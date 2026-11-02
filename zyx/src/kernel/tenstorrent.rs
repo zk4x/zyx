@@ -1104,6 +1104,8 @@ impl Kernel {
             self.tt_sfp_sigmoid(a, slot)
         } else if (kind == sf::SIN || kind == sf::COS) && b.is_null() {
             self.tt_sfp_sin_cos(id, kind, a, slot)
+        } else if kind == sf::POW && !b.is_null() {
+            self.tt_sfp_pow(a, b, slot)
         } else if (sf::EQ..=sf::LE).contains(&kind) && !b.is_null() {
             self.tt_sfp_compare(kind, a, b, slot)
         } else if (sf::INT_AND..=sf::INT_SHR).contains(&kind) && !b.is_null() {
@@ -2011,6 +2013,324 @@ impl Kernel {
             sfp(&mut ops, pushc, [0; 5]);
             sfp(&mut ops, ple, [u32::from(L3), u32::from(L4), 1, 0, 0]);
             konst(&mut ops, L7, 0x7fc0_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            st(&mut ops, slot, o, L7, INT32);
+        }
+        ops
+    }
+
+    /// `ops::pow_program`: `log_program`, the multiply by `y`, `exp_program`
+    /// and `pow_fix`, transcribed instruction for instruction. `x` is `a` and
+    /// `y` is `b`, both FP32 tiles; the result is `e^(y ln|x|)` with the
+    /// builder's special values, and within `pow_bound`.
+    fn tt_sfp_pow(&mut self, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
+        use tt_isa::isa::generated::defs;
+        let (mad, mov, abs, and, iadd, shft, arecip, exexp, setexp, setsgn) = (
+            defs::SFPMAD.opcode(),
+            defs::SFPMOV.opcode(),
+            defs::SFPABS.opcode(),
+            defs::SFPAND.opcode(),
+            defs::SFPIADD.opcode(),
+            defs::SFPSHFT.opcode(),
+            defs::SFPARECIP.opcode(),
+            defs::SFPEXEXP.opcode(),
+            defs::SFPSETEXP.opcode(),
+            defs::SFPSETSGN.opcode(),
+        );
+        let (gt, le, setcc) = (defs::SFPGT.opcode(), defs::SFPLE.opcode(), defs::SFPSETCC.opcode());
+        let (pushc, popc, compc, nop) =
+            (defs::SFPPUSHC.opcode(), defs::SFPPOPC.opcode(), defs::SFPCOMPC.opcode(), defs::SFPNOP.opcode());
+        let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
+            ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
+        };
+        let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
+            ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
+        };
+        let ld = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
+            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at, reg, fmt }))));
+        };
+        let st = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
+            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at, reg, fmt }))));
+        };
+        let mut ops: Vec<Op> = Vec::new();
+        sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
+        for o in (0..64u16).step_by(2) {
+            // ---------------------------------------------------------------
+            // `log_program(L0, L7)`: `|x|`, then `ln|x|` into `L7`.
+            // ---------------------------------------------------------------
+            ld(&mut ops, a, o, L0, FP32);
+            sfp(&mut ops, abs, [u32::from(L0), u32::from(L0), 1, 0, 0]);
+            sfp(&mut ops, exexp, [u32::from(L0), u32::from(L1), 0, 0, 0]);
+            sfp(&mut ops, setexp, [127, u32::from(L0), u32::from(L2), 1, 0]);
+            sfp(&mut ops, setsgn, [0, u32::from(L2), u32::from(L2), 1, 0]);
+            konst(&mut ops, L3, 0x3fb5_04f3); // sqrt(2)
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L3), u32::from(L2), 1, 0, 0]);
+            sfp(&mut ops, setexp, [126, u32::from(L2), u32::from(L2), 1, 0]);
+            sfp(&mut ops, iadd, [1, u32::from(L1), u32::from(L1), 5, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, mad, [LREG_ONE, u32::from(L2), LREG_ONE, u32::from(L3), 2]);
+            konst(&mut ops, L4, 0x4000_0000); // 2.0
+            sfp(&mut ops, mad, [LREG_ONE, u32::from(L3), u32::from(L4), u32::from(L4), 0]);
+            konst(&mut ops, L7, 0x7f7f_ffff); // f32::MAX
+            sfp(&mut ops, abs, [u32::from(L4), u32::from(L6), 1, 0, 0]);
+            konst(&mut ops, L2, 0x7180_0000); // 2^100
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L2), u32::from(L6), 1, 0, 0]);
+            konst(&mut ops, L7, 0x1f80_0000); // 2^-64
+            sfp(&mut ops, mad, [u32::from(L4), u32::from(L7), LREG_ZERO, u32::from(L6), 2]);
+            sfp(&mut ops, arecip, [0, u32::from(L6), u32::from(L5), 0, 0]);
+            sfp(&mut ops, mad, [u32::from(L6), u32::from(L5), LREG_ONE, u32::from(L2), 1]);
+            sfp(&mut ops, mad, [u32::from(L2), u32::from(L5), u32::from(L5), u32::from(L5), 0]);
+            sfp(&mut ops, mad, [u32::from(L6), u32::from(L5), LREG_ONE, u32::from(L2), 1]);
+            sfp(&mut ops, mad, [u32::from(L2), u32::from(L5), u32::from(L5), u32::from(L5), 0]);
+            sfp(&mut ops, mad, [u32::from(L5), u32::from(L7), LREG_ZERO, u32::from(L5), 2]);
+            konst(&mut ops, L7, 0x7f7f_ffff); // f32::MAX
+            sfp(&mut ops, compc, [0; 5]);
+            sfp(&mut ops, arecip, [0, u32::from(L4), u32::from(L5), 0, 0]);
+            sfp(&mut ops, mad, [u32::from(L4), u32::from(L5), LREG_ONE, u32::from(L2), 1]);
+            sfp(&mut ops, mad, [u32::from(L2), u32::from(L5), u32::from(L5), u32::from(L5), 0]);
+            sfp(&mut ops, mad, [u32::from(L4), u32::from(L5), LREG_ONE, u32::from(L2), 1]);
+            sfp(&mut ops, mad, [u32::from(L2), u32::from(L5), u32::from(L5), u32::from(L5), 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            // `1/±0` and a denormal: the seed's infinity.
+            konst(&mut ops, L2, 0x7fff_ffff);
+            sfp(&mut ops, and, [u32::from(L2), u32::from(L4), u32::from(L6), 1, 0]);
+            konst(&mut ops, L2, 0x0080_0000);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L6), u32::from(L2), 1, 0, 0]);
+            konst(&mut ops, L2, 0x7f80_0000);
+            sfp(&mut ops, mov, [u32::from(L4), u32::from(L5), 0, 0, 0]);
+            sfp(&mut ops, setsgn, [0, u32::from(L2), u32::from(L5), 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            // `1/±inf`: the seed's zero.
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L7), u32::from(L6), 1, 0, 0]);
+            konst(&mut ops, L2, 0x7f80_0001);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L6), u32::from(L2), 1, 0, 0]);
+            sfp(&mut ops, mov, [u32::from(L4), u32::from(L5), 0, 0, 0]);
+            sfp(&mut ops, setsgn, [0, LREG_ZERO, u32::from(L5), 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            // `s = f / (2 + f)`, the quotient corrected.
+            sfp(&mut ops, mad, [u32::from(L3), u32::from(L5), LREG_ZERO, u32::from(L6), 2]);
+            sfp(&mut ops, abs, [u32::from(L6), u32::from(L2), 1, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [LREG_ZERO, u32::from(L2), 1, 0, 0]);
+            sfp(&mut ops, mad, [u32::from(L4), u32::from(L6), u32::from(L3), u32::from(L2), 1]);
+            sfp(&mut ops, mad, [u32::from(L2), u32::from(L5), u32::from(L6), u32::from(L6), 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            // `ln m = 2s(1 + s^2/3 + s^4/5 + s^6/7 + s^8/9)`.
+            sfp(&mut ops, mad, [u32::from(L6), u32::from(L6), LREG_ZERO, u32::from(L3), 2]);
+            konst(&mut ops, L7, 0x3de3_8e39); // 1/9
+            konst(&mut ops, L2, 0x3e12_4925); // 1/7
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L3), u32::from(L2), u32::from(L7), 0]);
+            konst(&mut ops, L2, 0x3e4c_cccd); // 1/5
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L3), u32::from(L2), u32::from(L7), 0]);
+            konst(&mut ops, L2, 0x3eaa_aaab); // 1/3
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L3), u32::from(L2), u32::from(L7), 0]);
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L3), LREG_ZERO, u32::from(L7), 2]);
+            sfp(&mut ops, mad, [u32::from(L6), u32::from(L7), u32::from(L6), u32::from(L7), 0]);
+            sfp(&mut ops, mad, [LREG_ONE, u32::from(L7), u32::from(L7), u32::from(L7), 0]);
+            // `e ln 2 + ln m`.
+            konst(&mut ops, L2, 0x4b40_0000); // 1.5 * 2^23
+            sfp(&mut ops, iadd, [0, u32::from(L2), u32::from(L1), 4, 0]);
+            sfp(&mut ops, mad, [LREG_ONE, u32::from(L1), u32::from(L2), u32::from(L1), 2]);
+            konst(&mut ops, L2, 0xb95e_8083); // ln2_lo
+            sfp(&mut ops, mad, [u32::from(L1), u32::from(L2), u32::from(L7), u32::from(L7), 0]);
+            konst(&mut ops, L2, 0x3f31_8000); // ln2_hi
+            sfp(&mut ops, mad, [u32::from(L1), u32::from(L2), u32::from(L7), u32::from(L7), 0]);
+            // The special cases, each its own lanes.
+            sfp(&mut ops, abs, [u32::from(L0), u32::from(L2), 1, 0, 0]);
+            konst(&mut ops, L3, 0x0080_0000);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L2), u32::from(L3), 1, 0, 0]);
+            konst(&mut ops, L7, 0xff80_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            konst(&mut ops, L3, 0x807f_ffff);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L0), u32::from(L3), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7fc0_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            konst(&mut ops, L3, 0x7f7f_ffff);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L3), u32::from(L0), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7f80_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            konst(&mut ops, L3, 0x7f80_0000);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L3), u32::from(L0), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7fc0_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            // ---------------------------------------------------------------
+            // `y ln|x|` and `exp_program(L0, L7)`.
+            // ---------------------------------------------------------------
+            ld(&mut ops, b, o, L1, INT32);
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L1), LREG_ZERO, u32::from(L0), 2]);
+            konst(&mut ops, L1, 0x3fb8_aa3b); // log2 e
+            konst(&mut ops, L2, 0x4b40_0000); // 1.5 * 2^23
+            sfp(&mut ops, mad, [u32::from(L0), u32::from(L1), u32::from(L2), u32::from(L3), 0]);
+            sfp(&mut ops, mad, [LREG_ONE, u32::from(L3), u32::from(L2), u32::from(L4), 2]);
+            konst(&mut ops, L1, 0x3f31_8000); // ln2_hi
+            sfp(&mut ops, mad, [u32::from(L4), u32::from(L1), u32::from(L0), u32::from(L5), 1]);
+            konst(&mut ops, L1, 0xb95e_8083); // ln2_lo
+            sfp(&mut ops, mad, [u32::from(L4), u32::from(L1), u32::from(L5), u32::from(L5), 1]);
+            konst(&mut ops, L7, 0x3950_0d01); // 1/5040
+            konst(&mut ops, L6, 0x3ab6_0b61); // 1/720
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L5), u32::from(L6), u32::from(L7), 0]);
+            konst(&mut ops, L6, 0x3c08_8889); // 1/120
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L5), u32::from(L6), u32::from(L7), 0]);
+            konst(&mut ops, L6, 0x3d2a_aaab); // 1/24
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L5), u32::from(L6), u32::from(L7), 0]);
+            konst(&mut ops, L6, 0x3e2a_aaab); // 1/6
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L5), u32::from(L6), u32::from(L7), 0]);
+            konst(&mut ops, L6, 0x3f00_0000); // 1/2
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L5), u32::from(L6), u32::from(L7), 0]);
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L5), LREG_ONE, u32::from(L7), 0]);
+            sfp(&mut ops, mad, [u32::from(L7), u32::from(L5), LREG_ONE, u32::from(L7), 0]);
+            // `SFPMAD`'s automatic stall does not cover `SFPIADD`'s read.
+            sfp(&mut ops, nop, [0; 5]);
+            sfp(&mut ops, iadd, [0, u32::from(L3), u32::from(L2), 6, 0]);
+            sfp(&mut ops, shft, [23, u32::from(L2), u32::from(L2), 5, 0]);
+            sfp(&mut ops, iadd, [0, u32::from(L2), u32::from(L7), 4, 0]);
+            // The range and a NaN.
+            konst(&mut ops, L1, 0xc2ae_ac50);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L0), u32::from(L1), 1, 0, 0]);
+            sfp(&mut ops, mov, [LREG_ZERO, u32::from(L7), 0, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            konst(&mut ops, L1, 0x42b1_7218);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L0), u32::from(L1), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7f80_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            konst(&mut ops, L1, 0x7fff_ffff);
+            sfp(&mut ops, and, [u32::from(L1), u32::from(L0), u32::from(L3), 1, 0]);
+            konst(&mut ops, L1, 0x7f80_0000);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L1), u32::from(L3), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7fc0_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            // ---------------------------------------------------------------
+            // `pow_fix`: `x` in `L0`, `y` in `L1`, `e` in `L7`.
+            // ---------------------------------------------------------------
+            ld(&mut ops, a, o, L0, INT32);
+            ld(&mut ops, b, o, L1, INT32);
+            konst(&mut ops, L6, 0x7fff_ffff);
+            sfp(&mut ops, and, [u32::from(L6), u32::from(L0), u32::from(L2), 1, 0]);
+            sfp(&mut ops, and, [u32::from(L6), u32::from(L1), u32::from(L3), 1, 0]);
+            sfp(&mut ops, mov, [LREG_ZERO, u32::from(L4), 0, 0, 0]);
+            // `flags`: 0 not an integer, 1 an even integer, 3 an odd one.
+            konst(&mut ops, L6, 0x4b00_0000); // 2^23
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L3), u32::from(L6), 1, 0, 0]);
+            sfp(&mut ops, mad, [LREG_ONE, u32::from(L3), u32::from(L6), u32::from(L5), 0]);
+            sfp(&mut ops, mad, [LREG_ONE, u32::from(L5), u32::from(L6), u32::from(L6), 2]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L3), u32::from(L6), 1, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L6), u32::from(L3), 1, 0, 0]);
+            konst(&mut ops, L4, 0x0000_0001);
+            konst(&mut ops, L6, 0x0000_0001);
+            sfp(&mut ops, and, [u32::from(L6), u32::from(L5), u32::from(L6), 1, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L6), 0, 2, 0]);
+            konst(&mut ops, L4, 0x0000_0003);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            konst(&mut ops, L6, 0x4b00_0000); // 2^23
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L3), u32::from(L6), 1, 0, 0]);
+            konst(&mut ops, L5, 0x7f80_0000);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L3), u32::from(L5), 1, 0, 0]);
+            konst(&mut ops, L4, 0x0000_0001);
+            konst(&mut ops, L5, 0x4b80_0000); // 2^24
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L3), u32::from(L5), 1, 0, 0]);
+            konst(&mut ops, L6, 0x0000_0001);
+            sfp(&mut ops, and, [u32::from(L6), u32::from(L3), u32::from(L6), 1, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L6), 0, 2, 0]);
+            konst(&mut ops, L4, 0x0000_0003);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            // A negative base.
+            konst(&mut ops, L6, 0x7f80_0000);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L0), 0, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L4), 0, 6, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L2), 0, 2, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L2), u32::from(L6), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7fc0_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, compc, [0; 5]);
+            konst(&mut ops, L5, 0x0000_0002);
+            sfp(&mut ops, and, [u32::from(L5), u32::from(L4), u32::from(L5), 1, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L5), 0, 2, 0]);
+            sfp(&mut ops, mov, [u32::from(L7), u32::from(L7), 1, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            // `y = ±inf`.
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L3), u32::from(L6), 1, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L6), u32::from(L3), 1, 0, 0]);
+            sfp(&mut ops, mov, [LREG_ZERO, u32::from(L7), 0, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L1), 0, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L2), LREG_ONE, 1, 0, 0]);
+            sfp(&mut ops, mov, [u32::from(L6), u32::from(L7), 0, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L1), 0, 4, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [LREG_ONE, u32::from(L2), 1, 0, 0]);
+            sfp(&mut ops, mov, [u32::from(L6), u32::from(L7), 0, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [LREG_ONE, u32::from(L2), 1, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L2), LREG_ONE, 1, 0, 0]);
+            sfp(&mut ops, mov, [LREG_ONE, u32::from(L7), 0, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            // NaNs.
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L6), u32::from(L2), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7fc0_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, gt, [u32::from(L6), u32::from(L3), 1, 0, 0]);
+            konst(&mut ops, L7, 0x7fc0_0000);
+            sfp(&mut ops, popc, [0; 5]);
+            // `1^y` and `x^0`.
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [LREG_ONE, u32::from(L0), 1, 0, 0]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, le, [u32::from(L0), LREG_ONE, 1, 0, 0]);
+            sfp(&mut ops, mov, [LREG_ONE, u32::from(L7), 0, 0, 0]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, popc, [0; 5]);
+            sfp(&mut ops, pushc, [0; 5]);
+            sfp(&mut ops, setcc, [0, u32::from(L3), 0, 6, 0]);
+            sfp(&mut ops, mov, [LREG_ONE, u32::from(L7), 0, 0, 0]);
             sfp(&mut ops, popc, [0; 5]);
             st(&mut ops, slot, o, L7, INT32);
         }
@@ -3550,6 +3870,7 @@ mod sfp_row_ops {
             crate::backend::tenstorrent::kern::kind::SUB,
             crate::backend::tenstorrent::kern::kind::MUL,
             sf::DIV,
+            sf::POW,
             sf::EQ,
             sf::NE,
             sf::GT,

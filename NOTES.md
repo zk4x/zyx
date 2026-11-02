@@ -33,8 +33,15 @@ zyx/src/backend/tenstorrent/kern/sfpu/ops.rs                    (one visibility)
   transcribes is its own method beside it: `tt_sfp_bool_not`, `tt_sfp_add`/
   `sub`/`mul`, `tt_sfp_neg`/`abs`/`int_not`, `tt_sfp_sqrt`, `tt_sfp_recip`,
   `tt_sfp_round`, `tt_sfp_div`, `tt_sfp_sigmoid`, `tt_sfp_sin_cos`,
-  `tt_sfp_compare`, `tt_sfp_integer`. The dispatcher only checks arity, calls
-  one, and swaps the last op into `id`.
+  `tt_sfp_pow`, `tt_sfp_compare`, `tt_sfp_integer`. The dispatcher only checks
+  arity, calls one, and swaps the last op into `id`.
+- **`POW` is ported** (`tt_sfp_pow`: `log_program` + the multiply +
+  `exp_program` + `pow_fix`). It has no reachable frontend path: the dynamic
+  float `Pow` is rewritten to `Exp2(Log2 x * y)` by `fold_constants` and the
+  TT backend has no `Exp2`/`Log2` lowering, so `Tensor::pow` on TT stops in
+  `tt_verify` ("DRAM read in compute"). The `sfp_row_ops` A/B is its only
+  coverage; giving it a gate means lowering `Exp2`/`Log2` first, which is a
+  separate task.
 - **SFPU operands are one module-level block** at the top of
   `kernel/tenstorrent.rs`, derived from `tt_isa` (`LReg::L0.index()`,
   `LREG_ZERO`/`LREG_ONE`, `mod0_fmt::FP32`/`INT32`). It replaced four copies
@@ -93,11 +100,18 @@ port"; pass order in "Pipeline and pass names" and "Implementation order
 **Pick up here:**
 1. Confirm the tree (`cargo build`, the gates above, `cargo test --lib`). The
    user writes commit messages: commit only when asked.
-2. **Item 2 — finish it: `POW`, then `REM`.**
-   - `POW` needs no scratch: `tt_sfp_pow` beside `tt_sfp_sin_cos`, transcribing
-     `log_program` + a multiply + `exp_program` + `pow_fix` (~250 lines), with
-     `L0..L7` as the builder uses them. Gate it on ttsim (F32 in/out, so it
-     can be gated) and add it to `sfp_row_ops`'s binary list.
+2. **Item 2 — finish it: `REM`.**
+   - `POW` is **ported** (`tt_sfp_pow`: `log_program` + the multiply +
+     `exp_program` + `pow_fix`) and in `sfp_row_ops`'s binary list. It is
+     **not gateable on ttsim, and not reachable from the frontend**: `Tensor::
+     pow` lowers `BOp::Pow` to host semantics, and `fold_constants` rewrites a
+     dynamic float `Pow` into `Exp2(Log2 x * y)`; `uop_kind` deliberately has
+     no `Exp2`/`Log2` entry, so the TT kernel keeps `Unary Log2`, the multiply,
+     `Unary Exp2` and the store unlowered and `tt_verify` rejects the DRAM
+     `Load` inside compute ("tt_verify: DRAM read in compute"). Same class of
+     finding as `Tensor::abs` (which never reaches `ABS`). A `pow` gate would
+     be testing `Exp2`/`Log2` lowering, not this arm; that lowering is a
+     separate, unasked task. The permanent A/B is the arm's coverage.
    - `REM` (`ops/rem.rs`) is 276 restoring steps: **wait for item 4**. The
      builder stores the body once and the runner repeats it; unrolled it is
      ~7000 ops per row group. Its spill (`SPILL_ROW + 256`) is four standard
@@ -756,11 +770,14 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   (`sqrt_program`), `RECIP` (`Program::recip`), `FLOOR`/`TRUNC`
   (`round::body`), `DIV` (`scale_large_divisor` + `recip` + `divide`) — gate
   `unary_math`; then the comparisons (`EQ..LE` via `compare_body`), the
-  integer bit ops (`integer::body` ops 3–7), and `SIN`/`COS`
-  (`sin_cos_program`, three standard spill tiles). All the arms are now one
-  function per builder program, dispatched from `tt_sfp_sequence`. Remaining
-  reachable: `POW` (`log_program`/`exp_program`/`pow_fix`) and `REM`
-  (`ops::rem`); `REM` also wants item 4's loop lowering.
+  integer bit ops (`integer::body` ops 3–7), `SIN`/`COS`
+  (`sin_cos_program`, three standard spill tiles), and `POW`
+  (`log_program` + the multiply + `exp_program` + `pow_fix`). All the arms are
+  now one function per builder program, dispatched from `tt_sfp_sequence`.
+  `POW` has no frontend path (see the handoff: `fold_constants` turns `Pow`
+  into `Exp2(Log2 x * y)`, which the TT backend does not lower), so the A/B
+  is its only coverage. Remaining reachable: `REM` (`ops::rem`), which also
+  wants item 4's loop lowering.
   `EXP`/`LOG` are builder-only kinds (no table entry), and `EXP`'s body is
   already inlined in the sigmoid arm.
 - **Acceptance** = the gates, plus `interp` (`kern/sfpu/interp.rs`) for the
@@ -1014,7 +1031,7 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | `neg_sub_mul` | green, bit-exact — `NEG`/`SUB`/`MUL` row arms (`[10,256]`, the shape that exposed the `tt_tile` group-cap bug) |
 | `tiling` | green, bit-exact — `neg`/`mul` on `[32,32] [64,64] [10,32] [128,128]`; locks the `tt_tile` contract (one-tile no-op, element vs tile-counted group, bare `g*32` row stride, multi-tile grid) |
 | `unary_math` | green — `SQRT`/`RSQRT`/`RECIP`/`DIV` within `4 ulp`, `FLOOR`/`TRUNC` bit-exact; the special lanes (`0`/`±inf`/`NaN`) are not covered by this gate, but the `sfp_row_ops` A/B compares every arm bit-exactly against its builder program |
-| `sfp_row_ops` (lib) | green — all 27 ported kinds, arm vs builder through `interp`, bit-exact on specials; covers `SIN`/`COS`, the comparisons and the integer ops, which no ttsim gate can reach |
+| `sfp_row_ops` (lib) | green — all 28 ported kinds, arm vs builder through `interp`, bit-exact on specials; covers `SIN`/`COS`, `POW`, the comparisons and the integer ops, which no ttsim gate can reach |
 | comparisons, integer bit ops | ungated: a `Bool` output has no tile format and an `I32` input cannot unpack; verified bit-exact against the builder through `interp` on specials and shift amounts `>= 32` (temporary test, removed) |
 | `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
 | `matmul_add` | red: a second matmul's `ZEROACC CLR_ALL` would wipe the first accumulator (`CLR_ALL after 64 compute op(s)`); the `SETRWC`-base gate once the clear is scoped |
@@ -1099,14 +1116,16 @@ Since the 2026-10-30 handoff:
      `RECIP` (`Program::recip`), `FLOOR`/`TRUNC` (`round::body`), `DIV`
      (`scale_large_divisor` + `recip` + `divide`; gate `unary_math`), the
      comparisons (`compare_body`), the integer bit ops (`integer::body` ops
-     3–7), and `SIN`/`COS` (`sin_cos_program`, three standard spill tiles).
-     Every arm is its own method and emits `SFPENCC` once when it predicates.
+     3–7), `SIN`/`COS` (`sin_cos_program`, three standard spill tiles), and
+     `POW` (`log_program` + multiply + `exp_program` + `pow_fix`; no frontend
+     path, A/B only). Every arm is its own method and emits `SFPENCC` once
+     when it predicates.
      `tt_sfp_sequence` carries the shared emitter pieces: `SfpConst` staging,
      nested `if_`/`if_else`, `abs`/`neg`/`mov`/`mad`/`nmad`/`mul`/`sub`/
      `and`/`or`/`xor`/`not`/`iadd`/`isub_from`/`shl`/`shr_by`/
      `approx_recip`/`setsgn`/`SFPGT`/`SFPLE`/`SFPSETCC`, and the
      NOP-after-MAD rule.
-   - *Still to come in this item:* `POW`, `REM` (see the handoff), then
+   - *Still to come in this item:* `REM` (see the handoff), then
      `Sfpu { kind }`/`TtEmit::Sfpu`, `tt_sfpu_program` and `tt_row_remap` go,
      and `kern/sfpu`'s `Program`/`Code`/`LoopForm` half with them
      (`ops::kind_sfpu` must move to `kern/kind.rs` first).
