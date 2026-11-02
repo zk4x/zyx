@@ -16,7 +16,24 @@
 
 ### Start here — session handoff (2026-11-02, fourth pass)
 
-**Both bugs fixed; `exp2`, `sigmoid` and `sum_sigmoid` are green.**
+**Both bugs fixed; `exp2`, `sigmoid` and `sum_sigmoid` are green, and
+`tt_sfpu_fusion` exists.**
+
+0. **`tt_sfpu_fusion` (new, `device_epilogue` between `tt_dataflow_select`
+   and `tt_dst_reuse`).** DST only, exactly as settled: splice adjacent
+   `Replay` units along `A`'s trailing `SfpStore slot S` → `B`'s leading
+   `SfpLoad slot S`, keep the value in `A`'s result register, rename the
+   loaded register onto it (`tt_row_rename` by ISA field name, guarded by the
+   read/write sets from `tt_row_regs`). Conditions, all exact: same `slot`,
+   `at`, `fmt` and repeat count; the slot has exactly **two** accesses in the
+   whole kernel (so no other reader, no second writer, and never a kernel
+   output); `B` never writes the loaded register and never reads it after
+   first writing the result register; the spliced body stays ≤ 32 words (the
+   unrolled fallback shape is not spliced yet). It re-scans and merges one
+   pair per round, so chains fold. Measured on `sigmoid`: **35 → 28 replay
+   bodies**, T1 4817 → 4551 words, all 15 gates unchanged.
+   Deliberately *not* in this pass: anything CB-shaped. A `Pack`/`Unpack`
+   means T2/T0, so those sequences are not adjacent and never fuse.
 
 1. **The missing packer → unpacker seam (fixed).** `tt_reg_sync` only put
    `Register` storages in `touches`, so a `tt_materialize` round trip
@@ -50,12 +67,32 @@ gate), `sigmoid` (0 bad / 2560, `worst 0` — bit-exact against the host),
 `9 DST register tiles exceed the 8-tile budget` (allocator peak, unrelated to
 the two bugs; it also hits ttsim's `SRCA_SET_SetOvrdWithAddr=1` limitation).
 
-**Next:** `matmul_sigmoid` and the allocator peak; `tt_sfpu_fusion` (the seam
-and the math are now trustworthy, so its gates can point at fusion itself);
-then the integer `Sub` in `tt_log2`'s `e - 127` has the same dtype-blind
-problem as the `Add` (dyadic `DType::I32` dispatch is the pattern to follow),
-and `tt_log2` still fails to compile on
-`native unpack ... needs an F32 DST tile, got I32`.
+**Next (in order):**
+
+1. **`tt_dst_reuse`'s materialisation decision** — the settled design. It is
+   *not* "delete the first unpack": the executable form is "do not
+   materialise when the row can stay live to the last consumer", i.e. drop the
+   pack and the (single, cached) unpack. Note the tiering changed on
+   measurement: the "dead round trip" tier I first proposed is nearly vacuous,
+   because `tt_resolve_dst`'s per-CB cache already leaves **one unpack per
+   CB** for all consumers — so one pack + one unpack no longer proves one
+   consumer. What remains is the real tier: extend the allocator's liveness
+   over the pack/unpack span (the same two `Copy` arms `tt_reg_sync` now
+   models), alias the unpack onto the producer's row when nothing else claims
+   it, and keep it only if a re-run of the linear scan still fits the 8-tile
+   budget (greedy + revert; there is no spill yet). `sigmoid` has 7 such round
+   trips = 14 of its 23 hand-offs, so that is where the remaining win is.
+2. **Splice into bodies over 32 words**: the same store→load rule against a
+   `tt_row_loop`'s unrolled 32-copy form, or teach `TTOp::Replay` block
+   repeats (`mailbox::loops` + `code::stored(words, loops)`, one line at
+   `backend/tenstorrent/mod.rs:881`). `sigmoid`'s two 24-word bodies are the
+   pairs that currently miss because 24 + 24 − 2 > 32.
+3. `matmul_sigmoid` and the allocator peak (fusion and (1) both reduce live
+   tiles, so this may fall out).
+4. The integer **`Sub`** in `tt_log2`'s `e - 127` has the same dtype-blind
+   problem the `Add` had (follow the `DType::I32` dispatch), and `tt_log2`
+   still fails to compile on
+   `native unpack ... needs an F32 DST tile, got I32`.
 
 **How the hunt went (so it is not repeated):** `ZYX_DEBUG=264` gives the
 post-epilogue TT IR. What localized it: a temporary print of the role streams

@@ -123,6 +123,10 @@ impl Kernel {
             self.common_subexpression_elimination();
             self.dead_code_elimination();
             self.tt_dataflow_select();
+            // Chains that write an intermediate tile only to read it back:
+            // keep the value in its lane register. Before the allocator, so
+            // the rows it frees are never allocated.
+            self.tt_sfpu_fusion();
             // The allocated form is legal but at maximal pressure; the reuse
             // pass coalesces it down to the physical tile budget. It must run
             // after allocation and before codegen.

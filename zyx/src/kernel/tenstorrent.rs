@@ -134,6 +134,53 @@ fn tt_row_words(op: &Op) -> u32 {
     }
 }
 
+/// The lane registers a row op reads and writes, as 16-bit sets over
+/// `LReg::index()` (`bit i` is `L[i]`). `tt_sfp_fusion` uses it to prove that
+/// the producer's result register survives the consumer's sequence.
+fn tt_row_regs(op: &Op) -> (u16, u16) {
+    match op {
+        Op::TT(TTOp::Sfp(insn)) => tt_sfp_regs(insn.op, &insn.args),
+        Op::TT(TTOp::SfpLoad(load)) => (0, 1u16 << load.reg),
+        Op::TT(TTOp::SfpStore(store)) => (1u16 << store.reg, 0),
+        Op::TT(TTOp::SfpConst(k)) => (0, 1u16 << k.reg),
+        other => panic!("tt_row_regs: {other:?} is not a row op"),
+    }
+}
+
+/// Rename lane register `from` to `to` in one row op's register operands.
+/// Only `VA`/`VB`/`VC`/`VD` are registers; `Imm12`/`Imm1`/`Mod1` are not, so
+/// the fields are matched by the ISA's own names.
+fn tt_row_rename(op: &mut Op, from: u8, to: u8) {
+    match op {
+        Op::TT(TTOp::Sfp(insn)) => {
+            let Some(def) = crate::codegen::tenstorrent::tt_sfp_def(insn.op) else {
+                todo!("tt_row_rename: no ISA instruction has opcode {:#x}", insn.op);
+            };
+            for (i, field) in def.fields().iter().enumerate() {
+                if matches!(field.name(), "VA" | "VB" | "VC" | "VD") && insn.args[i] == u16::from(from) {
+                    insn.args[i] = u16::from(to);
+                }
+            }
+        }
+        Op::TT(TTOp::SfpLoad(load)) => {
+            if load.reg == from {
+                load.reg = to;
+            }
+        }
+        Op::TT(TTOp::SfpStore(store)) => {
+            if store.reg == from {
+                store.reg = to;
+            }
+        }
+        Op::TT(TTOp::SfpConst(k)) => {
+            if k.reg == from {
+                k.reg = to;
+            }
+        }
+        other => todo!("tt_row_rename: {other:?} is not a row op"),
+    }
+}
+
 /// One phase-2 pattern and the native lowering it emits. The list is
 /// ordered biggest-first; the recursive walk tries each pattern at a value
 /// root and stops at the first emitter that succeeds. The SFPU variant is
@@ -3732,6 +3779,161 @@ impl Kernel {
             ('c', 'p') => TtCopy::Drain,
             _ => panic!("tt_copy_kind: copy {id:?} moves between scopes with no stream"),
         }
+    }
+
+    /// Keep an intermediate in its lane register instead of writing it to its
+    /// own tile and reading it back: `tt_sfpu_fusion`.
+    ///
+    /// Lowering emits one row loop per op, so a chain does
+    ///
+    /// ```text
+    /// body A:  SFPLOAD r0 <- slot S  ...  SFPSTORE r2 -> slot S
+    /// body B:  SFPLOAD r0 <- slot S  ...  SFPSTORE r3 -> slot T
+    /// ```
+    ///
+    /// and `B`'s load reads back exactly what `A`'s store just wrote. This
+    /// pass splices the two bodies into one, dropping the store and the load:
+    /// the value stays in `A`'s result register and `B` reads it there.
+    ///
+    /// It is exact, not a heuristic, and it touches DST only — a `Pack` or
+    /// `Unpack` in between makes the two sequences live in different roles
+    /// (T2/T0), so they are not adjacent and never fuse. The conditions:
+    ///
+    /// - `A`'s body ends in a store and `B`'s begins with a load of the same
+    ///   storage, with the same row group and the same format (the format
+    ///   decides the denormal flush on store, so a mismatch is not bit-equal);
+    /// - that storage is read and written nowhere else in the kernel: two
+    ///   accesses total, the pair being spliced;
+    /// - the value survives `B`'s sequence: `B` never reads the loaded
+    ///   register after it first writes `A`'s result register, and never
+    ///   writes the loaded register itself (so a rename of the loaded register
+    ///   to the result register is a pure read rewrite);
+    /// - the spliced body still fits the 32-word replay buffer. Longer bodies
+    ///   are left alone: `tt_row_loop`'s unrolled form is a different shape,
+    ///   and splicing into it is a separate change.
+    pub fn tt_sfpu_fusion(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        for _ in 0..250_000 {
+            let mut ops: Vec<OpId> = Vec::new();
+            let mut id = self.head;
+            for _ in 0..250_000 {
+                if id.is_null() {
+                    break;
+                }
+                ops.push(id);
+                id = self.next_op(id);
+            }
+            // Every `Replay` marker and the body it owns, as index ranges.
+            let mut units: Vec<(usize, usize)> = Vec::new();
+            let mut i = 0;
+            while i < ops.len() {
+                let Op::TT(TTOp::Replay { len, .. }) = self.at(ops[i]) else {
+                    i += 1;
+                    continue;
+                };
+                let mut words = 0u32;
+                let mut j = i + 1;
+                while j < ops.len() && words < u32::from(*len) {
+                    words += tt_row_words(&self.at(ops[j]));
+                    j += 1;
+                }
+                units.push((i, j));
+                i = j;
+            }
+            let mut fused = false;
+            for u in 1..units.len() {
+                let (a_marker, a_end) = units[u - 1];
+                let (b_marker, b_end) = units[u];
+                if a_end != b_marker {
+                    continue;
+                }
+                if self.tt_fuse_pair(&ops, a_marker, a_end, b_marker, b_end) {
+                    fused = true;
+                    break;
+                }
+            }
+            if !fused {
+                return;
+            }
+        }
+    }
+
+    /// One fusion attempt over the two units `ops[a_marker..a_end]` and
+    /// `ops[b_marker..b_end]`. See [`Kernel::tt_sfpu_fusion`] for the
+    /// conditions; returns whether the bodies were spliced.
+    fn tt_fuse_pair(&mut self, ops: &[OpId], a_marker: usize, a_end: usize, b_marker: usize, b_end: usize) -> bool {
+        let (Some(&store_id), Some(&load_id)) = (ops.get(a_end.wrapping_sub(1)), ops.get(b_marker + 1)) else {
+            return false;
+        };
+        if a_marker + 1 > a_end - 1 || b_marker + 1 > b_end {
+            return false;
+        }
+        let Op::TT(TTOp::SfpStore(store)) = self.at(store_id) else {
+            return false;
+        };
+        let (store_slot, store_at, store_fmt, store_reg) = (store.slot, store.at, store.fmt, store.reg);
+        let Op::TT(TTOp::SfpLoad(load)) = self.at(load_id) else {
+            return false;
+        };
+        let (load_slot, load_at, load_fmt, load_reg) = (load.slot, load.at, load.fmt, load.reg);
+        let (Op::TT(TTOp::Replay { len: a_len, count: a_count }), Op::TT(TTOp::Replay { len: b_len, count: b_count })) =
+            (self.at(ops[a_marker]), self.at(ops[b_marker]))
+        else {
+            return false;
+        };
+        let (a_len, a_count, b_len, b_count) = (*a_len, *a_count, *b_len, *b_count);
+        if store_slot != load_slot || store_fmt != load_fmt || store_at != load_at || a_count != b_count {
+            return false;
+        }
+        // The tile must be private to this pair: no other reader and no other
+        // writer, which also keeps it out of the kernel's outputs.
+        let slot = store_slot;
+        let mut accesses = 0;
+        for &op in ops {
+            match self.at(op) {
+                Op::TT(TTOp::SfpLoad(l)) if l.slot == slot => accesses += 1,
+                Op::TT(TTOp::SfpStore(s)) if s.slot == slot => accesses += 1,
+                _ => {}
+            }
+        }
+        if accesses != 2 {
+            return false;
+        }
+        // `B`'s sequence must leave the value alone: `rp` is only read, and
+        // `A`'s result register is not overwritten before the last read.
+        let (r, rp) = (store_reg, load_reg);
+        let mut wrote_r = false;
+        for &op in &ops[b_marker + 2..b_end] {
+            let (reads, writes) = tt_row_regs(&self.at(op));
+            if reads & (1u16 << rp) != 0 && wrote_r {
+                return false;
+            }
+            if writes & (1u16 << rp) != 0 && rp != r {
+                return false;
+            }
+            if writes & (1u16 << r) != 0 {
+                wrote_r = true;
+            }
+        }
+        let merged = u32::from(a_len) + u32::from(b_len) - tt_row_words(self.at(store_id)) - tt_row_words(self.at(load_id));
+        if merged == 0 || merged > tt_isa::frontend::REPLAY_BUFFER {
+            return false;
+        }
+        // Splice: rename `B`'s reads of the loaded register to the result
+        // register, shrink `A`'s marker, and drop `B`'s marker plus the
+        // store/load pair.
+        if r != rp {
+            for &op in &ops[b_marker + 2..b_end] {
+                tt_row_rename(&mut self.ops[op].op, rp, r);
+            }
+        }
+        self.ops[ops[a_marker]].op = Op::TT(TTOp::Replay { len: merged as u16, count: a_count });
+        self.remove_op(ops[b_marker]);
+        self.remove_op(store_id);
+        self.remove_op(load_id);
+        true
     }
 
     /// Role hand-off over the DST tiles: `tt_reg_sync`. This is the only pass
