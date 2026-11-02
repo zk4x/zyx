@@ -272,6 +272,30 @@ fn max_scalar() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn sum_all() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+
+    // The no-argument reduce (`axes = []` means every axis). It is the same
+    // chain as `sum([0, 1])`: `reduce_axes` folds one axis at a time, so the
+    // kernel is `Row` then `Col`, never `TileDim::Scalar`.
+    let z = x.to(Dev::TT(0))?.sum_all().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 1);
+    let mut acc = 0f32;
+    for v in &xv {
+        acc += *v;
+    }
+    let err = (zv[0] - acc).abs();
+    println!("sum_all: {} vs {} (err {err})", zv[0], acc);
+    assert!(err <= 1e-3, "err {err}");
+
+    Ok(())
+}
+
+#[test]
 fn matmul_sigmoid() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::F32)?;
     let y = Tensor::rand([20, 12], DType::F32)?;

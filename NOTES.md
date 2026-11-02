@@ -604,8 +604,14 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 - **`TileDim::Col` is live now; `TileDim::Scalar` still is not.** The two
   live shapes are `Row` (one value per row of a tile) and `Col` (one value
   per column — here, a whole `[32]` vector). A whole-tensor reduce never
-  reaches `Scalar`: the graph splits `sum([0,1])` into a `Row` kernel and a
-  `Col` kernel. So the lowering no longer produces `ReduceTile` at all, and
+  reaches `Scalar`: `Tensor::reduce_axes` (`tensor/reduce_ops.rs:40`)
+  permutes the reduced axes last and folds **one axis at a time**, so
+  `sum([0,1])` *and* the no-argument `sum_all()` (`axes = []` → every axis,
+  `into_axes`, `shape.rs:47`) both become a `Row` kernel and then a `Col`
+  kernel. The `sum_all` gate is bit-identical to `sum_scalar`, which is the
+  evidence. `Op::Reduce` carries a single `reduce_axis`, so no IR can fold
+  both axes of one tile — `Scalar` is structurally unreachable, not merely
+  unused. The lowering therefore no longer produces `ReduceTile` at all, and
   `tt_reduce_program`/`reduce.rs`'s builder is dead on that path — deleting
   it is a separate step (the `Scalar` arm of the port stays transcribed and
   unexercised).
@@ -696,6 +702,7 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | `add` | green, 0/2560 (exact) — first kind on the row-op path (`SFPMAD` + `LREG_ONE`) |
 | `sum_scalar` | green, err 4.6e-5 — `Col + Add` (rank-1 kernel: one tile column), as of 2026-11-02 |
 | `max_scalar` | green, exact — `Col + Max`, same kernel |
+| `sum_all` | green, err 4.6e-5 (bit-identical to `sum_scalar`) — the no-arg `sum_all()` is the same `Row` then `Col` chain |
 | `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
 | `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
 
