@@ -16,14 +16,15 @@
 
 ### Start here — session handoff (2026-11-02, end of session)
 
-**State at handoff:** HEAD `d636dc3a` "tt_tile fixes" — the **tiling contract
-and the `tt_tile` rewrite** (see "Tiling: the search explores, `tt_tile`
-completes"), the first item-2 group (`NEG`/`ABS`/`SUB`/`MUL`/`INT_NOT` row
-arms in `tt_sfp_sequence`), the gate `neg_sub_mul`, and the previous revision
-of this block. **Uncommitted:** the rest of the unary/arithmetic batches
-(`SQRT`/`RSQRT`/`RECIP`/`FLOOR`/`TRUNC`/`DIV` arms in `tt_sfp_sequence`), the
-gates `tiling` and `unary_math`, and this note. `git status` should be exactly
-`zyx/src/kernel/tenstorrent.rs`, `zyx/tests/23_tt_lowering.rs`, `NOTES.md`.
+**State at handoff:** HEAD `722d9fb4` "more tt ops" — the tiling contract and
+`tt_tile` rewrite, the first two item-2 groups (`NEG`/`ABS`/`SUB`/`MUL`/
+`INT_NOT`, then `SQRT`/`RSQRT`/`RECIP`/`FLOOR`/`TRUNC`/`DIV`), the gates
+`neg_sub_mul`, `tiling` and `unary_math`, and the previous revision of this
+block. **Uncommitted:** the third group — the comparisons
+(`EQ`/`NE`/`GT`/`GE`/`LT`/`LE`) and the integer bit ops
+(`INT_AND`/`OR`/`XOR`/`SHL`/`SHR`) as row-op arms in `tt_sfp_sequence`.
+`git status` should be exactly `zyx/src/kernel/tenstorrent.rs` and
+`NOTES.md`.
 
 The committed base also contains:
 - **`tt_reg_sync`** (see the SFPU-emission section): the only pass that emits
@@ -71,27 +72,56 @@ cd zyx && TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   is the gate that will exercise `SETRWC`'s base *once the clear is scoped to
   the accumulator's rows*.
 
+**Open questions (the user owns them; nothing was changed for these):**
+- `SIN`/`COS` and `REM` need a scratch `Dst` tile; `tt_sfp_sequence(a, b,
+  slot)` has nowhere to put one. Add a fourth parameter (and who allocates
+  it — `tt_emit`'s `tt_new_dst` like the scalar reduce's `scratch`), or keep
+  those kinds on the builder for now?
+- `POW` needs no scratch and could be an inline arm like `SQRT`, but is
+  `log_program` + `exp_program` + `pow_fix` ≈ 250 lines. Inline, per-kind
+  private `fn`s, or a lowering builder? (`REM` also wants item 4's loop
+  lowering: the builder stores the body once and repeats it.)
+- The predicated arms already committed (`SQRT`/`RSQRT`, `RECIP`,
+  `FLOOR`/`TRUNC`, `DIV`) use `SFPSETCC`/`SFPGT`/`SFPLE` but never emit
+  `SFPENCC`; only `SIGMOID` does. On ttsim the gates are green either way,
+  but `SFPENCC.md` says `SFPSETCC` is a no-op unless lane-flag enable is on
+  (a previous kernel can leave it off). The new comparisons/integer arms emit
+  it themselves. Should the earlier arms get it too?
+
 **Pick up here:**
 1. Confirm the tree before starting (`cargo build`, the gates below,
    `cargo test --lib`); the user writes commit messages, so commit only when
    asked.
 2. **Item 2 — finish the SFPU port.** Done (row-op arms in `tt_sfp_sequence`):
    `BOOL_NOT`, `ADD`, `SIGMOID`, `NEG`, `ABS`, `SUB`, `MUL`, `INT_NOT`,
-   `SQRT`/`RSQRT`, `RECIP`, `FLOOR`/`TRUNC`, `DIV`. Gates:
-   `add`, `sigmoid`, `neg_sub_mul`, `unary_math` (`ABS`/`INT_NOT` have none —
-   see the coverage note).
-   Remaining reachable kinds, smallest body first: the comparisons
-   `EQ`/`NE`/`GT`/`GE`/`LT`/`LE` (`compare_body`), the integer bit ops
-   `INT_AND`/`OR`/`XOR`/`SHL`/`SHR` (`integer::body` ops 3–7), `SIN`/`COS`
-   (`trig_reduce` + `sin_cos_program`), `POW` (`log_program` + `exp_program`
-   + `pow_fix`), `REM` (`ops/rem.rs`). (`EXP`/`LOG`/`TANH`/`ERF`/`GELU`/other
-   trig have no `uop_kind`/`bop_kind` entry, so no table reaches them; they
-   are the builder's only.) Then `Sfpu { kind }`/`TtEmit::Sfpu`/
-   `tt_sfpu_program`/`tt_row_remap` go, and `kern/sfpu` shrinks to `interp`
-   (the oracle). `ops::kind_sfpu` is still used by `uop_kind`/`bop_kind` and
-   the pattern table, so **move those constants first** (natural home:
-   `kern/kind.rs`, whose doc already points at them) — that is an unasked
-   design choice, confirm it with the user.
+   `SQRT`/`RSQRT`, `RECIP`, `FLOOR`/`TRUNC`, `DIV`, the comparisons
+   `EQ`/`NE`/`GT`/`GE`/`LT`/`LE` (`compare_body`), and the integer bit ops
+   `INT_AND`/`OR`/`XOR`/`SHL`/`SHR` (`integer::body` ops 3–7). Gates:
+   `add`, `sigmoid`, `neg_sub_mul`, `unary_math` (`ABS`/`INT_NOT` and the last
+   two groups have none — see the coverage note).
+   Remaining reachable kinds: `SIN`/`COS` (`trig_reduce` + `sin_cos_program`),
+   `POW` (`log_program` + `exp_program` + `pow_fix`), `REM` (`ops/rem.rs`).
+   (`EXP`/`LOG`/`TANH`/`ERF`/`GELU`/other trig have no `uop_kind`/`bop_kind`
+   entry, so no table reaches them; they are the builder's only.) Then
+   `Sfpu { kind }`/`TtEmit::Sfpu`/`tt_sfpu_program`/`tt_row_remap` go, and
+   `kern/sfpu` shrinks to `interp` (the oracle). `ops::kind_sfpu` is still used
+   by `uop_kind`/`bop_kind` and the pattern table, so **move those constants
+   first** (natural home: `kern/kind.rs`, whose doc already points at them) —
+   that is an unasked design choice, confirm it with the user.
+   **Blocked on a decision, not on effort:** `SIN`/`COS` and `REM` spill to a
+   *scratch Dst tile* (`trig_reduce` at `spill..spill + 192`,
+   `rem.rs`'s `SPILL_ROW + 256`), and `tt_sfp_sequence` only receives `a`,
+   `b`, `slot` — supplying a scratch slot changes its signature. `REM` is also
+   276 restoring steps per row group in the builder (`Repeated` loop): unrolled
+   it is ~7000 ops per group, so it wants item 4's loop lowering.
+   **Coverage note for the last two groups:** they cannot be gated through
+   ttsim — a `Bool` output has no tile format (`tt_fmt`) and an `I32` input
+   stops at `native unpack ... needs an F32 DST tile`. They were verified
+   instead with a temporary lib test that encoded the row-op arms and ran them
+   against `ops::code2`'s builder program through `kern/sfpu/interp.rs` on
+   specials (`±0`, `±inf`, `±NaN`, denormals, `±MAX`, shift amounts `>= 32`,
+   negatives), requiring bit equality; test removed afterwards. Redo that A/B
+   for `SIN`/`COS`/`POW`/`REM` before deleting the builder.
    **Coverage before deleting the builder:** the gates use random host data,
    so the `0`/`±inf`/`NaN` lanes of `sqrt_program`/`Program::recip`/
    `divide` are barely (recip: almost never) exercised. Before the fallback
@@ -727,12 +757,15 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `INT_NOT` (one-instruction arms), then `SQRT`/`RSQRT`
   (`sqrt_program`), `RECIP` (`Program::recip`), `FLOOR`/`TRUNC`
   (`round::body`), `DIV` (`scale_large_divisor` + `recip` + `divide`) — gate
-  `unary_math`; all 2026-11-02, `kern/sfpu/reduce.rs` deleted in the same
-  session. Remaining reachable: `SIN`/`COS` (`sin_cos_program`), `POW`
-  (`log_program`/`exp_program`/`pow_fix`), `REM` (`ops::rem`), the
-  comparisons (`EQ..LE` via `compare_body`), the integer ops
-  (`integer::body`). `EXP`/`LOG` are builder-only kinds (no table entry), and
-  `EXP`'s body is already inlined in the sigmoid arm.
+  `unary_math`; then the comparisons (`EQ..LE` via `compare_body`) and the
+  integer bit ops (`integer::body` ops 3–7), both A/B'd through `interp` (no
+  ttsim gate: `Bool` has no tile format, `I32` cannot unpack); all 2026-11-02,
+  `kern/sfpu/reduce.rs` deleted in the same session. Remaining reachable:
+  `SIN`/`COS` (`sin_cos_program`), `POW` (`log_program`/`exp_program`/
+  `pow_fix`), `REM` (`ops::rem`). The first and last need a scratch Dst tile
+  (`tt_sfp_sequence` has no such parameter; `REM` also wants loop lowering).
+  `EXP`/`LOG` are builder-only kinds (no table entry), and `EXP`'s body is
+  already inlined in the sigmoid arm.
 - **Acceptance** = the gates, plus `interp` (`kern/sfpu/interp.rs`) for the
   kinds no gate touches. Word parity is a debugging aid, not the criterion.
 - **Row ops own the lowered value.** The root of a ported kind is an
@@ -984,6 +1017,7 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | `neg_sub_mul` | green, bit-exact — `NEG`/`SUB`/`MUL` row arms (`[10,256]`, the shape that exposed the `tt_tile` group-cap bug) |
 | `tiling` | green, bit-exact — `neg`/`mul` on `[32,32] [64,64] [10,32] [128,128]`; locks the `tt_tile` contract (one-tile no-op, element vs tile-counted group, bare `g*32` row stride, multi-tile grid) |
 | `unary_math` | green — `SQRT`/`RSQRT`/`RECIP`/`DIV` within `4 ulp`, `FLOOR`/`TRUNC` bit-exact; the special lanes (`0`/`±inf`/`NaN`) are not covered (see the handoff's `interp` A/B note) |
+| comparisons, integer bit ops | ungated: a `Bool` output has no tile format and an `I32` input cannot unpack; verified bit-exact against the builder through `interp` on specials and shift amounts `>= 32` (temporary test, removed) |
 | `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
 | `matmul_add` | red: a second matmul's `ZEROACC CLR_ALL` would wipe the first accumulator (`CLR_ALL after 64 compute op(s)`); the `SETRWC`-base gate once the clear is scoped |
 
@@ -1065,16 +1099,20 @@ Since the 2026-10-30 handoff:
      (one instruction each; gate `neg_sub_mul` for `NEG`/`SUB`/`MUL`),
      `SQRT`/`RSQRT` (`sqrt_program`), `RECIP` (`Program::recip`),
      `FLOOR`/`TRUNC` (`round::body`), `DIV` (`scale_large_divisor` + `recip` +
-     `divide`; gate `unary_math`). `tt_sfp_sequence` carries the emitter
-     pieces: `SFPENCC` once, `SfpConst` staging, nested `if_`/`if_else`,
-     `abs`/`neg`/`mov`/`mad`/`nmad`/`mul`/`sub`/`and`/`iadd`/`isub_from`/
-     `shl`/`approx_recip`/`setsgn`/`SFPGT`/`SFPLE`/`SFPSETCC`, and the
-     NOP-after-MAD rule.
-   - *Still to come in this item:* the last reachable kinds still reaching
-     `program_for` (`SIN`/`COS`, `POW`, `REM`, the comparisons, the integer
-     ops), then `Sfpu { kind }`/`TtEmit::Sfpu`, `tt_sfpu_program` and
-     `tt_row_remap` go, and `kern/sfpu`'s `Program`/`Code`/`LoopForm` half
-     with them (`ops::kind_sfpu` must move to `kern/kind.rs` first).
+     `divide`; gate `unary_math`), the comparisons (`compare_body`) and the
+     integer bit ops (`integer::body` ops 3–7; A/B through `interp`, ungated).
+     `tt_sfp_sequence` carries the emitter pieces: `SFPENCC` once, `SfpConst`
+     staging, nested `if_`/`if_else`,
+     `abs`/`neg`/`mov`/`mad`/`nmad`/`mul`/`sub`/`and`/`or`/`xor`/`not`/
+     `iadd`/`isub_from`/`shl`/`shr_by`/`approx_recip`/`setsgn`/`SFPGT`/
+     `SFPLE`/`SFPSETCC`, and the NOP-after-MAD rule. The comparisons and the
+     integer arm emit `SFPENCC` themselves (the earlier predicated arms do
+     not — see the open question in the handoff).
+   - *Still to come in this item:* `SIN`/`COS`, `POW`, `REM` (see the
+     scratch-slot and structure notes in the handoff), then
+     `Sfpu { kind }`/`TtEmit::Sfpu`, `tt_sfpu_program` and `tt_row_remap` go,
+     and `kern/sfpu`'s `Program`/`Code`/`LoopForm` half with them
+     (`ops::kind_sfpu` must move to `kern/kind.rs` first).
    - The **reduce** moved off the builder entirely and `TTOp::ReduceTile`
      is deleted (`tt_reduce_program`, `tt_dst_copy` and its unit test with
      it). `kern/sfpu/reduce.rs` is deleted too (2026-11-02, with its

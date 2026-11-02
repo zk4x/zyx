@@ -1609,6 +1609,170 @@ impl Kernel {
                 sfp(&mut ops, popc, [0; 5]);
                 st(&mut ops, slot, o, L7, FP32);
             }
+        } else if (sf::EQ..=sf::LE).contains(&kind) && !b.is_null() {
+            // `binary_body`'s comparison: `compare_constants`' magnitude mask,
+            // `+inf` and `1` live in `L4..L6`; `x = L0`, `y = L1`, the answer
+            // `L2` as raw bits. A zero of either sign is made `+0`, a lane
+            // with a NaN takes the unordered answer (`1` for `NE`, else `0`),
+            // and the ordered test is `SFPGT`/`SFPLE`'s total order.
+            use tt_isa::isa::generated::defs;
+            let (and, mov, gt, ple, setcc, pushc, popc) = (
+                defs::SFPAND.opcode(),
+                defs::SFPMOV.opcode(),
+                defs::SFPGT.opcode(),
+                defs::SFPLE.opcode(),
+                defs::SFPSETCC.opcode(),
+                defs::SFPPUSHC.opcode(),
+                defs::SFPPOPC.opcode(),
+            );
+            let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
+            };
+            let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
+                ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
+            };
+            // Lane-flag predication on, all lanes enabled, as `Program::new`
+            // does: without `SFPENCC` the unit's `UseLaneFlagsForLaneEnable`
+            // is whatever the previous kernel left, and `SFPSETCC` is a no-op.
+            sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
+            konst(&mut ops, L4, 0x7fff_ffff);
+            konst(&mut ops, L5, 0x7f80_0000);
+            konst(&mut ops, L6, 1);
+            let (unordered, holds) = if kind == sf::NE {
+                (u32::from(L6), LREG_ZERO)
+            } else {
+                (LREG_ZERO, u32::from(L6))
+            };
+            // The ordered test, one scope per condition (a nested `if_`):
+            // `SFPLE` takes its first operand as `VD`, so `LessEq(a, b)` is
+            // `SFPLE [b, a]` and `Less(a, b)` is `SFPGT [a, b]`.
+            let ordered = |ops: &mut Vec<Op>, sfp: &dyn Fn(&mut Vec<Op>, u8, [u32; 5])| match kind {
+                sf::EQ | sf::NE => {
+                    sfp(ops, pushc, [0; 5]);
+                    sfp(ops, ple, [u32::from(L1), u32::from(L0), 1, 0, 0]);
+                    sfp(ops, pushc, [0; 5]);
+                    sfp(ops, ple, [u32::from(L0), u32::from(L1), 1, 0, 0]);
+                    sfp(ops, mov, [holds, u32::from(L2), 0, 0, 0]);
+                    sfp(ops, popc, [0; 5]);
+                    sfp(ops, popc, [0; 5]);
+                }
+                sf::GT => {
+                    sfp(ops, pushc, [0; 5]);
+                    sfp(ops, gt, [u32::from(L1), u32::from(L0), 1, 0, 0]);
+                    sfp(ops, mov, [holds, u32::from(L2), 0, 0, 0]);
+                    sfp(ops, popc, [0; 5]);
+                }
+                sf::GE => {
+                    sfp(ops, pushc, [0; 5]);
+                    sfp(ops, ple, [u32::from(L0), u32::from(L1), 1, 0, 0]);
+                    sfp(ops, mov, [holds, u32::from(L2), 0, 0, 0]);
+                    sfp(ops, popc, [0; 5]);
+                }
+                sf::LT => {
+                    sfp(ops, pushc, [0; 5]);
+                    sfp(ops, gt, [u32::from(L0), u32::from(L1), 1, 0, 0]);
+                    sfp(ops, mov, [holds, u32::from(L2), 0, 0, 0]);
+                    sfp(ops, popc, [0; 5]);
+                }
+                _ => {
+                    sfp(ops, pushc, [0; 5]);
+                    sfp(ops, ple, [u32::from(L1), u32::from(L0), 1, 0, 0]);
+                    sfp(ops, mov, [holds, u32::from(L2), 0, 0, 0]);
+                    sfp(ops, popc, [0; 5]);
+                }
+            };
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
+                // `ax = x & mask`, `ay = y & mask`; a zero of either sign is
+                // `+0`.
+                sfp(&mut ops, and, [u32::from(L4), u32::from(L0), u32::from(L3), 1, 0]);
+                sfp(&mut ops, pushc, [0; 5]);
+                sfp(&mut ops, setcc, [0, u32::from(L3), 0, 6, 0]);
+                sfp(&mut ops, mov, [LREG_ZERO, u32::from(L0), 0, 0, 0]);
+                sfp(&mut ops, popc, [0; 5]);
+                sfp(&mut ops, and, [u32::from(L4), u32::from(L1), u32::from(L7), 1, 0]);
+                sfp(&mut ops, pushc, [0; 5]);
+                sfp(&mut ops, setcc, [0, u32::from(L7), 0, 6, 0]);
+                sfp(&mut ops, mov, [LREG_ZERO, u32::from(L1), 0, 0, 0]);
+                sfp(&mut ops, popc, [0; 5]);
+                sfp(&mut ops, mov, [unordered, u32::from(L2), 0, 0, 0]);
+                // Both magnitudes at most `+inf`; a NaN fails the first test
+                // (the ordered answer stands for it).
+                sfp(&mut ops, pushc, [0; 5]);
+                sfp(&mut ops, ple, [u32::from(L5), u32::from(L3), 1, 0, 0]);
+                sfp(&mut ops, pushc, [0; 5]);
+                sfp(&mut ops, ple, [u32::from(L5), u32::from(L7), 1, 0, 0]);
+                ordered(&mut ops, &sfp);
+                sfp(&mut ops, popc, [0; 5]);
+                sfp(&mut ops, popc, [0; 5]);
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+            }
+        } else if (sf::INT_AND..=sf::INT_SHR).contains(&kind) && !b.is_null() {
+            // `integer::body` ops 3..7: `AND`/`OR`/`XOR` on the words, and
+            // `SHL`/`SHR` with the shift amount taken modulo 32 (`SHR`
+            // arithmetic: the sign's ones shifted in). `a = L0`, `b = L1`,
+            // the result `L2`, `L3` scratch, raw bits both ways.
+            use tt_isa::isa::generated::defs;
+            let (and, or, xor, not, mov, shft, iadd, setcc, pushc, popc) = (
+                defs::SFPAND.opcode(),
+                defs::SFPOR.opcode(),
+                defs::SFPXOR.opcode(),
+                defs::SFPNOT.opcode(),
+                defs::SFPMOV.opcode(),
+                defs::SFPSHFT.opcode(),
+                defs::SFPIADD.opcode(),
+                defs::SFPSETCC.opcode(),
+                defs::SFPPUSHC.opcode(),
+                defs::SFPPOPC.opcode(),
+            );
+            let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
+                ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
+            };
+            let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
+                ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
+            };
+            // `SHR` predicates on the sign; without `SFPENCC` its `SFPSETCC`
+            // is a no-op.
+            sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
+            let op = kind - sf::INT_AND;
+            for o in (0..64u16).step_by(2) {
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
+                match op {
+                    0 => sfp(&mut ops, and, [u32::from(L1), u32::from(L0), u32::from(L2), 1, 0]),
+                    1 => sfp(&mut ops, or, [u32::from(L1), u32::from(L0), u32::from(L2), 1, 0]),
+                    2 => {
+                        sfp(&mut ops, mov, [u32::from(L0), u32::from(L2), 0, 0, 0]);
+                        sfp(&mut ops, xor, [u32::from(L1), u32::from(L2), 0, 0, 0]);
+                    }
+                    // The amount's five low bits; `SFPIADD` or `SFPSHFT` would
+                    // wrap it mod 32 for an unsigned six-bit field otherwise.
+                    3 => {
+                        konst(&mut ops, L3, 31);
+                        sfp(&mut ops, and, [u32::from(L3), u32::from(L1), u32::from(L1), 1, 0]);
+                        sfp(&mut ops, mov, [u32::from(L0), u32::from(L2), 0, 0, 0]);
+                        sfp(&mut ops, shft, [0, u32::from(L1), u32::from(L2), 0, 0]);
+                    }
+                    _ => {
+                        konst(&mut ops, L3, 31);
+                        sfp(&mut ops, and, [u32::from(L3), u32::from(L1), u32::from(L1), 1, 0]);
+                        sfp(&mut ops, mov, [u32::from(L0), u32::from(L2), 0, 0, 0]);
+                        // `L1 = -amount`, so `SFPSHFT` shifts right.
+                        sfp(&mut ops, iadd, [0, u32::from(LREG_ZERO), u32::from(L1), 6, 0]);
+                        sfp(&mut ops, shft, [0, u32::from(L1), u32::from(L2), 0, 0]);
+                        // A negative value: the ones `not(ZERO)` shifted in.
+                        sfp(&mut ops, pushc, [0; 5]);
+                        sfp(&mut ops, setcc, [0, u32::from(L0), 0, 0, 0]);
+                        sfp(&mut ops, not, [u32::from(LREG_ZERO), u32::from(L3), 0, 0, 0]);
+                        sfp(&mut ops, shft, [0, u32::from(L1), u32::from(L3), 0, 0]);
+                        sfp(&mut ops, not, [u32::from(L3), u32::from(L3), 0, 0, 0]);
+                        sfp(&mut ops, or, [u32::from(L2), u32::from(L3), u32::from(L2), 1, 0]);
+                        sfp(&mut ops, popc, [0; 5]);
+                    }
+                }
+                ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
+            }
         } else {
             return false;
         }
