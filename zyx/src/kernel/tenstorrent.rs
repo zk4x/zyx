@@ -43,9 +43,9 @@ use crate::shape::Dim;
 /// reserved for the reuse direction, which is not emitted yet.
 const TT_SEM_UNPACKED: u8 = 0;
 const TT_SEM_COMPUTED: u8 = 1;
-/// The reuse direction's index, reserved. Not emitted yet: the reuse seam is a
-/// `todo!()` in `tt_reg_sync` until a kernel writes a tile twice.
-#[allow(dead_code)]
+/// The reuse direction's index: a reader that is done with a physical tile
+/// posts it, and the next writer of that tile waits for every such reader
+/// before it overwrites the rows (`tt_reg_sync`).
 const TT_SEM_FREE: u8 = 2;
 /// `Before` codes, as codegen's `tt_before` numbering: the pipeline classes a
 /// `SEMWAIT` holds back until its semaphore was posted.
@@ -3698,18 +3698,26 @@ impl Kernel {
                     posts.push((*write_idx, TTOp::Post { sem, role: *writer }));
                     takes.push((first, TTOp::Wait { sem, before: before(reader), role: reader }));
                 }
-                // The reuse edge (reader posts `FREE`, the next writer takes it
-                // before it overwrites) is **not implemented yet**: no gate
-                // writes a DST tile twice, so the path would be unexercised
-                // code. Loud rather than silent — a kernel that reuses a tile
-                // would otherwise run without the hand-off and read stale data.
-                if let Some(((next_writer, _), _)) = epochs.get(n + 1) {
-                    for &(reader, _, _) in readers {
+                // The reuse edge: a tile written again in the next epoch must
+                // not be overwritten while a reader of this epoch still needs
+                // it. Every reader that is not the next writer posts `FREE`
+                // after its last access, and the next writer waits for each of
+                // them before its first write. A writer that was also this
+                // epoch's reader needs no edge: one thread's program order
+                // already orders it.
+                if let Some(((next_writer, next_write), _)) = epochs.get(n + 1) {
+                    let mut waiting = 0;
+                    for &(reader, _, last) in readers {
                         if reader != *next_writer {
-                            todo!(
-                                "tt_reg_sync: a DST tile is written twice across epochs; the FREE reuse seam is not implemented"
-                            );
+                            posts.push((last, TTOp::Post { sem: TT_SEM_FREE, role: reader }));
+                            waiting += 1;
                         }
+                    }
+                    for _ in 0..waiting {
+                        takes.push((
+                            *next_write,
+                            TTOp::Wait { sem: TT_SEM_FREE, before: before(*next_writer), role: *next_writer },
+                        ));
                     }
                 }
             }
