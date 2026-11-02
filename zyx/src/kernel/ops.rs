@@ -631,12 +631,14 @@ pub struct TTSfpConst {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// One non-addressing SFPU instruction ([`TTOp::Sfp`]): the ISA form named by
 /// its opcode, with the operand fields in the ISA's own order (high bits
-/// first, as `InstructionDef::fields` lists them) and zero padding.
+/// first, as `InstructionDef::fields` lists them) and zero padding. Every
+/// SFPU field is at most 16 bits wide (the widest is `Imm16`), so `u16`
+/// holds every field value.
 pub struct TTSfpInsn {
     /// ISA opcode (`tt_isa::isa::InstructionDef::opcode`).
     pub op: u8,
     /// Field values, in `fields()` order.
-    pub args: [u32; 5],
+    pub args: [u16; 5],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -706,9 +708,16 @@ pub enum TTOp {
     /// One lane-register immediate: see [`TTSfpConst`]. Boxed to keep `Op` in
     /// budget.
     SfpConst(Box<TTSfpConst>),
-    /// One non-addressing SFPU instruction: see [`TTSfpInsn`]. Boxed to keep
-    /// `Op` in budget.
-    Sfp(Box<TTSfpInsn>),
+    /// One non-addressing SFPU instruction: see [`TTSfpInsn`].
+    Sfp(TTSfpInsn),
+    /// One recorded row loop (`REPLAY`): the next `len` instruction words of
+    /// this role run once while being recorded, then `count - 1` more times.
+    /// The body's last `Dst` access steps by two rows per iteration through
+    /// the row address modifier, so the body is written for row group 0 and
+    /// replayed for the rest. `len` is a **word** count (a 32-bit `SFPLOADI`
+    /// constant is two words) and must fit the replay buffer; `count` is 32
+    /// for a 64-row tile. Operand-free: the body follows this marker.
+    Replay { len: u16, count: u16 },
     /// The compute core's T0 program: raw instruction words in emission
     /// order, already encoded by codegen. The launch pushes them into the
     /// role's program slot; nothing decodes them. Operand-free effect like
@@ -1566,6 +1575,7 @@ impl Op {
             | Op::TT(TTOp::DmWait)
             | Op::TT(TTOp::SfpConst(_))
             | Op::TT(TTOp::Sfp(_))
+            | Op::TT(TTOp::Replay { .. })
             | Op::TT(TTOp::Semset { .. }) => vec![],
             &Op::TT(TTOp::SfpLoad(ref load)) => vec![load.slot],
             &Op::TT(TTOp::SfpStore(ref store)) => vec![store.slot],
@@ -1687,6 +1697,7 @@ impl Op {
             | Op::TT(TTOp::DmWait)
             | Op::TT(TTOp::SfpConst(_))
             | Op::TT(TTOp::Sfp(_))
+            | Op::TT(TTOp::Replay { .. })
             | Op::TT(TTOp::Semset { .. }) => vec![],
             &mut Op::TT(TTOp::SfpLoad(ref mut load)) => vec![&mut load.slot],
             &mut Op::TT(TTOp::SfpStore(ref mut store)) => vec![&mut store.slot],

@@ -205,6 +205,9 @@ impl Kernel {
                 Op::TT(TTOp::Sfp(ref insn)) => {
                     writeln!(f, "{indent}{blue}sfp{reset} op:{:#x} args:{:?}", insn.op, insn.args).unwrap();
                 }
+                Op::TT(TTOp::Replay { len, count }) => {
+                    writeln!(f, "{indent}{blue}replay{reset} {count} x {len} words").unwrap();
+                }
                 Op::TT(TTOp::TensixGrid(ref grid)) => {
                     writeln!(f, "{indent}{blue}tensix_grid{reset} {grid:?}").unwrap();
                 }

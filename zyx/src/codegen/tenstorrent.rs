@@ -388,7 +388,18 @@ pub(crate) fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendErro
     let fields = def.fields();
     let mut word = def.skeleton();
     for (field, value) in fields.iter().zip(insn.args.iter()) {
-        if !field.fits(*value) {
+        // Every SFPU field is at most 16 bits wide (the widest is `Imm16`);
+        // a wider field would be silently truncated by the `u16` args array.
+        debug_assert!(
+            field.width() <= 16,
+            "tenstorrent: {:#x} ({}) field {} is {} bits wide, wider than the u16 args",
+            insn.op,
+            def.mnemonic(),
+            field.name(),
+            field.width()
+        );
+        let value = u32::from(*value);
+        if !field.fits(value) {
             return Err(tt_err(format!(
                 "tenstorrent: {:#x} ({}) field {} cannot hold {value}",
                 insn.op,
@@ -396,7 +407,7 @@ pub(crate) fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendErro
                 field.name()
             )));
         }
-        word |= field.place(*value);
+        word |= field.place(value);
     }
     Ok(Instruction::new(word, def))
 }
@@ -454,6 +465,9 @@ struct TtSection<'a> {
     native_t0: Vec<u32>,
     /// Native T2 (pack) words: one DST -> CB pack per lowered `Store`.
     native_t2: Vec<u32>,
+    /// A `Replay` body still being emitted: `(first word, word count,
+    /// repeats)`. The body is the next `len` words pushed to T1.
+    replay: Option<(usize, u16, u16)>,
     /// Which role stream the last emitted op went to (0 = T0, 1 = T1,
     /// 2 = T2): a semaphore op joins the stream of the instruction before it.
     last_role: u8,
@@ -628,6 +642,75 @@ impl<'a> TtSection<'a> {
             2 => self.native_t2.push(word),
             other => unreachable!("role {other} is not 0..2"),
         }
+    }
+
+    /// Begin a recorded row loop (`REPLAY`): set the row address modifier up,
+    /// emit the record instruction, and remember that the next `len` T1 words
+    /// are the body. Those words run once while being recorded; `finish_replay`
+    /// emits the rest.
+    fn begin_replay(&mut self, len: u16, count: u16) -> Result<(), BackendError> {
+        use tt_isa::isa::generated::encode;
+        if self.replay.is_some() {
+            return Err(self.err("replay: a body cannot contain another".to_string()));
+        }
+        if !(1..=tt_isa::frontend::REPLAY_BUFFER as u16).contains(&len) {
+            return Err(self.err(format!(
+                "replay: a {len}-word body does not fit the {}-word replay buffer",
+                tt_isa::frontend::REPLAY_BUFFER
+            )));
+        }
+        if count < 2 {
+            return Err(self.err(format!("replay: {count} is not a repeat count")));
+        }
+        use crate::backend::tenstorrent::kern::datapath::{addr_mod_entry, thread_entry};
+        let row = addr_mod_entry(0);
+        let step = addr_mod_entry(7);
+        self.native.push(thread_entry(row.dst_incr, 0).word());
+        self.native.push(thread_entry(step.dst_incr, 2).word());
+        self.native.push(setrwc_clear());
+        let record = encode::replay(0, u32::from(len), 1, 1).map_err(|e| self.err(format!("replay: {e:?}")))?;
+        self.native.push(record.word());
+        self.replay = Some((self.native.len(), len, count));
+        self.last_role = 1;
+        Ok(())
+    }
+
+    /// Close the pending `Replay` once its body is complete: put the stepping
+    /// address modifier on the body's last `Dst` access, then emit the
+    /// repeats. Does nothing while the body is still short.
+    fn finish_replay(&mut self) -> Result<(), BackendError> {
+        use tt_isa::isa::generated::{defs, encode};
+        let Some((start, len, count)) = self.replay else {
+            return Ok(());
+        };
+        let pushed = self.native.len() - start;
+        if pushed < usize::from(len) {
+            return Ok(());
+        }
+        if pushed > usize::from(len) {
+            return Err(self.err(format!("replay: body overran {len} words with {pushed}")));
+        }
+        let (index, field) = (start..start + usize::from(len))
+            .rev()
+            .find_map(|i| {
+                let opcode = (self.native[i] >> 24) as u8;
+                if opcode == defs::SFPLOAD.opcode() {
+                    Some((i, defs::SFPLOAD.field("AddrMod").expect("SFPLOAD has an AddrMod")))
+                } else if opcode == defs::SFPSTORE.opcode() {
+                    Some((i, defs::SFPSTORE.field("AddrMod").expect("SFPSTORE has an AddrMod")))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| self.err("replay: the body never touches Dst".to_string()))?;
+        self.native[index] |= field.place(7);
+        for _ in 1..count {
+            let again = encode::replay(0, u32::from(len), 0, 0).map_err(|e| self.err(format!("replay: {e:?}")))?;
+            self.native.push(again.word());
+        }
+        self.native.push(setrwc_clear());
+        self.replay = None;
+        Ok(())
     }
 
     /// Push a word into a named role stream (a semaphore op names the role it
@@ -1160,10 +1243,15 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.native.push(encoded.word());
                 sec.compute_ops += 1;
             }
+            Op::TT(TTOp::Replay { len, count }) => sec.begin_replay(*len, *count)?,
             Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) => {}
             Op::Barrier => return Err(sec.err("stray barrier in a TT kernel".to_string())),
             _ => return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)"))),
         }
+        sec.finish_replay()?;
+    }
+    if sec.replay.is_some() {
+        return Err(sec.err("a replay body is truncated by the section end".to_string()));
     }
     if !loop_stack.is_empty() {
         return Err(sec.err("section ends inside a loop".to_string()));
@@ -1394,6 +1482,12 @@ fn tt_before(code: u8) -> Option<tt_isa::backend::Before> {
 /// the `Dst` path's `thread_config` otherwise), then one self-contained
 /// unpack per `Copy`/`Unpacr`, then a drain so the role is complete when the
 /// firmware reports it done.
+/// `SETRWC` clearing the issuing thread's `Dst` row counter (`tt_reg_sync`'s
+/// row loops clear it before the first body and after the last repeat).
+fn setrwc_clear() -> u32 {
+    tt_isa::isa::generated::encode::Setrwc::ZERO.dst(1).encode().unwrap().word()
+}
+
 fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
     use tt_isa::backend::{Before, wait_for_unpacker0, wait_for_unpacker1};
     if body.is_empty() {
@@ -1613,6 +1707,7 @@ fn render(
             l1,
             native_t0: Vec::new(),
             native_t2: Vec::new(),
+            replay: None,
             last_role: 1,
             sems: Vec::new(),
             compute_ops: 0,
