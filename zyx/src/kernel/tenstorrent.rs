@@ -223,15 +223,12 @@ fn uop_kind(uop: UOp) -> Option<u32> {
         UOp::Neg => sf::NEG,
         UOp::Not => sf::BOOL_NOT,
         UOp::BitNot => sf::INT_NOT,
-        // No direct 2^x / log2 kind in metalium yet; the fused sigmoid
-        // pattern covers the exp2 inside sigmoid, and a standalone exp2
-        // stays high-level until the table grows a program entry.
-        UOp::Exp2 | UOp::Log2 => return None,
+        // `Exp2`, `Log2`, `Sin` and `Cos` are IR from `tt_unfold` on, so they
+        // never reach the pattern table and name no kind.
+        UOp::Exp2 | UOp::Log2 | UOp::Sin | UOp::Cos => return None,
         UOp::Reciprocal => sf::RECIP,
         UOp::Sqrt => sf::SQRT,
         UOp::Rsqrt => sf::RSQRT,
-        UOp::Sin => sf::SIN,
-        UOp::Cos => sf::COS,
         UOp::Floor => sf::FLOOR,
         UOp::Trunc => sf::TRUNC,
         UOp::Abs => sf::ABS,
@@ -741,7 +738,7 @@ impl Kernel {
         }
         let mut ids: Vec<OpId> = Vec::new();
         for (id, x) in self.iter_unordered() {
-            if matches!(x, Op::Unary { uop: UOp::Exp2 | UOp::Log2, .. }) {
+            if matches!(x, Op::Unary { uop: UOp::Exp2 | UOp::Log2 | UOp::Sin | UOp::Cos, .. }) {
                 ids.push(id);
             }
         }
@@ -752,6 +749,8 @@ impl Kernel {
             let out = match uop {
                 UOp::Exp2 => self.tt_exp2(id, x),
                 UOp::Log2 => self.tt_log2(id, x),
+                UOp::Sin => self.tt_sin_cos(id, x, false),
+                UOp::Cos => self.tt_sin_cos(id, x, true),
                 _ => unreachable!("tt_unfold collected {uop:?}"),
             };
             self.remap(id, out);
@@ -892,6 +891,98 @@ impl Kernel {
         // A NaN input stays that NaN (its own payload and sign).
         let is_nan = bin(self, x, x, BOp::NotEq);
         sel(self, is_nan, x, out)
+    }
+
+    /// `sin x` / `cos x` as IR: argument reduction plus a Taylor core.
+    ///
+    /// The builder's `sin_cos_program` is Payne–Hanek — five limbs of 2/π
+    /// shifted into integer registers, three `SFPMUL24` pairs, a carry chain,
+    /// about 180 instructions — and it exists to stay exact for arguments
+    /// anywhere in the exponent range. ML math does not need that (nothing
+    /// bit-matches `__sinf`, a TF32 matmul rounds to ten mantissa bits), and
+    /// `SFPMUL24` is not expressible in IR anyway, so this is the classical
+    /// float reduction:
+    ///
+    /// - `n = round(x * 2/π)` by the magic constant, the same trick `tt_exp2`
+    ///   uses, kept as a float for the reduction and an `i32` for the quadrant;
+    /// - `r = x - n*PIO2_HI - n*PIO2_LO` with a two-limb π/2, so `|r| <= π/4`
+    ///   and `n*PIO2_HI` is exact while `|n| < 2^12`;
+    /// - the Taylor polynomial of `sin r` / `cos r`, five terms, error under
+    ///   1e-9 over that interval;
+    /// - the quadrant from `q = n & 3`: its low bit chooses `sin` or `cos`, and
+    ///   `q >> 1` (for `cos`, `(q + 1) >> 1 & 1`) flips the sign.
+    ///
+    /// Exact to about 6400 rad; past that the two-limb reduction loses
+    /// precision, which is the trade every float library makes. `±0` falls out
+    /// of the polynomial, and `±inf`/NaN through `n*PIO2_HI` being infinite, so
+    /// `r` is a NaN.
+    fn tt_sin_cos(&mut self, at: OpId, x: OpId, cos: bool) -> OpId {
+        let konst = |k: &mut Kernel, v: f32| k.insert_before(at, Op::Const(Constant::new(v)));
+        let iconst = |k: &mut Kernel, v: i32| k.insert_before(at, Op::Const(Constant::new(v)));
+        let bin = |k: &mut Kernel, x: OpId, y: OpId, bop: BOp| k.insert_before(at, Op::Binary { x, y, bop });
+        let sel = |k: &mut Kernel, cond: OpId, if_true: OpId, if_false: OpId| {
+            k.insert_before(at, Op::Select { cond, if_true, if_false })
+        };
+        // Two-limb π/2: the high part keeps 12 mantissa bits, so `n * PIO2_HI`
+        // is exact for every `|n| < 2^12`; the low part carries the rest.
+        let pio2_hi = f32::from_bits((std::f64::consts::FRAC_PI_2 as f32).to_bits() & !0xfff);
+        let pio2_lo = (std::f64::consts::FRAC_PI_2 - f64::from(pio2_hi)) as f32;
+        let magic = konst(self, 12_582_912.0); // 1.5 * 2^23
+        let inv_pio2 = konst(self, std::f32::consts::FRAC_2_PI);
+        let pio2_hi = konst(self, pio2_hi);
+        let pio2_lo = konst(self, pio2_lo);
+        let t = bin(self, x, inv_pio2, BOp::Mul);
+        let t = bin(self, t, magic, BOp::Add);
+        let nf = bin(self, t, magic, BOp::Sub);
+        let n = self.insert_before(at, Op::Cast { x: nf, dtype: DType::I32 });
+        let a = bin(self, nf, pio2_hi, BOp::Mul);
+        let r = bin(self, x, a, BOp::Sub);
+        let b = bin(self, nf, pio2_lo, BOp::Mul);
+        let r = bin(self, r, b, BOp::Sub);
+        let s = bin(self, r, r, BOp::Mul);
+        let sin_coeffs = [-1.0 / 6.0, 1.0 / 120.0, -1.0 / 5040.0, 1.0 / 362_880.0, -1.0 / 39_916_800.0];
+        let cos_coeffs = [-0.5, 1.0 / 24.0, -1.0 / 720.0, 1.0 / 40_320.0, -1.0 / 3_628_800.0];
+        let sin_core = self.tt_horner(at, s, &sin_coeffs);
+        let cos_core = self.tt_horner(at, s, &cos_coeffs);
+        let sin_r = bin(self, r, sin_core, BOp::Mul);
+        // `q`'s low bit picks the core, `q >> 1` the sign (see the doc above).
+        // Both conditions are comparisons: `Select` wants a `Bool` tile.
+        let three = iconst(self, 3);
+        let one_i = iconst(self, 1);
+        let zero_i = iconst(self, 0);
+        let q = bin(self, n, three, BOp::BitAnd);
+        let low = bin(self, q, one_i, BOp::BitAnd);
+        let odd = bin(self, low, zero_i, BOp::NotEq);
+        let neg = if cos {
+            let q1 = bin(self, q, one_i, BOp::Add);
+            let half = bin(self, q1, one_i, BOp::BitShiftRight);
+            let bit = bin(self, half, one_i, BOp::BitAnd);
+            bin(self, bit, zero_i, BOp::NotEq)
+        } else {
+            let half = bin(self, q, one_i, BOp::BitShiftRight);
+            bin(self, half, zero_i, BOp::NotEq)
+        };
+        let (odd_core, even_core) = if cos { (sin_r, cos_core) } else { (cos_core, sin_r) };
+        let base = sel(self, odd, odd_core, even_core);
+        let minus_one = konst(self, -1.0);
+        let flipped = bin(self, base, minus_one, BOp::Mul);
+        sel(self, neg, flipped, base)
+    }
+
+    /// `1 + s*(c1 + s*(c2 + ...))`: the trig cores as IR adds and multiplies,
+    /// with `coeffs` the non-constant terms in increasing power of `s`.
+    fn tt_horner(&mut self, at: OpId, s: OpId, coeffs: &[f32]) -> OpId {
+        let konst = |k: &mut Kernel, v: f32| k.insert_before(at, Op::Const(Constant::new(v)));
+        let bin = |k: &mut Kernel, x: OpId, y: OpId, bop: BOp| k.insert_before(at, Op::Binary { x, y, bop });
+        let mut p = konst(self, coeffs[coeffs.len() - 1]);
+        for c in coeffs[..coeffs.len() - 1].iter().rev() {
+            let cc = konst(self, *c);
+            let q = bin(self, p, s, BOp::Mul);
+            p = bin(self, q, cc, BOp::Add);
+        }
+        let one = konst(self, 1.0);
+        let q = bin(self, p, s, BOp::Mul);
+        bin(self, q, one, BOp::Add)
     }
 
     pub fn tt_dataflow_select(&mut self) {
@@ -1571,8 +1662,6 @@ impl Kernel {
             self.tt_sfp_round(kind, a, slot)
         } else if kind == sf::DIV && !b.is_null() {
             self.tt_sfp_div(a, b, slot)
-        } else if (kind == sf::SIN || kind == sf::COS) && b.is_null() {
-            self.tt_sfp_sin_cos(id, kind, a, slot)
         } else if (sf::EQ..=sf::LE).contains(&kind) && !b.is_null() {
             self.tt_sfp_compare(kind, a, b, slot)
         } else if (sf::INT_AND..=sf::INT_SHR).contains(&kind) && !b.is_null() {
@@ -2034,285 +2123,6 @@ impl Kernel {
             sfp(&mut ops, popc, [0; 5]);
             sfp(&mut ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L5, fmt: FP32 }))));
-        });
-        ops.extend(body);
-        ops
-    }
-
-    /// `ops::sin_cos_program`: `trig_reduce` + `sin_cos_cores` + the quadrant
-    /// tail, transcribed instruction for instruction. `COS` when `kind` says
-    /// so. The reduction keeps two values and the sine core's result in `Dst`
-    /// because the eight writable lane registers cannot hold them: three
-    /// ordinary register tiles, allocated here and left to `tt_dst_reuse` like
-    /// any other tile.
-    fn tt_sfp_sin_cos(&mut self, id: OpId, kind: u32, a: OpId, slot: OpId) -> Vec<Op> {
-        use crate::backend::tenstorrent::kern::sfpu::ops::{kind_sfpu as sf, two_over_pi_limb};
-        use tt_isa::isa::generated::defs;
-        let cos = kind == sf::COS;
-        let (mad, mul, mov, abs, and, or, xor, shft, iadd, cast, exexp) = (
-            defs::SFPMAD.opcode(),
-            defs::SFPMUL.opcode(),
-            defs::SFPMOV.opcode(),
-            defs::SFPABS.opcode(),
-            defs::SFPAND.opcode(),
-            defs::SFPOR.opcode(),
-            defs::SFPXOR.opcode(),
-            defs::SFPSHFT.opcode(),
-            defs::SFPIADD.opcode(),
-            defs::SFPCAST.opcode(),
-            defs::SFPEXEXP.opcode(),
-        );
-        let (gt, ple, setcc) = (defs::SFPGT.opcode(), defs::SFPLE.opcode(), defs::SFPSETCC.opcode());
-        let (pushc, popc, nop) = (defs::SFPPUSHC.opcode(), defs::SFPPOPC.opcode(), defs::SFPNOP.opcode());
-        let sfp = |ops: &mut Vec<Op>, op: u8, args: [u16; 5]| {
-            ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op, args })));
-        };
-        let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
-            ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
-        };
-        let ld = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
-            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at, reg, fmt }))));
-        };
-        let st = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
-            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at, reg, fmt }))));
-        };
-        let dtype = match &self.ops[slot].op {
-            Op::Storage { dtype, scope: MemScope::Register, .. } => *dtype,
-            other => panic!("tt_sfp_sin_cos: slot {slot:?} is not a Register storage: {other:?}"),
-        };
-        // `sx`, `sq` and `sr` are the builder's `spill`, `spill + 64` and
-        // `spill + 128`.
-        let (sx, sq, sr) = (self.tt_new_dst(dtype, id), self.tt_new_dst(dtype, id), self.tt_new_dst(dtype, id));
-        // `sin_cos_cores`' Taylor coefficients, in `f64` then rounded, as the
-        // builder derives them.
-        let mut fact = 1.0f64;
-        let taylor: Vec<f32> = (0..=12)
-            .map(|n| {
-                if n > 0 {
-                    fact *= n as f64;
-                }
-                let sign = if (n / 2) % 2 == 0 { 1.0 } else { -1.0 };
-                (sign / fact) as f32
-            })
-            .collect();
-        let ph = std::f32::consts::FRAC_PI_2;
-        let pl = (std::f64::consts::FRAC_PI_2 - f64::from(ph)) as f32;
-        // `split12_host(ph)`.
-        let t = ph * 4097.0;
-        let phh = t - (t - ph);
-        let phl = ph - phh;
-        let mut ops: Vec<Op> = Vec::new();
-        sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        let body = self.tt_row_loop(|mut ops, o| {
-            // ---------------------------------------------------------------
-            // `trig_reduce(p, spill)`: `q` and `|g|` from `x`'s bits.
-            // ---------------------------------------------------------------
-            ld(&mut ops, a, o, L0, INT32);
-            st(&mut ops, sx, o, L0, INT32);
-            konst(&mut ops, L7, 0x007f_ffff);
-            // `ax = x & mask23`; the fraction `M'` waits in `sq`.
-            sfp(&mut ops, and, [u16::from(L7), u16::from(L0), u16::from(L1), 1, 0]);
-            st(&mut ops, sq, o, L1, INT32);
-            // `sh = exponent(x) - 126`.
-            sfp(&mut ops, exexp, [u16::from(L0), u16::from(L5), 1, 0, 0]);
-            sfp(&mut ops, iadd, [(-126i32) as u16 & 0xfff, u16::from(L5), u16::from(L5), 5, 0]);
-            // Limbs `j..j + 5` of the 2/pi table, shifted down while
-            // `sh >= 23`. `trig_reduce`'s `a`, one register per limb.
-            let a = [L0, L1, L2, L3, L4];
-            for (n, r) in a.iter().enumerate() {
-                konst(&mut ops, *r, two_over_pi_limb(n as u32));
-            }
-            konst(&mut ops, L6, 23);
-            for j in 1..=5u32 {
-                sfp(&mut ops, pushc, [0; 5]);
-                sfp(&mut ops, ple, [u16::from(L5), u16::from(L6), 1, 0, 0]);
-                for i in 0..4 {
-                    sfp(&mut ops, mov, [u16::from(a[i + 1]), u16::from(a[i]), 0, 0, 0]);
-                }
-                konst(&mut ops, L4, two_over_pi_limb(j + 4));
-                sfp(&mut ops, iadd, [(-23i32) as u16 & 0xfff, u16::from(L5), u16::from(L5), 5, 0]);
-                sfp(&mut ops, popc, [0; 5]);
-            }
-            sfp(&mut ops, iadd, [(-23i32) as u16 & 0xfff, u16::from(L5), u16::from(L7), 5, 0]);
-            // `W_i = (A_i << sh | A_(i+1) >> (23 - sh)) mod 2^23`.
-            for i in 0..4 {
-                sfp(&mut ops, mov, [u16::from(a[i + 1]), u16::from(L6), 0, 0, 0]);
-                sfp(&mut ops, shft, [0, u16::from(L7), u16::from(L6), 0, 0]);
-                sfp(&mut ops, shft, [0, u16::from(L5), u16::from(a[i]), 0, 0]);
-                sfp(&mut ops, or, [u16::from(L6), u16::from(a[i]), u16::from(a[i]), 1, 0]);
-            }
-            // `W3` only meets `SFPMUL24`, which reads the low 23 bits.
-            konst(&mut ops, L7, 0x007f_ffff);
-            for r in [L1, L2, L3] {
-                sfp(&mut ops, and, [u16::from(L7), u16::from(r), u16::from(r), 1, 0]);
-            }
-            // Limbs 1..3 of `M W mod 2^92`.
-            ld(&mut ops, sq, o, L4, INT32);
-            for (hi_of, lo_of, into) in [(L3, L2, L3), (L2, L1, L2), (L1, L0, L1)] {
-                sfp(&mut ops, defs::SFPMUL24.opcode(), [u16::from(L4), u16::from(hi_of), LREG_ZERO, u16::from(L5), 1]);
-                sfp(&mut ops, nop, [0; 5]);
-                sfp(&mut ops, iadd, [0, u16::from(L5), u16::from(into), 4, 0]);
-                sfp(&mut ops, defs::SFPMUL24.opcode(), [u16::from(L4), u16::from(lo_of), LREG_ZERO, u16::from(L5), 0]);
-                sfp(&mut ops, nop, [0; 5]);
-                sfp(&mut ops, iadd, [0, u16::from(L5), u16::from(into), 4, 0]);
-            }
-            // The carries, limb 3 kept to 23 bits.
-            konst(&mut ops, L6, (-23i32) as u32);
-            for (from, into) in [(L3, L2), (L2, L1)] {
-                sfp(&mut ops, mov, [u16::from(from), u16::from(L5), 0, 0, 0]);
-                sfp(&mut ops, shft, [0, u16::from(L6), u16::from(L5), 0, 0]);
-                sfp(&mut ops, and, [u16::from(L7), u16::from(from), u16::from(from), 1, 0]);
-                sfp(&mut ops, iadd, [0, u16::from(L5), u16::from(into), 4, 0]);
-            }
-            sfp(&mut ops, and, [u16::from(L7), u16::from(L1), u16::from(L1), 1, 0]);
-            // `q` in `L0`, the half bit in `L5`, the fraction's top 21 bits in
-            // `L1`.
-            sfp(&mut ops, mov, [u16::from(L1), u16::from(L0), 0, 0, 0]);
-            konst(&mut ops, L6, (-21i32) as u32);
-            sfp(&mut ops, shft, [0, u16::from(L6), u16::from(L0), 0, 0]);
-            konst(&mut ops, L6, 0x0010_0000);
-            sfp(&mut ops, and, [u16::from(L1), u16::from(L6), u16::from(L5), 1, 0]);
-            konst(&mut ops, L6, 0x001f_ffff);
-            sfp(&mut ops, and, [u16::from(L1), u16::from(L6), u16::from(L1), 1, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L5), 0, 2, 0]);
-            sfp(&mut ops, iadd, [1, u16::from(L0), u16::from(L0), 5, 0]);
-            sfp(&mut ops, xor, [u16::from(L6), u16::from(L1), 0, 0, 0]);
-            sfp(&mut ops, xor, [u16::from(L7), u16::from(L2), 0, 0, 0]);
-            sfp(&mut ops, xor, [u16::from(L7), u16::from(L3), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, shft, [11, u16::from(L5), u16::from(L5), 5, 0]);
-            sfp(&mut ops, or, [u16::from(L5), u16::from(L0), u16::from(L0), 1, 0]);
-            st(&mut ops, sq, o, L0, INT32);
-            // `|g| = f3 + f2 + f1`, the limbs at `2^-21`, `2^-44`, `2^-67`.
-            for (r, scale) in [(L1, 0x3500_0000), (L2, 0x2980_0000), (L3, 0x1e00_0000)] {
-                sfp(&mut ops, cast, [u16::from(r), u16::from(r), 0, 0, 0]);
-                konst(&mut ops, L6, scale);
-                sfp(&mut ops, mad, [u16::from(r), u16::from(L6), LREG_ZERO, u16::from(r), 2]);
-            }
-            // `hi = f3 + f2`, `lo` its exact error, plus `f1`; `hi = L4`,
-            // `lo = L5`.
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L1), u16::from(L2), u16::from(L4), 0]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L4), u16::from(L1), u16::from(L5), 2]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L2), u16::from(L5), u16::from(L5), 2]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L5), u16::from(L3), u16::from(L5), 0]);
-            // `r = (hi + lo) (ph + pl)`: `ph hi` exactly as `r_hi + e`
-            // (Dekker, negated), then `lo ph + hi pl - e`.
-            konst(&mut ops, L7, 4097.0f32.to_bits());
-            // `split12(hi, L1, L2, L7)`.
-            sfp(&mut ops, mul, [u16::from(L4), u16::from(L7), LREG_ZERO, u16::from(L2), 2]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L2), u16::from(L4), u16::from(L1), 2]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L2), u16::from(L1), u16::from(L1), 2]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L4), u16::from(L1), u16::from(L2), 2]);
-            konst(&mut ops, L7, ph.to_bits());
-            sfp(&mut ops, mul, [u16::from(L4), u16::from(L7), LREG_ZERO, u16::from(L3), 2]);
-            konst(&mut ops, L7, phh.to_bits());
-            sfp(&mut ops, mad, [u16::from(L1), u16::from(L7), u16::from(L3), u16::from(L6), 1]);
-            konst(&mut ops, L7, phl.to_bits());
-            sfp(&mut ops, mad, [u16::from(L1), u16::from(L7), u16::from(L6), u16::from(L6), 1]);
-            konst(&mut ops, L7, phh.to_bits());
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L7), u16::from(L6), u16::from(L6), 1]);
-            konst(&mut ops, L7, phl.to_bits());
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L7), u16::from(L6), u16::from(L6), 1]);
-            konst(&mut ops, L7, ph.to_bits());
-            sfp(&mut ops, mul, [u16::from(L5), u16::from(L7), LREG_ZERO, u16::from(L1), 2]);
-            konst(&mut ops, L7, pl.to_bits());
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L7), u16::from(L1), u16::from(L1), 0]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L1), u16::from(L6), u16::from(L1), 2]);
-            // Renormalised: `r_hi` (`L5`), `r_lo` its error (`L4`).
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L3), u16::from(L1), u16::from(L5), 0]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L5), u16::from(L3), u16::from(L2), 2]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L1), u16::from(L2), u16::from(L4), 2]);
-            // Below `pi/4`: `r = a`, `q = 0`.
-            ld(&mut ops, sx, o, L0, INT32);
-            konst(&mut ops, L7, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L7), u16::from(L0), u16::from(L0), 1, 0]);
-            ld(&mut ops, sq, o, L6, INT32);
-            konst(&mut ops, L7, std::f32::consts::FRAC_PI_4.to_bits());
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L0), u16::from(L7), 1, 0, 0]);
-            sfp(&mut ops, mov, [u16::from(L0), u16::from(L5), 0, 0, 0]);
-            sfp(&mut ops, mov, [LREG_ZERO, u16::from(L4), 0, 0, 0]);
-            sfp(&mut ops, mov, [LREG_ZERO, u16::from(L6), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            st(&mut ops, sq, o, L6, INT32);
-            // ---------------------------------------------------------------
-            // `sin_cos_cores(p, spill)`: `sin r` to `sr`, `cos r` to `L6`.
-            // ---------------------------------------------------------------
-            sfp(&mut ops, mul, [u16::from(L5), u16::from(L5), LREG_ZERO, u16::from(L3), 2]);
-            konst(&mut ops, L2, taylor[11].to_bits());
-            for n in [9, 7, 5, 3] {
-                konst(&mut ops, L1, taylor[n].to_bits());
-                sfp(&mut ops, mad, [u16::from(L2), u16::from(L3), u16::from(L1), u16::from(L2), 0]);
-            }
-            sfp(&mut ops, mul, [u16::from(L5), u16::from(L3), LREG_ZERO, u16::from(L1), 2]);
-            konst(&mut ops, L0, 0.5f32.to_bits());
-            sfp(&mut ops, mul, [u16::from(L3), u16::from(L0), LREG_ZERO, u16::from(L0), 2]);
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L0), u16::from(L4), u16::from(L6), 1]);
-            sfp(&mut ops, mad, [u16::from(L1), u16::from(L2), u16::from(L6), u16::from(L6), 0]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L5), u16::from(L6), u16::from(L7), 0]);
-            st(&mut ops, sr, o, L7, INT32);
-            konst(&mut ops, L2, taylor[12].to_bits());
-            for n in [10, 8, 6, 4] {
-                konst(&mut ops, L1, taylor[n].to_bits());
-                sfp(&mut ops, mad, [u16::from(L2), u16::from(L3), u16::from(L1), u16::from(L2), 0]);
-            }
-            sfp(&mut ops, mul, [u16::from(L3), u16::from(L3), LREG_ZERO, u16::from(L1), 2]);
-            sfp(&mut ops, mul, [u16::from(L1), u16::from(L2), LREG_ZERO, u16::from(L1), 2]);
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L5), u16::from(L1), u16::from(L1), 1]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, u16::from(L0), u16::from(L1), u16::from(L1), 2]);
-            sfp(&mut ops, defs::SFPMAD.opcode(), [LREG_ONE, LREG_ONE, u16::from(L1), u16::from(L6), 2]);
-            // ---------------------------------------------------------------
-            // `sin_cos_program`'s quadrant tail. `sin x = sign(x)
-            // [S, C, -S, -C][q]`, `cos x = [C, -S, -C, S][q]`.
-            // ---------------------------------------------------------------
-            ld(&mut ops, sx, o, L0, INT32);
-            ld(&mut ops, sq, o, L1, INT32);
-            ld(&mut ops, sr, o, L2, INT32);
-            konst(&mut ops, L4, 0x8000_0000);
-            sfp(&mut ops, and, [u16::from(L4), u16::from(L1), u16::from(L3), 1, 0]);
-            sfp(&mut ops, xor, [u16::from(L3), u16::from(L2), 0, 0, 0]);
-            // `q` odd takes the other core.
-            konst(&mut ops, L4, 1);
-            sfp(&mut ops, and, [u16::from(L4), u16::from(L1), u16::from(L3), 1, 0]);
-            sfp(&mut ops, mov, [u16::from(if cos { L6 } else { L2 }), u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L3), 0, 2, 0]);
-            sfp(&mut ops, mov, [u16::from(if cos { L2 } else { L6 }), u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            // The sign: `sin`'s from bit 1 of `q` and `x`'s; `cos`'s from
-            // bit 1 of `q + 1`.
-            if cos {
-                sfp(&mut ops, iadd, [1, u16::from(L1), u16::from(L3), 5, 0]);
-            } else {
-                sfp(&mut ops, mov, [u16::from(L1), u16::from(L3), 0, 0, 0]);
-            }
-            konst(&mut ops, L4, 2);
-            sfp(&mut ops, and, [u16::from(L4), u16::from(L3), u16::from(L3), 1, 0]);
-            sfp(&mut ops, shft, [30, u16::from(L3), u16::from(L3), 5, 0]);
-            if !cos {
-                konst(&mut ops, L4, 0x8000_0000);
-                sfp(&mut ops, and, [u16::from(L4), u16::from(L0), u16::from(L4), 1, 0]);
-                sfp(&mut ops, xor, [u16::from(L4), u16::from(L3), 0, 0, 0]);
-            }
-            sfp(&mut ops, xor, [u16::from(L3), u16::from(L7), 0, 0, 0]);
-            konst(&mut ops, L4, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L4), u16::from(L0), u16::from(L3), 1, 0]);
-            // `sin` is `x` itself below `|x| = 2^-12`.
-            if !cos {
-                konst(&mut ops, L4, 0x3980_0000);
-                sfp(&mut ops, pushc, [0; 5]);
-                sfp(&mut ops, gt, [u16::from(L3), u16::from(L4), 1, 0, 0]);
-                sfp(&mut ops, mov, [u16::from(L0), u16::from(L7), 0, 0, 0]);
-                sfp(&mut ops, popc, [0; 5]);
-            }
-            // `±inf` and NaNs give NaN.
-            konst(&mut ops, L4, 0x7f80_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, ple, [u16::from(L3), u16::from(L4), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            st(&mut ops, slot, o, L7, INT32);
         });
         ops.extend(body);
         ops
@@ -4393,8 +4203,6 @@ mod sfp_row_ops {
             sf::RECIP,
             sf::FLOOR,
             sf::TRUNC,
-            sf::SIN,
-            sf::COS,
         ];
         all.extend([
             crate::backend::tenstorrent::kern::kind::ADD,
@@ -4443,20 +4251,7 @@ mod sfp_row_ops {
     /// Every ported kind's arity, so the arm sees the null second operand a
     /// unary emit carries.
     fn unary(kind: u32) -> bool {
-        matches!(
-            kind,
-            sf::BOOL_NOT
-                | sf::NEG
-                | sf::ABS
-                | sf::INT_NOT
-                | sf::SQRT
-                | sf::RSQRT
-                | sf::RECIP
-                | sf::FLOOR
-                | sf::TRUNC
-                | sf::SIN
-                | sf::COS
-        )
+        matches!(kind, sf::BOOL_NOT | sf::NEG | sf::ABS | sf::INT_NOT | sf::SQRT | sf::RSQRT | sf::RECIP | sf::FLOOR | sf::TRUNC)
     }
 
     fn run(program: &[Instruction], a: &[u32], b: &[u32]) -> Vec<u32> {
@@ -4526,8 +4321,6 @@ mod sfp_row_ops {
             sf::RECIP,
             sf::FLOOR,
             sf::TRUNC,
-            sf::SIN,
-            sf::COS,
         ] {
             compare(kind);
         }

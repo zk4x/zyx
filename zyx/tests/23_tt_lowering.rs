@@ -605,3 +605,28 @@ fn exp2() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn sin_cos() -> Result<(), ZyxError> {
+    // The SFPU has no sin/cos instruction: `tt_unfold` reduces the argument
+    // (magic-constant round + a two-limb Cody-Waite pi/2) and evaluates the
+    // Taylor core, so the gate is the host's tolerance, not bit equality.
+    // `x` spans about [-100, 100]: enough for a two-digit quadrant with the
+    // two-limb reduction still exact (the doc's limit is ~6400 rad).
+    let x = &Tensor::rand([10, 256], DType::F32)? * 200.0f32 - 100.0f32;
+    let xs = x.to(Dev::TT(0))?;
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let sin: Vec<f32> = xs.sin().to(Dev::C)?.try_into().unwrap();
+    let cos: Vec<f32> = xs.cos().to(Dev::C)?.try_into().unwrap();
+    assert_eq!(sin.len(), 10 * 256);
+    assert_eq!(cos.len(), 10 * 256);
+    for i in 0..10 * 256 {
+        for (name, got, want) in [("sin", sin[i], xv[i].sin()), ("cos", cos[i], xv[i].cos())] {
+            // Absolute tolerance near zero, relative away from it.
+            let tolerance = 1e-5 * want.abs().max(1.0);
+            assert!((got - want).abs() <= tolerance, "{name} lane {i}: {got} vs {want} (x {})", xv[i]);
+        }
+    }
+
+    Ok(())
+}

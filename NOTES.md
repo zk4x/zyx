@@ -14,7 +14,104 @@
 
 ## CURRENT STATE (2026-11-02) — read this first
 
-### Start here — session handoff (2026-11-02, fourth pass)
+### Start here — session handoff (2026-11-02, fifth pass — end of session)
+
+**Every transcendental is now IR: `tt_unfold` covers `Exp2`, `Log2`, `Sin` and
+`Cos`, and `tt_sfp_sigmoid`/`tt_sfp_pow`/`tt_sfp_sin_cos` are gone.**
+
+**State:** the tree is clean except for this session's work; the user commits.
+Run cargo from `zyx/`.
+
+**Gates — 16 green on ttsim (one at a time, `TT_TTSIM_LIB=…`):** `add`,
+`unary_math`, `neg_sub_mul`, `shared_input`, `tiling`, `transfer_roundtrip`,
+`matmul`, `sum`, `max`, `sum_scalar`, `max_scalar`, `sum_all`, `exp2`,
+`sigmoid`, `sum_sigmoid`, `sin_cos` (new). `cargo test --lib` = **78**.
+**Red:** `matmul_sigmoid` — `9 DST register tiles exceed the 8-tile budget`,
+pre-existing, the allocator peak (reclamation cannot help, its baseline is over).
+
+**This session, in order**
+
+0. **`sin`/`cos` unfolded (last item of the port list).** `tt_unfold` now
+   lowers `UOp::Sin`/`Cos` through `tt_sin_cos` + `tt_horner`:
+   - `n = round(x·2/π)` by the magic constant (as `tt_exp2`'),
+   - `r = x − n·PIO2_HI − n·PIO2_LO`, two-limb π/2 with the high part keeping
+     12 mantissa bits (`to_bits() & !0xfff`), so `n·PIO2_HI` is exact for
+     `|n| < 2^12`,
+   - five-term Taylor cores for `sin r`/`cos r` (error < 1e-9 over `|r| ≤ π/4`),
+   - quadrant from `q = n & 3`: low bit picks the core, `q >> 1` (for `cos`,
+     `(q + 1) >> 1 & 1`) the sign. **`Select` needs a `Bool` condition** —
+     verify rejects an `I32` one, so the quadrant bits are compared against 0.
+   Replaces Payne–Hanek (≈180 instructions, and `SFPMUL24` is not expressible
+   in IR): the body went from ≈225 words to ≈34. Exact to about 6400 rad;
+   beyond that the two-limb reduction loses precision — the same trade every ML
+   library makes (TF32 matmuls are coarser). Gate: `sin_cos` in
+   `tests/23_tt_lowering.rs`, host tolerance `1e-5 * max(|want|, 1)`, `x ∈
+   [-100, 100]`, and it also passes under `ZYX_DEBUG=264`.
+   Deleted with it: `tt_sfp_sin_cos` (272 lines), its dispatch line,
+   `UOp::Sin`/`Cos` in `uop_kind` (they now return `None`, i.e. loud), and
+   `SIN`/`COS` from `sfp_row_ops`'s three kind lists.
+1. **`SIGMOID`/`POW` emitters deleted** (proved dead with a `todo!("PROOF")`
+   first): `tt_sfp_sigmoid` + `tt_sfp_pow` (≈470 lines), their dispatch
+   branches, both `sigmoid_pat` rows and their `Pat` construction, and the two
+   kinds from the `sfp_row_ops` lists. `Tensor::sigmoid` is `1/(exp(-x)+1)` at
+   the tensor level, so no sigmoid op ever exists; `unfold_pows` in
+   `default_epilogue` removes every `Pow` before lowering.
+2. **`tt_dst_reuse` reclaims round trips** (`tt_reclaim_round_trips`), and
+   `tt_sfpu_fusion` runs a second time after it. Conditions are exact: one pack
+   + one unpack on the CB and no publish/drain; the unpack's row written only
+   by the unlock; nothing writing the producer's row between the pack and the
+   last consumer; and **the projected peak must still fit** — `tt_live_peak`
+   simulates the row count the allocator will need (8/16 tiles by width), so a
+   reclamation that would need one tile too many is skipped, never forced.
+   Measured on `sigmoid`: `tt_copy` 14 → 4 (only the DRAM publish, input
+   unpack, output pack, drain remain), seam hand-offs 23 → 2.
+3. **Block repeats** (`mailbox::loops`): `tt_row_loop` always emits
+   `TTOp::Replay { len, count }`, codegen picks the mechanism — ≤ 32 words is
+   the hardware `REPLAY`, longer is a block repeat (body once + `[start, len,
+   count]` in the program header). `TTOp::Math` carries
+   `TTRoleProgram { words, loops }`; the backend hands them to `code::stored`.
+   **Trap:** a loop `start` indexes the role program, whose preamble is
+   `tt_math_role`'s state id **plus** its appended drain — `role.len() −
+   body.len()` is 2, not 1 (`tt_math_role` now returns the preamble). Limit:
+   `loops::MAX = 4` per role (loud compile error past it). Also mask
+   `LOOPED`/`STREAMED` wherever a program length is used as a count (the
+   launch check and the `ZYX_TT_DUMP` print both did).
+4. Earlier this session: per-edge semaphores in `tt_reg_sync` (the `semget`
+   underflow — ttsim prints the counter *value*, not the index), the missing
+   packer→unpacker seam, the integer-`Add` arm, `tt_sfpu_fusion`.
+
+**What is left**
+
+1. `matmul_sigmoid`'s 9-tile peak (allocator; fusion and reclamation both
+   reduce live tiles but this one starts over).
+2. `tt_log2`'s `e − 127` is an **I32 `Sub`** and has the same dtype-blind bug
+   `Add` had; `tt_log2` also still fails to compile on
+   `native unpack ... needs an F32 DST tile, got I32`.
+3. `recip`/`div`/`sqrt`/`round` arms are program transcriptions that *could*
+   become IR like sin/cos, but each needs a seed IR cannot express
+   (`SFPARECIP`); `round` is pure bit games and probably can. The rest of the
+   `tt_sfp_*` arms are primitives and stay.
+4. The builder module (`kern/sfpu/ops.rs` 4882 lines + `interp.rs` 942) is the
+   A/B oracle and the source of `kind_sfpu`'s numbering; deleting it needs
+   `kind_sfpu` moved to `kern/kind.rs` first (needs the user's OK).
+5. `Cast F32 → F32` (a no-op cast the graph leaves behind, e.g. in `relu`)
+   hits `todo!()`; folding it in `tt_lower_value` would be a one-liner.
+
+**Traps from this session (do not re-learn)**
+
+- ttsim's `tensix_semget: sem=N sem_max=15` prints the **counter value**, not
+  the semaphore index.
+- `SEMWAIT` is a level test, not a reservation: one counter per
+  `(producer, consumer)` edge, never per direction.
+- A materialised value's CB needs a seam between the pack (T2) and the unpack
+  (T0); `tt_reg_sync` models CBs for exactly those two `Copy` kinds.
+- `Select` requires a `Bool` condition in `verify`.
+- `ZYX_DEBUG=264` (256 `NoSearch` + 8 IR) is the way to dump post-epilogue TT
+  IR; `ZYX_DEBUG=8` alone prints nothing on the autotune path.
+- Run the gates one at a time: the ttsim owner thread dies with a failed test
+  and every later test in the process is a cascade.
+
+### Earlier handoff (fourth pass, superseded by the block above)
 
 **Both bugs fixed; `exp2`, `sigmoid` and `sum_sigmoid` are green,
 `tt_sfpu_fusion` exists, the materialised CB round trips are reclaimed, and the

@@ -470,7 +470,10 @@ fn execute(
     if std::env::var_os("ZYX_TT_DUMP").is_some() {
         for (thread, program) in run.programs.iter().enumerate() {
             if let Some(p) = program {
-                eprintln!("[tt] role T{thread}: {} bytes, {} entries, len {}", p.len * 4, p.ranges.len(), p.len);
+                // The length word also carries the STREAMED/LOOPED flags, so
+                // the plain word count is the masked value.
+                let words = p.len & tt_isa::dataflow::LENGTH_MASK;
+                eprintln!("[tt] role T{thread}: {} bytes, {} entries, len {words}", words as u64 * 4, p.ranges.len());
             }
         }
         eprintln!(
