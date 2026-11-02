@@ -1013,7 +1013,7 @@ const TWO_OVER_PI: [u32; 9] = [
 /// Limb `n` of [`trig_reduce`]'s table: bits `23n..23n + 23` of `2/pi`'s
 /// expansion preceded by 25 zeros, so that limb 0 begins at bit `k = -24`
 /// (`b_k` of `2/pi = sum b_k 2^-k`, `b_k = 0` for `k <= 0`).
-fn two_over_pi_limb(n: u32) -> u32 {
+pub fn two_over_pi_limb(n: u32) -> u32 {
     (23 * n..23 * n + 23).fold(0, |v, t| {
         let k = t as i64 - 25;
         let b = if k < 1 {

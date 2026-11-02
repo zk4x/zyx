@@ -369,7 +369,7 @@ fn tt_row_remap(mut code: Vec<Instruction>, a_row: u32, b_row: Option<u32>, out_
 /// Encode one row-level SFPU instruction: look its form up by ISA opcode and
 /// place the operand words into the form's fields, in the ISA's own order
 /// (high bits first, as `InstructionDef::fields` lists them).
-fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendError> {
+pub(crate) fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendError> {
     // `args` are the form's operands in the ISA's own field order, which is
     // the order `InstructionDef::fields` lists them in; the array is fixed at
     // five words, so a form with fewer fields reads the leading entries and
