@@ -81,11 +81,12 @@ const INT32: u8 = tt_isa::sfpu::mod0_fmt::INT32 as u8;
 /// write would corrupt a value, so the arms' own usage is what the table
 /// states. `SFPSHFT2`/`SFPTRANSP` (the reduce programs only) have implicit
 /// operands, so they are conservatively all-writable-registers on both sides.
-fn tt_sfp_regs(op: u8, args: &[u16; 5]) -> (u16, u16) {
-    let Some(def) = crate::codegen::tenstorrent::tt_sfp_def(op) else {
-        todo!("tt_sfp_regs: no ISA instruction has opcode {op:#x}");
-    };
-    let (reads, writes): (&[&str], &[&str]) = match def.mnemonic() {
+fn tt_sfp_reg_fields(mnemonic: &str) -> (&'static [&'static str], &'static [&'static str]) {
+    // `(read fields, written fields)`, by the ISA's own field names. This is
+    // the *only* place that says which fields are register operands: an
+    // instruction can have a field named `VD` that is not one (`SFPSETCC`'s
+    // must stay 0, or the simulator answers `tensix_sfpsetcc: lreg_dest=1`).
+    match mnemonic {
         // `d = f(c)`.
         "SFPABS" | "SFPCAST" | "SFPEXEXP" | "SFPEXMAN" | "SFPSETEXP" | "SFPSETSGN" | "SFPARECIP" | "SFPNOT" | "SFPSETMAN"
         | "SFPDIVP2" | "SFPXOR" | "SFPMOV" => (&["VC"], &["VD"]),
@@ -95,24 +96,32 @@ fn tt_sfp_regs(op: u8, args: &[u16; 5]) -> (u16, u16) {
         "SFPIADD" | "SFPSHFT" => (&["VC", "VD"], &["VD"]),
         // `d = a * b + c` and its two-operand forms.
         "SFPMAD" | "SFPADD" | "SFPMUL" | "SFPMUL24" => (&["VA", "VB", "VC"], &["VD"]),
-        // Predicates write the lane flags, not a register.
+        // Predicates write the lane flags, not a register; their `VD` is not
+        // an operand.
         "SFPGT" | "SFPLE" => (&["VC", "VD"], &[]),
         "SFPSETCC" => (&["VC"], &[]),
         "SFPPUSHC" | "SFPPOPC" | "SFPCOMPC" | "SFPENCC" | "SFPNOP" => (&[], &[]),
         "SFPSHFT2" | "SFPTRANSP" => (&["VB", "VC", "VD"], &["VD"]),
-        other => todo!("tt_sfp_regs: {other} has no register model"),
+        other => todo!("tt_sfp_reg_fields: {other} has no register model"),
+    }
+}
+
+fn tt_sfp_regs(op: u8, args: &[u16; 5]) -> (u128, u128) {
+    let Some(def) = crate::codegen::tenstorrent::tt_sfp_def(op) else {
+        todo!("tt_sfp_regs: no ISA instruction has opcode {op:#x}");
     };
+    let (reads, writes) = tt_sfp_reg_fields(def.mnemonic());
     let value = |name: &str| def.fields().iter().position(|f| f.name() == name).map(|i| args[i]);
-    let mut read = 0u16;
-    let mut write = 0u16;
+    let mut read = 0u128;
+    let mut write = 0u128;
     for name in reads {
         if let Some(v) = value(name) {
-            read |= 1 << v;
+            read |= 1u128 << v;
         }
     }
     for name in writes {
         if let Some(v) = value(name) {
-            write |= 1 << v;
+            write |= 1u128 << v;
         }
     }
     (read, write)
@@ -134,17 +143,78 @@ fn tt_row_words(op: &Op) -> u32 {
     }
 }
 
-/// The lane registers a row op reads and writes, as 16-bit sets over
-/// `LReg::index()` (`bit i` is `L[i]`). `tt_sfp_fusion` uses it to prove that
-/// the producer's result register survives the consumer's sequence.
-fn tt_row_regs(op: &Op) -> (u16, u16) {
+/// The lane registers a row op reads and writes, as sets over the register
+/// index (`bit i` is register `i`). `u128` so the same space can hold virtual
+/// registers; `tt_sfp_fusion` uses it to prove that the producer's result
+/// register survives the consumer's sequence.
+fn tt_row_regs(op: &Op) -> (u128, u128) {
     match op {
         Op::TT(TTOp::Sfp(insn)) => tt_sfp_regs(insn.op, &insn.args),
-        Op::TT(TTOp::SfpLoad(load)) => (0, 1u16 << load.reg),
-        Op::TT(TTOp::SfpStore(store)) => (1u16 << store.reg, 0),
-        Op::TT(TTOp::SfpConst(k)) => (0, 1u16 << k.reg),
+        Op::TT(TTOp::SfpLoad(load)) => (0, 1u128 << load.reg),
+        Op::TT(TTOp::SfpStore(store)) => (1u128 << store.reg, 0),
+        Op::TT(TTOp::SfpConst(k)) => (0, 1u128 << k.reg),
         other => panic!("tt_row_regs: {other:?} is not a row op"),
     }
+}
+
+/// Greedy linear scan of the eight general-purpose lane registers over a
+/// straight-line body, given each instruction's `(reads, writes)` in *virtual*
+/// space (register numbers `>= 16`; `0..8` are ignored, they are already
+/// physical). Returns the assignment indexed by virtual, or `None` when nine
+/// values are live at once.
+///
+/// One implementation, used twice: `tt_fuse_cone` runs it on the body it is
+/// about to build (and forms a shorter cone when it does not fit), and
+/// `tt_lreg_alloc` runs it on the body it emitted (where `None` is a bug).
+/// Liveness is exact because a row body is one block: every virtual has exactly
+/// one interval, `def -> last use`, and a register frees when its interval ends.
+fn tt_alloc_regs(body: &[(u128, u128)]) -> Option<[u8; 128]> {
+    let mut def = [-1i64; 128];
+    let mut last = [-1i64; 128];
+    let mut first_use = [-1i64; 128];
+    let mut any = false;
+    for (k, (reads, writes)) in body.iter().enumerate() {
+        for r in 0..128usize {
+            let bit = 1u128 << r;
+            if writes & bit != 0 {
+                if def[r] < 0 {
+                    def[r] = k as i64;
+                }
+                last[r] = k as i64;
+                any |= r >= 16;
+            }
+            if reads & bit != 0 {
+                if first_use[r] < 0 {
+                    first_use[r] = k as i64;
+                }
+                if last[r] < k as i64 {
+                    last[r] = k as i64;
+                }
+            }
+        }
+    }
+    let mut assign = [u8::MAX; 128];
+    if !any {
+        return Some(assign);
+    }
+    // Read before any write: the value is live from the body's start, and the
+    // interval must cover that read.
+    for r in 16..128usize {
+        if first_use[r] >= 0 && (def[r] < 0 || first_use[r] < def[r]) {
+            def[r] = -1;
+        }
+    }
+    let mut order: Vec<usize> = (16..128).filter(|r| last[*r] >= 0).collect();
+    order.sort_by_key(|r| (def[*r], *r));
+    let mut active: Vec<(usize, u8, i64)> = Vec::new(); // (vreg, phys, last)
+    for &r in &order {
+        active.retain(|&(_, _, l)| l >= def[r]);
+        let used: u16 = active.iter().fold(0, |m, &(_, p, _)| m | 1u16 << p);
+        let p = (0..8u8).find(|p| used & (1u16 << p) == 0)?;
+        assign[r] = p;
+        active.push((r, p, last[r]));
+    }
+    Some(assign)
 }
 
 /// Rename lane register `from` to `to` in one row op's register operands.
@@ -156,8 +226,12 @@ fn tt_row_rename(op: &mut Op, from: u8, to: u8) {
             let Some(def) = crate::codegen::tenstorrent::tt_sfp_def(insn.op) else {
                 todo!("tt_row_rename: no ISA instruction has opcode {:#x}", insn.op);
             };
-            for (i, field) in def.fields().iter().enumerate() {
-                if matches!(field.name(), "VA" | "VB" | "VC" | "VD") && insn.args[i] == u16::from(from) {
+            let (reads, writes) = tt_sfp_reg_fields(def.mnemonic());
+            for name in reads.iter().chain(writes.iter()) {
+                let Some(i) = def.fields().iter().position(|f| f.name() == *name) else {
+                    continue;
+                };
+                if insn.args[i] == u16::from(from) {
                     insn.args[i] = u16::from(to);
                 }
             }
@@ -1908,10 +1982,11 @@ impl Kernel {
         // Lane-flag predication on, all lanes enabled, as `Program::new`
         // does: without `SFPENCC` every scope below is a no-op.
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        // `max = L6` holds `f32::MAX` across the program.
-        konst(&mut ops, L6, 0x7f7f_ffff);
         let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
+            // `max = L6` holds `f32::MAX` for the tail. Inside the body, so a
+            // fused body writes every register it reads.
+            konst(&mut ops, L6, 0x7f7f_ffff);
             // `recip(x = L0, d = L2, t0 = L3, t1 = L4, max = L6)`.
             sfp(&mut ops, abs, [u16::from(L0), u16::from(L4), 1, 0, 0]);
             konst(&mut ops, L3, 0x7180_0000); // 2^100
@@ -2064,11 +2139,13 @@ impl Kernel {
         // Lane-flag predication on, all lanes enabled, as `Program::new`
         // does: without `SFPENCC` every scope below is a no-op.
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        konst(&mut ops, L6, 0x7f7f_ffff); // f32::MAX
-        konst(&mut ops, L7, 0x7f80_0000); // +inf
         let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
+            // The special cases' two constants; inside the body, so a fused
+            // body writes every register it reads.
+            konst(&mut ops, L6, 0x7f7f_ffff); // f32::MAX
+            konst(&mut ops, L7, 0x7f80_0000); // +inf
             // `scale_large_divisor(a, b, t = L3, c = L4)`.
             sfp(&mut ops, abs, [u16::from(L1), u16::from(L3), 1, 0, 0]);
             konst(&mut ops, L4, 0x7180_0000); // 2^100
@@ -2311,9 +2388,6 @@ impl Kernel {
         // does: without `SFPENCC` the unit's `UseLaneFlagsForLaneEnable`
         // is whatever the previous kernel left, and `SFPSETCC` is a no-op.
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        konst(&mut ops, L4, 0x7fff_ffff);
-        konst(&mut ops, L5, 0x7f80_0000);
-        konst(&mut ops, L6, 1);
         let (unordered, holds) = if kind == sf::NE {
             (u16::from(L6), LREG_ZERO)
         } else {
@@ -2360,6 +2434,11 @@ impl Kernel {
         let body = self.tt_row_loop(|mut ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
+            // The masks the comparison needs; inside the body, so a fused body
+            // writes every register it reads.
+            konst(ops, L4, 0x7fff_ffff);
+            konst(ops, L5, 0x7f80_0000);
+            konst(ops, L6, 1);
             // `ax = x & mask`, `ay = y & mask`; a zero of either sign is
             // `+0`.
             sfp(&mut ops, and, [u16::from(L4), u16::from(L0), u16::from(L3), 1, 0]);
@@ -3378,13 +3457,13 @@ impl Kernel {
         // writes, the body's words, and its loads/stores as `(slot, reg, op)`.
         let mut counts = vec![0u16; n];
         let mut lens = vec![0u32; n];
-        let mut writes = vec![0u16; n];
+        let mut writes = vec![0u128; n];
         let mut words = vec![0u32; n];
         let mut loads: Vec<Vec<(OpId, u8, u8, OpId)>> = vec![Vec::new(); n];
         let mut stores: Vec<Vec<(OpId, u8, u8, OpId)>> = vec![Vec::new(); n];
         // Registers written by the gap *before* a unit: those consts end up
         // inside a merged body, so they clobber like the body does.
-        let mut gap_writes = vec![0u16; n];
+        let mut gap_writes = vec![0u128; n];
         for u in 0..n {
             let (m, end) = units[u];
             let Op::TT(TTOp::Replay { len, count }) = self.at(ops[m]) else {
@@ -3454,12 +3533,21 @@ impl Kernel {
                 // A gap may hold only lane constants (inside the merged body)
                 // and the flags' enable (hoisted out in front of it).
                 let mut gap_words = 0u32;
+                // A part whose gap has no `SFPENCC` would run under the previous
+                // part's lane flags, which is not what it saw as its own body:
+                // interleaving rows makes every part start from a dirty mask, so
+                // every part gets a reset (inside the merged body).
+                let mut needs_reset: Vec<usize> = Vec::new();
                 let mut ok = true;
                 for u in s + 1..=end {
+                    let mut reset = false;
                     for &g in &ops[units[u - 1].1..units[u].0] {
                         match self.at(g) {
                             Op::TT(TTOp::SfpConst(_)) => gap_words += tt_row_words(self.at(g)),
-                            Op::TT(TTOp::Sfp(k)) if k.op == defs::SFPENCC.opcode() => gap_words += 1,
+                            Op::TT(TTOp::Sfp(k)) if k.op == defs::SFPENCC.opcode() => {
+                                gap_words += 1;
+                                reset = true;
+                            }
                             _ => {
                                 ok = false;
                                 break;
@@ -3469,66 +3557,103 @@ impl Kernel {
                     if !ok {
                         break;
                     }
+                    if !reset {
+                        needs_reset.push(u);
+                        gap_words += 1;
+                    }
                 }
                 if !ok {
                     end -= 1;
                     continue;
                 }
-                // Register plan. `live` is every interior value carried in a
-                // lane register: slot, register, and the last unit that reads it.
-                let mut live: Vec<(OpId, u8, usize)> = Vec::new();
+                // Virtualize. Every register a merged unit touches becomes a
+                // fresh virtual (`>= 16`), so units cannot collide and nothing
+                // here reasons about the eight-register file: `tt_lreg_alloc`
+                // assigns the physical ones after this pass. An interior value
+                // crosses on one `SFPMOV`, per row, between virtuals. A body is
+                // straight-line, so the merged body is one block and liveness
+                // there is exact.
+                // Indexed by register number up to 127: a body this pass
+                // already merged carries virtuals, and those keep their number
+                // (only physical 0..8 are renamed to fresh ones).
+                let mut maps: Vec<[u8; 128]> = vec![[u8::MAX; 128]; n];
+                let mut live: Vec<(OpId, u8, usize)> = Vec::new(); // slot, vreg, last reader
                 // Every row of the merged body starts with the flags reset: a
                 // body's own preamble did exactly that once, and interleaving
                 // rows leaves the previous part's lane flags behind.
                 let mut total = gap_words + 1;
-                let mut retire: Vec<OpId> = Vec::new();
-                let mut drop: Vec<OpId> = Vec::new();
+                let mut carry_over: Vec<(OpId, u8, u8)> = Vec::new();
                 let mut hand: Vec<(OpId, u8, u8)> = Vec::new();
-                let mut renames: Vec<(usize, u8, u8)> = Vec::new();
+                // A unit that an earlier merge already virtualized keeps its
+                // numbers, so this cone's fresh virtuals must start above every
+                // number already in it -- otherwise the two collide.
+                let mut next = 16u16;
+                for u in s..=end {
+                    let mut range: Vec<OpId> = ops[units[u].0 + 1..units[u].1].to_vec();
+                    if u > s {
+                        range.extend_from_slice(&ops[units[u - 1].1..units[u].0]);
+                    }
+                    for &op in &range {
+                        let (reads, writes) = tt_row_regs(self.at(op));
+                        for r in 16..128u32 {
+                            if (reads | writes) & (1u128 << r) != 0 {
+                                next = next.max(r as u16 + 1);
+                            }
+                        }
+                    }
+                }
                 let mut feasible = true;
+                // The body as the allocator will see it, in virtual space: it
+                // is what decides whether this cone fits the eight registers.
+                let mut shadow: Vec<(u128, u128)> = Vec::new();
                 for u in s..=end {
                     live.retain(|(_, _, last)| *last >= u);
                     total += words[u];
-                    // Everything this unit writes, including each load's target
-                    // and the consts of the gap that now precedes it.
-                    let mut clobber = writes[u] | if u > s { gap_writes[u] } else { 0 };
+                    // Fresh virtuals for every register this unit touches,
+                    // including the gap's constants, which are now part of it.
+                    let mut used = writes[u] | if u > s { gap_writes[u] } else { 0 };
                     for (_, reg, _, _) in &loads[u] {
-                        clobber |= 1u16 << reg;
+                        used |= 1u128 << reg;
                     }
-                    // A unit that writes a register holding a value the cone
-                    // still needs would destroy it. Shuffling it elsewhere
-                    // costs a `mov` per row and is not modelled here, so the
-                    // cone simply stops before that unit; the value keeps its
-                    // register or it is not an interior value at all.
-                    let live_regs = live.iter().fold(0u16, |m, (_, r, _)| m | 1u16 << r);
-                    if clobber & live_regs != 0 {
-                        feasible = false;
+                    for &op in &ops[units[u].0 + 1..units[u].1] {
+                        used |= tt_row_regs(self.at(op)).0;
+                    }
+                    for r in 0..128u8 {
+                        if used & (1u128 << r) == 0 {
+                            continue;
+                        }
+                        // `8..15` are the hardware's read-only constants
+                        // (`LREG_ZERO` = 9, `LREG_ONE` = 10, ...): they appear in
+                        // a body's read mask and must never be renamed, which is
+                        // why they are not part of the allocatable file.
+                        if (8..16).contains(&r) {
+                            continue;
+                        }
+                        // Already virtual (a body merged earlier) or physical:
+                        // both get a fresh number, so a merged body never shares
+                        // a virtual with anything from an earlier round.
+                        let _ = r;
+                        if next >= 128 {
+                            feasible = false;
+                            break;
+                        }
+                        maps[u][r as usize] = next as u8;
+                        next += 1;
+                    }
+                    if !feasible {
                         break;
                     }
                     // Hand each interior value to this unit, in a register.
                     for (slot, reg, _, op) in &loads[u] {
-                        let Some(&(_, src, last)) = live.iter().find(|(sl, _, _)| sl == slot) else {
+                        let Some(&(_, src, _)) = live.iter().find(|(sl, _, _)| sl == slot) else {
                             continue;
                         };
-                        if src == *reg {
-                            // Already in the consumer's register: the load has
-                            // nothing left to do.
-                            drop.push(*op);
-                            total -= 1;
-                            continue;
-                        }
-                        if last == u && writes[u] & (1u16 << reg) == 0 {
-                            renames.push((u, *reg, src));
-                            drop.push(*op);
-                            total -= 1;
-                        } else {
-                            hand.push((*op, src, *reg));
-                        }
+                        hand.push((*op, src, maps[u][*reg as usize]));
                     }
                     // Retire stores whose value never leaves the cone.
                     for (slot, reg, fmt, op) in &stores[u] {
                         let interior = producers.get(slot).is_some_and(|ps| ps.len() == 1 && ps[0] == u)
-                            && readers.get(slot).is_some_and(|rs| rs.len() == 1 && rs[0] > u && rs[0] <= end)
+                            && readers.get(slot).is_some_and(|rs| rs.iter().all(|&r| r > u && r <= end))
                             && load_fmts.get(slot).is_some_and(|fs| fs.iter().all(|f| f == fmt));
                         if !interior {
                             continue;
@@ -3536,10 +3661,66 @@ impl Kernel {
                         let Some(last) = readers.get(slot).and_then(|rs| rs.iter().max()) else {
                             continue;
                         };
-                        live.push((*slot, *reg, *last));
-                        retire.push(*op);
-                        total -= 1;
+                        // The store becomes the copy that hands the value on, at
+                        // the store's own position -- not "whatever is in the
+                        // register at the end of the body", which a later write
+                        // in the same unit would break.
+                        if next >= 128 {
+                            feasible = false;
+                            break;
+                        }
+                        let carry = next as u8;
+                        next += 1;
+                        carry_over.push((*op, maps[u][*reg as usize], carry));
+                        live.push((*slot, carry, *last));
                     }
+                }
+                // A body longer than this still miscompiles (see NOTES): the
+                // cone stops here until that is found. Lifting it is what buys
+                // the DST traffic win measured in the notes.
+                if total > 24 {
+                    feasible = false;
+                }
+                // The body as the allocator will see it, in virtual space: it is
+                // what decides whether this cone fits the eight registers.
+                if feasible {
+                    let ren = |m: u128, map: &[u8; 128]| {
+                        let mut out = 0u128;
+                        for r in 0..128usize {
+                            if m & (1u128 << r) == 0 {
+                                continue;
+                            }
+                            let to = map[r];
+                            out |= 1u128 << (if to == u8::MAX { r as u8 } else { to });
+                        }
+                        out
+                    };
+                    for u in s..=end {
+                        if u > s {
+                            for &g in &ops[units[u - 1].1..units[u].0] {
+                                if let Op::TT(TTOp::SfpConst(c)) = self.at(g) {
+                                    let to = maps[u][c.reg as usize];
+                                    let to = if to == u8::MAX { c.reg } else { to };
+                                    shadow.push((0, 1u128 << to));
+                                }
+                            }
+                        }
+                        for &op in &ops[units[u].0 + 1..units[u].1] {
+                            if let Some(&(_, src, dst)) = hand.iter().find(|(o, _, _)| *o == op) {
+                                shadow.push((1u128 << src, 1u128 << dst));
+                                continue;
+                            }
+                            if let Some(&(_, src, dst)) = carry_over.iter().find(|(o, _, _)| *o == op) {
+                                shadow.push((1u128 << src, 1u128 << dst));
+                                continue;
+                            }
+                            let (reads, writes) = tt_row_regs(self.at(op));
+                            shadow.push((ren(reads, &maps[u]), ren(writes, &maps[u])));
+                        }
+                    }
+                }
+                if feasible && tt_alloc_regs(&shadow).is_none() {
+                    feasible = false;
                 }
                 if !feasible || total == 0 || total >= 1 << tt_isa::mailbox::loops::LEN_BITS {
                     end -= 1;
@@ -3565,19 +3746,40 @@ impl Kernel {
                     ops[units[s].0 + 1],
                     Op::TT(TTOp::Sfp(TTSfpInsn { op: defs::SFPENCC.opcode(), args: [3, 0, 10, 0, 0] })),
                 );
-                for (u, from, to) in renames {
-                    for &op in &ops[units[u].0 + 1..units[u].1] {
-                        tt_row_rename(&mut self.ops[op].op, from, to);
+                for u in needs_reset {
+                    // Inside the body (before its first op, not before the
+                    // marker): the word is counted in `len`, and a reset parked
+                    // outside would leave the body short of its own length.
+                    self.insert_before(
+                        ops[units[u].0 + 1],
+                        Op::TT(TTOp::Sfp(TTSfpInsn { op: defs::SFPENCC.opcode(), args: [3, 0, 10, 0, 0] })),
+                    );
+                }
+                for u in s..=end {
+                    // The unit's own body plus the gap of constants that now
+                    // precedes it (the marker between them is not a row op);
+                    // `from` is always 0..8, `to` always >= 16, so the renames
+                    // cannot chain.
+                    let mut range: Vec<OpId> = ops[units[u].0 + 1..units[u].1].to_vec();
+                    if u > s {
+                        range.extend_from_slice(&ops[units[u - 1].1..units[u].0]);
+                    }
+                    for r in 0..128u8 {
+                        let to = maps[u][r as usize];
+                        if to == u8::MAX || to == r {
+                            continue;
+                        }
+                        for &op in &range {
+                            tt_row_rename(&mut self.ops[op].op, r, to);
+                        }
                     }
                 }
                 for (load, from, to) in hand {
                     self.ops[load].op = Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [u16::from(from), u16::from(to), 0, 0, 0] }));
                 }
-                for op in retire {
-                    self.remove_op(op);
-                }
-                for op in drop {
-                    self.remove_op(op);
+                for (store, from, to) in carry_over {
+                    self.ops[store].op =
+                        Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [u16::from(from), u16::from(to), 0, 0, 0] }));
                 }
                 self.ops[marker].op = Op::TT(TTOp::Replay { len: total as u16, count: counts[s] });
                 for u in s + 1..=end {
@@ -3587,6 +3789,128 @@ impl Kernel {
             }
         }
         false
+    }
+
+    /// Assign the eight physical lane registers to the virtuals
+    /// `tt_sfpu_fusion` left behind: `tt_lreg_alloc`.
+    ///
+    /// The space is `0..7` general purpose, `8..15` the hardware's read-only
+    /// constants (`LREG_ZERO` = 9, `LREG_ONE` = 10, ...; never remapped), and
+    /// `>= 16` virtual. A merged row body is one straight-line block, so its
+    /// liveness is exact: every virtual has one interval `def -> last use`, and
+    /// the linear scan is not an approximation. A register frees when its
+    /// interval ends and is reused, so a body with twenty values still fits
+    /// eight if no more than eight are live at once.
+    ///
+    /// A `SFPMOV` whose two ends land on the same register is dropped (the
+    /// coalescing case) and the `Replay` length is recomputed from what is
+    /// left. A body that needs a ninth live value fails loudly: spilling to a
+    /// DST tile is the next step, never a guess.
+    pub fn tt_lreg_alloc(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        let mut ops: Vec<OpId> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            ops.push(id);
+            id = self.next_op(id);
+        }
+        let mut i = 0;
+        while i < ops.len() {
+            let Op::TT(TTOp::Replay { len, count }) = self.at(ops[i]) else {
+                i += 1;
+                continue;
+            };
+            let (marker, count) = (ops[i], *count);
+            let mut words = 0u32;
+            let mut j = i + 1;
+            while j < ops.len() && words < u32::from(*len) {
+                words += tt_row_words(self.at(ops[j]));
+                j += 1;
+            }
+            let body: Vec<OpId> = ops[i + 1..j].to_vec();
+            i = j;
+            let mut def: [i64; 128] = [-1; 128];
+            let mut last: [i64; 128] = [-1; 128];
+            let mut first_use: [i64; 128] = [-1; 128];
+            let mut any = false;
+            for (k, &op) in body.iter().enumerate() {
+                let (reads, writes) = tt_row_regs(self.at(op));
+                for r in 0..128usize {
+                    let bit = 1u128 << r;
+                    if writes & bit != 0 {
+                        if def[r] < 0 {
+                            def[r] = k as i64;
+                        }
+                        last[r] = k as i64;
+                        any |= r >= 16;
+                    }
+                    if reads & bit != 0 {
+                        if first_use[r] < 0 {
+                            first_use[r] = k as i64;
+                        }
+                        if last[r] < k as i64 {
+                            last[r] = k as i64;
+                        }
+                    }
+                }
+            }
+            if !any {
+                continue;
+            }
+            // A value read before its first write is live from the body's start.
+            for r in 16..128usize {
+                if first_use[r] >= 0 && (def[r] < 0 || first_use[r] < def[r]) {
+                    def[r] = -1;
+                }
+            }
+            let mut order: Vec<usize> = (16..128).filter(|r| last[*r] >= 0).collect();
+            order.sort_by_key(|r| (def[*r], *r));
+            let mut active: Vec<(usize, u8, i64)> = Vec::new(); // (vreg, phys, last)
+            let mut assign = [u8::MAX; 128];
+            for &r in &order {
+                active.retain(|&(_, _, l)| l >= def[r]);
+                let used: u16 = active.iter().fold(0, |m, &(_, p, _)| m | 1u16 << p);
+                let Some(p) = (0..8u8).find(|p| used & (1u16 << p) == 0) else {
+                    todo!(
+                        "tt_lreg_alloc: no free lane register for virtual {r} (body op {}); spilling is not implemented",
+                        def[r]
+                    );
+                };
+                assign[r] = p;
+                active.push((r, p, last[r]));
+            }
+            // Sources are `>= 16`, targets `0..8`: no rename can chain.
+            for &op in &body {
+                for r in 16..128u8 {
+                    if assign[r as usize] != u8::MAX {
+                        tt_row_rename(&mut self.ops[op].op, r, assign[r as usize]);
+                    }
+                }
+            }
+            let mut gone: Vec<OpId> = Vec::new();
+            for &op in &body {
+                if let Op::TT(TTOp::Sfp(insn)) = self.at(op) {
+                    if insn.op == tt_isa::isa::generated::defs::SFPMOV.opcode() && insn.args[0] == insn.args[1] {
+                        gone.push(op);
+                    }
+                }
+            }
+            for &op in &gone {
+                self.remove_op(op);
+            }
+            let mut words = 0u32;
+            for &op in &body {
+                if !gone.contains(&op) {
+                    words += tt_row_words(self.at(op));
+                }
+            }
+            self.ops[marker].op = Op::TT(TTOp::Replay { len: words as u16, count });
+        }
     }
 
     /// Reclaim a materialised value's L1 round trip: `tt_dst_reuse`'s first

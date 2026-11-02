@@ -127,15 +127,13 @@ impl Kernel {
             // keep the value in its lane register. Before the allocator, so
             // the rows it frees are never allocated.
             self.tt_sfpu_fusion();
+            // The lane registers the fusion left are virtual (`>= 16`): this
+            // assigns the eight physical ones, per straight-line row body.
+            self.tt_lreg_alloc();
             // The allocated form is legal but at maximal pressure; the reuse
             // pass coalesces it down to the physical tile budget. It must run
             // after allocation and before codegen.
             self.tt_dst_reuse();
-            // Reclaiming a round trip leaves the consumers reading the
-            // producer's row directly, so the pairs it exposed are the
-            // adjacent store->load edges fusion wants. Any order, any
-            // repetition: this second run only removes row ops.
-            self.tt_sfpu_fusion();
             // Last: the role hand-off over the final physical tiles. It has to
             // see where allocation put every tile, and it is the only pass
             // that emits `Semset`/`Wait`/`Post`.

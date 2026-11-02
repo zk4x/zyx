@@ -107,37 +107,68 @@ the pipeline above exists.
   hardware's fixed constants (never remapped), `>= 16` virtual until allocation;
   codegen must assert no virtual survives.
 
-**Step 2 in detail (lreg virtual space + allocator) — the next change, in three
-commit-sized pieces:**
+**Step 2 (lreg virtual space + allocator) is IN the tree and green.** All 18
+ttsim gates pass, `cargo test --lib` = 78, fmt clean.
 
-1. **Widen the register-set primitive.** `tt_sfp_regs`/`tt_row_regs` return a
-   `u16` mask over `LReg::index() < 16`; virtuals do not fit. Widen to `u128`
-   (bit `i` = register `i`), and cap virtuals at `127`. A cone that would need
-   more than `127 - 16 = 111` virtuals is *not* formed (shrink, loud), which
-   keeps the mask exact instead of introducing a set type. Mechanical: no
-   behaviour change, gates stay green.
-2. **Fusion emits virtuals.** `tt_fuse_cone` drops its whole register-plan
-   section (the `clobber`/`feasible`/`rename`/`hand` reasoning) and becomes:
-   rename every register a merged unit uses to a fresh virtual
-   (`>= 16`, one block per unit, sparse counter), turn each interior hand-over
-   into `SFPMOV <value vreg> -> <consumer's vreg>` (one word, per row), retire
-   the producer's store, and keep the `SFPENCC` reset, the gap-const rule, the
-   32-bit-format rule and the block-repeat budget. No interference reasoning, no
-   refusal on register pressure -- that is the allocator's job now.
-3. **`tt_lreg_alloc`.** For each `Replay` body: parse def/use per op, build
-   `(def, last_use)` per virtual, sort by def, linear-scan into `L0..L7`
-   (expire intervals whose last use passed, reuse the register), rewrite the
-   body with `tt_row_rename` (sources are `>= 16`, targets `0..7`, so sequential
-   renames cannot chain), drop `SFPMOV x -> x` (adjust `len`), and *spill* when
-   no register is free: create an ordinary `Op::Storage { scope: Register }`
-   (no special kind -- zyx unifies) and emit `SFPSTORE`/`SFPLOAD` around the
-   live range. Registered in `device_epilogue` right after `tt_sfpu_fusion` and
-   before `tt_dst_reuse` (the tile allocator must see the spill tile).
-   Assert loudly on anything left `>= 16` after the pass.
+What it does now:
 
-Acceptance for that change: the elementwise gate (1 `SFPLOAD` + 1 `SFPSTORE`
-per row) and all 18 ttsim gates. If a body needs a ninth live value and the
-spill path is not in yet, the pass must fail loudly, never mis-allocate.
+- `tt_sfpu_fusion` gives every register of every merged unit a **fresh virtual**
+  (`>= 16`; `8..15` are the hardware's read-only constants and are never
+  touched). An interior value crosses a body on one `SFPMOV`; the producer's
+  store is replaced by `SFPMOV carry <- reg` **at the store's position** (not
+  read at body end), and the consumer's load by `SFPMOV dst <- carry`.
+- `tt_lreg_alloc` (registered right after the fusion in `device_epilogue`)
+  linear-scans `(def, last_use)` per virtual into `L0..L7` on each straight-line
+  row body, drops `SFPMOV x -> x`, and recomputes each `Replay`'s length.
+- Feasibility is the *same* scan: `tt_alloc_regs` is one free function used
+  twice -- the fusion builds the body it is about to emit in virtual space
+  (`shadow`) and forms a shorter cone when it would not fit; the allocator
+  re-runs it on the real body. Nine values live at once is still a hard error
+  (no spilling yet).
+
+Six bugs were found and fixed on the way; all are load-bearing, do not undo:
+
+1. **`8..15` must never be virtualized.** `LREG_ZERO` (9) / `LREG_ONE` (10) are
+   in a body's read mask; renaming them makes every `1.0` read an unwritten
+   register (`exp2` miscompiles everywhere).
+2. **Virtual numbers must not restart per merge.** A body an earlier merge
+   already virtualized keeps its numbers, so a new cone starts above the highest
+   one in it.
+3. **The carry copy belongs at the store's position** (see above). Reading the
+   register at body end is wrong: a unit may rewrite it after the store.
+4. **A per-part `SFPENCC` reset must be inserted *inside* the body** (before its
+   first op, not before the marker): its word is counted in `len`, and a reset
+   parked outside leaves the body one word short of its own length, so the
+   replay never closes.
+5. **`SFPENCC` is a predicate reset, not a scope**: `mod1 2 | 8` sets
+   `use_flags` and sets every `lane_flags = true` (`kern/sfpu/interp.rs:766`).
+   Interleaving rows of two parts therefore needs a reset *per part*.
+6. **A register hand-over is only bit-equal when the store and every load use the
+   same 32-bit format** (`INT32`/`FP32` convert through a tile), and a virtual
+   read before its first write is live from the body's start.
+
+**Measured (DST accesses per row, the metric that matters):** `sigmoid` 38 loads
+/ 23 stores / 20 replays; `sin_cos` 71/39/33; `log2` 50/30/28; `exp2` 34/19/18.
+That is level with the committed pass (36/21/21 for `sigmoid`), **not** yet the
+win. The reason is now precise: **the virtual name space is the limiter, not
+register pressure.** Numbering is per `(unit, register)`, so a 20-unit cone needs
+~100 names and `u128` gives 112 (`16..127`); cones therefore split by *name
+exhaustion* instead of live count. A previous build that restarted numbering at
+16 per merge (bug 2 above) measured `sigmoid` at 25 loads / 10 stores / 7
+replays -- that is the number to recover once names stop being the limit.
+
+**Next issues, in order:**
+
+1. **Names out of the way**: compact a cone's virtuals into a dense range before
+   committing (collect the `maps` targets, renumber `16..`), and/or reuse names
+   for non-overlapping ranges. `u128` masks cap it at 127; widening the mask (or
+   a small set type) is the alternative.
+2. **Spill instead of refusing**: a body that needs a ninth live value should
+   store it to an ordinary `Storage{Register}` tile and reload before use (the
+   user's rule: lreg spills to DST, never to L1).
+3. Then re-measure `sigmoid` against the 25/10 target and add the acceptance
+   gate (count `SFPLOAD`/`SFPSTORE` in the T1 program: 1/1 for a pure
+   elementwise kernel).
 
 ### Start here — session handoff (2026-11-02, fifth pass — end of session)
 
