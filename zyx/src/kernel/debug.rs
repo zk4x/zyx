@@ -256,6 +256,9 @@ impl Kernel {
                 Op::TT(TTOp::Wait { sem, before, role }) => {
                     writeln!(f, "{indent}{orange}semtake{reset} s{sem} before{before} on T{role}").unwrap();
                 }
+                Op::TT(TTOp::WaitBelowMax { sem, before, role }) => {
+                    writeln!(f, "{indent}{orange}semwait_below{reset} s{sem} before{before} on T{role}").unwrap();
+                }
                 Op::TT(TTOp::Semset { sem, value }) => {
                     writeln!(f, "{indent}{orange}semset{reset} s{sem} = {value}").unwrap();
                 }

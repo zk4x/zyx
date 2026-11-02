@@ -72,6 +72,56 @@ const LREG_ONE: u16 = tt_isa::sfpu::LREG_ONE as u16;
 const FP32: u8 = tt_isa::sfpu::mod0_fmt::FP32 as u8;
 const INT32: u8 = tt_isa::sfpu::mod0_fmt::INT32 as u8;
 
+/// The lane registers one SFPU instruction reads and writes, as 16-bit sets
+/// over `LReg::index()` (`bit i` is `L[i]`).
+///
+/// `InstructionDef` carries field layouts but no read/write sets, so this is
+/// the backend's model: a fusion pass needs it to carry a value across
+/// sequences in a lane register and to rename around collisions. Fields are
+/// resolved by the ISA's own names, never by position, and the same form
+/// `tt_sfp_encode` picks (Blackhole's, not the superseded Wormhole layout).
+///
+/// A false read is harmless (it only loses a fusion opportunity); a false
+/// write would corrupt a value, so the arms' own usage is what the table
+/// states. `SFPSHFT2`/`SFPTRANSP` (the reduce programs only) have implicit
+/// operands, so they are conservatively all-writable-registers on both sides.
+fn tt_sfp_regs(op: u8, args: &[u16; 5]) -> (u16, u16) {
+    let Some(def) = crate::codegen::tenstorrent::tt_sfp_def(op) else {
+        todo!("tt_sfp_regs: no ISA instruction has opcode {op:#x}");
+    };
+    let (reads, writes): (&[&str], &[&str]) = match def.mnemonic() {
+        // `d = f(c)`.
+        "SFPABS" | "SFPCAST" | "SFPEXEXP" | "SFPEXMAN" | "SFPSETEXP" | "SFPSETSGN" | "SFPARECIP" | "SFPNOT" | "SFPSETMAN"
+        | "SFPDIVP2" | "SFPXOR" | "SFPMOV" => (&["VC"], &["VD"]),
+        // `d = a & b` / `a | b` (the `USE_VB` layout).
+        "SFPAND" | "SFPOR" => (&["VB", "VC"], &["VD"]),
+        // In place: `d = c +/- d`, `d = d <<</>>> c`.
+        "SFPIADD" | "SFPSHFT" => (&["VC", "VD"], &["VD"]),
+        // `d = a * b + c` and its two-operand forms.
+        "SFPMAD" | "SFPADD" | "SFPMUL" | "SFPMUL24" => (&["VA", "VB", "VC"], &["VD"]),
+        // Predicates write the lane flags, not a register.
+        "SFPGT" | "SFPLE" => (&["VC", "VD"], &[]),
+        "SFPSETCC" => (&["VC"], &[]),
+        "SFPPUSHC" | "SFPPOPC" | "SFPCOMPC" | "SFPENCC" | "SFPNOP" => (&[], &[]),
+        "SFPSHFT2" | "SFPTRANSP" => (&["VB", "VC", "VD"], &["VD"]),
+        other => todo!("tt_sfp_regs: {other} has no register model"),
+    };
+    let value = |name: &str| def.fields().iter().position(|f| f.name() == name).map(|i| args[i]);
+    let mut read = 0u16;
+    let mut write = 0u16;
+    for name in reads {
+        if let Some(v) = value(name) {
+            read |= 1 << v;
+        }
+    }
+    for name in writes {
+        if let Some(v) = value(name) {
+            write |= 1 << v;
+        }
+    }
+    (read, write)
+}
+
 /// Instruction words a row op emits, counted as codegen counts them: a
 /// `SFPLOADI` is one word for a BF16 immediate and two for a full FP32 one.
 fn tt_row_words(op: &Op) -> u32 {
@@ -233,6 +283,10 @@ struct TtLowering<'a> {
     reader_cb_of: &'a Map<OpId, OpId>,
     rcs: &'a Map<OpId, u32>,
     materialized: Map<OpId, OpId>,
+    /// One DST tile per reader CB, unpacked at its first use: otherwise every
+    /// use of the same value copies it in again, one `UNPACKED` hand-off each,
+    /// and a 4-bit semaphore cannot carry that many.
+    unpacked: Map<OpId, OpId>,
     /// Matmul feeder index patterns (A plain, B K-scaled).
     pat_a: Pat,
     pat_b: Pat,
@@ -1024,6 +1078,7 @@ impl Kernel {
             reader_cb_of: &reader_cb_of,
             rcs: &rcs,
             materialized: Map::default(),
+            unpacked: Map::default(),
             pat_a,
             pat_b,
         };
@@ -1389,10 +1444,17 @@ impl Kernel {
         match self.ops[storage].op {
             Op::Storage { scope: MemScope::Register, .. } => Some((dtype, storage)),
             Op::Storage { scope: MemScope::Circular, .. } => {
+                // One tile per CB: a kernel phase's CB holds one tile, and
+                // the unpack always reads slot 0, so every use of the same CB
+                // may share one unpacked DST tile.
+                if let Some(&dst) = lower.unpacked.get(&storage) {
+                    return Some((dtype, dst));
+                }
                 let dst = self.tt_new_dst(dtype, lower.prologue);
                 let zero = self.insert_const_idx_before(consumer, 0i64);
                 let bytes = (dtype.bit_size() as u32 / 8).checked_mul(1024)?;
                 self.insert_before(consumer, Op::TT(TTOp::Copy { src: storage, src_idx: zero, dst, dst_idx: zero, bytes }));
+                lower.unpacked.insert(storage, dst);
                 Some((dtype, dst))
             }
             _ => None,
@@ -3820,7 +3882,14 @@ impl Kernel {
             self.insert_before(ops[idx], Op::TT(op));
         }
         for (idx, op) in posts {
-            self.insert_after(ops[idx], Op::TT(op));
+            let (sem, role) = match op {
+                TTOp::Post { sem, role } => (sem, role),
+                other => unreachable!("only posts are in `posts`, got {other:?}"),
+            };
+            // Back-pressure: the counter is four bits, so the producer must
+            // not get more than fifteen ahead of the consumer.
+            let post = self.insert_after(ops[idx], Op::TT(TTOp::Post { sem, role }));
+            self.insert_before(post, Op::TT(TTOp::WaitBelowMax { sem, before: before(role), role }));
         }
     }
 
@@ -4073,7 +4142,7 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. }) => {
                     assert!(section == 1, "tt_verify: compute op outside the compute section at {id:?}");
                 }
-                Op::TT(TTOp::Post { sem, .. }) | Op::TT(TTOp::Wait { sem, .. }) => {
+                Op::TT(TTOp::Post { sem, .. }) | Op::TT(TTOp::Wait { sem, .. }) | Op::TT(TTOp::WaitBelowMax { sem, .. }) => {
                     assert!(section == 1, "tt_verify: semaphore op outside the compute section at {id:?}");
                     assert!(
                         *sem < tt_isa::sync::Semaphore::COUNT,
@@ -4293,9 +4362,8 @@ mod sfp_row_ops {
     use tt_isa::isa::Instruction;
     use tt_isa::sfpu as enc;
 
-    /// The arm's sequence as ISA instructions: `a`, `b` and `slot` at the
-    /// interpreter's tile rows, any scratch tile the arm allocates after them.
-    fn arm(kind: u32) -> Vec<Instruction> {
+    /// The arm's ops and the interpreter row of every storage they touch.
+    fn arm_ops(kind: u32) -> (Vec<Op>, HashMap<u32, u32>) {
         let mut k = Kernel::new(Dev::Auto);
         let storage =
             |k: &mut Kernel| k.push_back(Op::Storage { dtype: DType::F32, scope: MemScope::Register, len: 1024, id: 0 });
@@ -4327,7 +4395,75 @@ mod sfp_row_ops {
             }
             op = k.ops[op].next;
         }
+        (list, rows)
+    }
+
+    /// The arm's sequence as ISA instructions: `a`, `b` and `slot` at the
+    /// interpreter's tile rows, any scratch tile the arm allocates after them.
+    fn arm(kind: u32) -> Vec<Instruction> {
+        let (list, rows) = arm_ops(kind);
         super::encode_row_ops(&list, &rows)
+    }
+
+    /// Every ported kind.
+    fn kinds() -> Vec<u32> {
+        let mut all = vec![
+            sf::BOOL_NOT,
+            sf::NEG,
+            sf::ABS,
+            sf::INT_NOT,
+            sf::SQRT,
+            sf::RSQRT,
+            sf::RECIP,
+            sf::FLOOR,
+            sf::TRUNC,
+            sf::SIGMOID,
+            sf::SIN,
+            sf::COS,
+        ];
+        all.extend([
+            crate::backend::tenstorrent::kern::kind::ADD,
+            crate::backend::tenstorrent::kern::kind::SUB,
+            crate::backend::tenstorrent::kern::kind::MUL,
+            sf::DIV,
+            sf::POW,
+            sf::EQ,
+            sf::NE,
+            sf::GT,
+            sf::GE,
+            sf::LT,
+            sf::LE,
+            sf::INT_AND,
+            sf::INT_OR,
+            sf::INT_XOR,
+            sf::INT_SHL,
+            sf::INT_SHR,
+        ]);
+        all
+    }
+
+    /// The register model names every lane register the arms touch, and only
+    /// the writable ones on the write side. A missing opcode panics inside
+    /// `tt_sfp_regs`; a false write would corrupt a merged body.
+    #[test]
+    fn the_register_model_covers_every_ported_kind() {
+        for kind in kinds() {
+            let (list, _) = arm_ops(kind);
+            for op in &list {
+                if let Op::TT(TTOp::Sfp(i)) = op {
+                    let (_, writes) = super::tt_sfp_regs(i.op, &i.args);
+                    assert_eq!(writes & !0x00ff, 0, "kind {kind:#x} writes a read-only lane register");
+                }
+            }
+        }
+        // The in-place and predicate forms are the ones a table can get wrong.
+        let (iadd, _) = (tt_isa::isa::generated::defs::SFPIADD.opcode(), 0);
+        let (r, w) = super::tt_sfp_regs(iadd, &[0, 1, 2, 5, 0]);
+        assert_eq!((r, w), (1 << 1 | 1 << 2, 1 << 2), "SFPIADD reads VC and VD, writes VD");
+        let (r, w) = super::tt_sfp_regs(tt_isa::isa::generated::defs::SFPSETCC.opcode(), &[0, 3, 0, 0, 0]);
+        assert_eq!((r, w), (1 << 3, 0), "SFPSETCC reads VC only and writes flags");
+        let (r, w) = super::tt_sfp_regs(tt_isa::isa::generated::defs::SFPGT.opcode(), &[4, 6, 1, 0, 0]);
+        assert_eq!((r, w), (1 << 4 | 1 << 6, 0), "SFPGT reads VC and VD, writes flags");
     }
 
     /// Every ported kind's arity, so the arm sees the null second operand a

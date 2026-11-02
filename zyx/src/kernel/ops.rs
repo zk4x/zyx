@@ -710,6 +710,11 @@ pub enum TTOp {
     SfpConst(Box<TTSfpConst>),
     /// One non-addressing SFPU instruction: see [`TTSfpInsn`].
     Sfp(TTSfpInsn),
+    /// Back-pressure before a `Post`: hold `before` and B1 until `sem`'s
+    /// counter is below its maximum (`SEMWAIT` C1). A counting hand-off on a
+    /// 4-bit counter would otherwise wrap when one role runs more than fifteen
+    /// epochs ahead of the other; this is the producer's half of the bound.
+    WaitBelowMax { sem: u8, before: u8, role: u8 },
     /// One recorded row loop (`REPLAY`): the next `len` instruction words of
     /// this role run once while being recorded, then `count - 1` more times.
     /// The body's last `Dst` access steps by two rows per iteration through
@@ -1564,6 +1569,7 @@ impl Op {
             | Op::TT(TTOp::Setcfg { .. })
             | Op::TT(TTOp::Post { .. })
             | Op::TT(TTOp::Wait { .. })
+            | Op::TT(TTOp::WaitBelowMax { .. })
             | Op::TT(TTOp::DmRead(_))
             | Op::TT(TTOp::DmWrite(_))
             | Op::TT(TTOp::DmReadTransposed(_))
@@ -1686,6 +1692,7 @@ impl Op {
             | Op::TT(TTOp::Setcfg { .. })
             | Op::TT(TTOp::Post { .. })
             | Op::TT(TTOp::Wait { .. })
+            | Op::TT(TTOp::WaitBelowMax { .. })
             | Op::TT(TTOp::DmRead(_))
             | Op::TT(TTOp::DmWrite(_))
             | Op::TT(TTOp::DmReadTransposed(_))

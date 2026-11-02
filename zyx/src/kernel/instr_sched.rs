@@ -154,7 +154,8 @@ impl Kernel {
                 | Op::TT(TTOp::Mvmul { .. })
                 | Op::TT(TTOp::Setc16 { .. })
                 | Op::TT(TTOp::Post { .. })
-                | Op::TT(TTOp::Wait { .. }) => structural[i] = true,
+                | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::WaitBelowMax { .. }) => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
                 // A copy reads its src and writes its dst: it pins like a
@@ -238,6 +239,7 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::WaitBelowMax { .. })
                 | Op::TT(TTOp::Semset { .. })
                 | Op::TT(TTOp::Replay { .. })
                 | Op::TT(TTOp::Unpack(_))

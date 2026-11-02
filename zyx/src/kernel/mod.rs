@@ -313,6 +313,7 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::WaitBelowMax { .. })
                 | Op::TT(TTOp::Semset { .. })
                 | Op::TT(TTOp::SfpConst(_))
                 | Op::TT(TTOp::Sfp(_))
@@ -743,6 +744,7 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::WaitBelowMax { .. })
                 | Op::TT(TTOp::Semset { .. }) => todo!("dtype: instruction op produces no value"),
                 // Every other TT op is instruction- or descriptor-shaped and
                 // carries no scalar value: the encoded role streams included.

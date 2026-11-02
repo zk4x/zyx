@@ -555,3 +555,50 @@ fn transfer_roundtrip() -> Result<(), ZyxError> {
 
     Ok(())
 }
+
+#[test]
+fn shared_input() -> Result<(), ZyxError> {
+    // The same value twice in one kernel: one CB, one replayed `MUL` sequence
+    // whose two loads read the same DST tile. It exercises the reader-CB
+    // unpack cache (`tt_resolve_dst`) and the `COMPUTED`/`UNPACKED` seams on a
+    // chain that is not one linear value. `SFPMAD` with a negated zero addend
+    // is an exact multiply, so the gate is bit equality.
+    let x = Tensor::rand([32, 32], DType::F32)?;
+    let xs = x.to(Dev::TT(0))?;
+    let z = (&xs * &xs).to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 32 * 32);
+    assert_eq!(zv.len(), 32 * 32);
+    for i in 0..xv.len() {
+        assert_eq!(zv[i].to_bits(), (xv[i] * xv[i]).to_bits(), "lane {i}");
+    }
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "red: tt_reg_sync pairing under replayed sequences; see NOTES"]
+fn exp2() -> Result<(), ZyxError> {
+    // Smallest kernel that unpacks a multi-use value, replays several
+    // sequences and shows the seam failure: `tensix_semget: sem=0`.
+    let x = Tensor::rand([32, 32], DType::F32)?;
+    let z = x.to(Dev::TT(0))?.exp2().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    let mut bad = 0;
+    for (i, &v) in zv.iter().enumerate().take(32 * 32) {
+        let want = xv[i].exp2();
+        if ((v - want) / want).abs() > 1e-5 {
+            if bad < 10 {
+                println!("z[{i}] = {v}, expected {want}");
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "exp2 lanes off");
+
+    Ok(())
+}

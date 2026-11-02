@@ -339,6 +339,7 @@ impl Kernel {
                 | Op::TT(TTOp::Setcfg { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
+                | Op::TT(TTOp::WaitBelowMax { .. })
                 | Op::TT(TTOp::Semset { .. })
                 | Op::TT(TTOp::SfpConst(_))
                 | Op::TT(TTOp::Sfp(_))

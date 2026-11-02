@@ -369,6 +369,16 @@ fn tt_row_remap(mut code: Vec<Instruction>, a_row: u32, b_row: Option<u32>, out_
 /// Encode one row-level SFPU instruction: look its form up by ISA opcode and
 /// place the operand words into the form's fields, in the ISA's own order
 /// (high bits first, as `InstructionDef::fields` lists them).
+/// The ISA form an `Sfp` opcode names: the Blackhole layout when the opcode
+/// exists on both, never the superseded Wormhole one (`tt_sfp_encode`'s rule).
+pub(crate) fn tt_sfp_def(op: u8) -> Option<&'static tt_isa::isa::InstructionDef> {
+    tt_isa::isa::generated::ALL
+        .iter()
+        .copied()
+        .find(|d| d.opcode() == op && !matches!(d.provenance(), tt_isa::isa::Provenance::SupersededOnBlackhole { .. }))
+        .or_else(|| tt_isa::isa::generated::ALL.iter().copied().find(|d| d.opcode() == op))
+}
+
 pub(crate) fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendError> {
     // `args` are the form's operands in the ISA's own field order, which is
     // the order `InstructionDef::fields` lists them in; the array is fixed at
@@ -379,12 +389,7 @@ pub(crate) fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendErro
     // the Wormhole one keeps the plain key (`SFPAND`, `SFPPUSHC`, ...) while
     // Blackhole's is suffixed (`SFPAND_BH`). The superseded layout is never the
     // one to emit: it drops fields this IR carries (`SFPAND`'s `VB`, for one).
-    let def = tt_isa::isa::generated::ALL
-        .iter()
-        .copied()
-        .find(|d| d.opcode() == insn.op && !matches!(d.provenance(), tt_isa::isa::Provenance::SupersededOnBlackhole { .. }))
-        .or_else(|| tt_isa::isa::generated::ALL.iter().copied().find(|d| d.opcode() == insn.op))
-        .ok_or_else(|| tt_err(format!("tenstorrent: no ISA instruction has opcode {:#x}", insn.op)))?;
+    let def = tt_sfp_def(insn.op).ok_or_else(|| tt_err(format!("tenstorrent: no ISA instruction has opcode {:#x}", insn.op)))?;
     let fields = def.fields();
     let mut word = def.skeleton();
     for (field, value) in fields.iter().zip(insn.args.iter()) {
@@ -1161,6 +1166,19 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         sec.push_role_word_for(*role, insn.word());
                     }
                 }
+            }
+            Op::TT(TTOp::WaitBelowMax { sem, before, role }) => {
+                // The producer's back-pressure: hold until the counter has
+                // room, so a 4-bit hand-off cannot wrap when one role runs
+                // ahead. No take: the matching `Post` follows.
+                let sem = tt_sem(*sem).map_err(|e| sec.err(format!("wait below max {id:?}: {e}")))?;
+                let mask =
+                    tt_before(*before).ok_or_else(|| sec.err(format!("wait below max {id:?}: unknown before mask {before}")))?;
+                if tt_unit(*role).is_none() {
+                    return Err(sec.err(format!("wait below max {id:?}: no stream {role}")));
+                }
+                let insn = tt_isa::sync::wait_below_max(sem, mask);
+                sec.push_role_word_for(*role, insn.word());
             }
             Op::TT(TTOp::Wait { sem, before, role }) => {
                 let sem = tt_sem(*sem).map_err(|e| sec.err(format!("wait {id:?}: {e}")))?;

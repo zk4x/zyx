@@ -14,7 +14,145 @@
 
 ## CURRENT STATE (2026-11-02) — read this first
 
-### Start here — session handoff (2026-11-02, end of session)
+### Start here — session handoff (2026-11-02, second session)
+
+**State:** HEAD is the user's last commit (the tree was committed twice during
+this session: `tt better reuse of dsts` and after the replay work). `git status`
+should be exactly:
+
+```
+NOTES.md
+zyx/src/kernel/tenstorrent.rs
+zyx/src/codegen/tenstorrent.rs
+zyx/tests/23_tt_lowering.rs
+```
+
+The user writes commit messages; commit only when asked.
+
+**What this session did, in order**
+
+1. **`TTSfpInsn.args` is `[u16; 5]`** and **`TTOp::Sfp` is unboxed** (`Op` stays
+   24 bytes; every SFPU field is ≤ 16 bits — the only wider ISA fields are
+   `SETC16.NewValue` and two `AddrLo`, both 18, neither SFPU). `tt_sfp_encode`
+   converts to `u32` for `field.fits`/`place` and `debug_assert!`s width ≤ 16.
+   `LREG_ZERO`/`LREG_ONE` are `u16`. The other `TTSfp*`/`Dm*` boxes were left
+   alone; unboxing them is mechanical (`Box::new(TTSfp… { … }))))` shape, 67
+   sites) if wanted.
+2. **`tt_unfold`** (in `kernel/tenstorrent.rs`, called from the TT branch of
+   `device_epilogue` after `tt_tile`): rewrites `Exp2`/`Log2` in normal `Op`
+   space as `exp_program`/`log_program` arithmetic. `Pow` reaches it through
+   `unfold_pows`' `Exp2(y Log2 x)`. Scalar constants stay `Op::Const` operands;
+   the new `TtEmit::SfpuConst` + `tt_fill_const` fill one into a DST tile
+   (`Expand` is refused post-linearize, so no shape op). `Bitcast`, `Cast`
+   (`I32↔F32`) and `Select` lower directly in `tt_lower_value`; a permanent
+   `#[cfg(test)] mod tt_lower_ops` A/Bs them through `interp`.
+3. **Pattern matching is done before lowering** (`TtLowering::matched`), with
+   the bindings recorded: once a value lowers its `Op` becomes a row op and
+   `shape` reads the slot's buffer length, so re-matching a DAG's shared
+   operand fails. `tt_lower_value` replays the recorded decision, then falls
+   back to the table if the emitter declines.
+4. **`TTOp::Replay { len, count }`** (word count + repeats) + codegen
+   `begin_replay`/`finish_replay`: address-modifier entries 0/7, `RWC` clears,
+   `REPLAY(load=1, exec=1)` record word before the body, `count-1` replay words
+   after, and `AddrMod = 7` patched onto the body's last `SFPLOAD`/`SFPSTORE`.
+   `tt_verify` checks `len ≤ 32`, `count ≥ 2`, row ops only, no nesting, body
+   complete. `tt_row_loop` is the shared emitter: every SFPU kind arm now emits
+   one row group and the helper wraps it; bodies over 32 words fall back to 32
+   unrolled copies with `at += 2k`. The test harness (`encode_row_ops`) expands
+   a `Replay` with the same two-row step. `tt_fill_const` and the two reduce
+   loops still write their own `for o` loops.
+5. **`tt_reg_sync`**: the FREE reuse seam is implemented (reader posts after
+   its last access, next writer takes before its first); seams are kept
+   *outside* replay bodies (`replay_of` maps member ops to the body bounds, so
+   `Wait`s go before the marker and `Post`s after the body); **`TTOp::WaitBelowMax`**
+   (`SEMWAIT` C1) is emitted before every `Post` as back-pressure for the 4-bit
+   counter.
+6. **Register model**: `tt_sfp_regs(op, args) -> (reads, writes)` with the
+   per-mnemonic table (resolved by ISA field name on `tt_sfp_def`'s form, the
+   same one the encoder picks). A test walks all 28 ported kinds and pins
+   `SFPIADD`/`SFPSETCC`/`SFPGT`. This is the foundation for fusion.
+7. **Unpack cache**: `tt_resolve_dst` keeps one DST tile per reader CB
+   (`TtLowering::unpacked`), because the unpack always reads slot 0 and one CB
+   holds one tile per phase. `sigmoid`'s `UNPACKED` hand-offs fell 21 → 6.
+
+**Gates / tests**
+
+- `cargo test --lib` = **77** (70 + 2 `sfp_row_ops` + 4 `tt_lower_ops` + 1
+  register-model test).
+- Green on ttsim, one at a time: `unary_math`, `tiling`, `neg_sub_mul`, `add`,
+  `transfer_roundtrip`, `matmul`, `sum`, `max`, `sum_scalar`, `max_scalar`,
+  `sum_all`, and the new `shared_input` (`x * x`, exact; the unpack-cache
+  regression).
+- **Red — `sigmoid`, `sum_sigmoid`**: `NonContractualBehavior: tensix_semget:
+  sem=0 sem_max=15`. Measured with a temporary seam trace: 6 posts (T0) / 6
+  takes (T1) on sem 0, every take is `SEMWAIT sem 0 (nonzero)` immediately
+  followed by `SEMGET sem 0`, the `WaitBelowMax` throttle makes no difference,
+  and the unpack cache does not change the failure. So a take reaches `get`
+  with the counter at zero although the static stream pairs everything. The
+  remaining suspects: (a) a take that codegen replays (the `replay_of` mapping
+  covers only marked bodies; an unrolled fallback region is invisible), or
+  (b) ttsim's model of wait/get across concurrent roles with several
+  consumer roles on one semaphore.
+- **Red — `matmul_sigmoid`**: `9 DST register tiles exceed the 8-tile budget`
+  (the allocator's peak; it also hits ttsim's documented
+  `SRCA_SET_SetOvrdWithAddr=1` limitation for mixed CB→DST unpack + matmul).
+- **Red, ignored — `exp2`** in `tests/23_tt_lowering.rs`: the smallest repro
+  of the seam failure (`tensix_semget`), `#[ignore]`d and documented.
+
+**What to do next (in order)**
+
+1. **Fix the seam pairing.** Cheapest lead: give each `(writer, reader)` role
+   pair its own semaphore instead of one `UNPACKED`/`COMPUTED`/`FREE` per
+   direction (8 semaphores, 4 bits each; assign lazily and error past 8). A
+   kernel where T1 and T2 both consume T0's writes is exactly where one
+   semaphore's single consumer assumption breaks. Otherwise reproduce by
+   bisecting the `exp2` kernel: drop the comparisons one at a time (they are
+   the big bodies), or force `LoopPolicy`-style unrolling of the chain, and
+   see whether the `get`-at-zero disappears — that separates (a) from (b).
+2. **`tt_sfpu_fusion`** (the register model is ready). After
+   `tt_dataflow_select`, before `tt_dst_reuse`. Merge a chain's per-row-group
+   bodies (the `Replay` bodies are exactly that unit), delete the intermediate
+   store/next load when the storage's only readers are those loads with the
+   same `fmt`/`at`, and rename registers across the merged body with
+   `tt_sfp_regs`. **Needs block repeats** (`mailbox::loops`, `MAX = 4`): a
+   fused body is ~1 word per IR op, over the 32-word `Replay` buffer, so
+   `TTOp::Replay` has to learn a block-repeat form (codegen collects
+   `Vec<Loop>` per role and the launch uploads through `code::stored(words,
+   loops)`; `TTOp::Math`/`Unpack`/`Pack` carry `{ words, loops }`). Without
+   that, fusion can only merge short pairs and will *not* fix the epoch churn.
+3. **Then delete the arms**: `tt_sfp_sigmoid`, `tt_sfp_sin_cos`, `tt_sfp_pow`,
+   the `Sfpu{kind}` fallback, `tt_sfpu_program`/`tt_row_remap`, and the builder
+   half — after `tt_unfold` covers `Sin`/`Cos` too (it does not yet) and
+   `ops::kind_sfpu` moves to `kern/kind.rs` (unasked design move).
+4. Loose ends: the 10 `unused_mut` warnings from the uniform `|mut ops, o|`
+   closure binding; `tt_fill_const` and the reduce loops are still unrolled;
+   `ZEROACC` scoping for `matmul_add`; `Op::Loop` lowering for `softmax`/`REM`.
+
+**Traps measured this session**
+
+- `Replay`'s `Count` operand is the **body length**, not a repeat count; a
+  record is `REPLAY(index, len, exec=1, load=1)` before the body, and each
+  further iteration is one `REPLAY(index, len, 0, 0)` word (`frontend::record`).
+  The buffer holds 32 words.
+- A word count for a body must count `SfpConst` as two words when
+  `bits & 0xffff != 0` (`load_f32` is two `SFPLOADI`s); `tt_row_words` is that
+  count in both the emitter and `tt_verify`.
+- `verify` refuses a NaN **constant**, and constant folding folds
+  `bitcast(0x7fc00000)` into one. `tt_exp2` propagates the input NaN (the
+  select returns `x`), `tt_log2` makes its NaN with `sqrt` of a negative.
+- A `Replay` body must end with a `Dst` access; codegen patches that access
+  with `AddrMod = 7` (the two-row step), and the setup (`thread_entry`s +
+  `SETRWC` clear) is emitted at the marker, so a seam landing inside the body
+  would be replayed too — `tt_reg_sync` maps member ops to the body bounds.
+- `tt_dataflow_select`'s `rcs` is pre-lowering; `tt_materialize` packs a
+  multi-use *computed* value to a CB, and every consumer then unpacks it (a
+  fresh `UNPACKED` epoch). The unpack cache is per CB storage, sound because
+  the unpack always reads slot 0.
+- `Expand` is a graph-shape op and is rejected post-linearize; scalar
+  constants reach `tt_dataflow_select` as `Op::Const` operands, handled by
+  `TtEmit::SfpuConst` and by the `Select` arm's const-branch fill.
+
+### Earlier handoff (superseded 2026-11-02, first session)
 
 **State at handoff:** HEAD `5a3b1dd3` "add comparison and bit ops". The tree
 adds item 2's structure change, its last reachable kind, two real fixes the new
