@@ -366,10 +366,14 @@ impl Kernel {
     /// as the innermost tile lane.
     ///
     /// This pass recognizes the one template zyx emits today — exactly one
-    /// `Reduce(Add)` fed by exactly one DRAM load and drained by exactly one
+    /// `Reduce` fed by exactly one DRAM load and drained by exactly one
     /// DRAM store — and rewrites both indices to `row * 32 + lane`, so the
-    /// load publishes one tile and the store drains one row. Anything else
-    /// is left untouched (multi-reduce, loops, groups, matmul cubes).
+    /// load publishes one tile and the store drains one row. The rewrite is
+    /// traffic-only: it does not care whether the fold is a sum or a maximum,
+    /// and `tt_dataflow_select`'s pattern table has both, so gating on `Add`
+    /// here would leave every other reduce at the logical pitch and unsuited
+    /// to the movers. Anything else is left untouched (multi-reduce, loops,
+    /// groups, matmul cubes).
     pub fn tt_reindex(&mut self) {
         if !self.device_info().tenstorrent {
             return;
@@ -414,9 +418,11 @@ impl Kernel {
         let root = reduces[0];
         let load = loads[0];
         let store = stores[0];
-        // Reduce(Add) over the DRAM load; the store drains the reduce.
+        // A reduce over the DRAM load; the store drains the reduce. The fold
+        // is not this pass's business — both `Add` and `Max` have a native
+        // pattern downstream, and the traffic rewrite is identical.
         let (x, k) = match &self.ops[root].op {
-            Op::Reduce { x, reduce_axis, rop } if matches!(rop, BOp::Add) => (*x, *reduce_axis),
+            Op::Reduce { x, reduce_axis, rop } if matches!(rop, BOp::Add | BOp::Max) => (*x, *reduce_axis),
             _ => return,
         };
         if x != load {
@@ -545,6 +551,8 @@ impl Kernel {
         let sigmoid_pat = (sx.neg().exp() + Pat::Const).recip().shape([32i64, 32]);
         let sx1 = Pat::bind('x').shape([32i64]);
         let sigmoid_pat1 = (sx1.neg().exp() + Pat::Const).recip().shape([32i64]);
+        // A rank-1 operand: one tile row (see the vector reduce patterns).
+        let vec1 = Pat::bind('t').shape([32i64]);
         let mut pats: Vec<(Pat, TtEmit)> = vec![
             (sigmoid_pat, TtEmit::Sfpu { kind: crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
             (sigmoid_pat1, TtEmit::Sfpu { kind: crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
@@ -554,6 +562,14 @@ impl Kernel {
             (Pat::reduce(tile.clone(), BOp::Max).shape([32i64]), TtEmit::Reduce(TileDim::Row)),
             (Pat::sum(tile.clone()).shape([] as [i64; 0]), TtEmit::Reduce(TileDim::Scalar)),
             (Pat::reduce(tile, BOp::Max).shape([] as [i64; 0]), TtEmit::Reduce(TileDim::Scalar)),
+            // A `[32]` vector occupies one tile **column**: element `i` is
+            // row `i`, column 0 (the tiled layout's rank-1 view — the reader
+            // moves the whole tile and the transfer untilizes by taking
+            // column 0 of each row). So folding it is a reduce over the
+            // tile's rows: `TileDim::Col`. That is the second kernel of a
+            // whole-tensor reduce, whose only axis the loop split consumed.
+            (Pat::sum(vec1.clone()).shape([] as [i64; 0]), TtEmit::Reduce(TileDim::Col)),
+            (Pat::reduce(vec1, BOp::Max).shape([] as [i64; 0]), TtEmit::Reduce(TileDim::Col)),
         ];
         // Generic elementwise table: every UOp/BOp with a native kind.
         // This is data, not per-op lowering code. Silu needs no entry:
@@ -586,7 +602,13 @@ impl Kernel {
             }
             if let Op::Load { src: base, src_idx: off, .. } = self.ops[id].op {
                 if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
-                    if self.shape(id) != vec![32, 32] {
+                    // A `[32, 32]` tile, or a `[32]` vector — one tile row.
+                    // The reader moves a whole tile in both cases (the DRAM
+                    // buffers are page-sized), and row 0 of the unpacked tile
+                    // is the vector, which is what the scalar-reduce kernel's
+                    // second pass reads.
+                    let shape = self.shape(id);
+                    if shape != vec![32, 32] && shape != vec![32] {
                         return;
                     }
                     loads.push((id, base, off));
@@ -731,10 +753,11 @@ impl Kernel {
                     if matches!(self.ops[base].op, Op::Storage { .. }) {
                         // Already lowered; nothing owned here.
                     } else if matches!(self.ops[base].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
-                        // Tiled stores and row stores (a reduce row is 32
-                        // elements); anything else bails the pass.
+                        // Tiled stores, row stores (a reduce row is 32
+                        // elements) and scalar stores (a whole-tile reduce's
+                        // first lane); anything else bails the pass.
                         match self.shape(id).as_slice() {
-                            [32, 32] | [32] | [1024] => stores.push((id, base, off, src)),
+                            [32, 32] | [32] | [1024] | [] => stores.push((id, base, off, src)),
                             _ => return,
                         }
                     } else {
@@ -769,8 +792,9 @@ impl Kernel {
                         break;
                     }
                     if let Op::Load { src: base, .. } = self.ops[scan].op {
+                        let shape = self.shape(scan);
                         if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
-                            && self.shape(scan) == vec![32, 32]
+                            && (shape == vec![32, 32] || shape == vec![32])
                         {
                             return;
                         }
@@ -789,7 +813,7 @@ impl Kernel {
                 };
                 // Single-tile shapes only; anything else bails the pass.
                 match self.shape(*store).as_slice() {
-                    [32, 32] | [32] | [1024] => {}
+                    [32, 32] | [32] | [1024] | [] => {}
                     _ => return,
                 };
                 if self.dtype(*store) != dtype {
@@ -1217,6 +1241,8 @@ impl Kernel {
                     (rop, dim),
                     (BOp::Add, TileDim::Row)
                         | (BOp::Max, TileDim::Row)
+                        | (BOp::Add, TileDim::Col)
+                        | (BOp::Max, TileDim::Col)
                         | (BOp::Add, TileDim::Scalar)
                         | (BOp::Max, TileDim::Scalar)
                 );
@@ -1392,16 +1418,27 @@ impl Kernel {
                             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot: dst, at: o, reg: L0, fmt: INT32 }))));
                         }
                     };
-                    accumulate(&mut ops, input, slot);
-                    finish_cols(&mut ops, slot);
-                    if let Some(scratch) = scratch {
+                    if dim == TileDim::Col {
+                        // Over the tile's rows: an in-order sum, or a copy
+                        // plus the transpose fold for a maximum.
                         if sum {
-                            accumulate_in_order(&mut ops, slot, scratch);
+                            accumulate_in_order(&mut ops, input, slot);
                         } else {
-                            accumulate(&mut ops, slot, scratch);
-                            finish_rows(&mut ops, scratch);
+                            accumulate(&mut ops, input, slot);
+                            finish_rows(&mut ops, slot);
                         }
-                        copy_tile(&mut ops, scratch, slot);
+                    } else {
+                        accumulate(&mut ops, input, slot);
+                        finish_cols(&mut ops, slot);
+                        if let Some(scratch) = scratch {
+                            if sum {
+                                accumulate_in_order(&mut ops, slot, scratch);
+                            } else {
+                                accumulate(&mut ops, slot, scratch);
+                                finish_rows(&mut ops, scratch);
+                            }
+                            copy_tile(&mut ops, scratch, slot);
+                        }
                     }
                     let last = ops.pop().expect("the reduce sequence is never empty");
                     for op in ops {

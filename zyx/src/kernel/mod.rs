@@ -412,7 +412,12 @@ impl Kernel {
                     // lane shape. Implicit broadcast: the value may be
                     // smaller or same rank, never bigger rank into a
                     // smaller-rank access.
-                    if !dst_idx.is_null() {
+                    // The rank rule is about SSA broadcasting, so it does not
+                    // apply to a lowered value: a native (TT) result is a
+                    // whole `Dst` tile whatever the logical rank it stands
+                    // for, and a scalar reduce's store writes that tile's
+                    // first lane into a rank-0 access.
+                    if !dst_idx.is_null() && !matches!(self.ops[x].op, Op::TT(_)) {
                         debug_assert!(dtypes[&x].1.len() <= dtypes[&dst_idx].1.len(), "store value rank exceeds access rank");
                     }
                     dtypes.insert(op_id, dtypes[&x].clone());

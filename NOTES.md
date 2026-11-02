@@ -563,26 +563,52 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   accumulator) then `finish(Sum, Cols)` (four faces lanewise per tile row,
   then the eight lanes' seven `SFPSHFT2` rotations). `tt_dataflow_select`'s
   Reduce arm emits it as row ops.
-- **The other reduce variants are not reachable, so their port is
-  unverified — and gated as such.** The same arm also transcribes
-  `Row + Max`, `Scalar + Add` and `Scalar + Max` (the in-order sum,
-  `finish(Max, Rows)`'s `SFPTRANSP`, the whole-tile copy), and
-  `tests/23_tt_lowering.rs` has `max`, `sum_scalar` and `max_scalar` for
-  them: all three are red at `tt_verify: missing EndReader`, which is the
-  proof that the emitter is never reached (not a wrong number). Like
-  `softmax`, they are bug documents — do not delete them to get green.
-  On the TT path the frontend keeps those reduces as a **lane-space** reduce
-  or a live `Op::Loop`, and
-  `tt_dataflow_select` bails before any pattern runs:
-  `max_keepdim([1])` on `[10, 20]` gives `[32x32x32] load → reduce max over
-  lanes 32` (bails at the `shape != [32, 32]` tile-load check in phase 1),
-  the same on `[100, 64]` and `sum([0, 1])` gives a `Loop` (bails at the top),
-  and `TileDim::Col` has no producer at all (`Kernel::reduce_tile` is
-  `todo!()`). That is the `softmax` class of gap: `devectorize` is **not** in
-  the TT epilogue (`autotune.rs:102-104`), so the lane reduce has to be folded
-  before `tt_dataflow_select` and only the sum case is. Until that happens the
-  Max/Scalar code paths and `ReduceTile` itself are dead, and the port cannot
-  be gated — do not "verify" them by inspection and call it done.
+- **`tt_reindex` is traffic, not algebra (2026-11-02).** It rewrote the
+  single-reduce template's load/store indices to the physical pitch
+  (`row * 32 + lane`) but gated on `rop == Add`, so every `max` reduce stayed
+  at the logical pitch: `[32x32x32] load → reduce max` instead of
+  `[32x32] load → reduce max over the lane axis`. `tt_tile`'s output for
+  `max_keepdim([1])` is **identical to `sum`'s**; the difference was only
+  this gate. Dropping it to `Add | Max` makes the `max` gate green (exact,
+  `0/10`) and exercises the ported `Row + Max` arm. The fold is not this
+  pass's business — the index rewrite is the same for both.
+- **`TileDim` names the result, not the folded axis — read it as "one value
+  per ___".** `Row` = sum up over each of the rows (each row collapses to one
+  value, so the answer is one value per row, carried in the result tile's
+  first **column**); `Col` = the same over each column (one value per column,
+  carried in the first **row**). `tt_reduce_program` agrees: `Row` →
+  `accumulate(op, Axis::Cols)` (Burn's `dim = 1`), `Col` →
+  `accumulate(op, Axis::Rows)`. If a sentence here ever says "`Col` reduces
+  over the rows", it is wrong — that is `Row`.
+- **A `[32]` rank-1 value is a column of values (one per tile row, first
+  column), so folding it is `TileDim::Col` (2026-11-02).** The second kernel
+  of `sum([0, 1])` / `max([0, 1])` reduces a `[10]` vector to a scalar, and
+  after `tt_tile`'s loop split its IR is `r21: f32[32] = load vec32 x[r8];
+  r15: f32 = reduce … over r8; store y[0] = r15` — **no group range at all**
+  (the loop *was* the tensor's only axis), so `tt_tile` has nothing to pad or
+  split and leaves a rank-1 access. The fix is in the lowering, not in
+  `tt_tile`: phase 1 accepts a `[32]` DRAM load (the reader moves a whole
+  tile either way, and the untilizer reads element `i` from row `i`, column
+  0), and the `[32] → []` pattern maps to `TileDim::Col` = one value per
+  column = fold down column 0, the values' column. The wrong choice is quiet
+  rather than loud: `Row` compiles and runs, and since the input tile is a
+  reduce's output (each row's value **replicated across its 32 columns**) it
+  folds 32 copies of *one row's* value — `237.0044 = 32 × 7.406` for the sum,
+  and `0.973` (= row 0's max, not the global `0.996`) for the max. That is
+  exactly how the first attempt failed, and why a green-looking kernel is not
+  evidence here: only the gate's numbers were. Phase 3 accepts a rank-0 store
+  for the same kernel (a whole-tile reduce's first lane), and
+  `compute_dtypes_and_rcs`'s "store value rank exceeds access rank" assert is
+  skipped for a lowered (`Op::TT`) source: a native result is a whole `Dst`
+  tile whatever logical rank it stands for.
+- **`TileDim::Col` is live now; `TileDim::Scalar` still is not.** The two
+  live shapes are `Row` (one value per row of a tile) and `Col` (one value
+  per column — here, a whole `[32]` vector). A whole-tensor reduce never
+  reaches `Scalar`: the graph splits `sum([0,1])` into a `Row` kernel and a
+  `Col` kernel. So the lowering no longer produces `ReduceTile` at all, and
+  `tt_reduce_program`/`reduce.rs`'s builder is dead on that path — deleting
+  it is a separate step (the `Scalar` arm of the port stays transcribed and
+  unexercised).
 - **The scalar reduce's scratch is an IR storage now.** It used to be
   `sec.fresh_slot() * 64` inside codegen, a row outside the declared register
   file that no op named. `SfpLoad`/`SfpStore` have to name a `Storage`, so the
@@ -666,12 +692,12 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | `sigmoid` | green, 0/2560 (worst 1.2e-7) — on the row-op path as of 2026-11-01 (Precise program, `sigmoid_program`) |
 | `sum` | green, 0/10 (worst 9.5e-7) — on the row-op path as of 2026-11-01 (sum over a tile row's columns) |
 | `sum_sigmoid` | green, 0/10 (exact) |
+| `max` | green, 0/10 (exact) — `Row + Max` on the row-op path, as of 2026-11-02 |
 | `add` | green, 0/2560 (exact) — first kind on the row-op path (`SFPMAD` + `LREG_ONE`) |
+| `sum_scalar` | green, err 4.6e-5 — `Col + Add` (rank-1 kernel: one tile column), as of 2026-11-02 |
+| `max_scalar` | green, exact — `Col + Max`, same kernel |
 | `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
 | `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
-| `max` | red for the same reason: the frontend leaves a lane-space reduce / `Op::Loop`, never the `Row + Max` pattern |
-| `sum_scalar` | red: the whole-tile sum leaves an `Op::Loop`; `TileDim::Scalar` is never reached |
-| `max_scalar` | red: as `max` + `sum_scalar` |
 
 CPU `01_unary` (64) and `04_reduce` (15) are green.
 
