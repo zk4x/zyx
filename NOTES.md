@@ -14,6 +14,131 @@
 
 ## CURRENT STATE (2026-11-02) — read this first
 
+### TARGET DESIGN — the register/memory hierarchy and the pass pipeline
+
+**This is the architecture the user wants. It supersedes the "one row loop per op,
+then fuse pairs, then reclaim" shape that the code has today.** The rule it comes
+from: *lowering does the simplest possible thing and allocates nothing; every
+register, tile and buffer decision is a pass.* "Fusion" is not a concept in this
+design — a value that fits in a lane register simply never needs the tile that
+lowering gave it, and the tile allocator drops it.
+
+**The hierarchy (what is actually shared with what):**
+
+```
+LREG   8 general-purpose lane registers      SFPU only (L0..L7; L9 = 0, L10 = 1,
+                                             L8 = 0.8373, L15 = 2*lane are fixed
+                                             and NOT writable: hardware silently
+                                             drops writes outside L0..L7)
+DST    8 tiles (32-bit) / 16 (16-bit)        ONE resource with three clients:
+                                             SFPU operands+results, the Matrix
+                                             Unit's accumulator, the packer's source
+SrcA   2 banks x 1 tile                      Matrix Unit input only, unpacker
+SrcB   2 banks x 1 tile                      writes it, SFPU cannot address it
+L1     circular buffers                      unpacker reads, packer writes
+DRAM
+```
+
+- **The Matrix Unit does not read DST and does not read L1.** `UNPACR` fills
+  `SrcA`/`SrcB` from a CB, `MVMUL` reads them and accumulates into DST, the packer
+  takes DST to a CB (`tenstorrent.rs:2880-2935`).
+- **`SrcA`/`SrcB` are a hand-off pipe, not storage.** A bank is owned by the
+  unpacker or the Matrix Unit; ownership moves only with `UNPACR`'s `FlipSrc` and
+  `MVMUL`/`SETRWC`'s `FlipSrcA/B`, and breaking the lockstep makes the hardware
+  *wait*, not fault (`tt-isa/src/matrix.rs`). So they are never a spill target;
+  the compiler's only obligation is lockstep and, later, double-buffering the two
+  banks.
+- **DST is the shared file** — that is why DST pressure is the real constraint,
+  and why the matmul accumulator pins a tile for the whole matmul.
+- The accumulator is *not* materialised even with several uses: every consumer
+  reads its DST tile in place (`tenstorrent.rs:2920-2935`).
+
+**Spill direction (the user's rule):** `lreg -> DST`, `DST -> L1`. An lreg value
+is **never** pushed down to L1 and reloaded, because coming back costs an
+L1→DST unpack on T0 *plus* a DST→lreg load on T1, i.e. two role crossings and two
+seams for one value. L1 is in the picture only when a value genuinely has to
+survive a role boundary (that is `tt_materialize`'s decision today).
+
+**The pipeline:**
+
+```
+zyx IR
+ 1. lower        one TT op per IR op, FLAT. Virtual lane registers (unbounded),
+                 one virtual DST tile per value. No replay marker, no grouping,
+                 no reuse, no sync. Allocation = none.
+ 2. lreg alloc   liveness over the flat stream, assign L0..L7, coalesce
+                 (no move when the producer's register is free), spill past 8
+                 into a DST tile (SFPSTORE/SFPLOAD inside the row body).
+ 3. dst alloc    the 8 tiles: disjoint live ranges share; spill past 8.
+                 (Today's `tt_dst_reuse`, which already renames logical
+                 `Storage` op ids to physical tiles — the tile side is already
+                 mostly LLVM-shaped; the round-trip reclamation in it is what
+                 "fusion" degenerates to once lregs can stay live.)
+ 4. cb alloc     circular buffers for the cross-role values.
+ 5. loop form    post-RA, so minimal: the flat stream is already row-shaped
+                 (every op is `at: 0`, the DST row counter is implicit). This
+                 pass only picks the cut points -- where one `REPLAY` ends and
+                 the next begins -- and the `AddrMod` on each body's last DST
+                 access. Nothing is hoisted: row-invariant constants are 1-word
+                 `SfpConst` in the body and address math is already outside the
+                 loop. If this pass ever needs to hoist or rediscover a loop,
+                 the passes before it are wrong.
+ 6. sync         semaphores (`tt_reg_sync`, exists).
+```
+
+**Acceptance test (the reason for all of this):** for a pure elementwise kernel
+(`sigmoid`, `elu`, `silu`, `gelu`, …) the emitted T1 program must be, per row,
+**one `SFPLOAD` from the input tile and one `SFPSTORE` to the output tile**, with
+everything else in `L0..L7` — two DST accesses, one tile in and one out. This is
+the user's version of geohot's "`self.elu()` must cost the same as `self.relu()`".
+Measured today: `sigmoid` 51 loads + 36 stores per row, `sin_cos` 44. Red until
+the pipeline above exists.
+
+**Where the code is now (2026-11-02, sixth pass):**
+
+- lowering bakes in **one `Replay` body per IR op** (`tt_row_loop`), physical lane
+  registers, and a physical-ish tile per value; `tt_sfpu_fusion` then re-splices
+  those bodies (`tt_fuse_cone`) — this is the shape that has to go: the grouping
+  belongs to step 5, the registers to step 2.
+- `tt_dst_reuse` = step 3 (plus `tt_reclaim_round_trips`), `tt_reg_sync` = step 6,
+  `tt_new_cb` = step 4.
+- Missing entirely: the two virtual spaces at lowering and the lreg allocator.
+- Register numbering when the virtual space lands: `0..7` physical, `8..15` the
+  hardware's fixed constants (never remapped), `>= 16` virtual until allocation;
+  codegen must assert no virtual survives.
+
+**Step 2 in detail (lreg virtual space + allocator) — the next change, in three
+commit-sized pieces:**
+
+1. **Widen the register-set primitive.** `tt_sfp_regs`/`tt_row_regs` return a
+   `u16` mask over `LReg::index() < 16`; virtuals do not fit. Widen to `u128`
+   (bit `i` = register `i`), and cap virtuals at `127`. A cone that would need
+   more than `127 - 16 = 111` virtuals is *not* formed (shrink, loud), which
+   keeps the mask exact instead of introducing a set type. Mechanical: no
+   behaviour change, gates stay green.
+2. **Fusion emits virtuals.** `tt_fuse_cone` drops its whole register-plan
+   section (the `clobber`/`feasible`/`rename`/`hand` reasoning) and becomes:
+   rename every register a merged unit uses to a fresh virtual
+   (`>= 16`, one block per unit, sparse counter), turn each interior hand-over
+   into `SFPMOV <value vreg> -> <consumer's vreg>` (one word, per row), retire
+   the producer's store, and keep the `SFPENCC` reset, the gap-const rule, the
+   32-bit-format rule and the block-repeat budget. No interference reasoning, no
+   refusal on register pressure -- that is the allocator's job now.
+3. **`tt_lreg_alloc`.** For each `Replay` body: parse def/use per op, build
+   `(def, last_use)` per virtual, sort by def, linear-scan into `L0..L7`
+   (expire intervals whose last use passed, reuse the register), rewrite the
+   body with `tt_row_rename` (sources are `>= 16`, targets `0..7`, so sequential
+   renames cannot chain), drop `SFPMOV x -> x` (adjust `len`), and *spill* when
+   no register is free: create an ordinary `Op::Storage { scope: Register }`
+   (no special kind -- zyx unifies) and emit `SFPSTORE`/`SFPLOAD` around the
+   live range. Registered in `device_epilogue` right after `tt_sfpu_fusion` and
+   before `tt_dst_reuse` (the tile allocator must see the spill tile).
+   Assert loudly on anything left `>= 16` after the pass.
+
+Acceptance for that change: the elementwise gate (1 `SFPLOAD` + 1 `SFPSTORE`
+per row) and all 18 ttsim gates. If a body needs a ninth live value and the
+spill path is not in yet, the pass must fail loudly, never mis-allocate.
+
 ### Start here — session handoff (2026-11-02, fifth pass — end of session)
 
 **Every transcendental is now IR: `tt_unfold` covers `Exp2`, `Log2`, `Sin` and
@@ -53,31 +178,46 @@ green)**. `cargo test --lib` = **78**. No red gates.
    converts and is refused). Result on `sigmoid`: **734 → 21 stores, 67 → 36
    loads, 30 → 21 replay units**; `matmul_sigmoid`'s 9-tile peak is gone (it is
    green).
-8. **`tt_fuse_pair` absorbs a gap of lane constants** and **hands a value over
-   with `mov`** when a rename is unsound:
-   - the gap between the two bodies may hold `SfpConst` ops; they are
-     row-invariant, so they run between `A`'s and `B`'s instructions inside the
-     merged body (`sin_cos`: 20 → 18 units). They must not write `A`'s result
-     register when the hand-over is a `mov`.
-   - **An `SFPENCC` in the gap is a hard barrier.** It is a *scope* (armed until
-     the matching disable), not row state: absorbing it into a loop left it
-     armed across `A`'s next iteration and `log2` came back with `-inf` in one
-     lane. Do not "fix" this by moving the enable before the merged marker
-     either.
-   - when `B` reads the loaded register after writing `A`'s result register (or
-     writes it itself), the rename would move a live value; instead the load
-     becomes `SFPMOV rp <- r`, one word. The old behaviour was to refuse the
-     pair.
-   - a merge may cross the 32-word replay buffer, but **not past `loops::MAX`
-     (4) block repeats** in the role: the count is taken over every `Replay`
-     marker before the merge, minus the two being joined, plus one if the merged
-     body is longer. Without that guard `sigmoid` produced 8 block repeats and
-     the backend refused the program.
-   Fusion does *not* reach a single load/store on `sigmoid` yet (21 units, one
-   store each): the remaining boundaries are `SFPENCC` scopes, CB round trips
-   for values with several readers, and units whose consumer is not the next
-   one in program order.
+8. **`tt_sfpu_fusion` is general cone fusion now** (`tt_fuse_cone` replaced
+   `tt_fuse_pair`). A *cone* is the reader-closure of a start unit: a value is
+   *interior* when exactly one unit in the cone writes it and every read is in
+   a later unit of the same cone, and then it never touches a tile -- the
+   consumer's `SFPLOAD` becomes the `SFPMOV` that hands the lane register over
+   (or a rename, when the value dies in that unit and the body never writes the
+   loaded register). The closure means a multi-reader value is fine: the cone
+   simply grows to include every reader. Nothing here knows what an activation
+   is, which is the point -- `elu`/`silu`/`gelu` are composed at the frontend
+   (`elementwise.rs:190/265`) and this is what has to make them cost the same
+   as `relu`.
 
+   Units after fusion (`cargo` gate, `--nocapture` count): `sin_cos` **1**,
+   `sigmoid` **2**, `log2` **2**, `exp2` **3**, `matmul_sigmoid` **2**. Before
+   the cone: 21, 21, 31, 17, 21. All 18 gates green, `cargo test --lib` = 78.
+
+   The two things that were wrong on the way, both worth not re-learning:
+   - **`SFPENCC` is a predicate reset, not a scope.** `mod1 2 | 8` sets
+     `use_flags` for every lane and sets every `lane_flags[l] = true`
+     (`kern/sfpu/interp.rs:766`). So a body's preamble resets the predicate, and
+     a merged body that interleaves rows must reset again between its parts.
+     The pass now puts one `SFPENCC` at the head of the merged body and keeps
+     each gap's own copy in place. Hoisting the reset out of the body gave
+     `-inf` in one lane of `log2`, and *dropping* it broke `sigmoid`/`exp2`.
+   - **A hand-over is only bit-equal when the store and every load use the same
+     32-bit format** (`INT32` and `FP32` convert on the way through a tile, so a
+     `mov` across a mismatch is not the same value). The cone requires equality.
+     Landing a value in the consumer's own register removes the load entirely
+     (`drop`), not just rewrites it.
+   - a merge may cross the 32-word replay buffer, but **not past `loops::MAX`
+     (4) block repeats**: the count is every long body before the merge, minus
+     the ones joined, plus one if the merged body is longer.
+
+   **Register pressure is the limiter, and it is deliberately conservative.**
+   A live value keeps its register; if the next unit writes that register the
+   cone stops one unit short and is retried, so no value is ever guessed. I did
+   implement a "move the live value to a free register first" variant and it
+   failed every gate that cones deeply (`sigmoid`, `exp2`, `log2`) even with the
+   `SFPENCC` fix in place -- the bug was not found, so it is *not* in the tree.
+   That mechanism is what stands between `sigmoid` at 2 units and 1.
 **This session, in order**
 
 0. **`sin`/`cos` unfolded (last item of the port list).** `tt_unfold` now
@@ -131,12 +271,13 @@ green)**. `cargo test --lib` = **78**. No red gates.
 
 **What is left**
 
-1. `sigmoid`'s fusion still stops at 21 units (one store each, 36 loads). The
-   boundaries left are `SFPENCC` scopes (see trap 8 above), CB round trips for
-   values with several readers, and units whose consumer is not the next unit in
-   program order (`adj=false` pairs with `accesses=1`). Getting to a single
-   load/store needs a multi-reader fusion (keep the value in the register across
-   several bodies), which the current "exactly two accesses" rule forbids.
+1. `sigmoid` is 2 units (goal: 1). What blocks the last step is only register
+   pressure: the live value's register is written by the next unit, and the
+   fix -- move it to a free lane register before that unit -- was implemented
+   and then removed because it failed the deep-cone gates. That is the single
+   next task for fusion; everything else (multi-reader, gaps, formats,
+   `SFPENCC`, block-repeat budget) is in place. `sin_cos` already reaches 1
+   unit, so the mechanism is proven end to end.
 2. `recip`/`div`/`sqrt`/`round` arms are program transcriptions that *could*
    become IR like sin/cos. `sqrt`'s seed is already integer magic
    (`0x5f3759df - (bits >> 1)`); `recip`/`div` need `SFPARECIP` replaced by the

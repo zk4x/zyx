@@ -3288,26 +3288,41 @@ impl Kernel {
     /// body B:  SFPLOAD r0 <- slot S  ...  SFPSTORE r3 -> slot T
     /// ```
     ///
-    /// and `B`'s load reads back exactly what `A`'s store just wrote. This
-    /// pass splices the two bodies into one, dropping the store and the load:
-    /// the value stays in `A`'s result register and `B` reads it there.
+    /// and `B`'s load reads back exactly what `A`'s store just wrote. This pass
+    /// fuses a whole *cone* of such bodies into one and drops every store and
+    /// load that only moved a value between two bodies of the cone.
     ///
-    /// It is exact, not a heuristic, and it touches DST only — a `Pack` or
-    /// `Unpack` in between makes the two sequences live in different roles
-    /// (T2/T0), so they are not adjacent and never fuse. The conditions:
+    /// A value is *interior* to a cone when exactly one unit writes it and every
+    /// read of it is in a later unit of the same cone; the cone is the
+    /// reader-closure of its first unit, so no interior value is read outside
+    /// it. Interior values then live in lane registers, and the consumer's
+    /// `SFPLOAD` becomes the `SFPMOV` that hands the word over. That is what
+    /// makes a composed activation (`elu = relu(x) - alpha*(1-exp(-x)).relu()`)
+    /// cost the same as a hand-written one: one load of the input tile, one
+    /// store of the output tile, no per-op tile and no per-op round trip.
     ///
-    /// - `A`'s body ends in a store and `B`'s begins with a load of the same
-    ///   storage, with the same row group and the same format (the format
-    ///   decides the denormal flush on store, so a mismatch is not bit-equal);
-    /// - that storage is read and written nowhere else in the kernel: two
-    ///   accesses total, the pair being spliced;
-    /// - the value survives `B`'s sequence: `B` never reads the loaded
-    ///   register after it first writes `A`'s result register, and never
-    ///   writes the loaded register itself (so a rename of the loaded register
-    ///   to the result register is a pure read rewrite);
-    /// - the spliced body still fits the 32-word replay buffer. Longer bodies
-    ///   are left alone: `tt_row_loop`'s unrolled form is a different shape,
-    ///   and splicing into it is a separate change.
+    /// It is exact, not a heuristic, and it touches DST only -- a `Copy` in
+    /// between makes the two sequences live in different roles (T2/T0), so they
+    /// are not adjacent and never fuse. Two things bound a cone:
+    ///
+    /// - **registers**. Eight lane registers. A value that must survive into a
+    ///   later unit is *live*, and a unit that writes a live register would
+    ///   destroy it, so the cone stops before that unit and is retried one unit
+    ///   shorter. Shuffling the value into a free register is possible in
+    ///   principle and not modelled yet: a cone never guesses.
+    /// - **the program slot**. A body longer than the 32-word replay buffer
+    ///   becomes a block repeat and the runner's header holds at most
+    ///   `loops::MAX` of them; a fusion that would need one more is refused.
+    ///
+    /// A gap between two bodies may hold only lane constants (row-invariant, so
+    /// they run inside the merged body between its two parts) and the flags'
+    /// enable `SFPENCC`. That one is *not* row state: `SFPENCC` (mod1 `2 | 8`)
+    /// sets `use_flags` and resets every lane flag to true, so a body's
+    /// preamble is a predicate reset, and a merged body that interleaves rows
+    /// must reset again between its parts. It does: one `SFPENCC` leads the
+    /// merged body and every gap's own copy stays where it was. (Hoisting the
+    /// reset out of the body, or dropping it, silently produced `-inf` in one
+    /// lane of `log2`.)
     pub fn tt_sfpu_fusion(&mut self) {
         if !self.device_info().tenstorrent {
             return;
@@ -3337,156 +3352,241 @@ impl Kernel {
                 let mut words = 0u32;
                 let mut j = i + 1;
                 while j < ops.len() && words < u32::from(*len) {
-                    words += tt_row_words(&self.at(ops[j]));
+                    words += tt_row_words(self.at(ops[j]));
                     j += 1;
                 }
                 units.push((i, j));
                 i = j;
             }
-            let mut fused = false;
-            for u in 1..units.len() {
-                let (a_marker, a_end) = units[u - 1];
-                let (b_marker, b_end) = units[u];
-                if self.tt_fuse_pair(&ops, a_marker, a_end, b_marker, b_end) {
-                    fused = true;
-                    break;
-                }
-            }
-            if !fused {
+            if !self.tt_fuse_cone(&ops, &units) {
                 return;
             }
         }
     }
 
-    /// One fusion attempt over the two units `ops[a_marker..a_end]` and
-    /// `ops[b_marker..b_end]`. See [`Kernel::tt_sfpu_fusion`] for the
-    /// conditions; returns whether the bodies were spliced.
-    fn tt_fuse_pair(&mut self, ops: &[OpId], a_marker: usize, a_end: usize, b_marker: usize, b_end: usize) -> bool {
-        let (Some(&store_id), Some(&load_id)) = (ops.get(a_end.wrapping_sub(1)), ops.get(b_marker + 1)) else {
-            return false;
-        };
-        if a_marker + 1 > a_end - 1 || b_marker + 1 > b_end {
-            return false;
-        }
-        let Op::TT(TTOp::SfpStore(store)) = self.at(store_id) else {
-            return false;
-        };
-        let (store_slot, store_at, store_fmt, store_reg) = (store.slot, store.at, store.fmt, store.reg);
-        let Op::TT(TTOp::SfpLoad(load)) = self.at(load_id) else {
-            return false;
-        };
-        let (load_slot, load_at, load_fmt, load_reg) = (load.slot, load.at, load.fmt, load.reg);
-        let (Op::TT(TTOp::Replay { len: a_len, count: a_count }), Op::TT(TTOp::Replay { len: b_len, count: b_count })) =
-            (self.at(ops[a_marker]), self.at(ops[b_marker]))
-        else {
-            return false;
-        };
-        let (a_len, a_count, b_len, b_count) = (*a_len, *a_count, *b_len, *b_count);
-        if store_slot != load_slot || store_fmt != load_fmt || store_at != load_at || a_count != b_count {
+    /// One cone of adjacent row-loop units, fused into one body. See
+    /// [`Kernel::tt_sfpu_fusion`] for the rule; returns whether anything was
+    /// spliced.
+    fn tt_fuse_cone(&mut self, ops: &[OpId], units: &[(usize, usize)]) -> bool {
+        use tt_isa::isa::generated::defs;
+        let n = units.len();
+        if n < 2 {
             return false;
         }
-        // The tile must be private to this pair: no other reader and no other
-        // writer, which also keeps it out of the kernel's outputs.
-        let slot = store_slot;
-        let mut accesses = 0;
-        for &op in ops {
-            match self.at(op) {
-                Op::TT(TTOp::SfpLoad(l)) if l.slot == slot => accesses += 1,
-                Op::TT(TTOp::SfpStore(s)) if s.slot == slot => accesses += 1,
-                _ => {}
-            }
-        }
-        if accesses != 2 {
-            return false;
-        }
-        // `B`'s sequence must leave the value alone: `rp` is only read, and
-        // `A`'s result register is not overwritten before the last read.
-        //
-        // A rename is free but only sound while `rp` holds nothing but the
-        // loaded word: once `B` has written `A`'s result register, or writes
-        // `rp` itself, a `rp -> r` rewrite would move a live value. The pair
-        // is still fusable then -- `rp` remains a valid home for the word --
-        // so the load becomes `mov rp <- r`, one word, and `B`'s body is left
-        // exactly as it was.
-        let (r, rp) = (store_reg, load_reg);
-        let mut rename = r != rp;
-        let mut wrote_r = false;
-        for &op in &ops[b_marker + 2..b_end] {
-            let (reads, writes) = tt_row_regs(&self.at(op));
-            if reads & (1u16 << rp) != 0 && wrote_r {
-                rename = false;
-            }
-            if writes & (1u16 << rp) != 0 && rp != r {
-                rename = false;
-            }
-            if writes & (1u16 << r) != 0 {
-                wrote_r = true;
-            }
-        }
-        // The gap between the two bodies may hold only lane-register constants.
-        // Those are row-invariant, so in the merged body they run between `A`'s
-        // and `B`'s instructions -- one execution per row that writes the same
-        // word. An `SFPENCC` is not row state but a *scope* (it stays enabled
-        // until the matching disable), so moving it inside a loop would leave
-        // it armed across `A`'s next iteration; a `Copy` would move the value
-        // through another role. Either way the pair is left alone.
-        let mut gap_words = 0u32;
-        for &op in &ops[a_end..b_marker] {
-            match self.at(op) {
-                Op::TT(TTOp::SfpConst(_)) => {}
-                _ => return false,
-            }
-            // A hand-over by `mov` copies `A`'s result register after the gap
-            // has run: a gap const that writes it would hand over the wrong
-            // word.
-            if !rename && r != rp && tt_row_regs(self.at(op)).1 & (1u16 << r) != 0 {
-                return false;
-            }
-            gap_words += tt_row_words(self.at(op));
-        }
-        let move_words = u32::from(!rename && r != rp);
-        let merged = u32::from(a_len) + u32::from(b_len) + gap_words + move_words
-            - tt_row_words(self.at(store_id))
-            - tt_row_words(self.at(load_id));
-        if merged == 0 {
-            return false;
-        }
-        // A body past the 32-word replay buffer becomes a block repeat, and the
-        // runner's program header holds at most `loops::MAX` of them: a merge
-        // must not need one more than the kernel already has.
         let buffer = tt_isa::frontend::REPLAY_BUFFER;
-        let mut long = 0usize;
-        for &op in ops {
-            if let Op::TT(TTOp::Replay { len, .. }) = self.at(op) {
-                long += usize::from(u32::from(*len) > buffer);
+        // Per unit: repeat count, the length word, the registers the body
+        // writes, the body's words, and its loads/stores as `(slot, reg, op)`.
+        let mut counts = vec![0u16; n];
+        let mut lens = vec![0u32; n];
+        let mut writes = vec![0u16; n];
+        let mut words = vec![0u32; n];
+        let mut loads: Vec<Vec<(OpId, u8, u8, OpId)>> = vec![Vec::new(); n];
+        let mut stores: Vec<Vec<(OpId, u8, u8, OpId)>> = vec![Vec::new(); n];
+        // Registers written by the gap *before* a unit: those consts end up
+        // inside a merged body, so they clobber like the body does.
+        let mut gap_writes = vec![0u16; n];
+        for u in 0..n {
+            let (m, end) = units[u];
+            let Op::TT(TTOp::Replay { len, count }) = self.at(ops[m]) else {
+                return false;
+            };
+            counts[u] = *count;
+            lens[u] = u32::from(*len);
+            for &op in &ops[m + 1..end] {
+                words[u] += tt_row_words(self.at(op));
+                writes[u] |= tt_row_regs(self.at(op)).1;
+                match self.at(op) {
+                    Op::TT(TTOp::SfpLoad(l)) => loads[u].push((l.slot, l.reg, l.fmt, op)),
+                    Op::TT(TTOp::SfpStore(s)) => stores[u].push((s.slot, s.reg, s.fmt, op)),
+                    _ => {}
+                }
+            }
+            if u > 0 {
+                for &op in &ops[units[u - 1].1..m] {
+                    if matches!(self.at(op), Op::TT(TTOp::SfpConst(_))) {
+                        gap_writes[u] |= tt_row_regs(self.at(op)).1;
+                    }
+                }
             }
         }
-        long -= usize::from(u32::from(a_len) > buffer);
-        long -= usize::from(u32::from(b_len) > buffer);
-        long += usize::from(merged > buffer);
-        if long > tt_isa::mailbox::loops::MAX {
-            return false;
-        }
-        // Splice: rename `B`'s reads of the loaded register to the result
-        // register (or hand the word over with one `mov`), shrink `A`'s
-        // marker, and drop `B`'s marker plus the store/load pair.
-        if rename {
-            for &op in &ops[b_marker + 2..b_end] {
-                tt_row_rename(&mut self.ops[op].op, rp, r);
+        // Who reads and who writes each slot, over the whole kernel.
+        let mut readers: Map<OpId, Vec<usize>> = Map::default();
+        let mut producers: Map<OpId, Vec<usize>> = Map::default();
+        // Every read's format: a hand-over is `SFPMOV` between lane registers,
+        // so it is only bit-equal when the store and every load move the same
+        // 32-bit format (`INT32` and `FP32` convert on the way through a tile).
+        let mut load_fmts: Map<OpId, Vec<u8>> = Map::default();
+        for u in 0..n {
+            for (slot, _, fmt, _) in &loads[u] {
+                readers.entry(*slot).or_default().push(u);
+                load_fmts.entry(*slot).or_default().push(*fmt);
             }
-        } else if r != rp {
-            self.ops[load_id].op = Op::TT(TTOp::Sfp(TTSfpInsn {
-                op: tt_isa::isa::generated::defs::SFPMOV.opcode(),
-                args: [u16::from(r), u16::from(rp), 0, 0, 0],
-            }));
+            for (slot, _, _, _) in &stores[u] {
+                producers.entry(*slot).or_default().push(u);
+            }
         }
-        self.ops[ops[a_marker]].op = Op::TT(TTOp::Replay { len: merged as u16, count: a_count });
-        self.remove_op(ops[b_marker]);
-        self.remove_op(store_id);
-        if rename || r == rp {
-            self.remove_op(load_id);
+        for s in 0..n {
+            // The cone closes over its readers: a value written inside it must
+            // not be read outside it.
+            let mut e = s;
+            loop {
+                let mut next = e;
+                for u in s..=e {
+                    for (slot, _, _, _) in &stores[u] {
+                        if let Some(rs) = readers.get(slot) {
+                            for &r in rs {
+                                next = next.max(r);
+                            }
+                        }
+                    }
+                }
+                if next == e || next >= n {
+                    break;
+                }
+                e = next;
+            }
+            let mut end = e;
+            while end > s {
+                if counts[s..=end].iter().any(|c| *c != counts[s]) {
+                    end -= 1;
+                    continue;
+                }
+                // A gap may hold only lane constants (inside the merged body)
+                // and the flags' enable (hoisted out in front of it).
+                let mut gap_words = 0u32;
+                let mut ok = true;
+                for u in s + 1..=end {
+                    for &g in &ops[units[u - 1].1..units[u].0] {
+                        match self.at(g) {
+                            Op::TT(TTOp::SfpConst(_)) => gap_words += tt_row_words(self.at(g)),
+                            Op::TT(TTOp::Sfp(k)) if k.op == defs::SFPENCC.opcode() => gap_words += 1,
+                            _ => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !ok {
+                        break;
+                    }
+                }
+                if !ok {
+                    end -= 1;
+                    continue;
+                }
+                // Register plan. `live` is every interior value carried in a
+                // lane register: slot, register, and the last unit that reads it.
+                let mut live: Vec<(OpId, u8, usize)> = Vec::new();
+                // Every row of the merged body starts with the flags reset: a
+                // body's own preamble did exactly that once, and interleaving
+                // rows leaves the previous part's lane flags behind.
+                let mut total = gap_words + 1;
+                let mut retire: Vec<OpId> = Vec::new();
+                let mut drop: Vec<OpId> = Vec::new();
+                let mut hand: Vec<(OpId, u8, u8)> = Vec::new();
+                let mut renames: Vec<(usize, u8, u8)> = Vec::new();
+                let mut feasible = true;
+                for u in s..=end {
+                    live.retain(|(_, _, last)| *last >= u);
+                    total += words[u];
+                    // Everything this unit writes, including each load's target
+                    // and the consts of the gap that now precedes it.
+                    let mut clobber = writes[u] | if u > s { gap_writes[u] } else { 0 };
+                    for (_, reg, _, _) in &loads[u] {
+                        clobber |= 1u16 << reg;
+                    }
+                    // A unit that writes a register holding a value the cone
+                    // still needs would destroy it. Shuffling it elsewhere
+                    // costs a `mov` per row and is not modelled here, so the
+                    // cone simply stops before that unit; the value keeps its
+                    // register or it is not an interior value at all.
+                    let live_regs = live.iter().fold(0u16, |m, (_, r, _)| m | 1u16 << r);
+                    if clobber & live_regs != 0 {
+                        feasible = false;
+                        break;
+                    }
+                    // Hand each interior value to this unit, in a register.
+                    for (slot, reg, _, op) in &loads[u] {
+                        let Some(&(_, src, last)) = live.iter().find(|(sl, _, _)| sl == slot) else {
+                            continue;
+                        };
+                        if src == *reg {
+                            // Already in the consumer's register: the load has
+                            // nothing left to do.
+                            drop.push(*op);
+                            total -= 1;
+                            continue;
+                        }
+                        if last == u && writes[u] & (1u16 << reg) == 0 {
+                            renames.push((u, *reg, src));
+                            drop.push(*op);
+                            total -= 1;
+                        } else {
+                            hand.push((*op, src, *reg));
+                        }
+                    }
+                    // Retire stores whose value never leaves the cone.
+                    for (slot, reg, fmt, op) in &stores[u] {
+                        let interior = producers.get(slot).is_some_and(|ps| ps.len() == 1 && ps[0] == u)
+                            && readers.get(slot).is_some_and(|rs| rs.len() == 1 && rs[0] > u && rs[0] <= end)
+                            && load_fmts.get(slot).is_some_and(|fs| fs.iter().all(|f| f == fmt));
+                        if !interior {
+                            continue;
+                        }
+                        let Some(last) = readers.get(slot).and_then(|rs| rs.iter().max()) else {
+                            continue;
+                        };
+                        live.push((*slot, *reg, *last));
+                        retire.push(*op);
+                        total -= 1;
+                    }
+                }
+                if !feasible || total == 0 || total >= 1 << tt_isa::mailbox::loops::LEN_BITS {
+                    end -= 1;
+                    continue;
+                }
+                // One more block repeat than the runner's header holds is a
+                // program it cannot run: shrink instead.
+                let mut projected = lens.iter().filter(|l| **l > buffer).count();
+                for u in s..=end {
+                    if lens[u] > buffer {
+                        projected -= 1;
+                    }
+                }
+                projected += usize::from(total > buffer);
+                if projected > tt_isa::mailbox::loops::MAX {
+                    end -= 1;
+                    continue;
+                }
+                // Apply.
+                let mov = defs::SFPMOV.opcode();
+                let marker = ops[units[s].0];
+                self.insert_before(
+                    ops[units[s].0 + 1],
+                    Op::TT(TTOp::Sfp(TTSfpInsn { op: defs::SFPENCC.opcode(), args: [3, 0, 10, 0, 0] })),
+                );
+                for (u, from, to) in renames {
+                    for &op in &ops[units[u].0 + 1..units[u].1] {
+                        tt_row_rename(&mut self.ops[op].op, from, to);
+                    }
+                }
+                for (load, from, to) in hand {
+                    self.ops[load].op = Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [u16::from(from), u16::from(to), 0, 0, 0] }));
+                }
+                for op in retire {
+                    self.remove_op(op);
+                }
+                for op in drop {
+                    self.remove_op(op);
+                }
+                self.ops[marker].op = Op::TT(TTOp::Replay { len: total as u16, count: counts[s] });
+                for u in s + 1..=end {
+                    self.remove_op(ops[units[u].0]);
+                }
+                return true;
+            }
         }
-        true
+        false
     }
 
     /// Reclaim a materialised value's L1 round trip: `tt_dst_reuse`'s first
