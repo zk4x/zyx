@@ -83,6 +83,96 @@ fn add() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn unary_math() -> Result<(), ZyxError> {
+    // `SQRT`/`RSQRT` (`sqrt_program`), `RECIP` (`Program::recip`), `DIV`
+    // (`scale_large_divisor` + `recip` + `divide`) are each within about a ulp
+    // of the host's correctly rounded result; `FLOOR`/`TRUNC` (`round::body`)
+    // are exact on the raw bits. `rand` is in `[0, 1)` (a safe domain for the
+    // three reciprocals and the quotient); `randn` is signed, so floor/trunc
+    // see both sides and non-integral magnitudes.
+    let x = Tensor::rand([10, 256], DType::F32)?;
+    let y = Tensor::rand([10, 256], DType::F32)?;
+    let n = Tensor::randn([10, 256], DType::F32)?;
+    let xs = x.to(Dev::TT(0))?;
+    let ys = y.to(Dev::TT(0))?;
+    let ns = n.to(Dev::TT(0))?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let yv: Vec<f32> = y.try_into().unwrap();
+    let nv: Vec<f32> = n.try_into().unwrap();
+
+    let sqrt: Vec<f32> = xs.sqrt().to(Dev::C)?.try_into().unwrap();
+    let rsqrt: Vec<f32> = xs.rsqrt().to(Dev::C)?.try_into().unwrap();
+    let recip: Vec<f32> = xs.reciprocal().to(Dev::C)?.try_into().unwrap();
+    let div: Vec<f32> = (&xs / &ys).to(Dev::C)?.try_into().unwrap();
+    let cases: [(&str, &[f32], fn(f32, f32) -> f32); 4] = [
+        ("sqrt", &sqrt, |a, _| a.sqrt()),
+        ("rsqrt", &rsqrt, |a, _| 1.0 / a.sqrt()),
+        ("recip", &recip, |a, _| a.recip()),
+        ("div", &div, |a, b| a / b),
+    ];
+    for (name, got, f) in cases {
+        assert_eq!(got.len(), xv.len(), "{name}");
+        for i in 0..xv.len() {
+            let expected = f(xv[i], yv[i]);
+            let v = got[i];
+            assert_eq!(v.is_nan(), expected.is_nan(), "{name} lane {i}: {v} vs {expected}");
+            if !expected.is_finite() {
+                assert_eq!(v.is_infinite(), expected.is_infinite(), "{name} lane {i}: {v} vs {expected}");
+                assert_eq!(v.to_bits() >> 31, expected.to_bits() >> 31, "{name} lane {i}: sign of {v} vs {expected}");
+                continue;
+            }
+            let err = (v - expected).abs();
+            let tol = 4.0 * f32::EPSILON * expected.abs().max(1.0);
+            assert!(err <= tol, "{name} lane {i}: {v} vs {expected} (err {err}, tol {tol})");
+        }
+    }
+
+    let floor: Vec<f32> = ns.floor().to(Dev::C)?.try_into().unwrap();
+    let trunc: Vec<f32> = ns.trunc().to(Dev::C)?.try_into().unwrap();
+    for (name, got, f) in [("floor", &floor, f32::floor as fn(f32) -> f32), ("trunc", &trunc, f32::trunc)] {
+        assert_eq!(got.len(), nv.len(), "{name}");
+        for i in 0..nv.len() {
+            assert_eq!(got[i].to_bits(), f(nv[i]).to_bits(), "{name} lane {i}: {} vs {}", got[i], f(nv[i]));
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn tiling() -> Result<(), ZyxError> {
+    // The shapes that exercise the forms `tt_tile` must finish (NOTES,
+    // "Tiling: the search explores, `tt_tile` completes"):
+    // - `[32, 32]` is already one tile: one 32-lane unroll over the rows and
+    //   one column *group*, so the one-group pre-split must not run;
+    // - `[64, 64]` vectorizes along the rows: the row group is counted in
+    //   tiles (`32 * g + lane`), the column group in elements, so only the
+    //   latter may be split;
+    // - `[10, 32]`'s row stride is exactly 32, a bare `g * 32` that must not
+    //   be mistaken for a tile-counted group;
+    // - `[128, 128]` is a 4x4-tile grid (the multi-tile case).
+    // `NEG` and `MUL` are exact in F32 (the host rounds `MUL` the same way), so
+    // the gate is bit equality.
+    for (r, c) in [(32i64, 32i64), (64, 64), (10, 32), (128, 128)] {
+        let x = Tensor::rand([r, c], DType::F32)?;
+        let xs = x.to(Dev::TT(0))?;
+
+        let xv: Vec<f32> = x.try_into().unwrap();
+        let neg: Vec<f32> = (-&xs).to(Dev::C)?.try_into().unwrap();
+        let mul: Vec<f32> = (&xs * &xs).to(Dev::C)?.try_into().unwrap();
+        assert_eq!(neg.len(), xv.len(), "[{r}, {c}]");
+        assert_eq!(mul.len(), xv.len(), "[{r}, {c}]");
+        for i in 0..xv.len() {
+            assert_eq!(neg[i].to_bits(), (-xv[i]).to_bits(), "[{r}, {c}] neg lane {i}");
+            assert_eq!(mul[i].to_bits(), (xv[i] * xv[i]).to_bits(), "[{r}, {c}] mul lane {i}");
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
 fn neg_sub_mul() -> Result<(), ZyxError> {
     // Three row ops of one SFPU instruction each: `NEG` is `SFPMOV` with the
     // negate modifier, `SUB` is `SFPMAD` with a negated addend, `MUL` is
