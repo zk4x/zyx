@@ -80,6 +80,11 @@ const INT32: u8 = tt_isa::sfpu::mod0_fmt::INT32 as u8;
 enum TtEmit {
     /// Elementwise SFPU: `arity` 1 or 2 DST inputs, one DST result.
     Sfpu { kind: u32, arity: u8 },
+    /// Elementwise SFPU with one scalar-constant operand: the constant is
+    /// filled into a tile first, then the same arm as [`TtEmit::Sfpu`] runs.
+    /// `tt_unfold`'s coefficients reach the SFPU this way; a later pass can
+    /// fold the fill into the arm's lane-register immediate.
+    SfpuConst { kind: u32 },
     /// Hardware Matrix Unit: CB inputs, DST result.
     Matmul,
     /// Structural tile reduce: DST input, DST result.
@@ -203,6 +208,11 @@ const BOPS: &[BOp] = &[
 /// row without complicating lowering.
 struct TtLowering<'a> {
     pats: &'a [(Pat, TtEmit)],
+    /// The pattern each value matched, and its bindings, decided over the
+    /// tiled IR before anything lowers. Matching cannot be redone later: a
+    /// value's `Op` becomes its last row op when it lowers, and `shape` then
+    /// reads the slot's buffer length, not the tile's.
+    matched: &'a Map<OpId, (usize, Bindings)>,
     prologue: OpId,
     reader_cb_of: &'a Map<OpId, OpId>,
     rcs: &'a Map<OpId, u32>,
@@ -587,6 +597,190 @@ impl Kernel {
         self.verify();
     }
 
+    /// The transcendentals of the Tensix Vector Unit, written in the IR
+    /// instead of as row-op sequences. Runs after `tt_tile` and before
+    /// `tt_dataflow_select`, while the kernel is still ordinary `Op`s, and
+    /// rewrites each leaf transcendental into the arithmetic of its metalium
+    /// program -- one IR op per instruction -- so the native lowering only
+    /// ever sees primitives (`mul`/`add`/`sub`/`div`, the bit ops,
+    /// `Bitcast`/`Cast`, comparisons and `Select`):
+    ///
+    /// - `Exp2`: the `exp_program` reduction (`n = round(x)` by the
+    ///   `1.5 * 2^23` trick, `r = x - n`), its `e^(r ln 2)` polynomial, and
+    ///   the exponent-field assembly. `x^y = exp2(y log2 x)` (`unfold_pows`)
+    ///   turns `Pow` into this pair.
+    /// - `Log2`: the `log_program` reduction (`m` in `[1/sqrt 2, sqrt 2)`, the
+    ///   exponent by `SFPSETEXP`'s bit form), its `2 atanh(s)` series and
+    ///   `e ln 2`, times `log2 e`.
+    ///
+    /// Both carry `exp_program`/`log_program`'s special values (overflow to
+    /// `+0` or `+inf`, `log2` of a zero or denormal `-inf`, of a negative
+    /// `NaN`, a NaN staying one). `Sin`/`Cos` are not unfolded yet.
+    ///
+    /// The IR has no `SFPMAD`, so a Horner step is a multiply and an add; the
+    /// programs' error bounds still hold to within a rounding or two. A scalar
+    /// constant stays an `Op::Const` operand; the native lowering fills it into
+    /// a tile (`TtEmit::SfpuConst`, `tt_fill_const`), and a later pass can fold
+    /// that fill into the consumer's lane-register immediate.
+    pub fn tt_unfold(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        let mut ids: Vec<OpId> = Vec::new();
+        for (id, x) in self.iter_unordered() {
+            if matches!(x, Op::Unary { uop: UOp::Exp2 | UOp::Log2, .. }) {
+                ids.push(id);
+            }
+        }
+        for id in ids {
+            let Op::Unary { x, uop } = self.ops[id].op else {
+                unreachable!("tt_unfold collected a non-`Unary` op");
+            };
+            let out = match uop {
+                UOp::Exp2 => self.tt_exp2(id, x),
+                UOp::Log2 => self.tt_log2(id, x),
+                _ => unreachable!("tt_unfold collected {uop:?}"),
+            };
+            self.remap(id, out);
+        }
+    }
+
+    /// `2^x` by `exp_program`: the reduction and polynomial of `e^r`, the
+    /// exponent assembled into the result's bit pattern. `x < -126` is `+0`
+    /// (a denormal, which the unit's arithmetic flushes), `x >= 128` is
+    /// `+inf`, a NaN stays one.
+    fn tt_exp2(&mut self, at: OpId, x: OpId) -> OpId {
+        let konst = |k: &mut Kernel, v: f32| k.insert_before(at, Op::Const(Constant::new(v)));
+        let bin = |k: &mut Kernel, x: OpId, y: OpId, bop: BOp| k.insert_before(at, Op::Binary { x, y, bop });
+        let sel = |k: &mut Kernel, cond: OpId, if_true: OpId, if_false: OpId| {
+            k.insert_before(at, Op::Select { cond, if_true, if_false })
+        };
+        let magic = konst(self, 12_582_912.0); // 1.5 * 2^23
+        let lo = konst(self, -126.0);
+        let hi = konst(self, 128.0);
+        // Clamp only the reduction's input; the selects below restore the
+        // specials, so the clamped path's value never escapes.
+        let over = bin(self, x, hi, BOp::Cmpgt);
+        let xc = sel(self, over, hi, x);
+        let under = bin(self, xc, lo, BOp::Cmplt);
+        let xc = sel(self, under, lo, xc);
+        // `n = round(xc)` by the magic constant, `r = xc - n` exactly.
+        let t = bin(self, xc, magic, BOp::Add);
+        let nf = bin(self, t, magic, BOp::Sub);
+        let r = bin(self, xc, nf, BOp::Sub);
+        // `2^r = e^(r ln 2)`, `exp_program`'s Horner form.
+        let ln2 = konst(self, std::f32::consts::LN_2);
+        let s = bin(self, r, ln2, BOp::Mul);
+        let mut d = konst(self, 1.0 / 5040.0);
+        for c in [1.0 / 720.0, 1.0 / 120.0, 1.0 / 24.0, 1.0 / 6.0, 0.5] {
+            let cc = konst(self, c);
+            let p = bin(self, d, s, BOp::Mul);
+            d = bin(self, p, cc, BOp::Add);
+        }
+        for _ in 0..2 {
+            let one = konst(self, 1.0);
+            let p = bin(self, d, s, BOp::Mul);
+            d = bin(self, p, one, BOp::Add);
+        }
+        // `bits(d) + (n << 23)`: `SFPEXEXP`/`SFPSETEXP`'s exponent add, in the
+        // IR's own bit form.
+        let bits = self.insert_before(at, Op::Bitcast { x: d, dtype: DType::I32 });
+        let n = self.insert_before(at, Op::Cast { x: nf, dtype: DType::I32 });
+        let c23 = self.insert_before(at, Op::Const(Constant::new(23i32)));
+        let n23 = bin(self, n, c23, BOp::BitShiftLeft);
+        let scale = bin(self, bits, n23, BOp::Add);
+        let base = self.insert_before(at, Op::Bitcast { x: scale, dtype: DType::F32 });
+        // The specials, each its own lanes.
+        let zero = konst(self, 0.0);
+        let small = bin(self, x, lo, BOp::Cmplt);
+        let out = sel(self, small, zero, base);
+        let inf = konst(self, f32::INFINITY);
+        let large = bin(self, x, hi, BOp::Cmpge);
+        let out = sel(self, large, inf, out);
+        // A NaN input stays that NaN (its own payload and sign).
+        let is_nan = bin(self, x, x, BOp::NotEq);
+        sel(self, is_nan, x, out)
+    }
+
+    /// `log2 x` by `log_program`: the exponent and mantissa by the bit form of
+    /// `SFPEXEXP`/`SFPSETEXP`, `ln m = 2 atanh(s)` with `s = f / (2 + f)`, then
+    /// `e ln 2 + ln m`, times `log2 e`. `±0` and a denormal are `-inf`, a
+    /// negative is `NaN`, `+inf` is `+inf`, a NaN stays one.
+    fn tt_log2(&mut self, at: OpId, x: OpId) -> OpId {
+        let konst = |k: &mut Kernel, v: f32| k.insert_before(at, Op::Const(Constant::new(v)));
+        let icons = |k: &mut Kernel, v: i32| k.insert_before(at, Op::Const(Constant::new(v)));
+        let bin = |k: &mut Kernel, x: OpId, y: OpId, bop: BOp| k.insert_before(at, Op::Binary { x, y, bop });
+        let sel = |k: &mut Kernel, cond: OpId, if_true: OpId, if_false: OpId| {
+            k.insert_before(at, Op::Select { cond, if_true, if_false })
+        };
+        let bits = self.insert_before(at, Op::Bitcast { x, dtype: DType::I32 });
+        let signless = icons(self, 0x7fff_ffffu32 as i32);
+        let signless = bin(self, bits, signless, BOp::BitAnd);
+        // `m` in `[1, 2)` with the exponent set to 127.
+        let mask = icons(self, 0x807f_ffffu32 as i32);
+        let mant = bin(self, bits, mask, BOp::BitAnd);
+        let exp127 = icons(self, 0x3f80_0000);
+        let mant = bin(self, mant, exp127, BOp::BitOr);
+        let mant = self.insert_before(at, Op::Bitcast { x: mant, dtype: DType::F32 });
+        // `e = (bits >> 23) - 127`.
+        let c23 = icons(self, 23);
+        let e = bin(self, signless, c23, BOp::BitShiftRight);
+        let c127 = icons(self, 127);
+        let e = bin(self, e, c127, BOp::Sub);
+        // Bring `m` below `sqrt 2`, carrying the halving into `e`.
+        let sqrt2 = konst(self, std::f32::consts::SQRT_2);
+        let big = bin(self, mant, sqrt2, BOp::Cmpgt);
+        let half = konst(self, 0.5);
+        let halved = bin(self, mant, half, BOp::Mul);
+        let m = sel(self, big, halved, mant);
+        let one_i = icons(self, 1);
+        let e1 = bin(self, e, one_i, BOp::Add);
+        let e = sel(self, big, e1, e);
+        // `s = f / (2 + f)`, `f = m - 1`.
+        let one = konst(self, 1.0);
+        let two = konst(self, 2.0);
+        let f = bin(self, m, one, BOp::Sub);
+        let den = bin(self, f, two, BOp::Add);
+        let s = bin(self, f, den, BOp::Div);
+        // `ln m = 2(s + s*(s^2*(1/3 ...)))`.
+        let s2 = bin(self, s, s, BOp::Mul);
+        let mut ser = konst(self, 1.0 / 9.0);
+        for c in [1.0 / 7.0, 1.0 / 5.0, 1.0 / 3.0] {
+            let cc = konst(self, c);
+            let p = bin(self, ser, s2, BOp::Mul);
+            ser = bin(self, p, cc, BOp::Add);
+        }
+        let t1 = bin(self, s2, ser, BOp::Mul);
+        let t2 = bin(self, s, t1, BOp::Mul);
+        let t3 = bin(self, t2, s, BOp::Add);
+        let lnm = bin(self, t3, t3, BOp::Add);
+        // `e ln 2 + ln m`.
+        let ef = self.insert_before(at, Op::Cast { x: e, dtype: DType::F32 });
+        let ln2 = konst(self, std::f32::consts::LN_2);
+        let eln2 = bin(self, ef, ln2, BOp::Mul);
+        let ln = bin(self, lnm, eln2, BOp::Add);
+        let log2e = konst(self, std::f32::consts::LOG2_E);
+        let mut out = bin(self, ln, log2e, BOp::Mul);
+        // The specials, in `log_program`'s order.
+        let absx = self.insert_before(at, Op::Unary { x, uop: UOp::Abs });
+        let min_normal = konst(self, f32::from_bits(0x0080_0000));
+        let tiny = bin(self, absx, min_normal, BOp::Cmplt);
+        let neg_inf = konst(self, f32::NEG_INFINITY);
+        out = sel(self, tiny, neg_inf, out);
+        let zero = konst(self, 0.0);
+        let neg = bin(self, x, zero, BOp::Cmplt);
+        // No NaN constant (`verify` refuses one, and constant folding would
+        // make one of a bitcast): `sqrt` of a negative is the NaN.
+        let nan = self.insert_before(at, Op::Unary { x, uop: UOp::Sqrt });
+        out = sel(self, neg, nan, out);
+        let inf = konst(self, f32::INFINITY);
+        let is_inf = bin(self, x, inf, BOp::Eq);
+        out = sel(self, is_inf, inf, out);
+        // A NaN input stays that NaN (its own payload and sign).
+        let is_nan = bin(self, x, x, BOp::NotEq);
+        sel(self, is_nan, x, out)
+    }
+
     pub fn tt_dataflow_select(&mut self) {
         if !self.device_info().tenstorrent {
             return;
@@ -669,6 +863,15 @@ impl Kernel {
             let p2 = Pat::binary(bop, Pat::bind('x').shape([32i64, 32]), Pat::bind('y').shape([32i64, 32])).shape([32i64, 32]);
             let p1 = Pat::binary(bop, Pat::bind('x').shape([32i64]), Pat::bind('y').shape([32i64])).shape([32i64]);
             pats.push((Pat::Any(Box::new([p2, p1])), TtEmit::Sfpu { kind, arity: 2 }));
+            // A scalar-constant operand (`tt_unfold`'s coefficients): only the
+            // other side's shape is pinned; the emitter tells the sides apart
+            // by which operand is a `Const`.
+            let right2 = Pat::binary(bop, Pat::bind('x').shape([32i64, 32]), Pat::Const);
+            let left2 = Pat::binary(bop, Pat::Const, Pat::bind('x').shape([32i64, 32]));
+            pats.push((Pat::Any(Box::new([right2, left2])), TtEmit::SfpuConst { kind }));
+            let right1 = Pat::binary(bop, Pat::bind('x').shape([32i64]), Pat::Const);
+            let left1 = Pat::binary(bop, Pat::Const, Pat::bind('x').shape([32i64]));
+            pats.push((Pat::Any(Box::new([right1, left1])), TtEmit::SfpuConst { kind }));
         }
         // Phase 1 — reader publishes: every tile `Load` over a DRAM
         // param gets a `TTOp::Copy` publishing the tile to the param's
@@ -771,8 +974,31 @@ impl Kernel {
         // first unpack is redundant with the producer's DST row on purpose:
         // a later pass can coalesce it, keeping lowering simple.
         let (_, rcs) = self.compute_dtypes_and_rcs();
+        // Every pattern decision is taken here, before anything lowers, and
+        // recorded with its bindings: matching again later would read the
+        // buffer length of an already-lowered operand as its shape.
+        let mut matched: Map<OpId, (usize, Bindings)> = Map::default();
+        let mut scan = self.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            if matches!(
+                self.ops[scan].op,
+                Op::Unary { .. } | Op::Binary { .. } | Op::Reduce { .. } | Op::Select { .. } | Op::Bitcast { .. } | Op::Cast { .. }
+            ) {
+                for (i, (pat, _)) in pats.iter().enumerate() {
+                    if let Some(m) = self.match_pat(scan, pat) {
+                        matched.insert(scan, (i, m));
+                        break;
+                    }
+                }
+            }
+            scan = self.next_op(scan);
+        }
         let mut lower = TtLowering {
             pats: &pats,
+            matched: &matched,
             prologue,
             reader_cb_of: &reader_cb_of,
             rcs: &rcs,
@@ -971,6 +1197,28 @@ impl Kernel {
         }
     }
 
+    /// A scalar constant as a DST tile: one lane-register immediate, stored to
+    /// every row group, inserted before `consumer`. A scalar operand of an
+    /// elementwise op has no tile of its own in the IR (`tt_unfold`'s
+    /// coefficients), so this is where it gets one.
+    fn tt_fill_const(&mut self, konst: OpId, consumer: OpId, prologue: OpId) -> Option<(DType, OpId)> {
+        let Op::Const(c) = self.ops[konst].op else {
+            return None;
+        };
+        let (bits, fmt) = match c {
+            Constant::F32(b) => (u32::from_le_bytes(b), FP32),
+            Constant::I32(v) => (v as u32, INT32),
+            other => todo!("a fill of a {other:?} constant has no native form"),
+        };
+        let dtype = c.dtype();
+        let slot = self.tt_new_dst(dtype, prologue);
+        self.insert_before(consumer, Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L0, bits }))));
+        for o in (0..64u16).step_by(2) {
+            self.insert_before(consumer, Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L0, fmt }))));
+        }
+        Some((dtype, slot))
+    }
+
     /// Fresh Circular CB, inserted in the prologue. Used for multi-use
     /// values and for writer packs.
     fn tt_new_cb(&mut self, dtype: DType, prologue: OpId) -> OpId {
@@ -1029,8 +1277,18 @@ impl Kernel {
             }
             Op::Select { cond, if_true, if_false } => {
                 let (_, c) = self.tt_resolve_dst(cond, id, lower)?;
-                let (dtype, t) = self.tt_resolve_dst(if_true, id, lower)?;
-                let (_, f) = self.tt_resolve_dst(if_false, id, lower)?;
+                // A branch may be a scalar constant (`tt_unfold`'s specials):
+                // it has no storage, so it is filled into a tile here.
+                let (dtype, t) = if matches!(self.ops[if_true].op, Op::Const(_)) {
+                    self.tt_fill_const(if_true, id, lower.prologue)?
+                } else {
+                    self.tt_resolve_dst(if_true, id, lower)?
+                };
+                let (_, f) = if matches!(self.ops[if_false].op, Op::Const(_)) {
+                    self.tt_fill_const(if_false, id, lower.prologue)?
+                } else {
+                    self.tt_resolve_dst(if_false, id, lower)?
+                };
                 let slot = self.tt_new_dst(dtype, lower.prologue);
                 let mut ops = self.tt_sfp_select(c, t, f, slot);
                 let last = ops.pop().expect("the sequence is never empty");
@@ -1041,6 +1299,15 @@ impl Kernel {
                 return self.tt_materialize(id, dtype, slot, lower);
             }
             _ => {}
+        }
+        // The decision recorded before lowering, then (for an emitter that
+        // turned out not to apply) the rest of the table.
+        let recorded = lower.matched.get(&id).map(|(i, m)| (*i, m.clone()));
+        if let Some((i, m)) = recorded {
+            let emit = lower.pats[i].1;
+            if let Some(v) = self.tt_emit(id, emit, &m, lower) {
+                return Some(v);
+            }
         }
         for i in 0..lower.pats.len() {
             let Some(m) = self.match_pat(id, &lower.pats[i].0) else {
@@ -2715,6 +2982,20 @@ impl Kernel {
                     OpId::NULL
                 };
                 let slot = self.tt_new_dst(dtype, lower.prologue);
+                if !self.tt_sfp_sequence(id, kind, a, b, slot) {
+                    self.ops[id].op = Op::TT(TTOp::Sfpu { kind, a, b, slot });
+                }
+                self.tt_materialize(id, dtype, slot, lower)
+            }
+            TtEmit::SfpuConst { kind } => {
+                let Op::Binary { x, y, .. } = self.ops[id].op else {
+                    return None;
+                };
+                let (tile, konst) = if matches!(self.ops[x].op, Op::Const(_)) { (y, x) } else { (x, y) };
+                let (dtype, a) = self.tt_resolve_dst(tile, id, lower)?;
+                let (_, kb) = self.tt_fill_const(konst, id, lower.prologue)?;
+                let slot = self.tt_new_dst(dtype, lower.prologue);
+                let (a, b) = if tile == x { (a, kb) } else { (kb, a) };
                 if !self.tt_sfp_sequence(id, kind, a, b, slot) {
                     self.ops[id].op = Op::TT(TTOp::Sfpu { kind, a, b, slot });
                 }

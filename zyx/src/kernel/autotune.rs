@@ -105,6 +105,10 @@ impl Kernel {
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
             self.tt_tile();
+            // The transcendentals are IR from here on: `Exp2`/`Log2` (and the
+            // `Pow` that `unfold_pows` left as that pair) become ordinary ops,
+            // so the native lowering only sees primitives.
+            self.tt_unfold();
             // Logical indices -> physical tile traffic: a single-tile
             // reduce loads a rank-3 cube and stores at the logical pitch;
             // the NOC moves tiles.
