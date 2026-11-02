@@ -14,6 +14,104 @@
 
 ## CURRENT STATE (2026-11-02) — read this first
 
+### Start here — session handoff (2026-11-02, end of session)
+
+**State at handoff:** HEAD `9db02ac1` "fused matmul sigmoid on tt" contains
+everything in this handoff block. If `git status` is not clean, the only
+difference should be this NOTES section itself. It contains:
+- **`tt_reg_sync`** (see the SFPU-emission section): the only pass that emits
+  `Semset`/`Wait`/`Post`, after `tt_dst_reuse`; the matmul's hand-spelled
+  `ready`/`free` is gone; **`matmul_sigmoid` is green**.
+- The **`Dst` row-counter restore** at the end of the matmul arm (a fused
+  SFPU op after a matmul is otherwise shifted by a whole tile).
+- `Kernel::dtype` walks `Setrwc` to its `dst`; `kern/sfpu/reduce.rs` deleted;
+  the codegen pack branch `continue`s; a role-1 `Post` drains Matrix *and*
+  SFPU; a matmul result is never materialized.
+- The **reuse (`FREE`) seam is a `todo!()`**, not emitted code (no gate writes
+  a DST tile twice); `TT_SEM_FREE` is the reserved index.
+- `codegen::tenstorrent::tests::setrwc_names_the_accumulator_in_dst_halves`:
+  a lib test that renders a one-op kernel and pins `SETRWC.DstVal == 2` for a
+  `Register` storage at allocation index 1, and asserts `dst_val(64)` is an
+  encoding error. `SETRWC.DstVal` is **four bits of 32-row halves**, so
+  `row / 32` is correct — a row does not fit the field. (The earlier "ten bits
+  of rows" note confused the counter `RWC.Dst` with the field.)
+- `matmul_add` gate (two matmuls, so the second accumulator is off tile 0):
+  **red**, and not on `SETRWC` — see below.
+
+Where the reasoning lives: the seam design and the `Dst` counter story are in
+"SFPU emission: the shape of the port"; the pass order is in "Pipeline and
+pass names" and "Implementation order (agreed)". Read those two before
+touching `tt_reg_sync` or the matmul arm.
+
+**Green on ttsim, one test at a time** (the file cascades failures; shared RT):
+`add`, `transfer_roundtrip`, `matmul`, `sigmoid`, `sum`, `sum_sigmoid`,
+`max`, `sum_scalar`, `max_scalar`, `sum_all`, `matmul_sigmoid`;
+`cargo test --lib` = 70.
+
+```
+cd zyx && TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
+  AGENT=1 cargo test --test 23_tt_lowering <name> -- --exact --nocapture
+```
+
+**Red on purpose:**
+- `softmax` — `Op::Loop` bails `tt_dataflow_select` (`missing EndReader`).
+  Item 4.
+- `matmul_add` — two matmuls in one kernel; the second `ZEROACC` is
+  `CLR_ALL`, which would wipe the first accumulator, and codegen refuses it
+  loudly (`CLR_ALL after 64 compute op(s) would destroy live DST rows`). It
+  is the gate that will exercise `SETRWC`'s base *once the clear is scoped to
+  the accumulator's rows*.
+
+**Pick up here:**
+1. Confirm the tree before starting (`cargo build`, the eleven gates,
+   `cargo test --lib`); the user writes commit messages, so commit only when
+   asked.
+2. **Item 2 — finish the SFPU port**: the remaining kinds (`FLOOR`/`TRUNC`,
+   the comparisons, the integers, `EXP`/`LOG`/`RECIP`/`TANH`/`ERF`/`GELU`,
+   trig). None is gated, so each is transcribed from the builder's `Program`
+   body and checked against the builder's words first. Then
+   `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` and `kern/sfpu`'s
+   `Program`/`Code`/`LoopForm` half die.
+3. **Item 4 — loop lowering for `softmax`** (`REPLAY` for bodies that fit its
+   32-word buffer, `mailbox::loops` for longer; a `Param` trip count is a TT
+   compile error).
+
+**Unimplemented / next blockers, in the order they bite:**
+- **`SETRWC`'s restore** after a matmul is exact only while the accumulator is
+  tile 0 (it sets the counter to the accumulator's base, which is 0 there). A
+  nonzero accumulator needs an IR way to say `RWC.Dst = 0`; `Setrwc`'s operand
+  is a storage. Nothing can move the accumulator off tile 0 today, so this is
+  latent, not a live bug.
+- **Two matmuls in one kernel** need a `ZEROACC` scoped to the accumulator's
+  rows (`CLR_ALL` is the only mode emitted). This is the "matmul tile state"
+  item that item 5 also lists.
+- **Mixed `CB → DST` unpack plus matmul in one kernel**: ttsim refuses with
+  `tensix_unpacr: unpack_to_dst: SRCA_SET_SetOvrdWithAddr=1` — the DST
+  unpack's config does not clear the Src override the matmul's `Unpacr` set.
+  Found by `w + matmul(x, y)`; not on any gate.
+- **ttsim's matmul only runs with the accumulator at tile 0** (it refuses
+  `MVMUL dst_row` past ~64). Silicon is unmeasured for a nonzero accumulator.
+- Item 3 leftovers and `tt_tile`'s multi-tile index math are still open
+  (see item 3 and item 5).
+
+**Traps measured this session — do not re-derive:**
+- An `SFPLOAD`/`SFPSTORE` address is `Imm10 + RWC.Dst` (`kern/sfpu/interp.rs`
+  models it). `MVMUL`'s address modifiers advance that counter, so a row op
+  fused after a matmul lands a whole tile too far unless it is restored. The
+  measured symptom: the pack read zeros at rows 64..127 and the sigmoid's
+  output was at 128..191.
+- The runtime's DST dump covers **rows 0..15 only** (`mailbox::DUMP_MAX_ROWS`
+  = 16). To see a later tile, read the writer CB out of L1 at the end of
+  `execute` (`run.writes[..].1` is its L1 address; `dev.read32` per word), or
+  set a pack's `DEST_TARGET_REG_CFG_PACK_SEC0_Offset` by hand. Both were
+  temporary and are reverted; nothing in the tree dumps DST.
+- `ZYX_DEBUG=8` prints the optimized IR once per compiled winner; the
+  no-search path additionally runs a `dead_code_elimination` after
+  `device_epilogue`, so "the IR I printed" and "the IR codegen sees" can
+  differ there.
+- The codegen pack branch ends in `continue`, not `return Ok(())`: a pack is
+  one op, not the section's end (two packs are now possible).
+
 ### 0. Memory model (the card, not the host)
 
 - **Host** = CPU DDR5.
@@ -358,10 +456,10 @@ and issues; and the `Kernel` does not survive compilation beyond debugging.
 
 ```
 tt_tile -> tt_reindex -> CSE/DCE -> tt_dataflow_select -> tt_dst_reuse
-        -> verify -> tt_verify
+        -> tt_reg_sync -> verify -> tt_verify
 ```
 
-Three stages, and the middle one is what the TTOp form exists for:
+Four stages, and the middle one is what the TTOp form exists for:
 
 1. **`tt_dataflow_select`** lowers the tiled SSA into the TT opset and performs
    the *primitive* allocation that representation cannot avoid: every result
@@ -372,7 +470,12 @@ Three stages, and the middle one is what the TTOp form exists for:
    (coalescing, in-place merging, store/load forwarding, dead-tile removal) and
    is where the simple post-regalloc optimizations live — ordering, peepholes,
    later L1 spills. It only rewrites *which* tile an op names.
-3. **Codegen** converts that post-regalloc IR into bytecode, the `u32` words;
+3. **`tt_reg_sync`** derives the role hand-off over the final physical tiles
+   (unpacker / math / packer) and is the only pass that emits
+   `Semset`/`Wait`/`Post`. It runs after the allocator because coalescing
+   changes which edge exists at all, and before codegen because those are
+   instructions, not an encoding detail.
+4. **Codegen** converts that post-regalloc IR into bytecode, the `u32` words;
    the `TTOp` variants do not survive it.
 
 So the TTOp set is not a machine-independent abstraction: it is **whatever the
@@ -642,15 +745,78 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   builder's `push` does this implicitly; a straight transcription of
   `finish()` drops six NOPs per group without changing the names, so compare
   words or the gate will only show it on other data.
+- **`tt_reg_sync` owns the DST hand-off (2026-11-02).** A new pass between
+  `tt_dst_reuse` and `verify`, and the only place that emits
+  `Semset`/`Wait`/`Post` for tile registers. It walks the final physical tiles
+  and derives, per tile, one *epoch* per write, then emits only the seams that
+  exist: a **data** seam when a reader in another role follows a writer
+  (writer posts after its last write, reader takes before its first read:
+  `UNPACKED` for T0's writes, `COMPUTED` for T1's). A **reuse** seam (reader
+  posts `FREE`, next writer takes) is a `todo!()` until a kernel writes a tile
+  twice — see below. The semaphores are fixed (0/1/2), not per tile: each
+  role's stream is in order, so posts and takes pair FIFO. Initial values are
+  zero — a producer always posts before any take of its seam. `tt_verify` now
+  rejects a wait/post whose semaphore has no `Semset`.
+  - The matmul's hand-spelled `ready`/`free` protocol is **gone**: the pass
+    derives the accumulator's edge from the `MVMUL`s themselves (the lowerer
+    no longer carries `TtLowering.matmul`, and phase 3's pack is a plain
+    move). `SETRWC` names the accumulator, every `MVMUL` after it writes that
+    tile, and `SFPSTORE`/`SFPU` write their slot.
+  - A `Post` from role 1 drains **both** Matrix and SFPU: a role names the
+    stream, not the unit, and T1 owns both. (`tt_isa::sync::post_after` takes
+    one `Unit`; codegen emits the two `STALLWAIT`s itself for role 1.)
+  - Why it matters at all: a kernel with any `Semset` runs
+    `Schedule::Concurrent`, i.e. all three roles start together; without a
+    seam, T2 packs a tile T1 is still writing. Kernels with no seam stay
+    `InOrder`.
+- **The Matrix Unit leaves the thread's `Dst` row counter advanced.** An
+  `SFPLOAD`/`SFPSTORE` address is `Imm10 + RWC.Dst`
+  (`kern/sfpu/interp.rs` models it that way), the `MVMUL` address modifiers
+  advance it, and the row-op path writes *absolute* rows (`dst_row(slot) +
+  at`). So in a fused kernel every SFPU op after a matmul was shifted by one
+  whole tile (measured: the pack read zeros at 64, the sigmoid was at 128).
+  The matmul arm now ends with a `Setrwc { dst: slot }` to restore the counter;
+  that is exact because the accumulator is slot 0 (`dst_val = row / 32` = 0),
+  and a nonzero accumulator would need a true zero, which the IR cannot
+  express yet (`Setrwc`'s operand is a storage).
+- **`SETRWC`'s `DstVal` is four bits** (bit 14, 0..15), so one unit is a
+  32-row half-tile: `row / 32`, not `row` (a row of 64 does not encode at
+  all). The suspicion that `Dst` is ten bits of rows confused the *counter*
+  (`RWC.Dst` is) with the *field*. Pinned by
+  `codegen::tenstorrent::tests::setrwc_names_the_accumulator_in_dst_halves`,
+  which renders a one-op kernel with a `Register` storage at index 1 and
+  asserts the emitted `SETRWC` word's `DstVal == 2`; it also asserts that
+  `dst_val(64)` is an encoding error. The remaining open item is the
+  **restore**, not the base: with the accumulator *not* at tile 0 there is no
+  way to say `RWC.Dst = 0`.
+- **The reuse seam is a `todo!()`, not dead code** (2026-11-02). No gate writes
+  a DST tile twice, so emitting `FREE` would be unexercised; `tt_reg_sync`
+  panics with `todo!("... FREE reuse seam is not implemented")` when it needs
+  one. The reserved index is still 2.
+- **Two matmuls in one kernel do not lower yet**: the second `ZEROACC CLR_ALL`
+  would wipe the first accumulator, and codegen refuses loudly. `matmul_add`
+  (two matmuls, so the second accumulator is off tile 0) documents it; it is
+  the `SETRWC`-base gate once the clear is scoped to the accumulator's rows.
+- **A pack is not the end of the compute section.** codegen's
+  `(None, Some(dcb), false)` pack branch ended in `return Ok(())`, which was
+  invisible while a pack was the section's last op. With two packs (an
+  accumulator output and a fused SFPU output) it silently dropped the second
+  one — the compiled T2 program was half its IR. Now `continue`.
+- **A matmul result is not materialized, even with several uses.** The pack
+  `tt_materialize` emitted landed right after `SETRWC`, i.e. *before* the
+  Matrix Unit ran, and its unpack would have been T0 reading a T2 pack with no
+  seam. Every consumer now reads the accumulator's DST tile in place; the
+  pass's `COMPUTED` seam orders the packs.
+- **`Kernel::dtype` walks `Setrwc` to its `dst`** instead of returning
+  `IDX_T`. That was the `matmul_sigmoid` `tt_verify` failure (the SFPU's DST
+  slot was declared I64).
 - **Next** (matching "Implementation order"): **item 2 — finish the port.**
-  (a) delete `kern/sfpu/reduce.rs` (orphaned, see above); (b) the remaining
-  kinds — `FLOOR`/`TRUNC` (`round::body`), the comparisons, the integers, then
-  `EXP`/`LOG`/`RECIP`/`TANH`/`ERF`/`GELU`/trig — each transcribed from its
-  `Program` body and checked against the builder's words first (23 kinds still
-  reach `program_for`); then `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap`
-  die with the `kern/sfpu` builder half. **Item 5's `Setrwc` dtype fix is the
-  one gated thing available meanwhile** (`matmul_sigmoid`), and **item 4
-  (loops → `softmax`)** is the next real feature. Matmul needs
+  The remaining kinds — `FLOOR`/`TRUNC` (`round::body`), the comparisons, the
+  integers, then `EXP`/`LOG`/`RECIP`/`TANH`/`ERF`/`GELU`/trig — each
+  transcribed from its `Program` body and checked against the builder's words
+  first (23 kinds still reach `program_for`); then `Sfpu { kind }`/
+  `tt_sfpu_program`/`tt_row_remap` die with the `kern/sfpu` builder half.
+  **Item 4 (loops → `softmax`)** is the next real feature. Matmul needs
   nothing: it is already instruction-level ops
   (`Unpacr`/`Setadczw`/`Setrwc`/`Zeroacc`/`Mvmul`/`Setc16`/`Setcfg`), and
   `kern::matmul` only supplies constants.
@@ -714,8 +880,9 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | `sum_scalar` | green, err 4.6e-5 — `Col + Add` (rank-1 kernel: one tile column), as of 2026-11-02 |
 | `max_scalar` | green, exact — `Col + Max`, same kernel |
 | `sum_all` | green, err 4.6e-5 (bit-identical to `sum_scalar`) — the no-arg `sum_all()` is the same `Row` then `Col` chain |
-| `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
+| `matmul_sigmoid` | green, 0/120 (worst 1.2e-4) — matmul + SFPU in one stream, as of 2026-11-02 (needed `tt_reg_sync` and the `Dst` counter restore) |
 | `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
+| `matmul_add` | red: a second matmul's `ZEROACC CLR_ALL` would wipe the first accumulator (`CLR_ALL after 64 compute op(s)`); the `SETRWC`-base gate once the clear is scoped |
 
 CPU `01_unary` (64) and `04_reduce` (15) are green.
 
@@ -798,8 +965,10 @@ Since the 2026-10-30 handoff:
      NOP-after-MAD rule.
    - The **reduce** moved off the builder entirely and `TTOp::ReduceTile`
      is deleted (`tt_reduce_program`, `tt_dst_copy` and its unit test with
-     it). `kern/sfpu/reduce.rs` is now orphaned — **delete that file next**;
-     it must not be read as the source of truth.
+     it). `kern/sfpu/reduce.rs` is deleted too (2026-11-02, with its
+     `pub mod reduce;` line); the emitter in this file is the truth.
+   - **`tt_reg_sync`** exists (see the SFPU-emission section) and the
+     matmul's hand-spelled `ready`/`free` is gone; `matmul_sigmoid` is green.
    - *Still to come in this item:* the ~23 kinds still reaching `program_for`
      (`FLOOR`/`TRUNC`, the comparisons, the integers, `EXP`/`LOG`/`RECIP`/
      `TANH`/`ERF`/`GELU`, trig), then `Sfpu { kind }`/`TtEmit::Sfpu`,
@@ -861,14 +1030,12 @@ Since the 2026-10-30 handoff:
    `mailbox::loops` header only for longer ones) for `softmax`; multi-tile per
    core. A trip count that does not fold to `Const` is a TT compile error (§2).
 5. **Fixes** (the no-gate-needed list):
-   - **`Setrwc` dtype** — `Kernel::dtype` returns `IDX_T` for it
-     (`kernel/mod.rs:712`) while `compute_dtypes_and_rcs` already gives it
-     `dst`'s dtype, so `tt_lowered_storage`/`tt_lower_value`
-     (`kernel/tenstorrent.rs:921`, `:1659`) hand the consumer `I64` and its
-     DST slot is declared `I64` → `tt_verify: DST register … is I64`. Fix:
-     the accumulator storage's dtype. That is the whole `matmul_sigmoid` red,
-     and it is the first thing to take after this item (it is gated, and the
-     kernel is a matmul plus an SFPU chain in one program).
+   - ~~**`Setrwc` dtype**~~ — **done 2026-11-02**: `Kernel::dtype` walks to
+     `dst` instead of returning `IDX_T`. That cleared the `matmul_sigmoid`
+     verify failure; the kernel then exposed the three bugs recorded under
+     "SFPU emission" (the misplaced materialize pack, the pack branch's early
+     `return`, and the Matrix Unit's leftover `Dst` row counter), and it is
+     green now.
    - ~~the reduce kind keyed on `reduce_axis`~~ — **superseded 2026-11-02**:
      the patterns key on shape, and `Row`/`Col` cover both live cases.
    - **`tt_tile`'s grouped index math** (32 tiles per step where one is

@@ -5,9 +5,9 @@
 //! verify the reader/compute/writer stream shape.
 //!
 //! Pipeline order: `tt_tile` -> `tt_reindex` -> `tt_dataflow_select` ->
-//! `tt_dst_reuse` -> `verify` -> `tt_verify`. The passes are public so
-//! external pass authors can reuse or replace stages. Calling them out of
-//! order is a loud panic, never silent corruption.
+//! `tt_dst_reuse` -> `tt_reg_sync` -> `verify` -> `tt_verify`. The passes are
+//! public so external pass authors can reuse or replace stages. Calling them
+//! out of order is a loud panic, never silent corruption.
 //!
 //! `tt_dataflow_select` is the phase boundary: it selects the native instruction
 //! form for every value and gives each result its own tile (no reuse), so
@@ -34,15 +34,25 @@ use crate::kernel::{
 };
 use crate::shape::Dim;
 
-/// Matmul role hand-off: T2 may pack the accumulator (T1 posts) and T1 may
-/// clear it again (T2 posts). The numbers are the run's semaphore indices;
-/// both are initialised by the matmul lowering (`TTOp::Semset`).
-const TT_SEM_READY: u8 = 0;
-const TT_SEM_FREE: u8 = 1;
-/// `Before::MATRIX` as codegen's `tt_before` numbering.
-const TT_BEFORE_MATRIX: u8 = 2;
-/// `Before::PACKER` as codegen's `tt_before` numbering.
+/// The register hand-off's fixed semaphore set (`tt_reg_sync`). Every seam is
+/// a counting hand-off, not a lock: the producer posts when its unit drained,
+/// the consumer takes before it reads, and `UNPACKED`/`COMPUTED` name the two
+/// data directions. Indices are ours, not hardware: the Sync Unit has eight
+/// flat 4-bit counters and no idea what any of them means. The third index is
+/// reserved for the reuse direction, which is not emitted yet.
+const TT_SEM_UNPACKED: u8 = 0;
+const TT_SEM_COMPUTED: u8 = 1;
+/// The reuse direction's index, reserved. Not emitted yet: the reuse seam is a
+/// `todo!()` in `tt_reg_sync` until a kernel writes a tile twice.
+#[allow(dead_code)]
+const TT_SEM_FREE: u8 = 2;
+/// `Before` codes, as codegen's `tt_before` numbering: the pipeline classes a
+/// `SEMWAIT` holds back until its semaphore was posted.
+const TT_BEFORE_UNPACKER: u8 = 0;
 const TT_BEFORE_PACKER: u8 = 1;
+/// `Before::EVERYTHING`. T1 has two DST-writing units (Matrix and SFPU) and no
+/// single `Before` names both, so a take on T1 blocks every class.
+const TT_BEFORE_ALL: u8 = 7;
 
 /// One phase-2 pattern and the native lowering it emits. The list is
 /// ordered biggest-first; the recursive walk tries each pattern at a value
@@ -56,6 +66,21 @@ enum TtEmit {
     Matmul,
     /// Structural tile reduce: DST input, DST result.
     Reduce(TileDim),
+}
+
+/// What a tile `Copy` moves between, and hence which stream runs it. The
+/// movers (`Publish`, `Drain`) are not part of the register hand-off: their
+/// traffic is a flat list issued around the compute program, not a role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TtCopy {
+    /// `Param -> Circular`: the reader (B mover).
+    Publish,
+    /// `Circular -> Register`: the unpacker (T0).
+    Unpack,
+    /// `Register -> Circular`: the packer (T2).
+    Pack,
+    /// `Circular -> Param`: the writer (NC mover).
+    Drain,
 }
 
 /// zyx unary op -> metalium SFPU kind. `None` means no native kind yet;
@@ -167,12 +192,6 @@ struct TtLowering<'a> {
     /// Matmul feeder index patterns (A plain, B K-scaled).
     pat_a: Pat,
     pat_b: Pat,
-    /// The matmul accumulator that has a role hand-off: its DST slot, and the
-    /// `(ready, free)` semaphores. T1 takes `free` before clearing the
-    /// accumulator and posts `ready` when the last `MVMUL` drained; T2 takes
-    /// `ready` before packing and posts `free` after. Only the pack of *this*
-    /// slot waits — any other pack has nothing to hand off.
-    matmul: Option<(OpId, u8, u8)>,
 }
 
 impl Kernel {
@@ -693,7 +712,6 @@ impl Kernel {
             materialized: Map::default(),
             pat_a,
             pat_b,
-            matmul: None,
         };
         let mut roots: Vec<OpId> = Vec::new();
         let mut scan = self.head;
@@ -857,18 +875,10 @@ impl Kernel {
                         dst_idx: zero_pack,
                         bytes: pack_bytes,
                     });
-                    // A matmul accumulator hands its work over: T2 takes
-                    // `ready` before reading it and posts `free` after, so T1
-                    // can clear the rows for the next tile. The wait goes in
-                    // first so it precedes the pack.
-                    let handoff = lower.matmul.filter(|(slot, _, _)| *slot == storage);
-                    if let Some((_, ready, free)) = handoff {
-                        self.insert_before(*store, Op::TT(TTOp::Wait { sem: ready, before: TT_BEFORE_PACKER, role: 2 }));
-                    }
-                    let pack = self.insert_before(*store, pack);
-                    if let Some((_, _, free)) = handoff {
-                        self.insert_after(pack, Op::TT(TTOp::Post { sem: free, role: 2 }));
-                    }
+                    // The pack itself is a plain tile move; the hand-off that
+                    // orders it against the math that filled the tile is
+                    // `tt_reg_sync`'s, from the tile's lifetimes.
+                    self.insert_before(*store, pack);
                     self.push_back(Op::TT(TTOp::Copy {
                         src: writer_cb,
                         src_idx: slot_zero,
@@ -1559,14 +1569,10 @@ impl Kernel {
                     one(thread::FIDELITY_BASE_Phase, 0),
                 ];
                 let mut after = vec![
-                    // The role hand-off. `ready` starts empty (T1 posts it) and
-                    // `free` starts full (T2 hands it back), so the first take
-                    // of each has the value its protocol expects.
-                    TTOp::Semset { sem: TT_SEM_READY, value: 0 },
-                    TTOp::Semset { sem: TT_SEM_FREE, value: 1 },
-                    // T1 does not clear the accumulator until T2 has finished
-                    // reading the previous tile out of it.
-                    TTOp::Wait { sem: TT_SEM_FREE, before: TT_BEFORE_MATRIX, role: 1 },
+                    // T1 clears the whole register file before the first
+                    // multiply. `tt_reg_sync` owns the role hand-off, so the
+                    // accumulator's produce/consume edge is added there from
+                    // the `MVMUL`s themselves, not spelled here.
                     TTOp::Zeroacc { mode: 3, imm10: 0 },
                 ];
                 // One `MVMUL` group into rows `base..base + 16` of the `fi`:
@@ -1623,17 +1629,9 @@ impl Kernel {
                             flip_b: true,
                             broadcast_b: false,
                         });
-                        if fi == 1 && k == 1 {
-                            // The tile is complete: T2 may pack it (post_after
-                            // drains the Matrix Unit first).
-                            after.push(TTOp::Post { sem: TT_SEM_READY, role: 1 });
-                        }
                     }
                 }
                 let slot = self.tt_new_dst(dtype_a, lower.prologue);
-                // Remember the accumulator so phase 3 can wrap its pack in the
-                // `ready` take and the `free` post.
-                lower.matmul = Some((slot, TT_SEM_READY, TT_SEM_FREE));
                 self.ops[root].op = Op::TT(TTOp::Setrwc { dst: slot });
                 for op in before.drain(..) {
                     self.insert_before(root, Op::TT(op));
@@ -1642,7 +1640,22 @@ impl Kernel {
                 for op in after {
                     cur = self.insert_after(cur, Op::TT(op));
                 }
-                self.tt_materialize(root, dtype_a, slot, lower)
+                // The Matrix Unit advances the thread's `Dst` row counter as it
+                // walks the accumulator (`MVMUL`'s address modifiers), and an
+                // `SFPLOAD`/`SFPSTORE` address is `Imm10 + RWC.Dst`: a fused
+                // SFPU op after the matmul would write one tile too far. This
+                // restores the counter to the accumulator's own base, which is
+                // 0 for the only placement that runs today (the accumulator is
+                // tile 0). A nonzero accumulator would need a true zero here,
+                // and no op expresses "RWC.Dst = 0" without naming a tile.
+                self.insert_after(cur, Op::TT(TTOp::Setrwc { dst: slot }));
+                // The accumulator tile is not materialized, even when it has
+                // several uses: its DST rows are protected by the hand-off
+                // `tt_reg_sync` derives, and a pack emitted here would land
+                // *before* the Matrix Unit's work, while its unpack would be T0
+                // reading a T2 pack with no seam between them. So every
+                // consumer reads the accumulator's DST tile in place.
+                Some((dtype_a, slot))
             }
         }
     }
@@ -1806,6 +1819,192 @@ impl Kernel {
                 next += 1;
             }
             id = self.next_op(id);
+        }
+    }
+
+    /// Classify a tile `Copy` by the scopes it moves between.
+    fn tt_copy_kind(&self, id: OpId) -> TtCopy {
+        let Op::TT(TTOp::Copy { src, dst, .. }) = self.ops[id].op else {
+            panic!("tt_copy_kind: {id:?} is not a tile copy");
+        };
+        let scope = |o: OpId| match self.ops[o].op {
+            Op::Param { .. } => 'p',
+            Op::Storage { scope: MemScope::Register, .. } => 'r',
+            Op::Storage { scope: MemScope::Circular, .. } => 'c',
+            _ => '?',
+        };
+        match (scope(src), scope(dst)) {
+            ('c', 'r') => TtCopy::Unpack,
+            ('r', 'c') => TtCopy::Pack,
+            ('p', 'c') => TtCopy::Publish,
+            ('c', 'p') => TtCopy::Drain,
+            _ => panic!("tt_copy_kind: copy {id:?} moves between scopes with no stream"),
+        }
+    }
+
+    /// Role hand-off over the DST tiles: `tt_reg_sync`. This is the only pass
+    /// that emits `Semset`/`Wait`/`Post` for tile registers.
+    ///
+    /// The hardware has no DST lock: the Sync Unit holds eight flat 4-bit
+    /// counters, and the only ordering between the unpacker (T0), the math
+    /// thread (T1: Matrix Unit + SFPU) and the packer (T2) is one
+    /// `SEMPOST`/`SEMWAIT` per direction. So the pass derives, per physical
+    /// tile, who writes it and who reads it, in program order, and emits the
+    /// seams that are actually needed:
+    ///
+    /// - a *data* seam when a reader in another role follows a writer: the
+    ///   writer posts after its last write, the reader takes before its first
+    ///   read (`UNPACKED` for T0's writes, `COMPUTED` for T1's);
+    /// - a *reuse* seam when a later epoch overwrites a tile some other role
+    ///   read: the reader posts after its last read, the next writer takes
+    ///   before its first write (`FREE`).
+    ///
+    /// Both are counting hand-offs, so one semaphore serves every tile of a
+    /// direction: each role's stream is in order, so posts and takes pair up
+    /// FIFO. Reads by the role that wrote the tile need no seam — they are the
+    /// same stream — and a tile written once (every single-tile kernel) gets
+    /// no `FREE` seam at all. Initial values are zero: a producer always posts
+    /// before any take of its seam.
+    ///
+    /// A missing seam is a real race only because a kernel with any `Semset`
+    /// runs the three roles concurrently (`Schedule::Concurrent`); without
+    /// semaphores the runtime runs T0, then T1, then T2.
+    pub fn tt_reg_sync(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        let mut ops: Vec<OpId> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            ops.push(id);
+            id = self.next_op(id);
+        }
+        // Per tile, in program order: `(op index, role, is write)`. The
+        // intra-tile address is not part of an edge: a hand-off is per tile,
+        // and the consumer's first row read follows the producer's last write
+        // anyway.
+        let mut touches: Map<OpId, Vec<(usize, u8, bool)>> = Map::default();
+        let mut acc: Option<OpId> = None;
+        for (i, &op) in ops.iter().enumerate() {
+            let mut touched: Vec<(OpId, u8, bool)> = Vec::new();
+            match self.ops[op].op {
+                Op::TT(TTOp::Setrwc { dst }) => {
+                    acc = Some(dst);
+                    touched.push((dst, 1, true));
+                }
+                // The Matrix Unit's result lands in the accumulator the last
+                // `SETRWC` named; `MVMUL` carries a row of it, not a storage.
+                Op::TT(TTOp::Mvmul { .. }) => {
+                    if let Some(a) = acc {
+                        touched.push((a, 1, true));
+                    }
+                }
+                // The SFPU is T1 too: its stores and loads join the same
+                // stream as the Matrix Unit, so a tile it writes and reads
+                // needs no seam.
+                Op::TT(TTOp::SfpStore(ref store)) => touched.push((store.slot, 1, true)),
+                Op::TT(TTOp::SfpLoad(ref load)) => touched.push((load.slot, 1, false)),
+                Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                    touched.push((a, 1, false));
+                    if !b.is_null() {
+                        touched.push((b, 1, false));
+                    }
+                    touched.push((slot, 1, true));
+                }
+                Op::TT(TTOp::Copy { src, dst, .. }) => match self.tt_copy_kind(op) {
+                    TtCopy::Unpack => touched.push((dst, 0, true)),
+                    TtCopy::Pack => touched.push((src, 2, false)),
+                    TtCopy::Publish | TtCopy::Drain => {}
+                },
+                _ => {}
+            }
+            for (tile, role, write) in touched {
+                if matches!(self.ops[tile].op, Op::Storage { scope: MemScope::Register, .. }) {
+                    touches.entry(tile).or_default().push((i, role, write));
+                }
+            }
+        }
+        let before = |role: u8| match role {
+            0 => TT_BEFORE_UNPACKER,
+            2 => TT_BEFORE_PACKER,
+            _ => TT_BEFORE_ALL,
+        };
+        let mut posts: Vec<(usize, TTOp)> = Vec::new();
+        let mut takes: Vec<(usize, TTOp)> = Vec::new();
+        for events in touches.values() {
+            // One epoch per write: the data an epoch publishes is what the
+            // reads that follow it (before the next write) consume.
+            let mut epochs: Vec<((u8, usize), Vec<(u8, usize, usize)>)> = Vec::new();
+            for &(idx, role, write) in events.iter() {
+                if write {
+                    epochs.push(((role, idx), Vec::new()));
+                } else if let Some(((writer, _), readers)) = epochs.last_mut() {
+                    if *writer != role {
+                        match readers.iter_mut().find(|r| r.0 == role) {
+                            Some(r) => r.2 = idx,
+                            None => readers.push((role, idx, idx)),
+                        }
+                    }
+                }
+            }
+            for (n, ((writer, write_idx), readers)) in epochs.iter().enumerate() {
+                let sem = if *writer == 0 { TT_SEM_UNPACKED } else { TT_SEM_COMPUTED };
+                for &(reader, first, _) in readers {
+                    posts.push((*write_idx, TTOp::Post { sem, role: *writer }));
+                    takes.push((first, TTOp::Wait { sem, before: before(reader), role: reader }));
+                }
+                // The reuse edge (reader posts `FREE`, the next writer takes it
+                // before it overwrites) is **not implemented yet**: no gate
+                // writes a DST tile twice, so the path would be unexercised
+                // code. Loud rather than silent — a kernel that reuses a tile
+                // would otherwise run without the hand-off and read stale data.
+                if let Some(((next_writer, _), _)) = epochs.get(n + 1) {
+                    for &(reader, _, _) in readers {
+                        if reader != *next_writer {
+                            todo!("tt_reg_sync: a DST tile is written twice across epochs; the FREE reuse seam is not implemented");
+                        }
+                    }
+                }
+            }
+        }
+        if posts.is_empty() && takes.is_empty() {
+            return;
+        }
+        // `Semset` is not an instruction: codegen folds it into the run's
+        // semaphore table, and `tt_verify` requires it in the compute section.
+        let mut used: Vec<u8> = Vec::new();
+        for (_, op) in posts.iter().chain(takes.iter()) {
+            if let TTOp::Post { sem, .. } | TTOp::Wait { sem, .. } = op {
+                if !used.contains(sem) {
+                    used.push(*sem);
+                }
+            }
+        }
+        used.sort_unstable();
+        let mut scan = self.head;
+        let mut end_reader = None;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            if matches!(self.ops[scan].op, Op::TT(TTOp::EndReader)) {
+                end_reader = Some(scan);
+                break;
+            }
+            scan = self.next_op(scan);
+        }
+        let end_reader = end_reader.expect("tt_reg_sync: no EndReader in a lowered TT kernel");
+        for &sem in &used {
+            self.insert_after(end_reader, Op::TT(TTOp::Semset { sem, value: 0 }));
+        }
+        for (idx, op) in takes {
+            self.insert_before(ops[idx], Op::TT(op));
+        }
+        for (idx, op) in posts {
+            self.insert_after(ops[idx], Op::TT(op));
         }
     }
 
@@ -2025,6 +2224,8 @@ impl Kernel {
         let mut reader_entries = 0u32;
         let mut writer_entries = 0u32;
         let mut written: Set<OpId> = Set::default();
+        let mut sems_init: Set<u8> = Set::default();
+        let mut sems_used: Vec<(u8, OpId)> = Vec::new();
         let is_dram = |op: &Op| matches!(op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
         let is_written = |op: &Op| matches!(op, Op::Param { kind: ParamKind::GlobalMut, .. });
         let mut id = self.head;
@@ -2051,11 +2252,26 @@ impl Kernel {
                 | Op::TT(TTOp::Zeroacc { .. })
                 | Op::TT(TTOp::Mvmul { .. })
                 | Op::TT(TTOp::Setc16 { .. })
-                | Op::TT(TTOp::Setcfg { .. })
-                | Op::TT(TTOp::Post { .. })
-                | Op::TT(TTOp::Wait { .. })
-                | Op::TT(TTOp::Semset { .. }) => {
+                | Op::TT(TTOp::Setcfg { .. }) => {
                     assert!(section == 1, "tt_verify: compute op outside the compute section at {id:?}");
+                }
+                Op::TT(TTOp::Post { sem, .. }) | Op::TT(TTOp::Wait { sem, .. }) => {
+                    assert!(section == 1, "tt_verify: semaphore op outside the compute section at {id:?}");
+                    assert!(
+                        *sem < tt_isa::sync::Semaphore::COUNT,
+                        "tt_verify: semaphore op names {sem}, but only {} exist",
+                        tt_isa::sync::Semaphore::COUNT
+                    );
+                    sems_used.push((*sem, id));
+                }
+                Op::TT(TTOp::Semset { sem, .. }) => {
+                    assert!(section == 1, "tt_verify: Semset outside the compute section at {id:?}");
+                    assert!(
+                        *sem < tt_isa::sync::Semaphore::COUNT,
+                        "tt_verify: Semset names semaphore {sem}, but only {} exist",
+                        tt_isa::sync::Semaphore::COUNT
+                    );
+                    assert!(sems_init.insert(*sem), "tt_verify: semaphore {sem} initialised twice");
                 }
                 Op::TT(TTOp::DmRead(_))
                 | Op::TT(TTOp::DmWrite(_))
@@ -2116,6 +2332,15 @@ impl Kernel {
         }
         assert!(seen_reader, "tt_verify: missing EndReader");
         assert!(seen_compute, "tt_verify: missing EndCompute");
+        // A wait on an uninitialised semaphore reads whatever the previous
+        // kernel left in the Sync Unit: every seam must be in the run's init
+        // list.
+        for &(sem, id) in &sems_used {
+            assert!(
+                sems_init.contains(&sem),
+                "tt_verify: semaphore {sem} used at {id:?} has no Semset"
+            );
+        }
         // One list per mover per launch, and the list ring holds
         // `dm::LIST_MAX` entries: a kernel that would need a second list is a
         // compile error here, never a silent split at launch.

@@ -33,7 +33,6 @@ pub mod integer;
 pub mod interp;
 pub mod kernel;
 pub mod ops;
-pub mod reduce;
 pub mod round;
 
 use tt_isa::frontend;

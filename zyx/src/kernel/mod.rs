@@ -709,7 +709,10 @@ impl Kernel {
                     op_id = ops[0]
                 }
                 Op::TT(TTOp::Unpacr { .. }) => return IDX_T,
-                Op::TT(TTOp::Setrwc { .. }) => return IDX_T,
+                // The accumulator pointer carries the tile the Matrix Unit
+                // filled: its value is the DST storage it names, so the
+                // consumer must see that storage's dtype, not a pointer type.
+                Op::TT(TTOp::Setrwc { dst }) => op_id = dst,
                 Op::TT(TTOp::Sfpu { a, .. }) => op_id = a,
                 Op::TT(TTOp::SfpLoad(ref load)) => op_id = load.slot,
                 Op::TT(TTOp::SfpStore(ref store)) => op_id = store.slot,

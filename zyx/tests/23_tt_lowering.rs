@@ -337,6 +337,60 @@ fn matmul_sigmoid() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn matmul_add() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+    let y = Tensor::rand([20, 12], DType::F32)?;
+    let a = Tensor::rand([10, 20], DType::F32)?;
+    let b = Tensor::rand([20, 12], DType::F32)?;
+
+    // Two matmuls, so the second accumulator is not tile 0: this is the shape
+    // that would pin `SETRWC`'s `DstVal` (four bits of 32-row halves) and the
+    // row counter's restore. It does not reach them yet: the second matmul
+    // emits `ZEROACC CLR_ALL`, which would wipe the first accumulator, and
+    // codegen refuses that loudly. Once the clear is scoped to the
+    // accumulator's own rows, this test is the `SETRWC` gate.
+    let m1 = x.to(Dev::TT(0))?.matmul(&y.to(Dev::TT(0))?)?;
+    let m2 = a.to(Dev::TT(0))?.matmul(&b.to(Dev::TT(0))?)?;
+    let z = (m1 + m2).to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let yv: Vec<f32> = y.try_into().unwrap();
+    let av: Vec<f32> = a.try_into().unwrap();
+    let bv: Vec<f32> = b.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(zv.len(), 10 * 12);
+    let mut bad = 0;
+    let mut worst = 0f32;
+    for r in 0..10 {
+        for c in 0..12 {
+            let mut acc = 0f32;
+            for k in 0..20 {
+                acc += xv[r * 20 + k] * yv[k * 12 + c];
+            }
+            let mut acc2 = 0f32;
+            for k in 0..20 {
+                acc2 += av[r * 20 + k] * bv[k * 12 + c];
+            }
+            let expected = acc + acc2;
+            let v = zv[r * 12 + c];
+            let err = (v - expected).abs();
+            worst = worst.max(err);
+            // TF32 in `Src`, as in `matmul`/`matmul_sigmoid`.
+            if err > 1e-2 {
+                if bad < 10 {
+                    println!("z[{r},{c}] = {v}, expected {expected} (err {err})");
+                }
+                bad += 1;
+            }
+        }
+    }
+    println!("matmul_add bad: {bad} / {} (worst {worst})", 10 * 12);
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+#[test]
 fn softmax() -> Result<(), ZyxError> {
     let x = Tensor::rand([256, 256], DType::F32)?;
 

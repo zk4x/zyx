@@ -123,6 +123,10 @@ impl Kernel {
             // pass coalesces it down to the physical tile budget. It must run
             // after allocation and before codegen.
             self.tt_dst_reuse();
+            // Last: the role hand-off over the final physical tiles. It has to
+            // see where allocation put every tile, and it is the only pass
+            // that emits `Semset`/`Wait`/`Post`.
+            self.tt_reg_sync();
             self.verify();
             self.tt_verify();
         } else {

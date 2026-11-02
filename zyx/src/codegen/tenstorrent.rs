@@ -786,7 +786,10 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             ));
                             sec.native_t2.extend(code.iter().map(|i| i.word()));
                             sec.last_role = 2;
-                            return Ok(());
+                            // A pack is one op, not the end of the section:
+                            // the register hand-off (`tt_reg_sync`) can put
+                            // another tile's pack after this one.
+                            continue;
                         }
                         if sec.section != 0 {
                             return Err(sec.err(format!("publish {id:?} outside the reader")));
@@ -991,6 +994,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     .src_b(1)
                     .src_b_val(crate::backend::tenstorrent::kern::matmul::SRC_B_ROW as u32)
                     .dst(1)
+                    // `SETRWC`'s `DstVal` is four bits, so one unit is a 32-row
+                    // half-tile, not a row: a `Dst` row cannot be encoded at
+                    // all. Pinned by `setrwc_names_the_accumulator_in_dst_halves`.
                     .dst_val(row / 32)
                     .fidelity(1)
                     .encode()
@@ -1054,12 +1060,23 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             }
             Op::TT(TTOp::Post { sem, role }) => {
                 let sem = tt_sem(*sem).map_err(|e| sec.err(format!("post {id:?}: {e}")))?;
-                // Drain the posting role's unit first, then post
-                // (`sync::post_after`): the consumer must not see the post
-                // before the work it stands for is done.
-                let unit = tt_unit(*role).ok_or_else(|| sec.err(format!("post {id:?}: no stream {role}")))?;
-                for insn in tt_isa::sync::post_after(unit, sem) {
-                    sec.push_role_word_for(*role, insn.word());
+                // A post announces that the posting stream's work is done, so
+                // the unit that produced it must have drained before the
+                // consumer sees it. T1 owns two DST-writing units (Matrix and
+                // SFPU) and a role names the stream, not the unit: drain both.
+                // Draining a unit with no work costs nothing.
+                if *role == 1 {
+                    use tt_isa::backend::{Before, wait_for_matrix, wait_for_sfpu};
+                    for insn in [wait_for_matrix(Before::EVERYTHING), wait_for_sfpu(Before::EVERYTHING)] {
+                        let insn = insn.map_err(|e| sec.err(format!("post {id:?}: {e:?}")))?;
+                        sec.push_role_word_for(*role, insn.word());
+                    }
+                    sec.push_role_word_for(*role, tt_isa::sync::post(sem).word());
+                } else {
+                    let unit = tt_unit(*role).ok_or_else(|| sec.err(format!("post {id:?}: no stream {role}")))?;
+                    for insn in tt_isa::sync::post_after(unit, sem) {
+                        sec.push_role_word_for(*role, insn.word());
+                    }
                 }
             }
             Op::TT(TTOp::Wait { sem, before, role }) => {
@@ -2146,4 +2163,54 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `SETRWC`'s `DstVal` is **four bits**, so one unit is a 32-row half of a
+    /// 32-bit `Dst` tile: an accumulator at allocation index 1 (rows 64..128)
+    /// encodes 2. The raw row does not fit the field, which is why the codegen
+    /// divides — and why a head-room assumption here must be a test, not a
+    /// comment.
+    #[test]
+    fn setrwc_names_the_accumulator_in_dst_halves() {
+        use crate::backend::{DTypeCapability, DeviceInfo};
+        use crate::shape::Dim;
+        use std::sync::Arc;
+        let mut k = Kernel::new(crate::Dev::Auto);
+        // `generate_tenstorrent` reads one device property (the CB count); the
+        // test only needs a bound device, not a real one.
+        k.dev_info = Some(Arc::new(DeviceInfo {
+            compute: 1_000_000,
+            max_global_work_dims: vec![Dim::from(1_000_000_000); 3],
+            max_local_threads: 1024,
+            max_local_work_dims: vec![1024, 1024, 1024],
+            preferred_vector_size: 8,
+            local_mem_size: 8192,
+            max_register_bytes: 256_000,
+            tensor_cores: false,
+            warp_size: 1,
+            cc: [0, 0],
+            dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
+            has_native_exp2: false,
+            supported_vec_lens: vec![2, 4, 8, 16],
+            vector_depth: 1,
+            tenstorrent: true,
+            tile: [Dim::from(32), Dim::from(32)],
+            tile_sizes: vec![[Dim::from(32), Dim::from(32)]],
+            wmma_layouts: vec![],
+            num_circular_buffers: 4,
+            has_openmp: false,
+        }));
+        let storage = k.push_back(Op::Storage { dtype: DType::F32, scope: MemScope::Register, len: 1024, id: 1 });
+        k.push_back(Op::TT(TTOp::EndReader));
+        k.push_back(Op::TT(TTOp::Setrwc { dst: storage }));
+        k.push_back(Op::TT(TTOp::EndCompute));
+        let program = k.generate_tenstorrent().expect("a minimal math-only kernel renders");
+        let mut setrwc = program.roles[1]
+            .iter()
+            .map(|&word| tt_isa::isa::Instruction::new(word, &tt_isa::isa::generated::defs::SETRWC))
+            .filter(|insn| insn.def().mnemonic() == "SETRWC");
+        let insn = setrwc.find(|insn| insn.operand("Dst") == Some(1)).expect("the accumulator pointer is in the math stream");
+        assert_eq!(insn.operand("DstVal"), Some(2));
+        // The row itself cannot be encoded: `DstVal` is 0..15.
+        assert!(tt_isa::isa::generated::encode::Setrwc::ZERO.dst(1).dst_val(64).encode().is_err());
+    }
 }
