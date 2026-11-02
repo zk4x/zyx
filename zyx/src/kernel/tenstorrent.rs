@@ -932,20 +932,9 @@ impl Kernel {
         // binds at most 3 (fresh budget per call).
         let pat_a = Pat::bind('k') + (Pat::bind('d') * Pat::bind('e'));
         let pat_b = Pat::bind('f') + (Pat::bind('g') * Pat::bind('k'));
-        // Fused sigmoid composite, single tile. Builder spelling
-        // (`tensor/elementwise.rs`): `sigmoid = recip(add(exp2(mul(neg(x),
-        // LOG2_E)), 1))`; the scalar consts match any `Const` (builders
-        // cast them to the tile dtype). Rank-1 handles a reduce result
-        // feeding elementwise (`sum` -> `sigmoid`).
-        let sx = Pat::bind('x').shape([32i64, 32]);
-        let sigmoid_pat = (sx.neg().exp() + Pat::Const).recip().shape([32i64, 32]);
-        let sx1 = Pat::bind('x').shape([32i64]);
-        let sigmoid_pat1 = (sx1.neg().exp() + Pat::Const).recip().shape([32i64]);
         // A rank-1 operand: one tile row (see the vector reduce patterns).
         let vec1 = Pat::bind('t').shape([32i64]);
         let mut pats: Vec<(Pat, TtEmit)> = vec![
-            (sigmoid_pat, TtEmit::Sfpu { kind: crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
-            (sigmoid_pat1, TtEmit::Sfpu { kind: crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu::SIGMOID, arity: 1 }),
             (mmul, TtEmit::Matmul),
             (mmul_swap, TtEmit::Matmul),
             (Pat::sum(tile.clone()).shape([32i64]), TtEmit::Reduce(TileDim::Row)),
@@ -1319,24 +1308,18 @@ impl Kernel {
     /// One row loop of a ported kind: `body` writes one four-row group's
     /// column half at offset `o`; the emitted sequence is that body once
     /// inside `TTOp::Replay` (32 iterations, the row address modifier stepping
-    /// `Dst` by two rows), or 32 unrolled copies when the body is too long for
-    /// the replay buffer. The body must end with a `Dst` access.
+    /// `Dst` by two rows). Codegen picks the mechanism from the length: a
+    /// body that fits the replay buffer is a hardware `REPLAY`, a longer one
+    /// is a block repeat the runner pushes. The body must end with a `Dst`
+    /// access.
     fn tt_row_loop(&mut self, body: impl Fn(&mut Vec<Op>, u16)) -> Vec<Op> {
         let mut once: Vec<Op> = Vec::new();
         body(&mut once, 0);
         let words: u32 = once.iter().map(tt_row_words).sum();
-        if words <= tt_isa::frontend::REPLAY_BUFFER {
-            let mut ops: Vec<Op> = Vec::with_capacity(once.len() + 1);
-            ops.push(Op::TT(TTOp::Replay { len: words as u16, count: 32 }));
-            ops.extend(once);
-            ops
-        } else {
-            let mut ops: Vec<Op> = Vec::new();
-            for o in (0..64u16).step_by(2) {
-                body(&mut ops, o);
-            }
-            ops
-        }
+        let mut ops: Vec<Op> = Vec::with_capacity(once.len() + 1);
+        ops.push(Op::TT(TTOp::Replay { len: words as u16, count: 32 }));
+        ops.extend(once);
+        ops
     }
 
     /// A scalar constant as a DST tile: one lane-register immediate, stored to
@@ -1588,12 +1571,8 @@ impl Kernel {
             self.tt_sfp_round(kind, a, slot)
         } else if kind == sf::DIV && !b.is_null() {
             self.tt_sfp_div(a, b, slot)
-        } else if kind == sf::SIGMOID && b.is_null() {
-            self.tt_sfp_sigmoid(a, slot)
         } else if (kind == sf::SIN || kind == sf::COS) && b.is_null() {
             self.tt_sfp_sin_cos(id, kind, a, slot)
-        } else if kind == sf::POW && !b.is_null() {
-            self.tt_sfp_pow(a, b, slot)
         } else if (sf::EQ..=sf::LE).contains(&kind) && !b.is_null() {
             self.tt_sfp_compare(kind, a, b, slot)
         } else if (sf::INT_AND..=sf::INT_SHR).contains(&kind) && !b.is_null() {
@@ -2060,160 +2039,6 @@ impl Kernel {
         ops
     }
 
-    /// `ops::sigmoid_program`, the Precise body.
-    fn tt_sfp_sigmoid(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
-        let mut ops: Vec<Op> = Vec::new();
-        // `ops::sigmoid_program`: `abs`, `neg`, `exp_program`, `1 + e`,
-        // `recip`, then the three `x < 0` branches. The input waits in
-        // `Dst` across the exponential, which needs all eight lane
-        // registers; the spill goes to the **output tile**, whose rows
-        // are dead until the last store of the iteration.
-        use tt_isa::isa::generated::defs;
-        let (mad, mov, abs, and, iadd, shft, arecip) = (
-            defs::SFPMAD.opcode(),
-            defs::SFPMOV.opcode(),
-            defs::SFPABS.opcode(),
-            defs::SFPAND.opcode(),
-            defs::SFPIADD.opcode(),
-            defs::SFPSHFT.opcode(),
-            defs::SFPARECIP.opcode(),
-        );
-        let (setcc, gt, ple, setsgn) =
-            (defs::SFPSETCC.opcode(), defs::SFPGT.opcode(), defs::SFPLE.opcode(), defs::SFPSETSGN.opcode());
-        let (pushc, popc, compc, nop) =
-            (defs::SFPPUSHC.opcode(), defs::SFPPOPC.opcode(), defs::SFPCOMPC.opcode(), defs::SFPNOP.opcode());
-        let sfp = |ops: &mut Vec<Op>, op: u8, args: [u16; 5]| {
-            ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op, args })));
-        };
-        let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
-            ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
-        };
-        let ld = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
-            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at, reg, fmt }))));
-        };
-        let st = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
-            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at, reg, fmt }))));
-        };
-        // Lane-flag predication on, all lanes enabled: without `SFPENCC`
-        // the unit's `UseLaneFlagsForLaneEnable` is whatever the previous
-        // kernel left, and `SFPSETCC` is a no-op (`SFPENCC.md`).
-        sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        let body = self.tt_row_loop(|mut ops, o| {
-            ld(&mut ops, a, o, L0, FP32);
-            st(&mut ops, slot, o, L0, INT32); // spill x (raw bits)
-            // `nz = -|x|` in L1.
-            sfp(&mut ops, abs, [u16::from(L0), u16::from(L1), 1, 0, 0]);
-            sfp(&mut ops, mov, [u16::from(L1), u16::from(L1), 1, 0, 0]);
-            // `exp_program(L1, L2)`: k=L0, magic=L3, t=L4, nf=L5, r=L6, c=L7.
-            konst(&mut ops, L0, 0x3fb8_aa3b); // log2 e
-            konst(&mut ops, L3, 0x4b40_0000); // 1.5 * 2^23
-            sfp(&mut ops, mad, [u16::from(L1), u16::from(L0), u16::from(L3), u16::from(L4), 0]);
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L4), u16::from(L3), u16::from(L5), 2]);
-            konst(&mut ops, L0, 0x3f31_8000); // ln2_hi
-            sfp(&mut ops, mad, [u16::from(L5), u16::from(L0), u16::from(L1), u16::from(L6), 1]);
-            konst(&mut ops, L0, 0xb95e_8083); // ln2_lo
-            sfp(&mut ops, mad, [u16::from(L5), u16::from(L0), u16::from(L6), u16::from(L6), 1]);
-            konst(&mut ops, L2, 0x3950_0d01); // 1/5040
-            for c in [0x3ab6_0b61, 0x3c08_8889, 0x3d2a_aaab, 0x3e2a_aaab, 0x3f00_0000] {
-                konst(&mut ops, L7, c);
-                sfp(&mut ops, mad, [u16::from(L2), u16::from(L6), u16::from(L7), u16::from(L2), 0]);
-            }
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L6), LREG_ONE, u16::from(L2), 0]);
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L6), LREG_ONE, u16::from(L2), 0]);
-            // `SFPMAD`'s automatic stall does not cover `SFPIADD`'s read.
-            sfp(&mut ops, nop, [0; 5]);
-            // `isub_from(t, magic)`: `magic = t - magic`.
-            sfp(&mut ops, iadd, [0, u16::from(L4), u16::from(L3), 6, 0]);
-            sfp(&mut ops, shft, [23, u16::from(L3), u16::from(L3), 5, 0]);
-            sfp(&mut ops, iadd, [0, u16::from(L3), u16::from(L2), 4, 0]);
-            // Below `ln 2^-126`: zero.
-            konst(&mut ops, L0, 0xc2ae_ac50);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L1), u16::from(L0), 1, 0, 0]);
-            sfp(&mut ops, mov, [LREG_ZERO, u16::from(L2), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            // From `ln f32::MAX`: infinity.
-            konst(&mut ops, L0, 0x42b1_7218);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, ple, [u16::from(L1), u16::from(L0), 1, 0, 0]);
-            konst(&mut ops, L2, 0x7f80_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            // A NaN stays one (masked: `SFPABS` keeps a negative NaN).
-            konst(&mut ops, L0, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L0), u16::from(L1), u16::from(L4), 1, 0]);
-            konst(&mut ops, L0, 0x7f80_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L0), u16::from(L4), 1, 0, 0]);
-            konst(&mut ops, L2, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            // `den = 1 + e`; `y = 1/den` (`recip`: seed, two Newton
-            // steps, the four special cases).
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L2), LREG_ONE, u16::from(L3), 0]);
-            konst(&mut ops, L6, 0x7f7f_ffff); // f32::MAX
-            sfp(&mut ops, abs, [u16::from(L3), u16::from(L5), 1, 0, 0]);
-            konst(&mut ops, L4, 0x7180_0000); // 2^100
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L4), u16::from(L5), 1, 0, 0]);
-            // Huge: scale by 2^-64, then scale the result back.
-            konst(&mut ops, L6, 0x1f80_0000);
-            sfp(&mut ops, mad, [u16::from(L3), u16::from(L6), LREG_ZERO, u16::from(L5), 2]);
-            sfp(&mut ops, arecip, [0, u16::from(L5), u16::from(L7), 0, 0]);
-            for _ in 0..2 {
-                sfp(&mut ops, mad, [u16::from(L5), u16::from(L7), LREG_ONE, u16::from(L4), 1]);
-                sfp(&mut ops, mad, [u16::from(L4), u16::from(L7), u16::from(L7), u16::from(L7), 0]);
-            }
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L6), LREG_ZERO, u16::from(L7), 2]);
-            konst(&mut ops, L6, 0x7f7f_ffff);
-            sfp(&mut ops, compc, [0; 5]);
-            sfp(&mut ops, arecip, [0, u16::from(L3), u16::from(L7), 0, 0]);
-            for _ in 0..2 {
-                sfp(&mut ops, mad, [u16::from(L3), u16::from(L7), LREG_ONE, u16::from(L4), 1]);
-                sfp(&mut ops, mad, [u16::from(L4), u16::from(L7), u16::from(L7), u16::from(L7), 0]);
-            }
-            sfp(&mut ops, popc, [0; 5]);
-            // `1/±0` and a denormal: the seed's infinity met `0 * inf`.
-            konst(&mut ops, L4, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L4), u16::from(L3), u16::from(L5), 1, 0]);
-            konst(&mut ops, L4, 0x0080_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L5), u16::from(L4), 1, 0, 0]);
-            konst(&mut ops, L4, 0x7f80_0000);
-            sfp(&mut ops, mov, [u16::from(L3), u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, setsgn, [0, u16::from(L4), u16::from(L7), 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            // `1/±inf`: the seed's zero met `inf * 0`.
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L6), u16::from(L5), 1, 0, 0]);
-            konst(&mut ops, L4, 0x7f80_0001);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L5), u16::from(L4), 1, 0, 0]);
-            // `copy_sign(ZERO, x, d)`: `d = x` then its sign from `ZERO`.
-            sfp(&mut ops, mov, [u16::from(L3), u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, setsgn, [0, LREG_ZERO, u16::from(L7), 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            // x back from the spill; below zero take `e * y`.
-            ld(&mut ops, slot, o, L0, INT32);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L0), 0, 0, 0]);
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L7), LREG_ZERO, u16::from(L7), 2]);
-            sfp(&mut ops, popc, [0; 5]);
-            // `-0` is `>= 0`: `1/2`.
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L0), 0, 0, 0]);
-            konst(&mut ops, L5, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L5), u16::from(L0), u16::from(L4), 1, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L4), 0, 6, 0]);
-            konst(&mut ops, L7, 0x3f00_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            st(&mut ops, slot, o, L7, FP32);
-        });
-        ops.extend(body);
-        ops
-    }
-
     /// `ops::sin_cos_program`: `trig_reduce` + `sin_cos_cores` + the quadrant
     /// tail, transcribed instruction for instruction. `COS` when `kind` says
     /// so. The reduction keeps two values and the sine core's result in `Dst`
@@ -2637,325 +2462,6 @@ impl Kernel {
             sfp(ops, mov, [u16::from(L1), u16::from(L3), 0, 0, 0]);
             sfp(ops, popc, [0; 5]);
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L3, fmt: INT32 }))));
-        });
-        ops.extend(body);
-        ops
-    }
-
-    /// `ops::pow_program`: `log_program`, the multiply by `y`, `exp_program`
-    /// and `pow_fix`, transcribed instruction for instruction. `x` is `a` and
-    /// `y` is `b`, both FP32 tiles; the result is `e^(y ln|x|)` with the
-    /// builder's special values, and within `pow_bound`.
-    fn tt_sfp_pow(&mut self, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
-        use tt_isa::isa::generated::defs;
-        let (mad, mov, abs, and, iadd, shft, arecip, exexp, setexp, setsgn) = (
-            defs::SFPMAD.opcode(),
-            defs::SFPMOV.opcode(),
-            defs::SFPABS.opcode(),
-            defs::SFPAND.opcode(),
-            defs::SFPIADD.opcode(),
-            defs::SFPSHFT.opcode(),
-            defs::SFPARECIP.opcode(),
-            defs::SFPEXEXP.opcode(),
-            defs::SFPSETEXP.opcode(),
-            defs::SFPSETSGN.opcode(),
-        );
-        let (gt, le, setcc) = (defs::SFPGT.opcode(), defs::SFPLE.opcode(), defs::SFPSETCC.opcode());
-        let (pushc, popc, compc, nop) =
-            (defs::SFPPUSHC.opcode(), defs::SFPPOPC.opcode(), defs::SFPCOMPC.opcode(), defs::SFPNOP.opcode());
-        let sfp = |ops: &mut Vec<Op>, op: u8, args: [u16; 5]| {
-            ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op, args })));
-        };
-        let konst = |ops: &mut Vec<Op>, reg: u8, bits: u32| {
-            ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg, bits }))));
-        };
-        let ld = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
-            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at, reg, fmt }))));
-        };
-        let st = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8, fmt: u8| {
-            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at, reg, fmt }))));
-        };
-        let mut ops: Vec<Op> = Vec::new();
-        sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        let body = self.tt_row_loop(|mut ops, o| {
-            // ---------------------------------------------------------------
-            // `log_program(L0, L7)`: `|x|`, then `ln|x|` into `L7`.
-            // ---------------------------------------------------------------
-            ld(&mut ops, a, o, L0, FP32);
-            sfp(&mut ops, abs, [u16::from(L0), u16::from(L0), 1, 0, 0]);
-            sfp(&mut ops, exexp, [u16::from(L0), u16::from(L1), 0, 0, 0]);
-            sfp(&mut ops, setexp, [127, u16::from(L0), u16::from(L2), 1, 0]);
-            sfp(&mut ops, setsgn, [0, u16::from(L2), u16::from(L2), 1, 0]);
-            konst(&mut ops, L3, 0x3fb5_04f3); // sqrt(2)
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L3), u16::from(L2), 1, 0, 0]);
-            sfp(&mut ops, setexp, [126, u16::from(L2), u16::from(L2), 1, 0]);
-            sfp(&mut ops, iadd, [1, u16::from(L1), u16::from(L1), 5, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L2), LREG_ONE, u16::from(L3), 2]);
-            konst(&mut ops, L4, 0x4000_0000); // 2.0
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L3), u16::from(L4), u16::from(L4), 0]);
-            konst(&mut ops, L7, 0x7f7f_ffff); // f32::MAX
-            sfp(&mut ops, abs, [u16::from(L4), u16::from(L6), 1, 0, 0]);
-            konst(&mut ops, L2, 0x7180_0000); // 2^100
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L2), u16::from(L6), 1, 0, 0]);
-            konst(&mut ops, L7, 0x1f80_0000); // 2^-64
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L7), LREG_ZERO, u16::from(L6), 2]);
-            sfp(&mut ops, arecip, [0, u16::from(L6), u16::from(L5), 0, 0]);
-            sfp(&mut ops, mad, [u16::from(L6), u16::from(L5), LREG_ONE, u16::from(L2), 1]);
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L5), u16::from(L5), u16::from(L5), 0]);
-            sfp(&mut ops, mad, [u16::from(L6), u16::from(L5), LREG_ONE, u16::from(L2), 1]);
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L5), u16::from(L5), u16::from(L5), 0]);
-            sfp(&mut ops, mad, [u16::from(L5), u16::from(L7), LREG_ZERO, u16::from(L5), 2]);
-            konst(&mut ops, L7, 0x7f7f_ffff); // f32::MAX
-            sfp(&mut ops, compc, [0; 5]);
-            sfp(&mut ops, arecip, [0, u16::from(L4), u16::from(L5), 0, 0]);
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L5), LREG_ONE, u16::from(L2), 1]);
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L5), u16::from(L5), u16::from(L5), 0]);
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L5), LREG_ONE, u16::from(L2), 1]);
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L5), u16::from(L5), u16::from(L5), 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            // `1/±0` and a denormal: the seed's infinity.
-            konst(&mut ops, L2, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L2), u16::from(L4), u16::from(L6), 1, 0]);
-            konst(&mut ops, L2, 0x0080_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L6), u16::from(L2), 1, 0, 0]);
-            konst(&mut ops, L2, 0x7f80_0000);
-            sfp(&mut ops, mov, [u16::from(L4), u16::from(L5), 0, 0, 0]);
-            sfp(&mut ops, setsgn, [0, u16::from(L2), u16::from(L5), 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            // `1/±inf`: the seed's zero.
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L7), u16::from(L6), 1, 0, 0]);
-            konst(&mut ops, L2, 0x7f80_0001);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L6), u16::from(L2), 1, 0, 0]);
-            sfp(&mut ops, mov, [u16::from(L4), u16::from(L5), 0, 0, 0]);
-            sfp(&mut ops, setsgn, [0, LREG_ZERO, u16::from(L5), 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            // `s = f / (2 + f)`, the quotient corrected.
-            sfp(&mut ops, mad, [u16::from(L3), u16::from(L5), LREG_ZERO, u16::from(L6), 2]);
-            sfp(&mut ops, abs, [u16::from(L6), u16::from(L2), 1, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [LREG_ZERO, u16::from(L2), 1, 0, 0]);
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L6), u16::from(L3), u16::from(L2), 1]);
-            sfp(&mut ops, mad, [u16::from(L2), u16::from(L5), u16::from(L6), u16::from(L6), 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            // `ln m = 2s(1 + s^2/3 + s^4/5 + s^6/7 + s^8/9)`.
-            sfp(&mut ops, mad, [u16::from(L6), u16::from(L6), LREG_ZERO, u16::from(L3), 2]);
-            konst(&mut ops, L7, 0x3de3_8e39); // 1/9
-            konst(&mut ops, L2, 0x3e12_4925); // 1/7
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L3), u16::from(L2), u16::from(L7), 0]);
-            konst(&mut ops, L2, 0x3e4c_cccd); // 1/5
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L3), u16::from(L2), u16::from(L7), 0]);
-            konst(&mut ops, L2, 0x3eaa_aaab); // 1/3
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L3), u16::from(L2), u16::from(L7), 0]);
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L3), LREG_ZERO, u16::from(L7), 2]);
-            sfp(&mut ops, mad, [u16::from(L6), u16::from(L7), u16::from(L6), u16::from(L7), 0]);
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L7), u16::from(L7), u16::from(L7), 0]);
-            // `e ln 2 + ln m`.
-            konst(&mut ops, L2, 0x4b40_0000); // 1.5 * 2^23
-            sfp(&mut ops, iadd, [0, u16::from(L2), u16::from(L1), 4, 0]);
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L1), u16::from(L2), u16::from(L1), 2]);
-            konst(&mut ops, L2, 0xb95e_8083); // ln2_lo
-            sfp(&mut ops, mad, [u16::from(L1), u16::from(L2), u16::from(L7), u16::from(L7), 0]);
-            konst(&mut ops, L2, 0x3f31_8000); // ln2_hi
-            sfp(&mut ops, mad, [u16::from(L1), u16::from(L2), u16::from(L7), u16::from(L7), 0]);
-            // The special cases, each its own lanes.
-            sfp(&mut ops, abs, [u16::from(L0), u16::from(L2), 1, 0, 0]);
-            konst(&mut ops, L3, 0x0080_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L2), u16::from(L3), 1, 0, 0]);
-            konst(&mut ops, L7, 0xff80_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            konst(&mut ops, L3, 0x807f_ffff);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L0), u16::from(L3), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            konst(&mut ops, L3, 0x7f7f_ffff);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L3), u16::from(L0), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7f80_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            konst(&mut ops, L3, 0x7f80_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L3), u16::from(L0), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            // ---------------------------------------------------------------
-            // `y ln|x|` and `exp_program(L0, L7)`.
-            // ---------------------------------------------------------------
-            ld(&mut ops, b, o, L1, INT32);
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L1), LREG_ZERO, u16::from(L0), 2]);
-            konst(&mut ops, L1, 0x3fb8_aa3b); // log2 e
-            konst(&mut ops, L2, 0x4b40_0000); // 1.5 * 2^23
-            sfp(&mut ops, mad, [u16::from(L0), u16::from(L1), u16::from(L2), u16::from(L3), 0]);
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L3), u16::from(L2), u16::from(L4), 2]);
-            konst(&mut ops, L1, 0x3f31_8000); // ln2_hi
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L1), u16::from(L0), u16::from(L5), 1]);
-            konst(&mut ops, L1, 0xb95e_8083); // ln2_lo
-            sfp(&mut ops, mad, [u16::from(L4), u16::from(L1), u16::from(L5), u16::from(L5), 1]);
-            konst(&mut ops, L7, 0x3950_0d01); // 1/5040
-            konst(&mut ops, L6, 0x3ab6_0b61); // 1/720
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L5), u16::from(L6), u16::from(L7), 0]);
-            konst(&mut ops, L6, 0x3c08_8889); // 1/120
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L5), u16::from(L6), u16::from(L7), 0]);
-            konst(&mut ops, L6, 0x3d2a_aaab); // 1/24
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L5), u16::from(L6), u16::from(L7), 0]);
-            konst(&mut ops, L6, 0x3e2a_aaab); // 1/6
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L5), u16::from(L6), u16::from(L7), 0]);
-            konst(&mut ops, L6, 0x3f00_0000); // 1/2
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L5), u16::from(L6), u16::from(L7), 0]);
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L5), LREG_ONE, u16::from(L7), 0]);
-            sfp(&mut ops, mad, [u16::from(L7), u16::from(L5), LREG_ONE, u16::from(L7), 0]);
-            // `SFPMAD`'s automatic stall does not cover `SFPIADD`'s read.
-            sfp(&mut ops, nop, [0; 5]);
-            sfp(&mut ops, iadd, [0, u16::from(L3), u16::from(L2), 6, 0]);
-            sfp(&mut ops, shft, [23, u16::from(L2), u16::from(L2), 5, 0]);
-            sfp(&mut ops, iadd, [0, u16::from(L2), u16::from(L7), 4, 0]);
-            // The range and a NaN.
-            konst(&mut ops, L1, 0xc2ae_ac50);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L0), u16::from(L1), 1, 0, 0]);
-            sfp(&mut ops, mov, [LREG_ZERO, u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            konst(&mut ops, L1, 0x42b1_7218);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L0), u16::from(L1), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7f80_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            konst(&mut ops, L1, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L1), u16::from(L0), u16::from(L3), 1, 0]);
-            konst(&mut ops, L1, 0x7f80_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L1), u16::from(L3), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            // ---------------------------------------------------------------
-            // `pow_fix`: `x` in `L0`, `y` in `L1`, `e` in `L7`.
-            // ---------------------------------------------------------------
-            ld(&mut ops, a, o, L0, INT32);
-            ld(&mut ops, b, o, L1, INT32);
-            konst(&mut ops, L6, 0x7fff_ffff);
-            sfp(&mut ops, and, [u16::from(L6), u16::from(L0), u16::from(L2), 1, 0]);
-            sfp(&mut ops, and, [u16::from(L6), u16::from(L1), u16::from(L3), 1, 0]);
-            sfp(&mut ops, mov, [LREG_ZERO, u16::from(L4), 0, 0, 0]);
-            // `flags`: 0 not an integer, 1 an even integer, 3 an odd one.
-            konst(&mut ops, L6, 0x4b00_0000); // 2^23
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L3), u16::from(L6), 1, 0, 0]);
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L3), u16::from(L6), u16::from(L5), 0]);
-            sfp(&mut ops, mad, [LREG_ONE, u16::from(L5), u16::from(L6), u16::from(L6), 2]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L3), u16::from(L6), 1, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L6), u16::from(L3), 1, 0, 0]);
-            konst(&mut ops, L4, 0x0000_0001);
-            konst(&mut ops, L6, 0x0000_0001);
-            sfp(&mut ops, and, [u16::from(L6), u16::from(L5), u16::from(L6), 1, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L6), 0, 2, 0]);
-            konst(&mut ops, L4, 0x0000_0003);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            konst(&mut ops, L6, 0x4b00_0000); // 2^23
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L3), u16::from(L6), 1, 0, 0]);
-            konst(&mut ops, L5, 0x7f80_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L3), u16::from(L5), 1, 0, 0]);
-            konst(&mut ops, L4, 0x0000_0001);
-            konst(&mut ops, L5, 0x4b80_0000); // 2^24
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L3), u16::from(L5), 1, 0, 0]);
-            konst(&mut ops, L6, 0x0000_0001);
-            sfp(&mut ops, and, [u16::from(L6), u16::from(L3), u16::from(L6), 1, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L6), 0, 2, 0]);
-            konst(&mut ops, L4, 0x0000_0003);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            // A negative base.
-            konst(&mut ops, L6, 0x7f80_0000);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L0), 0, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L4), 0, 6, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L2), 0, 2, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L2), u16::from(L6), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, compc, [0; 5]);
-            konst(&mut ops, L5, 0x0000_0002);
-            sfp(&mut ops, and, [u16::from(L5), u16::from(L4), u16::from(L5), 1, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L5), 0, 2, 0]);
-            sfp(&mut ops, mov, [u16::from(L7), u16::from(L7), 1, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            // `y = ±inf`.
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L3), u16::from(L6), 1, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L6), u16::from(L3), 1, 0, 0]);
-            sfp(&mut ops, mov, [LREG_ZERO, u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L1), 0, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L2), LREG_ONE, 1, 0, 0]);
-            sfp(&mut ops, mov, [u16::from(L6), u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L1), 0, 4, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [LREG_ONE, u16::from(L2), 1, 0, 0]);
-            sfp(&mut ops, mov, [u16::from(L6), u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [LREG_ONE, u16::from(L2), 1, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L2), LREG_ONE, 1, 0, 0]);
-            sfp(&mut ops, mov, [LREG_ONE, u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            // NaNs.
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L6), u16::from(L2), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, gt, [u16::from(L6), u16::from(L3), 1, 0, 0]);
-            konst(&mut ops, L7, 0x7fc0_0000);
-            sfp(&mut ops, popc, [0; 5]);
-            // `1^y` and `x^0`.
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [LREG_ONE, u16::from(L0), 1, 0, 0]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, le, [u16::from(L0), LREG_ONE, 1, 0, 0]);
-            sfp(&mut ops, mov, [LREG_ONE, u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, popc, [0; 5]);
-            sfp(&mut ops, pushc, [0; 5]);
-            sfp(&mut ops, setcc, [0, u16::from(L3), 0, 6, 0]);
-            sfp(&mut ops, mov, [LREG_ONE, u16::from(L7), 0, 0, 0]);
-            sfp(&mut ops, popc, [0; 5]);
-            st(&mut ops, slot, o, L7, INT32);
         });
         ops.extend(body);
         ops
@@ -3629,6 +3135,9 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
+        // Before allocating: a materialised value whose row can survive to its
+        // last consumer does not need the L1 round trip at all.
+        self.tt_reclaim_round_trips();
         let mut prologue = self.head;
         for _ in 0..250_000 {
             if prologue.is_null() {
@@ -3918,7 +3427,7 @@ impl Kernel {
             }
         }
         let merged = u32::from(a_len) + u32::from(b_len) - tt_row_words(self.at(store_id)) - tt_row_words(self.at(load_id));
-        if merged == 0 || merged > tt_isa::frontend::REPLAY_BUFFER {
+        if merged == 0 {
             return false;
         }
         // Splice: rename `B`'s reads of the loaded register to the result
@@ -3934,6 +3443,204 @@ impl Kernel {
         self.remove_op(store_id);
         self.remove_op(load_id);
         true
+    }
+
+    /// Reclaim a materialised value's L1 round trip: `tt_dst_reuse`'s first
+    /// half.
+    ///
+    /// Lowering gives every value with more than one use a CB (`tt_materialize`:
+    /// pack the DST row, unpack it back for each consumer). That is only
+    /// necessary when the producer's row is reused before the last consumer.
+    /// When nothing claims the row in between, the value can stay in it and the
+    /// pair disappears — and with it the pack on T2, the unpack on T0 and both
+    /// seams `tt_reg_sync` would derive.
+    ///
+    /// Exact conditions: the CB is touched by exactly one pack and one unpack
+    /// (no publish, no drain, so it is not a kernel output); the unpack's
+    /// destination is written by nothing else; the producer's row is not
+    /// written between the pack and the last consumer; and the rows still fit
+    /// the tile budget afterwards, which is what makes this safe to do before
+    /// allocation — a reclamation that would need a ninth tile is left alone
+    /// rather than turned into a compile error. Repeats until nothing applies.
+    fn tt_reclaim_round_trips(&mut self) {
+        let mut tried: Vec<OpId> = Vec::new();
+        for _ in 0..250_000 {
+            let mut ops: Vec<OpId> = Vec::new();
+            let mut id = self.head;
+            for _ in 0..250_000 {
+                if id.is_null() {
+                    break;
+                }
+                ops.push(id);
+                id = self.next_op(id);
+            }
+            let Some((pack, unpack, cb, x, y)) = self.tt_round_trip(&ops, &tried) else {
+                return;
+            };
+            let Some(pack_idx) = ops.iter().position(|&o| o == pack) else {
+                return;
+            };
+            let mut keep = true;
+            // The unpack's row is written by the unpack alone: the consumers
+            // are reads, so moving them onto `x` is a pure rename.
+            let writers = ops.iter().filter(|&&op| self.tt_register_output(self.at(op)) == Some(y)).count();
+            if writers != 1 {
+                keep = false;
+            }
+            // Nothing but the consumers may write the producer's row in the
+            // window the reclamation extends it over.
+            if keep {
+                for &op in &ops[pack_idx + 1..] {
+                    if op == unpack || op == pack {
+                        continue;
+                    }
+                    if self.tt_register_output(self.at(op)) == Some(x) {
+                        keep = false;
+                        break;
+                    }
+                }
+            }
+            // The rows must still fit afterwards; a reclamation that needs one
+            // tile too many stays a round trip. The register file is uniform
+            // (`tt_verify` enforces it), so one width sets the budget.
+            let budget = ops
+                .iter()
+                .find_map(|&op| match self.at(op) {
+                    Op::Storage { dtype, scope: MemScope::Register, .. } => Some(if dtype.bit_size() > 16 { 8 } else { 16 }),
+                    _ => None,
+                })
+                .unwrap_or(8);
+            if keep && self.tt_live_peak(&ops, Some((x, y))) > budget {
+                keep = false;
+            }
+            if !keep {
+                tried.push(cb);
+                continue;
+            }
+            // Move every use of the unpacked row onto the producer's row, then
+            // drop the pair (and the CB, if nothing else names it).
+            let mut rewrites: Vec<(OpId, usize)> = Vec::new();
+            for &op in &ops {
+                if op == pack || op == unpack {
+                    continue;
+                }
+                for (idx, p) in self.at(op).parameters().enumerate() {
+                    if p == y {
+                        rewrites.push((op, idx));
+                    }
+                }
+            }
+            for (op, idx) in rewrites {
+                if let Some(slot) = self.ops[op].op.parameters_mut().nth(idx) {
+                    *slot = x;
+                }
+            }
+            self.remove_op(unpack);
+            self.remove_op(pack);
+            let still_used = {
+                let mut id = self.head;
+                let mut used = false;
+                for _ in 0..250_000 {
+                    if id.is_null() {
+                        break;
+                    }
+                    if self.at(id).parameters().any(|p| p == cb) {
+                        used = true;
+                        break;
+                    }
+                    id = self.next_op(id);
+                }
+                used
+            };
+            if !still_used {
+                self.remove_op(cb);
+            }
+            // The unpacked row is dead now; dropping it keeps the tile budget
+            // honest before the allocator counts.
+            self.remove_op(y);
+        }
+    }
+
+    /// One reclaimable round trip in `ops`: `(pack, unpack, cb, producer row,
+    /// unpack row)`. A CB already in `tried` is skipped.
+    fn tt_round_trip(&self, ops: &[OpId], tried: &[OpId]) -> Option<(OpId, OpId, OpId, OpId, OpId)> {
+        let mut packs: Map<OpId, Vec<OpId>> = Map::default();
+        let mut unpacks: Map<OpId, Vec<OpId>> = Map::default();
+        let mut touched: Vec<OpId> = Vec::new();
+        for &op in ops {
+            let Op::TT(TTOp::Copy { .. }) = self.at(op) else { continue };
+            match self.tt_copy_kind(op) {
+                TtCopy::Pack => {
+                    let Op::TT(TTOp::Copy { dst, .. }) = self.at(op) else {
+                        unreachable!()
+                    };
+                    packs.entry(*dst).or_default().push(op);
+                }
+                TtCopy::Unpack => {
+                    let Op::TT(TTOp::Copy { src, .. }) = self.at(op) else {
+                        unreachable!()
+                    };
+                    unpacks.entry(*src).or_default().push(op);
+                }
+                // A publish or drain makes the CB a DRAM boundary: not a
+                // round trip.
+                TtCopy::Publish | TtCopy::Drain => touched.push(op),
+            }
+        }
+        let mut found: Option<(OpId, OpId, OpId, OpId, OpId)> = None;
+        for (&cb, ps) in packs.iter() {
+            if ps.len() != 1 || tried.contains(&cb) || touched.iter().any(|&op| self.at(op).parameters().any(|p| p == cb)) {
+                continue;
+            }
+            let Some(us) = unpacks.get(&cb) else { continue };
+            if us.len() != 1 {
+                continue;
+            }
+            let (pack, unpack) = (ps[0], us[0]);
+            let (Op::TT(TTOp::Copy { src: x, .. }), Op::TT(TTOp::Copy { dst: y, .. })) = (self.at(pack), self.at(unpack)) else {
+                continue;
+            };
+            found = Some((pack, unpack, cb, *x, *y));
+            break;
+        }
+        found
+    }
+
+    /// Peak number of live `Register` tiles over `ops`, with `merge`'s pair
+    /// treated as one value in `x` that lives to `y`'s last use. That is what
+    /// the allocator will need, since a row frees once its last use is past.
+    fn tt_live_peak(&self, ops: &[OpId], merge: Option<(OpId, OpId)>) -> usize {
+        let mut first: Map<OpId, usize> = Map::default();
+        let mut last: Map<OpId, usize> = Map::default();
+        for (i, &op) in ops.iter().enumerate() {
+            for p in self.at(op).parameters() {
+                if p.is_null() || !matches!(self.ops[p].op, Op::Storage { scope: MemScope::Register, .. }) {
+                    continue;
+                }
+                first.entry(p).or_insert(i);
+                last.insert(p, i);
+            }
+        }
+        if let Some((x, y)) = merge {
+            if let Some(&end) = last.get(&y) {
+                last.insert(x, end);
+            }
+            first.remove(&y);
+            last.remove(&y);
+        }
+        let mut delta = vec![0i32; ops.len() + 2];
+        for (s, &f) in first.iter() {
+            let l = last[s];
+            delta[f] += 1;
+            delta[l + 1] -= 1;
+        }
+        let mut run = 0i32;
+        let mut peak = 0i32;
+        for d in delta {
+            run += d;
+            peak = peak.max(run);
+        }
+        peak as usize
     }
 
     /// Role hand-off over the DST tiles: `tt_reg_sync`. This is the only pass
@@ -4482,10 +4189,12 @@ impl Kernel {
                 Op::TT(TTOp::Replay { len, count }) => {
                     assert!(section == 1, "tt_verify: replay outside the compute section at {id:?}");
                     assert!(replay_left.is_none(), "tt_verify: nested replay at {id:?}");
+                    // A body that fits the replay buffer is a hardware `REPLAY`;
+                    // a longer one is a block repeat the runner pushes
+                    // (`mailbox::loops`), so the buffer is not its limit.
                     assert!(
-                        *len > 0 && u32::from(*len) <= tt_isa::frontend::REPLAY_BUFFER,
-                        "tt_verify: replay body of {len} words does not fit the {}-word buffer at {id:?}",
-                        tt_isa::frontend::REPLAY_BUFFER
+                        *len > 0 && u32::from(*len) < 1 << tt_isa::mailbox::loops::LEN_BITS,
+                        "tt_verify: replay body of {len} words at {id:?} exceeds the block repeat's length field"
                     );
                     assert!(*count >= 2, "tt_verify: replay count {count} at {id:?}");
                     replay_left = Some(u32::from(*len));
@@ -4684,7 +4393,6 @@ mod sfp_row_ops {
             sf::RECIP,
             sf::FLOOR,
             sf::TRUNC,
-            sf::SIGMOID,
             sf::SIN,
             sf::COS,
         ];
@@ -4693,7 +4401,6 @@ mod sfp_row_ops {
             crate::backend::tenstorrent::kern::kind::SUB,
             crate::backend::tenstorrent::kern::kind::MUL,
             sf::DIV,
-            sf::POW,
             sf::EQ,
             sf::NE,
             sf::GT,
@@ -4747,7 +4454,6 @@ mod sfp_row_ops {
                 | sf::RECIP
                 | sf::FLOOR
                 | sf::TRUNC
-                | sf::SIGMOID
                 | sf::SIN
                 | sf::COS
         )
@@ -4820,7 +4526,6 @@ mod sfp_row_ops {
             sf::RECIP,
             sf::FLOOR,
             sf::TRUNC,
-            sf::SIGMOID,
             sf::SIN,
             sf::COS,
         ] {
@@ -4835,7 +4540,6 @@ mod sfp_row_ops {
             crate::backend::tenstorrent::kern::kind::SUB,
             crate::backend::tenstorrent::kern::kind::MUL,
             sf::DIV,
-            sf::POW,
             sf::EQ,
             sf::NE,
             sf::GT,

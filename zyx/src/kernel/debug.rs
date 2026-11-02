@@ -127,8 +127,9 @@ impl Kernel {
                 Op::TT(TTOp::Unpack(ref words)) => {
                     writeln!(f, "{indent}{blue}unpack{reset} {} words", words.len()).unwrap();
                 }
-                Op::TT(TTOp::Math(ref words)) => {
-                    writeln!(f, "{indent}{blue}math{reset} {} words", words.len()).unwrap();
+                Op::TT(TTOp::Math(ref program)) => {
+                    writeln!(f, "{indent}{blue}math{reset} {} words, {} loops", program.words.len(), program.loops.len())
+                        .unwrap();
                 }
                 Op::TT(TTOp::Pack(ref words)) => {
                     writeln!(f, "{indent}{blue}pack{reset} {} words", words.len()).unwrap();

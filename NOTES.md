@@ -16,10 +16,98 @@
 
 ### Start here — session handoff (2026-11-02, fourth pass)
 
-**Both bugs fixed; `exp2`, `sigmoid` and `sum_sigmoid` are green, and
-`tt_sfpu_fusion` exists.**
+**Both bugs fixed; `exp2`, `sigmoid` and `sum_sigmoid` are green,
+`tt_sfpu_fusion` exists, the materialised CB round trips are reclaimed, and the
+`SIGMOID`/`POW` emitters are deleted.**
 
-0. **`tt_sfpu_fusion` (new, `device_epilogue` between `tt_dataflow_select`
+0. **`SIGMOID` and `POW` emitters deleted.** Proved dead with the notes' own
+   recipe first: both dispatch branches were replaced by
+   `todo!("PROOF: ...")` and all 16 ttsim gates ran green — nothing reached
+   them. Then removed:
+   - `tt_sfp_sigmoid` and `tt_sfp_pow` (≈470 lines);
+   - their `tt_sfp_sequence` branches;
+   - both `sigmoid_pat` pattern rows *and* their `Pat` construction (they match
+     a cone that cannot exist by then: `tt_unfold` has already turned `Exp2`
+     into IR, and `Tensor::sigmoid` is `1/(exp(-x)+1)` at the tensor level, so
+     there is no sigmoid op at all);
+   - `SIGMOID`/`POW` from `sfp_row_ops`'s kind lists (`ported`, `unary`, and the
+     A/B lists).
+   `bop_kind`'s `BOp::Pow => sf::POW` mapping was left in place: it only names a
+   kind, and `unfold_pows` runs in `default_epilogue` before lowering, so no
+   `Pow` survives to use it. **`SIN`/`COS` are still live** — `tt_unfold` only
+   handles `Exp2 | Log2`, so `tt_sfp_sin_cos` stays until the trigonometry
+   program is transcribed into IR ops (deliberately left for later).
+
+1. **`tt_dst_reuse` now reclaims round trips (`tt_reclaim_round_trips`), and
+   `tt_sfpu_fusion` runs a second time after it.**
+   A value with more than one use is materialised by lowering (pack its row,
+   unpack it back for the consumers) only because the producer's row *might* be
+   reused first. The pass deletes that pack and unpack when:
+   - the CB is touched by exactly one pack and one unpack and nothing else
+     (`Publish`/`Drain` excluded — that would be a kernel output);
+   - the unpack's destination is written by the unpack alone (consumers only
+     read, so moving them onto the producer's row is a pure rename);
+   - nothing writes the producer's row between the pack and the last consumer;
+   - the projected peak live tiles still fit the budget
+     (`tt_live_peak(ops, Some((x, y)))`, which is the allocator's row count: a
+     row frees once its last use is past; 8 for 32-bit tiles, 16 for 16-bit).
+
+   A candidate that fails the budget is skipped (`tried`), not forced: the pass
+   must never turn a working kernel into a `tt_verify` budget error. The CB and
+   the now-unused unpack row are removed with it.
+
+   Then the epilogue runs **`tt_sfpu_fusion` again**: with the round trip gone,
+   the consumers read the producer's row directly, so the store→load edges it
+   skips (`Pack`/`Unpack` in between) are now adjacent. Both passes only remove
+   row ops, so the physical rows stay valid.
+
+   Measured on `sigmoid` (one kernel): `tt_copy` **14 → 4** (only the DRAM
+   publish, the input unpack, the output pack and the drain are left — every
+   intermediate round trip is gone), seams **23 → 2** posts/takes, values still
+   bit-identical, 15 gates green. `matmul_sigmoid` is still the pre-existing
+   `9 DST register tiles exceed the 8-tile budget` — the reclamation cannot help
+   there because its baseline peak is already over the budget.
+
+2. **Block repeats are wired (`mailbox::loops`), and row loops no longer
+   unroll.** `tt_row_loop` now always emits `TTOp::Replay { len, count }`; the
+   *codegen* picks the mechanism from the length:
+   - `len <= REPLAY_BUFFER (32)` — the hardware `REPLAY` record, unchanged.
+   - longer — a **block repeat**: no record word, the body appears once in the
+     role program, and a `[start, len, count]` entry goes in the program's loop
+     header. `tt_isa::mailbox::loops` already had the format (`MAX = 4`, two
+     deep, `count <= 128`), `code::stored(words, loops)` already produced the
+     header, and `tt_isa::dataflow::LENGTH_MASK` already existed on the firmware
+     side — the missing piece was plumbing.
+
+   Plumbing, in order: `TTOp::Math` carries `TTRoleProgram { words, loops }`
+   (one `Box`, so `Op` stays 24 bytes — the `const _` assert in `ops.rs` still
+   fires); `TtSection::loops: [Vec<[u32; 3]>; 3]` collects them in
+   `finish_replay`; `render` returns them, shifted by `tt_math_role`'s preamble
+   (it now returns `(words, preamble)` — the trap below); `TTProgram.loops`
+   carries them to `render_tt`; the backend turns them into `code::Loop` and
+   hands them to `stored`. The launch's `ProgramTooLong` check masks the
+   `LOOPED`/`STREAMED` bits now (a looped program's length word is
+   `len | 1 << 31`).
+
+   **Trap found while wiring it:** the loop `start` indexes the *role program
+   the runner pushes*, which begins with `tt_math_role`'s preamble — and that
+   function both prepends the state id **and appends an SFPU drain**, so
+   `role.len() - body.len()` is 2, not 1. The first version shifted by 2, which
+   moved `start` one word past the body: the loop then pushed
+   `[load b, mad, store, SETRWC]` instead of `[load a, load b, mad, store]`, so
+   the first operand was missing *and* the trailing clear reset the row counter
+   every iteration. Symptom: the first row group right, the rest stale. Hence
+   the explicit `preamble` return.
+
+   Measured: `sigmoid` T1 **4551 → 2172 words** (2 block repeats), `unary_math`
+   T1 58 words with its 43-word sqrt body as one block repeat, `exp2` T1 1930
+   with one 34-word repeat. All 15 gates green, values unchanged.
+
+   Limits/gotchas: at most 4 block repeats per role (`loops::MAX`, a loud
+   compile error past it), `1 <= len < 4096`, `count <= 128`, and two loops may
+   be nested at most once (the runner checks the table and fails loudly).
+
+3. **`tt_sfpu_fusion` (new, `device_epilogue` between `tt_dataflow_select`
    and `tt_dst_reuse`).** DST only, exactly as settled: splice adjacent
    `Replay` units along `A`'s trailing `SfpStore slot S` → `B`'s leading
    `SfpLoad slot S`, keep the value in `A`'s result register, rename the
@@ -35,7 +123,7 @@
    Deliberately *not* in this pass: anything CB-shaped. A `Pack`/`Unpack`
    means T2/T0, so those sequences are not adjacent and never fuse.
 
-1. **The missing packer → unpacker seam (fixed).** `tt_reg_sync` only put
+4. **The missing packer → unpacker seam (fixed).** `tt_reg_sync` only put
    `Register` storages in `touches`, so a `tt_materialize` round trip
    (DST → CB on the packer, CB → DST on the unpacker) had **no edge at all**:
    the unpack raced the pack and read whatever the CB held before. Symptom: the
@@ -47,7 +135,7 @@
    logic then emits the T2 → T0 data seam and its reuse seam. It was a real
    race, not a sim artifact — `y = x*2` used twice passed by luck (its unpack
    happened to run after the pack), any longer chain lost.
-2. **Integer `Add` lowered through the F32 arm (fixed).**
+5. **Integer `Add` lowered through the F32 arm (fixed).**
    `Op::Binary { bop: Add }` was dispatched by `bop` alone, so `tt_exp2`'s
    `bits(d) + (n << 23)` became `SFPMAD`'s float add
    (`0x3f800000 + 0x00800000` = `1.0 + 1.2e-38`, a no-op) and every lane with
@@ -82,17 +170,17 @@ the two bugs; it also hits ttsim's `SRCA_SET_SetOvrdWithAddr=1` limitation).
    it, and keep it only if a re-run of the linear scan still fits the 8-tile
    budget (greedy + revert; there is no spill yet). `sigmoid` has 7 such round
    trips = 14 of its 23 hand-offs, so that is where the remaining win is.
-2. **Splice into bodies over 32 words**: the same store→load rule against a
-   `tt_row_loop`'s unrolled 32-copy form, or teach `TTOp::Replay` block
-   repeats (`mailbox::loops` + `code::stored(words, loops)`, one line at
-   `backend/tenstorrent/mod.rs:881`). `sigmoid`'s two 24-word bodies are the
-   pairs that currently miss because 24 + 24 − 2 > 32.
-3. `matmul_sigmoid` and the allocator peak (fusion and (1) both reduce live
+2. **`matmul_sigmoid` and the allocator peak** (fusion and (1) both reduce live
    tiles, so this may fall out).
-4. The integer **`Sub`** in `tt_log2`'s `e - 127` has the same dtype-blind
+3. **The integer `Sub`** in `tt_log2`'s `e - 127` has the same dtype-blind
    problem the `Add` had (follow the `DType::I32` dispatch), and `tt_log2`
    still fails to compile on
    `native unpack ... needs an F32 DST tile, got I32`.
+4. **More block repeats than 4**: a role program may carry only
+   `mailbox::loops::MAX` of them, so a kernel with five long row loops is a
+   loud compile error today. If that shows up, either nest the row loops inside
+   one outer `count = 32` loop (they all repeat the same number of times), which
+   is the natural fix, or fall back to unrolling for the extra ones.
 
 **How the hunt went (so it is not repeated):** `ZYX_DEBUG=264` gives the
 post-epilogue TT IR. What localized it: a temporary print of the role streams

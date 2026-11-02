@@ -82,6 +82,10 @@ pub struct TTProgram {
     /// and [`TTOp::Pack`] in the rendered kernel; the C++ source is only the
     /// not-yet-ported fallback.
     pub roles: [Vec<u32>; 3],
+    /// Block repeats per role (`[start, len, count]` over `roles`), from row
+    /// loop bodies longer than the replay buffer. They ride on
+    /// [`TTOp::Math`] so the launch hands them to the runner.
+    pub loops: [Vec<[u32; 3]>; 3],
     /// The DRAM boundary: one move per reader publish (param -> CB) and per
     /// writer drain (CB -> param), in program order. Render expands each into
     /// one [`TTOp::DmRead`]/[`TTOp::DmWrite`] per 4 KB page.
@@ -129,12 +133,16 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let [unpack, math, pack] = program.roles;
+        let [_, math_loops, _] = program.loops;
         let mut rendered =
             Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
         rendered.push_back(Op::TT(TTOp::Unpack(unpack.into_boxed_slice())));
-        rendered.push_back(Op::TT(TTOp::Math(math.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Math(Box::new(crate::kernel::TTRoleProgram {
+            words: math.into_boxed_slice(),
+            loops: math_loops.into_boxed_slice(),
+        }))));
         rendered.push_back(Op::TT(TTOp::Pack(pack.into_boxed_slice())));
         // The reader list: one op per 4 KB page, so the stream's shape is
         // fixed here and the launch only substitutes addresses (NOTES §2).
@@ -254,13 +262,13 @@ impl Kernel {
         // Render.
         let l1 = tt_place_cbs(k, &cb_order)?;
         let mut sems: Vec<TTSemaphoreInit> = Vec::new();
-        let (reader_src, compute_src, writer_src, roles) = render(k, &param_ordinal_of, &cbs, &l1, &mut sems)?;
+        let (reader_src, compute_src, writer_src, roles, loops) = render(k, &param_ordinal_of, &cbs, &l1, &mut sems)?;
 
         // The DRAM boundary: one move per reader publish and per writer drain,
         // in program order. `render_tt` splits each into page ops.
         let (reader, writer) = tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?;
 
-        Ok(TTProgram { reader_src, compute_src, writer_src, roles, reader, writer, sems })
+        Ok(TTProgram { reader_src, compute_src, writer_src, roles, loops, reader, writer, sems })
     }
 }
 
@@ -473,9 +481,16 @@ struct TtSection<'a> {
     /// A `Replay` body still being emitted: `(first word, word count,
     /// repeats)`. The body is the next `len` words pushed to T1.
     replay: Option<(usize, u16, u16)>,
+    /// `true` while the pending row loop is a *block repeat* rather than a
+    /// hardware `REPLAY`: its body is longer than the replay buffer, so the
+    /// runner pushes it `count` times instead (`mailbox::loops`).
+    replay_block: bool,
     /// Which role stream the last emitted op went to (0 = T0, 1 = T1,
     /// 2 = T2): a semaphore op joins the stream of the instruction before it.
     last_role: u8,
+    /// Block repeats per role, `[start, len, count]` over that role's words:
+    /// a row loop body longer than the replay buffer is pushed this way.
+    loops: [Vec<[u32; 3]>; 3],
     /// Semaphore init list from `Semset` ops (the run's concurrent schedule).
     sems: Vec<TTSemaphoreInit>,
     /// Compute value ops emitted so far: `ZEROACC` mode 3 (`CLR_ALL`) is only
@@ -649,23 +664,24 @@ impl<'a> TtSection<'a> {
         }
     }
 
-    /// Begin a recorded row loop (`REPLAY`): set the row address modifier up,
-    /// emit the record instruction, and remember that the next `len` T1 words
-    /// are the body. Those words run once while being recorded; `finish_replay`
-    /// emits the rest.
+    /// Begin a row loop: set the row address modifier up and remember that the
+    /// next `len` T1 words are the body. A body that fits the replay buffer is
+    /// recorded in hardware (`REPLAY`, executed once while being recorded); a
+    /// longer one is a *block repeat*: the body is emitted once and the runner
+    /// pushes it `count` times, so its length is not bounded by the buffer.
     fn begin_replay(&mut self, len: u16, count: u16) -> Result<(), BackendError> {
         use tt_isa::isa::generated::encode;
         if self.replay.is_some() {
             return Err(self.err("replay: a body cannot contain another".to_string()));
         }
-        if !(1..=tt_isa::frontend::REPLAY_BUFFER as u16).contains(&len) {
-            return Err(self.err(format!(
-                "replay: a {len}-word body does not fit the {}-word replay buffer",
-                tt_isa::frontend::REPLAY_BUFFER
-            )));
-        }
         if count < 2 {
             return Err(self.err(format!("replay: {count} is not a repeat count")));
+        }
+        if u32::from(len) >= 1 << tt_isa::mailbox::loops::LEN_BITS {
+            return Err(self.err(format!(
+                "replay: a {len}-word body does not fit a block repeat's {} length bits",
+                tt_isa::mailbox::loops::LEN_BITS
+            )));
         }
         use crate::backend::tenstorrent::kern::datapath::{addr_mod_entry, thread_entry};
         let row = addr_mod_entry(0);
@@ -673,8 +689,11 @@ impl<'a> TtSection<'a> {
         self.native.push(thread_entry(row.dst_incr, 0).word());
         self.native.push(thread_entry(step.dst_incr, 2).word());
         self.native.push(setrwc_clear());
-        let record = encode::replay(0, u32::from(len), 1, 1).map_err(|e| self.err(format!("replay: {e:?}")))?;
-        self.native.push(record.word());
+        self.replay_block = u32::from(len) > tt_isa::frontend::REPLAY_BUFFER;
+        if !self.replay_block {
+            let record = encode::replay(0, u32::from(len), 1, 1).map_err(|e| self.err(format!("replay: {e:?}")))?;
+            self.native.push(record.word());
+        }
         self.replay = Some((self.native.len(), len, count));
         self.last_role = 1;
         Ok(())
@@ -709,12 +728,18 @@ impl<'a> TtSection<'a> {
             })
             .ok_or_else(|| self.err("replay: the body never touches Dst".to_string()))?;
         self.native[index] |= field.place(7);
-        for _ in 1..count {
-            let again = encode::replay(0, u32::from(len), 0, 0).map_err(|e| self.err(format!("replay: {e:?}")))?;
-            self.native.push(again.word());
+        if self.replay_block {
+            // The runner pushes `words[start..start + len]` `count` times.
+            self.loops[1].push([start as u32, u32::from(len), u32::from(count)]);
+        } else {
+            for _ in 1..count {
+                let again = encode::replay(0, u32::from(len), 0, 0).map_err(|e| self.err(format!("replay: {e:?}")))?;
+                self.native.push(again.word());
+            }
         }
         self.native.push(setrwc_clear());
         self.replay = None;
+        self.replay_block = false;
         Ok(())
     }
 
@@ -1528,16 +1553,17 @@ fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
 }
 
 /// T1, the math role: the state id, then the per-op math programs in
-/// emission order, then an SFPU drain.
-fn tt_math_role(body: Vec<u32>) -> Vec<u32> {
+/// emission order, then an SFPU drain. Also returns how many words precede the
+/// body: a block repeat's `start` indexes this array, not the body.
+fn tt_math_role(body: Vec<u32>) -> (Vec<u32>, u32) {
     use tt_isa::backend::{Before, wait_for_sfpu};
     if body.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let mut role: Vec<u32> = vec![crate::backend::tenstorrent::kern::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_sfpu(Before::EVERYTHING).expect("wait_for_sfpu(EVERYTHING) is encodable").word());
-    role
+    (role, 1)
 }
 
 /// T2, the pack role: the state id, then one self-contained DST -> CB pack
@@ -1560,7 +1586,7 @@ fn render(
     cbs: &Map<OpId, u32>,
     l1: &[u32],
     sems: &mut Vec<TTSemaphoreInit>,
-) -> Result<(String, String, String, [Vec<u32>; 3]), BackendError> {
+) -> Result<(String, String, String, [Vec<u32>; 3], [Vec<[u32; 3]>; 3]), BackendError> {
     let mut sections: [Vec<OpId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut section = 0usize;
     let mut op_id = k.head;
@@ -1639,6 +1665,7 @@ fn render(
     let mut srcs = [String::new(), String::new(), String::new()];
     // The compute core's three programs, filled by the compute section below.
     let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut loops: [Vec<[u32; 3]>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut fp32 = false; // 32-bit DST mode: any F32 tile, or any F8 circular (Blackhole
     // mandate). F32 circulars are accepted (format 0), like the old backend.
     let mut scan = k.head;
@@ -1726,7 +1753,9 @@ fn render(
             native_t0: Vec::new(),
             native_t2: Vec::new(),
             replay: None,
+            replay_block: false,
             last_role: 1,
+            loops: [Vec::new(), Vec::new(), Vec::new()],
             sems: Vec::new(),
             compute_ops: 0,
             acc_row: 0,
@@ -1887,12 +1916,13 @@ fn render(
             // (`Schedule::InOrder`), so no semaphores: each role drains its
             // unit before the firmware reports it done. The three streams
             // become `TTOp::Unpack`/`Math`/`Pack`: codegen is the encoder.
-            roles = [
-                tt_unpack_role(section_t0, sec.has_src_unpack),
-                tt_math_role(section_native),
-                tt_pack_role(section_t2),
-            ];
+            let (math, preamble) = tt_math_role(section_native);
+            roles = [tt_unpack_role(section_t0, sec.has_src_unpack), math, tt_pack_role(section_t2)];
             *sems = std::mem::take(&mut sec.sems);
+            loops = std::mem::take(&mut sec.loops);
+            for entry in &mut loops[1] {
+                entry[0] += preamble;
+            }
         } else {
             debug_assert!(section_native.is_empty(), "native compute words outside the compute section");
             debug_assert!(section_t0.is_empty(), "native unpack words outside the compute section");
@@ -1901,7 +1931,7 @@ fn render(
         srcs[s] = sec.out;
     }
 
-    Ok((srcs[0].clone(), srcs[1].clone(), srcs[2].clone(), roles))
+    Ok((srcs[0].clone(), srcs[1].clone(), srcs[2].clone(), roles, loops))
 }
 
 /// Render a traffic `Copy`: publish (DRAM→CB, NOC read) or drain

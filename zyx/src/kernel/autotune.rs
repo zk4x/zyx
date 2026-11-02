@@ -131,6 +131,11 @@ impl Kernel {
             // pass coalesces it down to the physical tile budget. It must run
             // after allocation and before codegen.
             self.tt_dst_reuse();
+            // Reclaiming a round trip leaves the consumers reading the
+            // producer's row directly, so the pairs it exposed are the
+            // adjacent store->load edges fusion wants. Any order, any
+            // repetition: this second run only removes row ops.
+            self.tt_sfpu_fusion();
             // Last: the role hand-off over the final physical tiles. It has to
             // see where allocation put every tile, and it is the only pass
             // that emits `Semset`/`Wait`/`Post`.

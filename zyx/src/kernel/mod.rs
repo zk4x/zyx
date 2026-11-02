@@ -100,7 +100,7 @@ pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{
     BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTDmRead, TTDmWrite, TTOp,
-    TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore, TileDim,
+    TTRoleProgram, TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore, TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};

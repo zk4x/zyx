@@ -618,6 +618,19 @@ pub struct TTSfpStore {
     pub fmt: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One role's program ([`TTOp::Math`]): the instruction words codegen encoded,
+/// plus the block repeats the role runner pushes. A loop entry is
+/// `[start, len, count]`: push `words[start..start + len]` `count` times. This
+/// is how a row loop body longer than the 32-word hardware replay buffer is
+/// stored — one copy of the body in the program instead of 32 unrolled ones.
+pub struct TTRoleProgram {
+    /// The program's instruction words, in push order.
+    pub words: Box<[u32]>,
+    /// Block repeats over `words`, at most `mailbox::loops::MAX`.
+    pub loops: Box<[[u32; 3]]>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// One lane-register immediate ([`TTOp::SfpConst`]): `reg = bits`, in every
 /// enabled lane. One `SFPLOADI` when the low half is zero, two otherwise.
@@ -728,8 +741,13 @@ pub enum TTOp {
     /// role's program slot; nothing decodes them. Operand-free effect like
     /// [`TTOp::EndReader`]. Boxed to keep `Op` in budget.
     Unpack(Box<[u32]>),
-    /// The compute core's T1 program. See [`TTOp::Unpack`].
-    Math(Box<[u32]>),
+    /// The compute core's T1 program: its instruction words plus the block
+    /// repeats the runner pushes (`mailbox::loops`, at most
+    /// `loops::MAX` entries of `[start, len, count]` word ranges). Codegen
+    /// emits a row loop longer than the replay buffer this way: the body
+    /// appears once and the runner repeats it, so a fused body of any length
+    /// costs one copy in the program. Boxed to keep `Op` in budget.
+    Math(Box<TTRoleProgram>),
     /// The compute core's T2 program. See [`TTOp::Unpack`].
     Pack(Box<[u32]>),
     /// TT copy: DRAM<->CB traffic, CB->DRAM drain, and the CB->DST

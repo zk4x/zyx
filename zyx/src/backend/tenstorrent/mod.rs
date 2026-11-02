@@ -780,6 +780,7 @@ impl TTDevice {
         let mut reader: Vec<TTDmMove> = Vec::new();
         let mut writer: Vec<TTDmMove> = Vec::new();
         let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut math_loops: Vec<[u32; 3]> = Vec::new();
         let mut semset: Vec<TTSemaphoreInit> = Vec::new();
         let mut gws: Option<Vec<GwsDim>> = None;
         let mut n_inputs = 0u32;
@@ -806,7 +807,10 @@ impl TTDevice {
                 }
                 Op::TT(TTOp::TensixGrid(grid)) => gws = Some(grid.to_vec()),
                 Op::TT(TTOp::Unpack(words)) => roles[0] = words.to_vec(),
-                Op::TT(TTOp::Math(words)) => roles[1] = words.to_vec(),
+                Op::TT(TTOp::Math(program)) => {
+                    roles[1] = program.words.to_vec();
+                    math_loops = program.loops.to_vec();
+                }
                 Op::TT(TTOp::Pack(words)) => roles[2] = words.to_vec(),
                 Op::TT(TTOp::DmRead(page)) => reader.push(TTDmMove {
                     param: page.param,
@@ -878,7 +882,13 @@ impl TTDevice {
             if words.is_empty() {
                 continue;
             }
-            let (stored, len) = kern::code::stored(words, &[]).map_err(|e| BackendError {
+            // Block repeats belong to T1's stream (row loops are SFPU work).
+            let loops: Vec<kern::code::Loop> = if thread == 1 {
+                math_loops.iter().map(|l| kern::code::Loop { start: l[0], len: l[1], count: l[2] }).collect()
+            } else {
+                Vec::new()
+            };
+            let (stored, len) = kern::code::stored(words, &loops).map_err(|e| BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("tenstorrent: role T{thread} program: {e}").into(),
             })?;

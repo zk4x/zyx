@@ -393,7 +393,9 @@ pub fn run<T: Transport, N: NocId>(
     let setup = assemble(kernel)?;
     for (thread, program) in kernel.programs.iter().enumerate() {
         if let Some(len) = program
-            && *len > mailbox::PROGRAM_MAX
+            // The length word also carries the STREAMED/LOOPED flags; a
+            // program with block repeats is longer on the wire, not in slots.
+            && *len & tt_isa::dataflow::LENGTH_MASK > mailbox::PROGRAM_MAX
         {
             return Err(RunError::ProgramTooLong { thread, len: *len as usize });
         }
