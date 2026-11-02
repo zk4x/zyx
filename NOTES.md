@@ -562,11 +562,36 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `accumulate(Sum, Cols, first)` (a tile copy — the first tile *is* the
   accumulator) then `finish(Sum, Cols)` (four faces lanewise per tile row,
   then the eight lanes' seven `SFPSHFT2` rotations). `tt_dataflow_select`'s
-  Reduce arm now emits that as row ops for `BOp::Add && TileDim::Row`; every
-  other reduce (`Max`, the in-order `Axis::Rows` sum, `TileDim::Scalar`'s
-  two-pass scratch) is still `ReduceTile` → `tt_reduce_program`. The in-order
-  accumulator is **not** gated (both `sum` gates reduce `dim = 1`), so port it
-  only with a gate or `interp` behind it.
+  Reduce arm emits it as row ops.
+- **The other reduce variants are not reachable, so their port is
+  unverified — and gated as such.** The same arm also transcribes
+  `Row + Max`, `Scalar + Add` and `Scalar + Max` (the in-order sum,
+  `finish(Max, Rows)`'s `SFPTRANSP`, the whole-tile copy), and
+  `tests/23_tt_lowering.rs` has `max`, `sum_scalar` and `max_scalar` for
+  them: all three are red at `tt_verify: missing EndReader`, which is the
+  proof that the emitter is never reached (not a wrong number). Like
+  `softmax`, they are bug documents — do not delete them to get green.
+  On the TT path the frontend keeps those reduces as a **lane-space** reduce
+  or a live `Op::Loop`, and
+  `tt_dataflow_select` bails before any pattern runs:
+  `max_keepdim([1])` on `[10, 20]` gives `[32x32x32] load → reduce max over
+  lanes 32` (bails at the `shape != [32, 32]` tile-load check in phase 1),
+  the same on `[100, 64]` and `sum([0, 1])` gives a `Loop` (bails at the top),
+  and `TileDim::Col` has no producer at all (`Kernel::reduce_tile` is
+  `todo!()`). That is the `softmax` class of gap: `devectorize` is **not** in
+  the TT epilogue (`autotune.rs:102-104`), so the lane reduce has to be folded
+  before `tt_dataflow_select` and only the sum case is. Until that happens the
+  Max/Scalar code paths and `ReduceTile` itself are dead, and the port cannot
+  be gated — do not "verify" them by inspection and call it done.
+- **The scalar reduce's scratch is an IR storage now.** It used to be
+  `sec.fresh_slot() * 64` inside codegen, a row outside the declared register
+  file that no op named. `SfpLoad`/`SfpStore` have to name a `Storage`, so the
+  lowering declares it with `tt_new_dst`. The in-place prohibition stays safe
+  because `tt_dst_reuse` frees a row only once `last_use` is past, and the
+  accumulator's last use is the closing copy — *after* the zeroing stores that
+  first mention the scratch, which is exactly what `accumulate_in_order`
+  needs. Note that liveness, not the row's position, is what guarantees it
+  now.
 - **`SFPSHFT2` is a missed-stall reader too.** `rotate_row` is `Mod1 = 3`, one
   of `stall_modes::SHFT2_MISSED`, so every rotation that follows an `SFPMAD`
   needs an `SFPNOP` (the first one follows an `SFPMOV` and does not). The
@@ -574,10 +599,14 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   `finish()` drops six NOPs per group without changing the names, so compare
   words or the gate will only show it on other data.
 - **Next**: the remaining SFPU kinds — `FLOOR`/`TRUNC` (`round::body`), the
-  comparisons, the integers — then `Max` and the scalar reduce (needs a
-  scratch tile: `TileDim::Scalar` stages through one, and no local-slot trick
-  works because the second pass reads the whole first-pass result). Each
-  transcribed from its `Program` body and verified by word comparison first.
+  comparisons, the integers — each transcribed from its `Program` body and
+  verified by word comparison first. Retiring `ReduceTile` is blocked
+  *upstream*, not in the emitter: max and the scalar reduce have to become
+  tile reduces (or the lane reduce has to be expanded on TT) before the
+  ported arms run at all. `max`, `sum_scalar`, `max_scalar` and `softmax`
+  are the four gates standing on that one gap; when they go green, the
+  reduce emitter's untested branches become the thing to check, and then
+  `ReduceTile`/`tt_reduce_program` can be deleted.
   `Sfpu { kind }`/`tt_sfpu_program`/`tt_row_remap` then die (23 kinds still
   reach `program_for`). Matmul needs nothing: it is already instruction-level
   ops (`Unpacr`/`Setadczw`/`Setrwc`/`Zeroacc`/`Mvmul`/`Setc16`/`Setcfg`), and
@@ -640,6 +669,9 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
 | `add` | green, 0/2560 (exact) — first kind on the row-op path (`SFPMAD` + `LREG_ONE`) |
 | `matmul_sigmoid` | fails at `tt_verify`: DST register is I64 — the `Setrwc` dtype bug |
 | `softmax` | red: `Op::Loop` bails `tt_dataflow_select`, so `tt_verify` reports `missing EndReader` |
+| `max` | red for the same reason: the frontend leaves a lane-space reduce / `Op::Loop`, never the `Row + Max` pattern |
+| `sum_scalar` | red: the whole-tile sum leaves an `Op::Loop`; `TileDim::Scalar` is never reached |
+| `max_scalar` | red: as `max` + `sum_scalar` |
 
 CPU `01_unary` (64) and `04_reduce` (15) are green.
 

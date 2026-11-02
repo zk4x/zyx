@@ -1207,72 +1207,201 @@ impl Kernel {
                 };
                 let (dtype, input) = self.tt_resolve_dst(m.op('t'), id, lower)?;
                 let slot = self.tt_new_dst(dtype, lower.prologue);
-                // `reduce.rs`'s sum over a tile row's columns, as row ops
-                // (`accumulate(Sum, Cols, first)` then `finish(Sum, Cols)`).
-                // Every other reduce (a max, the in-order sum over rows, the
-                // whole-tile scalar pass) still takes `ReduceTile`.
-                if rop == BOp::Add && dim == TileDim::Row {
+                // `reduce.rs`'s programs as row ops: a tile-row reduce is
+                // `accumulate(op, Cols, first)` then `finish(op, Cols)`; a
+                // whole-tile one runs the same pass, then a second over rows
+                // through a scratch tile, and copies the scalar back.
+                // `TileDim::Col` has no producer (the pattern table emits
+                // `Row` and `Scalar` only), so it keeps `ReduceTile`.
+                let ported = matches!(
+                    (rop, dim),
+                    (BOp::Add, TileDim::Row)
+                        | (BOp::Max, TileDim::Row)
+                        | (BOp::Add, TileDim::Scalar)
+                        | (BOp::Max, TileDim::Scalar)
+                );
+                // The scalar reduce's second pass reads the first pass's whole
+                // result, so it needs a tile of its own. Declaring it here (and
+                // not in codegen, as `fresh_slot` did) makes it a register the
+                // allocator numbers and can place; liveness keeps it off the
+                // accumulator's row, which `accumulate_in_order` requires (it
+                // zeroes its output before reading its input).
+                let scratch = if ported && dim == TileDim::Scalar {
+                    Some(self.tt_new_dst(dtype, lower.prologue))
+                } else {
+                    None
+                };
+                if ported {
                     use tt_isa::isa::generated::defs;
-                    // `Dst` format code for an FP32 tile, and the lane
-                    // registers `reduce.rs` uses.
+                    // `Dst` format codes: `reduce.rs` reduces a sum in FP32 and
+                    // a max over the raw bits.
                     const FP32: u8 = 3;
+                    const INT32: u8 = 4;
+                    // The lane registers the programs use, and the two
+                    // read-only constants (`LReg.md`).
                     const L0: u8 = 0;
                     const L1: u8 = 1;
                     const L2: u8 = 2;
+                    const L3: u8 = 3;
+                    const L4: u8 = 4;
+                    const L5: u8 = 5;
+                    const L6: u8 = 6;
+                    const L7: u8 = 7;
+                    const LREG_ZERO: u8 = 9;
                     const LREG_ONE: u32 = 10;
-                    let (mad, mov, shft2, nop) =
-                        (defs::SFPMAD.opcode(), defs::SFPMOV.opcode(), defs::SFPSHFT2.opcode(), defs::SFPNOP.opcode());
+                    let (mad, mov, gt, trans, shft2, pushc, popc, nop) = (
+                        defs::SFPMAD.opcode(),
+                        defs::SFPMOV.opcode(),
+                        defs::SFPGT.opcode(),
+                        defs::SFPTRANSP.opcode(),
+                        defs::SFPSHFT2.opcode(),
+                        defs::SFPPUSHC.opcode(),
+                        defs::SFPPOPC.opcode(),
+                        defs::SFPNOP.opcode(),
+                    );
+                    let sum = rop == BOp::Add;
+                    let fmt = if sum { FP32 } else { INT32 };
                     let mut ops: Vec<Op> = Vec::new();
                     let sfp = |ops: &mut Vec<Op>, op: u8, args: [u32; 5]| {
                         ops.push(Op::TT(TTOp::Sfp(Box::new(TTSfpInsn { op, args }))));
                     };
                     let ld = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8| {
-                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at, reg, fmt: FP32 }))));
+                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at, reg, fmt }))));
                     };
-                    let st = |ops: &mut Vec<Op>, slot: OpId, at: u16| {
-                        ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at, reg: L0, fmt: FP32 }))));
+                    let st = |ops: &mut Vec<Op>, slot: OpId, at: u16, reg: u8| {
+                        ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at, reg, fmt }))));
                     };
-                    // `into = other + into` (`SFPMAD` with the constant one).
-                    let add = |ops: &mut Vec<Op>, other: u8, into: u8| {
-                        sfp(
-                            ops,
-                            mad,
-                            [u32::from(LREG_ONE), u32::from(other), u32::from(into), u32::from(into), 0],
-                        );
+                    // `into = op(other, into)`, lanewise (`combine`).
+                    let combine = |ops: &mut Vec<Op>, other: u8, into: u8| {
+                        if sum {
+                            sfp(
+                                ops,
+                                mad,
+                                [LREG_ONE, u32::from(other), u32::from(into), u32::from(into), 0],
+                            );
+                        } else {
+                            // `if_(Less(into, other)) mov(other, into)`, in
+                            // the sign-magnitude order of `SFPGT`.
+                            sfp(ops, pushc, [0; 5]);
+                            sfp(ops, gt, [u32::from(into), u32::from(other), 1, 0, 0]);
+                            sfp(ops, mov, [u32::from(other), u32::from(into), 0, 0, 0]);
+                            sfp(ops, popc, [0; 5]);
+                        }
                     };
-                    // Accumulate: the first tile *is* the accumulator.
-                    for o in (0..64u16).step_by(2) {
-                        ld(&mut ops, input, o, L0);
-                        st(&mut ops, slot, o);
-                    }
-                    // Finish: each tile row's four faces lanewise, then the
-                    // eight lanes' seven rotations. The rotation reads `VD`
-                    // in a mode `SFPMAD`'s stall does not see, so every
+                    // `accumulate(op, Cols, first)`: the first tile *is* the
+                    // accumulator, so it is a copy.
+                    let accumulate = |ops: &mut Vec<Op>, input: OpId, out: OpId| {
+                        for o in (0..64u16).step_by(2) {
+                            ld(ops, input, o, L0);
+                            st(ops, out, o, L0);
+                        }
+                    };
+                    // `finish(op, Cols)`: each tile row's four faces lanewise,
+                    // then the eight lanes' seven rotations. `rotate_row` reads
+                    // `VD` in a mode `SFPMAD`'s stall does not see, so every
                     // rotation after an add needs an `SFPNOP` (`mod.rs`'s
-                    // `stalls_automatically_after_mad`).
-                    for lower in [0u16, 32] {
-                        for g in 0..4u16 {
-                            let (left, right) = (lower + 4 * g, lower + 16 + 4 * g);
-                            let at = [left, left | 2, right, right | 2];
-                            // The accumulator is always L0; the three other
-                            // faces are combined into it through L1.
-                            ld(&mut ops, slot, at[0], L0);
-                            for &a in &at[1..] {
-                                ld(&mut ops, slot, a, L1);
-                                add(&mut ops, L1, L0);
-                            }
-                            sfp(&mut ops, mov, [u32::from(L0), u32::from(L2), 0, 0, 0]);
-                            for i in 0..7 {
-                                if i > 0 {
-                                    sfp(&mut ops, nop, [0; 5]);
+                    // `stalls_automatically_after_mad`); a max is compare+move
+                    // and needs none.
+                    let finish_cols = |ops: &mut Vec<Op>, tile: OpId| {
+                        for lower in [0u16, 32] {
+                            for g in 0..4u16 {
+                                let (left, right) = (lower + 4 * g, lower + 16 + 4 * g);
+                                let at = [left, left | 2, right, right | 2];
+                                // The fold is always through L0; the three
+                                // other faces come in through L1.
+                                ld(ops, tile, at[0], L0);
+                                for &a in &at[1..] {
+                                    ld(ops, tile, a, L1);
+                                    combine(ops, L1, L0);
                                 }
-                                sfp(&mut ops, shft2, [0, u32::from(L2), u32::from(L2), 3, 0]);
-                                add(&mut ops, L2, L0);
-                            }
-                            for &a in &at {
-                                st(&mut ops, slot, a);
+                                sfp(ops, mov, [u32::from(L0), u32::from(L2), 0, 0, 0]);
+                                for i in 0..7 {
+                                    if i > 0 && sum {
+                                        sfp(ops, nop, [0; 5]);
+                                    }
+                                    sfp(ops, shft2, [0, u32::from(L2), u32::from(L2), 3, 0]);
+                                    combine(ops, L2, L0);
+                                }
+                                for &a in &at {
+                                    st(ops, tile, a, L0);
+                                }
                             }
                         }
+                    };
+                    // `accumulate(Sum, Rows, first)` — `accumulate_in_order`:
+                    // zero the accumulator, then add each column's rows top to
+                    // bottom. A load holds four rows of eight columns; one
+                    // `SFPTRANSP` puts row `i` of the four into row 0 of `L[i]`,
+                    // and the running sum lives in row 0 of `L4`, which is on
+                    // the transpose's diagonal and so survives it.
+                    let accumulate_in_order = |ops: &mut Vec<Op>, input: OpId, out: OpId| {
+                        for o in (0..64u16).step_by(2) {
+                            st(ops, out, o, LREG_ZERO);
+                        }
+                        for (top, bottom) in [(0u16, 32u16), (16, 48)] {
+                            for half in [0u16, 2] {
+                                sfp(ops, mov, [u32::from(LREG_ZERO), u32::from(L4), 0, 0, 0]);
+                                for g in 0..8u16 {
+                                    let r = if g < 4 { top + 4 * g } else { bottom + 4 * (g - 4) };
+                                    ld(ops, input, r + half, L0);
+                                    sfp(ops, trans, [0; 5]);
+                                    for row in [L0, L1, L2, L3] {
+                                        sfp(
+                                            ops,
+                                            mad,
+                                            [LREG_ONE, u32::from(L4), u32::from(row), u32::from(L4), 0],
+                                        );
+                                    }
+                                }
+                                // Row 0 the sums, rows 1..4 zero: `L5..L7`
+                                // cleared and transposed into them.
+                                for l in [L5, L6, L7] {
+                                    sfp(ops, mov, [u32::from(LREG_ZERO), u32::from(l), 0, 0, 0]);
+                                }
+                                sfp(ops, trans, [0; 5]);
+                                st(ops, out, top + half, L4);
+                            }
+                        }
+                    };
+                    // `finish(Max, Rows)`: each column's eight row groups
+                    // lanewise, then the four lane rows by `SFPTRANSP`.
+                    let finish_rows = |ops: &mut Vec<Op>, tile: OpId| {
+                        for (top, bottom) in [(0u16, 32u16), (16, 48)] {
+                            for half in [0u16, 2] {
+                                ld(ops, tile, top + half, L0);
+                                for g in 0..8u16 {
+                                    let r = if g < 4 { top + 4 * g } else { bottom + 4 * (g - 4) };
+                                    if r != top {
+                                        ld(ops, tile, r + half, L1);
+                                        combine(ops, L1, L0);
+                                    }
+                                }
+                                sfp(ops, trans, [0; 5]);
+                                combine(ops, L1, L0);
+                                combine(ops, L3, L2);
+                                combine(ops, L2, L0);
+                                st(ops, tile, top + half, L0);
+                            }
+                        }
+                    };
+                    // A whole-tile copy (`tt_dst_copy`): raw bits, one address
+                    // at a time.
+                    let copy_tile = |ops: &mut Vec<Op>, src: OpId, dst: OpId| {
+                        for o in 0..64u16 {
+                            ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: src, at: o, reg: L0, fmt: INT32 }))));
+                            ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot: dst, at: o, reg: L0, fmt: INT32 }))));
+                        }
+                    };
+                    accumulate(&mut ops, input, slot);
+                    finish_cols(&mut ops, slot);
+                    if let Some(scratch) = scratch {
+                        if sum {
+                            accumulate_in_order(&mut ops, slot, scratch);
+                        } else {
+                            accumulate(&mut ops, slot, scratch);
+                            finish_rows(&mut ops, scratch);
+                        }
+                        copy_tile(&mut ops, scratch, slot);
                     }
                     let last = ops.pop().expect("the reduce sequence is never empty");
                     for op in ops {

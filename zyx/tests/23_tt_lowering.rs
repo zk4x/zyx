@@ -194,6 +194,84 @@ fn sum_sigmoid() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn max() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.max_keepdim([1])?.to(Dev::C)?;
+
+    // Host reference: per-row maxima over k=0..20. A `SFPGT` fold is exact,
+    // so any real error is a wrong program, not rounding.
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 10);
+    let mut bad = 0;
+    let mut worst = 0f32;
+    for r in 0..10 {
+        let mut m = f32::NEG_INFINITY;
+        for k in 0..20 {
+            m = m.max(xv[r * 20 + k]);
+        }
+        let v = zv[r];
+        let err = (v - m).abs();
+        worst = worst.max(err);
+        if err > 0.0 {
+            if bad < 10 {
+                println!("z[{r}] = {v}, expected {m} (err {err})");
+            }
+            bad += 1;
+        }
+    }
+    println!("max bad: {bad} / 10 (worst {worst})");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+#[test]
+fn sum_scalar() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.sum([0, 1])?.to(Dev::C)?;
+
+    // Host reference: the total, left to right. The device folds the tile
+    // row, then the rows in order, so the bound is the usual summation
+    // error, not bit equality.
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 1);
+    let mut acc = 0f32;
+    for v in &xv {
+        acc += *v;
+    }
+    let err = (zv[0] - acc).abs();
+    println!("sum_scalar: {} vs {} (err {err})", zv[0], acc);
+    assert!(err <= 1e-3, "err {err}");
+
+    Ok(())
+}
+
+#[test]
+fn max_scalar() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.max([0, 1])?.to(Dev::C)?;
+
+    // Host reference: the maximum over everything. Exact, like `max`.
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 1);
+    let m = xv.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let err = (zv[0] - m).abs();
+    println!("max_scalar: {} vs {} (err {err})", zv[0], m);
+    assert_eq!(err, 0.0);
+
+    Ok(())
+}
+
+#[test]
 fn matmul_sigmoid() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::F32)?;
     let y = Tensor::rand([20, 12], DType::F32)?;
