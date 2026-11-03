@@ -68,7 +68,6 @@ impl Kernel {
         let (shapes, _) = self.compute_dtypes_and_rcs();
         let mut dtypes: Map<OpId, DType> = Map::default();
         let mut op_id = self.head;
-        let mut has_loops = false;
         let mut id_map = Map::default();
         let mut max_id = OpId::ZERO;
         let (bold, blue, cyan, green, grey, magenta, orange, red, reset, yellow) = if colorless {
@@ -99,10 +98,6 @@ impl Kernel {
                     let shp = self.shape_suffix(op_id, &shapes);
                     let x = id_map[&x];
                     let reduce_axis = id_map.get(&reduce_axis).unwrap_or(&reduce_axis);
-                    if has_loops {
-                        indent.pop();
-                        indent.pop();
-                    }
                     writeln!(
                         f,
                         "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {red}reduce {}{reset} r{x} over r{reduce_axis}",
@@ -540,7 +535,6 @@ impl Kernel {
                     }
                 }
                 Op::Loop { len } => {
-                    has_loops = true;
                     let dtype = dtypes.get(&len).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
                     let len = id_map.get(&len).copied().unwrap_or(OpId::NULL);

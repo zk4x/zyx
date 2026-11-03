@@ -111,7 +111,15 @@ impl Kernel {
         // devectorize runs on the TT path.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR before tt_tile ===");
+                self.debug();
+            }
             self.tt_tile();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_tile ===");
+                self.debug();
+            }
             // The transcendentals are IR from here on: `Exp2`/`Log2` (and the
             // `Pow` that `unfold_pows` left as that pair) become ordinary ops,
             // so the native lowering only sees primitives.
@@ -119,7 +127,15 @@ impl Kernel {
             // Logical indices -> physical tile traffic: a single-tile
             // reduce loads a rank-3 cube and stores at the logical pitch;
             // the NOC moves tiles.
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR before tt_reindex ===");
+                self.debug();
+            }
             self.tt_reindex();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_reindex ===");
+                self.debug();
+            }
             // Native lowering: tile the SSA, then claim it into reader
             // traffic (`TTOp::Copy`), run-level compute programs, and the
             // section markers. There is no CB-sync or DST-lock pass: those

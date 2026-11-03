@@ -945,58 +945,6 @@ impl Kernel {
         if pad_groups.len() > 2 {
             todo!("tt_tile: more than two group ranges");
         }
-        if pad_groups.len() == 1 && rank == 0 {
-            // Only a **fully scalar** access needs a 2-D grid out of one group
-            // range: split it into two nested groups of roughly equal size
-            // (user spec — no loop check, no length threshold), then pad and
-            // split each normally below. An access that already carries a lane
-            // axis must not be pre-split: the group then is the *other*
-            // dimension, and pre-splitting it double-counts that dimension
-            // (`[32, 32]` unary: one 32-lane unroll over rows plus one group
-            // over columns; the pre-split made a second grid axis, then a
-            // rank-3 load `tt_dataflow_select` bails on).
-            let g = pad_groups[0];
-            self.pad_to(g, 32);
-            let len = match self.ops[g].op {
-                Op::Range { kind: RangeKind::Group(len), .. } => self.resolve_const(len).and_then(|c| c.as_dim()),
-                _ => unreachable!("pad_to preserves the Group range"),
-            };
-            if let Some(len) = len {
-                // Largest divisor at or below sqrt(len): the two
-                // factors are as equal as possible.
-                let mut f = (len as f64).sqrt() as Dim;
-                while f > 1 && len % f != 0 {
-                    f -= 1;
-                }
-                if f > 1 {
-                    let factor = u16::try_from(f).expect("tt_tile: group split factor overflows u16");
-                    // The inner group takes a new axis: highest group
-                    // axis + 1 (user spec; verify requires unique group
-                    // axes, and split reuses the axis). TT-local: split
-                    // itself is generic across backends.
-                    let mut max_group_axis = 0u32;
-                    for (_, x) in self.iter_unordered() {
-                        if let Op::Range { axis, kind: RangeKind::Group(_) } = x {
-                            max_group_axis = max_group_axis.max(*axis);
-                        }
-                    }
-                    let inner = self.split(g, SplitMode::Group, factor);
-                    if !inner.is_null() {
-                        let new_axis = max_group_axis.checked_add(1).expect("tt_tile: group axis overflows u32");
-                        match &mut self.ops[inner].op {
-                            Op::Range { axis, kind: RangeKind::Group(_) } => *axis = new_axis,
-                            _ => unreachable!("split Group returns the inner group range"),
-                        }
-                    }
-                }
-            }
-            pad_groups.clear();
-            for (op, x) in self.iter_unordered() {
-                if matches!(x, Op::Range { kind: RangeKind::Group(_), .. }) {
-                    pad_groups.push(op);
-                }
-            }
-        }
         // A group already counted in **tiles** is the one the search vectorized
         // along: its term is `32 * g + lane`, with `lane` an `Unroll` of 32.
         // That group is the dimension's grid axis and must be left as it is

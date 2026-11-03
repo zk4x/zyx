@@ -4,13 +4,69 @@
 `unfold_pows` move, activation gates, the cast lowering, the algebraic `select`
 rewrite, the comparison-into-predicate fold, `exp2` back at `1e-5`, the
 acceptance unit test, the select register/constant reuse) plus uncommitted: the
-`matmul_add` fixes (`zyx/src/codegen/tenstorrent.rs`, `tests/23_tt_lowering.rs`)
-and this file. **23/23 ttsim gates green** (`matmul_add` included),
-`cargo test --lib` = 83, changed files fmt clean.
+`matmul_add` fixes (`zyx/src/codegen/tenstorrent.rs`, `tests/23_tt_lowering.rs`),
+the `tt_tile` contract change below (`zyx/src/kernel/tenstorrent.rs`), the
+`debug` indentation fix (`zyx/src/kernel/debug.rs`), the `ZYX_TT_IR` dumps
+(`zyx/src/kernel/autotune.rs`), and this file. **23/23 ttsim gates green**
+(`matmul_add` included), `cargo test --lib` = 83.
 
 `23_tt_lowering` has 24 tests. **Only `softmax` is red** (`tt_verify: missing
-EndReader`: phase 1 bails on its reduce/loop shape, so no reader section forms).
-That is the next thing.
+EndReader`). That is the next thing.
+
+### The `tt_tile` contract change (2026-11-03, this session)
+
+**The one-group sqrt pre-split is deleted.** `tt_tile` used to split a lone
+group range into two nested groups of `sqrt(len)` when the access was fully
+scalar. That was wrong for every multi-tile extent: for the 256-element output
+of softmax's max-reduce it made `16 x 16`, then each factor was padded to 32
+and lane-split, so
+
+- the grid collapsed from **8 tiles to 1** (each factor's `Group(32) -> Group(1)`),
+- the output index became `16*a + b`, reaching **527** for 256 outputs,
+- the load became `[32x32x32]` = **32 tiles** instead of one, and the source
+  index reached **135167** for a 65536-element tensor.
+
+The rule now:
+
+- **An access is exactly one tile axis plus one 32-lane axis.** Pad each
+  element-counted group to 32 and split `Unroll 32` -> `Group(L/32)` (grid) +
+  `Unroll(32)` (lane). A tile-counted group is left alone. A fully scalar
+  access gets a **1-D grid**, which `gws_from_kernel` pads to two dims; the
+  `tiling` gate already proves 1-D works.
+- **Never synthesise a 2-D grid from sqrt factors.** If a 2-D grid is wanted,
+  split the tile-counted group with `SplitMode::Group` (deliberate, not
+  automatic).
+- **Reduces now produce rank 2, not the old rank-3 cube.** A reduce over a
+  >32-element axis is `Loop(k_tiles) + Unroll(32)`; the loaded value is one
+  tile per iteration, and `tt_reindex`'s `row2` arm (`load [32,32] -> root
+  [32]`) is the target, not `drop3`.
+
+Verified after the change: all 23 gates green, `cargo test --lib` = 83, and
+softmax's IR is now the intended shape:
+
+```
+r21 = group_range(0) over r7        // 8 output tiles
+r11 = 32*r21 + r38                  // output 0..255, exact
+r20 = r11 * r6                      // r6 = 256
+store r1[r38] = -inf
+for r22 in 0..8 {
+  r15 = r18 + 32*r22
+  r27 = r20 + r15                   // [32x32] = ONE tile
+  r37 = load vec32 r1[r38]          // accumulator
+  r35 = load tile 32x32 r32[r27]
+  r13 = reduce max r35 over r18
+  store vec32 r1[r38] = max(r13, r37)
+}
+store vec32 r4[r11] = load vec32 r1[r38]
+```
+
+The remaining softmax blocker is **`tt_reindex`'s `Op::Loop` early return**
+(`tenstorrent.rs:1105`) plus phase 1's index walk, which rejects the loop var
+(`tenstorrent.rs:1573`). The physical address needs one more term than
+`row*32 + lane`: with K tiles along the reduced axis, tile `(row_tile, i)` is
+at `(row_tile*K + i)*1024`, so loop-aware reindex must emit
+`row_tile*K*TILE + i*TILE + row_lane*32 + k_lane` (or hand the tile advance to
+the reader). That is the next step.
 
 ### The result
 
@@ -168,16 +224,18 @@ adding an activation. It already caught `relu` at 2 loads.
 
 ### Open work
 
-1. **`softmax`** — the only red test in `23_tt_lowering`:
-   `tt_verify: missing EndReader`. Phase 1 (the reader publish) bails on the
-   kernel's shape, so no reader section is emitted. Diagnose with the pre-tile IR
-   (`ZYX_DEBUG=4`) and the phase-1 bail points in `tt_dataflow_select`; softmax
-   lowers to a reduce over an axis plus a loop, so expect the multi-tile/loop
-   shape to be the trigger.
+1. **`tt_reindex` / loop-aware traffic** — the softmax blocker, and the next
+   step. `tt_tile` now produces the right shape (see the top section): one tile
+   per loop iteration, `Loop(k_tiles) + Unroll(32)`, grid over output tiles.
+   `tt_reindex` still returns early on any `Op::Loop` (`tenstorrent.rs:1105`),
+   and phase 1's index walk rejects the loop var (`tenstorrent.rs:1573`). The
+   physical address needs the tile term: with K k-tiles, tile `(row_tile, i)`
+   is `(row_tile*K + i)*1024`, so the rewrite is
+   `row_tile*K*TILE + i*TILE + row_lane*32 + k_lane`.
 2. **Beyond the simulator** (in rough order): BF16/F16 staging — the backend is
    F32-only and the pinned ttsim models only three 32-bit `(in, out)` DST pairs;
-   a **silicon run** (everything so far is ttsim); grid dispatch (a launch is one
-   tile today).
+   a **silicon run** (everything so far is ttsim); concurrency/waves (grid
+   dispatch itself is done and sequential).
 3. `matmul_add`'s gate compares the sum of two TF32 accumulations, so its
    tolerance is `2e-2` (measured worst 1.4e-2). Keep that reasoning if it moves.
 
@@ -1521,15 +1579,18 @@ and issues; and the `Kernel` does not survive compilation beyond debugging.
   the lane **added** to the scaled group, not a bare `g * 32`: 32 is also a
   legal row stride (`[10, 32]` has `rows = g * 32`, and the row group is exactly
   the one that must be split).
-- **The one-group pre-split is for a fully scalar access only.** One group must
-  become a 2-D grid (split into two nested groups, each then padded and split).
-  If the access already has a lane axis (rank ≥ 1) that pre-split double-counts
-  the dimension: `[32, 32]` unary arrives as a 32-lane unroll over rows plus one
-  group over columns, and pre-splitting the group made a second grid axis, then
-  a rank-3 load `tt_dataflow_select` bails on.
-- **Reduces keep splitting every group.** `Op::Reduce` only exists here after
-  `split` unrolled a loop into lanes; that rank-3 cube is deliberate and
-  `tt_reindex` rewrites it for the movers.
+- **No sqrt pre-split (deleted 2026-11-03).** A lone group used to be split
+  into two nested groups of `sqrt(len)` for a "2-D grid". That collapsed the
+  grid (`Group(32) -> Group(1)`) and multiplied the lane space: a 256-element
+  output became `16 x 16` padded to `32 x 32`, index `16*a+b` reaching 527, and
+  the load became 32 tiles. A fully scalar access now gets a **1-D grid**
+  (`Group(L/32) x Unroll(32)`); `gws_from_kernel` pads to two dims and `tiling`
+  proves 1-D works. A deliberate 2-D grid is a `SplitMode::Group` on the
+  tile-counted group.
+- **Reduces produce rank 2.** `Op::Reduce` only exists here after `split`
+  unrolled a loop into lanes; the value is one tile (`[row_lane x k_lane]`) and
+  the reduced axis beyond 32 is `Loop(k_tiles) + Unroll(32)`. `tt_reindex`'s
+  `row2` arm is the target (the old rank-3 `drop3` cube is gone).
 - **Why not let `tt_tile` choose?** Then there would be exactly one fixed
   tiling for every kernel, and the best one differs (which axis is vectorized,
   where the grid goes). Search explores; `tt_tile` normalizes.
@@ -1738,8 +1799,8 @@ Working notes for writing the emitter — these are the mechanics, not opinions.
   explores, `tt_tile` completes" for the contract: the access index's rank is
   the number of tile axes already present, the pass adds only the missing ones,
   and a group already counted in tiles is left alone. `sigmoid` arrives scalar
-  (rank 0), `add`/`mul` arrive rank 1, a reduce keeps its rank-3 cube for
-  `tt_reindex`.
+  (rank 0), `add`/`mul` arrive rank 1, and a reduce arrives as one tile plus a
+  lane axis (rank 2) — `tt_reindex`'s `row2` arm, not the old `drop3` cube.
 - **`SIGMOID` ported (2026-11-01)**, gate `0/2560`, worst `1.19e-7` — the
   same number the builder path gives. The ported kind is the **Precise**
   program (`ops::sigmoid_program`, kind `0x12b`), which is what the lowering's
