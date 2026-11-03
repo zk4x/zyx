@@ -1317,83 +1317,64 @@ impl Kernel {
         self.insert_before(at, Op::Bitcast { x: scale, dtype: DType::F32 })
     }
 
-    /// `log2 x` by `log_program`: the exponent and mantissa by the bit form of
-    /// `SFPEXEXP`/`SFPSETEXP`, `ln m = 2 atanh(s)` with `s = f / (2 + f)`, then
-    /// `e ln 2 + ln m`, times `log2 e`. `±0` and a denormal are `-inf`, a
-    /// negative is `NaN`, `+inf` is `+inf`, a NaN stays one.
+    /// `log2 x` by tt-metal's `calculate_log_body` (Norbert Juffa's `logf`).
+    ///
+    /// The reduction is Juffa's: `bits(x) - bits(0.75)` with the mantissa
+    /// cleared is the exponent as `k << 23`, and subtracting it from `bits(x)`
+    /// leaves the mantissa with the exponent of 1.0, so `x = m 2^k` with `m` in
+    /// `[0.75, 1.5)`. `log1p(m - 1)` is one Horner chain over `[-0.25, 0.5)` --
+    /// the LLK's shared degree-9 polynomial, with its fp32 `vConstFloatPrgm1/2`
+    /// constants -- and `log2 x = k + log2(m)` folds the `ln 2`/`log2 e` round
+    /// trip into a single multiply by `log2 e`.
+    ///
+    /// Worst case on the gate's metric (`|err| / max(1, |log2 x|)`) over
+    /// `x in [0.01, 100]` is **1.4e-7**, the accuracy the LLK's fp32 path has.
+    /// This replaces the atanh series, which needed a `sqrt 2` normalization
+    /// (two `Select`s and an extra live `e`) to reach the same place. The
+    /// specials (`±0`/denormal -> `-inf`, negative -> `NaN`, `+inf` -> `+inf`,
+    /// NaN stays one) are dropped, the same ML approximation `tt_exp2` takes: a
+    /// non-positive or NaN input lands on the polynomial's value.
     fn tt_log2(&mut self, at: OpId, x: OpId) -> OpId {
         let konst = |k: &mut Kernel, v: f32| k.insert_before(at, Op::Const(Constant::new(v)));
         let icons = |k: &mut Kernel, v: i32| k.insert_before(at, Op::Const(Constant::new(v)));
         let bin = |k: &mut Kernel, x: OpId, y: OpId, bop: BOp| k.insert_before(at, Op::Binary { x, y, bop });
-        let sel = |k: &mut Kernel, cond: OpId, if_true: OpId, if_false: OpId| {
-            k.insert_before(at, Op::Select { cond, if_true, if_false })
-        };
         let bits = self.insert_before(at, Op::Bitcast { x, dtype: DType::I32 });
-        let signless = icons(self, 0x7fff_ffffu32 as i32);
-        let signless = bin(self, bits, signless, BOp::BitAnd);
-        // `m` in `[1, 2)` with the exponent set to 127.
-        let mask = icons(self, 0x807f_ffffu32 as i32);
-        let mant = bin(self, bits, mask, BOp::BitAnd);
-        let exp127 = icons(self, 0x3f80_0000);
-        let mant = bin(self, mant, exp127, BOp::BitOr);
-        let mant = self.insert_before(at, Op::Bitcast { x: mant, dtype: DType::F32 });
-        // `e = (bits >> 23) - 127`.
-        let c23 = icons(self, 23);
-        let e = bin(self, signless, c23, BOp::BitShiftRight);
-        let c127 = icons(self, 127);
-        let e = bin(self, e, c127, BOp::Sub);
-        // Bring `m` below `sqrt 2`, carrying the halving into `e`.
-        let sqrt2 = konst(self, std::f32::consts::SQRT_2);
-        let big = bin(self, mant, sqrt2, BOp::Cmpgt);
-        let half = konst(self, 0.5);
-        let halved = bin(self, mant, half, BOp::Mul);
-        let m = sel(self, big, halved, mant);
-        let one_i = icons(self, 1);
-        let e1 = bin(self, e, one_i, BOp::Add);
-        let e = sel(self, big, e1, e);
-        // `s = f / (2 + f)`, `f = m - 1`.
+        // `e = setman(bits - bits(0.75), 0)`: the exponent as `k << 23`.
+        let c75 = icons(self, 0x3f40_0000);
+        let e = bin(self, bits, c75, BOp::Sub);
+        let emask = icons(self, 0xff80_0000u32 as i32);
+        let e = bin(self, e, emask, BOp::BitAnd);
+        // `m = bits - e` is the mantissa with the exponent of 1.0.
+        let m = bin(self, bits, e, BOp::Sub);
+        let m = self.insert_before(at, Op::Bitcast { x: m, dtype: DType::F32 });
         let one = konst(self, 1.0);
-        let two = konst(self, 2.0);
-        let f = bin(self, m, one, BOp::Sub);
-        let den = bin(self, f, two, BOp::Add);
-        let s = bin(self, f, den, BOp::Div);
-        // `ln m = 2(s + s*(s^2*(1/3 ...)))`.
-        let s2 = bin(self, s, s, BOp::Mul);
-        let mut ser = konst(self, 1.0 / 9.0);
-        for c in [1.0 / 7.0, 1.0 / 5.0, 1.0 / 3.0] {
-            let cc = konst(self, c);
-            let p = bin(self, ser, s2, BOp::Mul);
-            ser = bin(self, p, cc, BOp::Add);
+        let m = bin(self, m, one, BOp::Sub);
+        let s = bin(self, m, m, BOp::Mul);
+        // Juffa's `log1p` chain, with the LLK's fp32 constant set.
+        let mut r = konst(self, f32::from_bits(0xbd49_6000));
+        for c in [
+            0x3ddc_2000,
+            0xbe06_2000,
+            0x3e13_a000,
+            0xbe2a_8000,
+            0x3e4c_c000,
+            0xbe80_000d,
+            0x3eaa_aab9,
+            0xbf00_0000,
+        ] {
+            let cc = konst(self, f32::from_bits(c));
+            let p = bin(self, r, m, BOp::Mul);
+            r = bin(self, p, cc, BOp::Add);
         }
-        let t1 = bin(self, s2, ser, BOp::Mul);
-        let t2 = bin(self, s, t1, BOp::Mul);
-        let t3 = bin(self, t2, s, BOp::Add);
-        let lnm = bin(self, t3, t3, BOp::Add);
-        // `e ln 2 + ln m`.
+        let r = bin(self, r, s, BOp::Mul);
+        let r = bin(self, r, m, BOp::Add);
+        // `e` is `k << 23` as an integer, so `e * 2^-23` is exactly `k`.
         let ef = self.insert_before(at, Op::Cast { x: e, dtype: DType::F32 });
-        let ln2 = konst(self, std::f32::consts::LN_2);
-        let eln2 = bin(self, ef, ln2, BOp::Mul);
-        let ln = bin(self, lnm, eln2, BOp::Add);
+        let two_m23 = konst(self, f32::from_bits(0x3400_0000));
+        let kf = bin(self, ef, two_m23, BOp::Mul);
         let log2e = konst(self, std::f32::consts::LOG2_E);
-        let mut out = bin(self, ln, log2e, BOp::Mul);
-        // The specials, in `log_program`'s order.
-        let absx = self.insert_before(at, Op::Unary { x, uop: UOp::Abs });
-        let min_normal = konst(self, f32::from_bits(0x0080_0000));
-        let tiny = bin(self, absx, min_normal, BOp::Cmplt);
-        let neg_inf = konst(self, f32::NEG_INFINITY);
-        out = sel(self, tiny, neg_inf, out);
-        let zero = konst(self, 0.0);
-        let neg = bin(self, x, zero, BOp::Cmplt);
-        // No NaN constant (`verify` refuses one, and constant folding would
-        // make one of a bitcast): `sqrt` of a negative is the NaN.
-        let nan = self.insert_before(at, Op::Unary { x, uop: UOp::Sqrt });
-        out = sel(self, neg, nan, out);
-        let inf = konst(self, f32::INFINITY);
-        let is_inf = bin(self, x, inf, BOp::Eq);
-        out = sel(self, is_inf, inf, out);
-        // A NaN input stays that NaN (its own payload and sign).
-        let is_nan = bin(self, x, x, BOp::NotEq);
-        sel(self, is_nan, x, out)
+        let rl = bin(self, r, log2e, BOp::Mul);
+        bin(self, kf, rl, BOp::Add)
     }
 
     /// `sin x` / `cos x` as IR: argument reduction plus a Taylor core.

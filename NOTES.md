@@ -1,39 +1,110 @@
-## HANDOFF (2026-11-03, end of session) — PARITY: sigmoid is 1 load + 1 store
+## HANDOFF (2026-11-03) — elementwise parity: sigmoid/exp2/log2 at 1 load + 1 store
 
-**Tree state:** clean at `be3f166c` (plus this handoff). 18/18 ttsim gates green, `cargo test --lib`
-= 82, fmt clean. Committing partial state is allowed (the user squashes later).
+**Tree state:** uncommitted changes in `zyx/src/kernel/tenstorrent.rs` (the two
+fusion fixes below + `tt_log2`'s specials and its new polynomial),
+`zyx/src/kernel/autotune.rs` (`unfold_pows` moved into `device_epilogue`, whole
+`default_epilogue` before `tt_dataflow_select`), `zyx/tests/23_tt_lowering.rs`
+(the four activation gates) and this file. 21 of 22 ttsim gates green (`elu` is
+the red bug doc below), `cargo test --lib` = 82, changed files fmt clean.
+Committing partial state is allowed (the user squashes later).
 
-### The result this session was for
+### The result
 
-`sigmoid` compiled from the tensor graph (one op, composed by the frontend, no
-hand-written kernel) now emits **1 replay, 1 `SFPLOAD`, 1 `SFPSTORE` per row** --
-one tile in, one tile out, everything else in `L0..L7`. Handwritten reference
-(metalium-rs `sigmoid_program`): 2 loads + 2 stores (it spills `x`). `relu`'s floor
-is 1 + 1. So the graph path now matches the hand-written floor; that is the whole
-point of this backend (metalium has no general chain fuser -- its `elu` is N
-kernels).
+These are tensor-graph kernels (no hand-written programs): one tile in, one tile
+out, everything else in `L0..L7`.
 
 | kernel | replays | loads | stores |
 |---|---|---|---|
 | `sigmoid` | **1** | **1** | **1** |
-| `exp2` | 2 | 4 | 2 |
-| `log2` | 2 | 7 | 6 |
-| `sin_cos` | 2 | 6 | 6 |
+| `exp2` | **1** | **1** | **1** |
+| `log2` | **1** | **1** | **1** |
+| `sin_cos` | 1 per kernel | 3 | 3 |
 
-### What made the difference, in one line
+Handwritten reference (metalium-rs): `sigmoid_program` 2 loads + 2 stores (it
+spills `x`), `relu`'s floor is 1 + 1. `exp2` and `log2` now hit that floor, with
+no `tt_lreg_alloc` split. The `sin_cos` *test* compiles **two kernels**
+(`xs.sin()`, `xs.cos()`), so its 6/6 is 3/3 each, with two register splits per
+kernel -- also pressure, not fusion.
 
-**Width, not the allocator.** The five `Select`s in `tt_exp2` (two clamps + the
-denormal/overflow/NaN specials) kept 9 values live at a point; removing them (the
-ML approximation the user asked for) put the fused body inside eight registers,
-so `tt_lreg_alloc` splits nothing. The allocator and the fusion were already
-correct -- they only had to *stop* paying for a wide body.
+### What made the difference, in one line each
+
+1. **Width, not the allocator** (`sigmoid`). The five `Select`s in `tt_exp2` (two
+   clamps + the denormal/overflow/NaN specials) kept 9 values live at a point;
+   removing them (the ML approximation the user asked for) put the fused body
+   inside eight registers, so `tt_lreg_alloc` splits nothing.
+2. **The fusion's two rules were the `exp2` blocker**, not pressure: its body
+   peaked at 5 registers against a budget of 8, yet the chain came out as two
+   row bodies, because the kernel *input* is read both before and after the
+   rounding (`t = x + magic`, `r = x - nf`) and its unpack `Copy` was emitted
+   between the two bodies -- and a cone's gap may only hold `SfpConst`/`SFPENCC`.
+   Fix (a): the segment-CSE carry guard now asks `tt_flag_effect(..) != Keep`
+   instead of "is it a const", so a preceding `SFPLOAD` no longer vetoes a carry
+   (`exp2` 4 -> 3 loads). Fix (b): a whole-tile `Unpack` in a gap is **hoisted in
+   front of the merged body** (it runs once per tile there, not per row) when no
+   part of the cone writes the tile it fills or its circular buffer; that closes
+   the cone (`exp2` 2 replays 4/2 -> 1 replay 1/1).
+3. **`tt_log2` was rebuilt on tt-metal's own algorithm.** First its specials went
+   (the `tiny`/`neg`/`inf`/NaN `Select`s, like `tt_exp2`'s): 2 replays 7/6 ->
+   1 replay 2/2. The 2/2 was one *register* split from the two `sqrt 2`
+   `Select`s that the atanh series needed. Then the series itself was replaced by
+   the LLK's `calculate_log_body` (Norbert Juffa's `logf`): `bits(x) -
+   bits(0.75)` with the mantissa cleared gives the exponent as `k << 23`,
+   `bits(x) - e` gives `m in [0.75, 1.5)`, one degree-9 Horner chain in
+   `m - 1` gives `log1p`, and `log2 x = k + log2(m)` folds the `ln2`/`log2 e`
+   round trip into one multiply. No `Select` at all, fewer live values:
+   **1 replay, 1 load, 1 store**. Accuracy is the LLK's (measured worst
+   **1.4e-7** on the gate's metric over `x in [0.01, 100]`).
+   Trap for next time: `BOp::And` is the **logical** and and types its result
+   `Bool`; the bitwise mask is `BOp::BitAnd` (both lower to `INT_AND`).
+
+### Activations are composed, and they fuse (new gates)
+
+Four new gates in `23_tt_lowering`, on `[-4, 4]` input: `tanh`, `silu`
+(`x*sigmoid(x)`), `gelu` (the tanh form) and `elu`. The frontend composes every
+activation from primitives, so these test the *fuser*, not a hand-written
+program:
+
+| gate | kernels | replays | loads | stores | body |
+|---|---|---|---|---|---|
+| `tanh` | 1 | 1 | 1 | 1 | 230 words |
+| `silu` | 1 | 1 | 1 | 1 | 220 words |
+| `gelu` | 1 | 1 | 1 | 1 | 272 words |
+| `elu` | -- | -- | -- | -- | **blocked** |
+
+`silu` is the interesting one: `x` is used twice (once directly, once through
+the sigmoid), and it is still 1+1 -- the second use is a register carry, which
+is the segment CSE doing its job.
+
+`elu` does not lower yet. `Tensor::elu` goes through `Tensor::relu`, which is
+`cmpgt(0) * x`, so the graph contains `f32(bool_tile)`. By the time it reaches
+`tt_lower_value` the Bool has been materialised in an F32 tile, so the `Cast`
+resolves to `F32 -> F32` and hits the `todo!()` in the `Op::Cast` arm
+(`tenstorrent.rs:1969`, "cast F32 -> F32 has no native row-op program").
+
+**No optimizer can remove it**: the IR cast is `Bool -> F32`, and `F32 -> F32` is
+only what `tt_resolve_dst` reports for the *tile* the Bool already lives in
+(comparisons write 0.0/1.0 into an F32 DST tile). Running `default_epilogue`
+before `tt_dataflow_select` (which the TT path now does) leaves it untouched --
+verified. The fix is in the lowering: a same-tile-dtype cast is a remap, and the
+`Bool` case should be named explicitly. The gate is left **red on purpose** as the
+bug doc.
 
 ### The pipeline as it stands (`device_epilogue`, `autotune.rs`)
 
 ```
-tt_tile -> tt_unfold -> tt_reindex -> CSE -> DCE -> tt_dataflow_select
+unfold_pows                     (in device_epilogue, for every backend)
+tt_tile -> tt_unfold -> tt_reindex -> default_epilogue -> tt_dataflow_select
   -> tt_sfpu_fusion -> tt_lreg_alloc -> tt_dst_reuse -> tt_reg_sync -> verify
 ```
+
+- **`unfold_pows` is a lowering decision, so it lives in `device_epilogue`**,
+  once, for every backend (TT's `tt_unfold` then turns the resulting
+  `Exp2`/`Log2` into primitives; elsewhere `devectorize` follows). It is gone
+  from `default_epilogue`, which is now device-independent -- no exp conversion,
+  and it can be run many times during the search without re-expanding `Pow`.
+- **`tt_dataflow_select` gets the minimal IR**: the TT path runs the whole
+  `default_epilogue` (constant folding, LICM, algebraic simplification, CSE,
+  DCE) right before it, not just CSE + DCE.
 
 - **`tt_dataflow_select`** is the phase boundary/emitter driver: pattern table ->
   `tt_sfp_*` emitters -> one `Replay` body per op.
@@ -71,6 +142,22 @@ carry copy at the store's position; per-part `SFPENCC` **inside** the body;
 `SFPENCC` is a predicate reset, not a scope; hand-over only when formats allow;
 coalescing must not drop an `SFPMOV` whose `Mod1` is set (log2 was off by `-2e`).
 
+Fusion rules (this session, both are *semantic*, not tuning):
+
+7. **The carry guard is about the mask, not about op kinds.** Only `SFPENCC`
+   (`Reset`), `SFPSETCC`/`SFPCOMPC` (`Mask`) and `SFPPUSHC`/`SFPPOPC`
+   (`Push`/`Pop`) change the lane mask -- `tt_flag_effect` is the one place that
+   knows this. `SFPLOAD`/`SFPSTORE`/arithmetic are `Keep`; treating them as
+   flag-touching is what made `exp2` reload `nf`.
+8. **A tile move cannot be inlined into a row body, but it can be hoisted out of
+   one.** The gap rule (`SfpConst` + `SFPENCC` only) exists because gap ops are
+   inlined and a merged body runs once per row: a `Copy` moved inside would run
+   once per row and clobber the tile mid-body. Hoisting it *in front of* the
+   merged body keeps it once per tile and is sound exactly when no part of the
+   cone writes the tile it fills (or its circular buffer); the hoisted op has no
+   lane registers, so the body's remap must skip it. Only `Unpack` is eligible
+   (a `Pack` writes a circular buffer the cone reads).
+
 ### Dead ends (measured, do not retry)
 
 - **Scheduling the bodies** (per instruction, or per `PUSHC..POPC` scope): the
@@ -85,21 +172,33 @@ coalescing must not drop an `SFPMOV` whose `Mod1` is set (log2 was off by `-2e`)
 
 ### Open work, in order
 
-1. **`log2` and `sin_cos`**: they still emit their specials as `Select`s and
-   still split (7/6 and 6/6). Drop the specials for ML exactly as `tt_exp2` did;
-   expect their replay/split counts to fall the same way. (Their specials are in
-   `tt_log2` around the `tiny`/`neg`/`inf`/NaN selects and `tt_sin_cos`.)
-2. **`tt_sink_const_splats` has a precision bug**: with it, `exp2` is ~5e-5
+1. **`elu` is blocked by a no-op `Cast`** (see the activation table above):
+   `tt_lower_value`'s `Op::Cast` arm has no `F32 -> F32` case, and the frontend's
+   `relu` (`cmpgt(0) * x`) produces exactly that after the Bool is materialised in
+   an F32 tile. Tiny fix, but it blocks `elu`, `relu`, `leaky_relu`, `selu` and
+   anything else composing `relu`.
+2. **`sin_cos`'s cost is pressure, not fusion.** (Corrected -- the old note said
+   "2 replays"; it is **two kernels**, `xs.sin()` and `xs.cos()`, one replay
+   each.) Each kernel has **two register splits** (3 loads / 3 stores): e.g. the
+   sin kernel stores tiles 841 and 656 at body ops ~217/223 and reloads them at
+   ~314/316. Its two `Select`s are the quadrant/sign choice (`q & 1` picks the
+   core, `q >> 1` flips the sign), so the `log2` trick does not apply. Next
+   diagnosis: which values keep the peak over 8 (two-limb pi/2 + quadrant i32 +
+   Taylor core), from the planner's peak, not a guess. The `log2` rewrite is the
+   template if the polynomial can be re-based to a narrower range.
+3. **`tt_sink_const_splats` has a precision bug**: with it, `exp2` is ~5e-5
    relative; disabled, the same kernel is ~1e-9. Fine for ML, but it is a real
    defect (suspect: the word-count/`len` bookkeeping when a 1-word load becomes a
    2-word `SfpConst`, or the constant path). The `exp2` gate was relaxed from
    `1e-5` to `1e-4` with a comment; do not leave it there once the sink is fixed.
-3. **The acceptance gate**: now realistic and worth writing -- for a pure
-   elementwise kernel the compiled T1 stream must have one `SFPLOAD` + one
-   `SFPSTORE` per row (`sigmoid` already is). Needs a test-visible accessor for the
-   compiled stream (the user approved adding one).
-4. Re-check `exp2`'s 2 replays (4/2): the body should probably be one replay once
-   its remaining splits are gone.
+4. **The acceptance gate**: for a pure elementwise kernel the compiled T1 stream
+   must have one `SFPLOAD` + one `SFPSTORE` per row (`sigmoid`, `exp2` and `log2`
+   already are). Needs a test-visible accessor for the compiled stream (the user
+   approved adding one).
+
+Done this session: the two fusion fixes, `exp2` 1/1/1, `log2`'s specials *and*
+its polynomial (1/1/1), the `sin_cos` correction above, and the four activation
+gates (`tanh`/`silu`/`gelu` 1/1/1, `elu` blocked by the no-op cast).
 
 ### How to run things
 
@@ -193,10 +292,11 @@ zyx IR
 **one `SFPLOAD` from the input tile and one `SFPSTORE` to the output tile**, with
 everything else in `L0..L7` — two DST accesses, one tile in and one out. This is
 the user's version of geohot's "`self.elu()` must cost the same as `self.relu()`".
-**Measured 2026-11-03: `sigmoid` is 1 load + 1 store, so this is met for it.**
-`exp2` 4/2, `log2` 7/6, `sin_cos` 6/6 are the remaining gap (their specials are
-still selects). It is still not a *test*: the acceptance gate (an accessor for
-the compiled T1 stream) is open.
+**Measured 2026-11-03: met for `sigmoid` and `exp2` (both 1 load + 1 store per
+row); `log2` is 2/2 (one register split from its two sqrt-2 selects) and
+`sin_cos` 6/6 (two replays, its selects are the quadrant choice).** It is still
+not a *test*: the acceptance gate (an accessor for the compiled T1 stream) is
+open.
 
 **Where the code is now (2026-11-03):**
 

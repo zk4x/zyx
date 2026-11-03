@@ -69,8 +69,9 @@ impl Kernel {
     /// The default epilogue, run on every kernel state during autotuning and
     /// before compilation: the standard always-on pipeline (unrolling of
     /// length-1 loops, constant folding, LICM, algebraic simplification, CSE,
-    /// instruction scheduling, DCE, ...) followed by the hardware-specific
-    /// `exp`/`exp2` conversion. Users can provide their own epilogue.
+    /// instruction scheduling, DCE, ...). It is device-independent: nothing
+    /// here converts a transcendental, and `Pow` is left alone (see
+    /// [`Kernel::device_epilogue`]). Users can provide their own epilogue.
     pub fn default_epilogue(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("default_epilogue");
@@ -79,7 +80,6 @@ impl Kernel {
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
         self.fold_accs();
-        self.unfold_pows();
         self.algebraic_simplifications();
         self.simplify_accumulating_loop();
         self.simplify_accumulating_loop();
@@ -87,7 +87,6 @@ impl Kernel {
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
         self.fold_accs();
-        self.unfold_pows();
         self.algebraic_simplifications();
         self.simplify_accumulating_loop();
         self.swap_commutative();
@@ -98,6 +97,14 @@ impl Kernel {
 
     /// Device specific epilogue
     pub fn device_epilogue(&mut self) {
+        // `Pow` -> `exp2(y * log2 x)` is a *lowering* decision, so it happens
+        // exactly once, here, for every backend: the pairs this creates are
+        // what the backend-specific passes below turn into primitives
+        // (`tt_unfold` on Tenstorrent, `devectorize` elsewhere). Keeping it out
+        // of `default_epilogue` means a kernel that is optimized many times
+        // during the search is not re-expanded each time, and a user-supplied
+        // epilogue cannot skip it.
+        self.unfold_pows();
         // Unroll vectors never survive to a scalar backend: they unfold
         // to per-element statements. Tenstorrent tiles the vector IR
         // (there is no way to tile a devectorized kernel), so no
@@ -120,8 +127,15 @@ impl Kernel {
             // Every generic pass runs before the phase boundary: `tt_dataflow_select`
             // selects the native instruction form, gives each result its own
             // tile, and leaves no SSA behind. Nothing generic may run after it.
-            self.common_subexpression_elimination();
-            self.dead_code_elimination();
+            //
+            // `tt_dataflow_select` gets the minimal IR: the full always-on
+            // pipeline (constant folding, LICM, algebraic simplification,
+            // CSE, DCE), not just CSE + DCE. A composed frontend op leaves
+            // identity junk behind -- `Tensor::relu` is `cmpgt(0) * x`, and
+            // its `Bool -> F32` cast reaches `tt_lower_value` as `F32 -> F32`
+            // once the Bool is materialised in an F32 tile, which the cast
+            // arm has no program for.
+            self.default_epilogue();
             self.tt_dataflow_select();
             // Chains that write an intermediate tile only to read it back:
             // keep the value in its lane register. Before the allocator, so

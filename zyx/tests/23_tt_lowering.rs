@@ -44,6 +44,110 @@ fn sigmoid() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// The activation gates below are all *composed* from primitives by the
+/// frontend (`tanh` is `sigmoid(2x)*2 - 1`, `silu` is `x*sigmoid(x)`, `gelu`
+/// adds the `tanh` cubic, `elu` goes through `relu`), so what they measure is
+/// the fuser, not a hand-written kernel: every one should come out as one row
+/// body with one `SFPLOAD` and one `SFPSTORE`.
+fn activation_input() -> Tensor {
+    &Tensor::rand([10, 256], DType::F32).unwrap() * 8.0f32 - 4.0f32
+}
+
+#[test]
+fn tanh() -> Result<(), ZyxError> {
+    let x = activation_input();
+    let z = x.to(Dev::TT(0))?.tanh().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    let mut bad = 0;
+    for i in 0..10 * 256 {
+        let want = xv[i].tanh();
+        if (zv[i] - want).abs() > 1e-3 {
+            if bad < 10 {
+                println!("tanh z[{i}] = {}, expected {want} (x {})", zv[i], xv[i]);
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "tanh lanes off");
+
+    Ok(())
+}
+
+#[test]
+fn silu() -> Result<(), ZyxError> {
+    // `x * sigmoid(x)`, the fork that makes `x` a two-use value.
+    let x = activation_input();
+    let xs = x.to(Dev::TT(0))?;
+    let z = (xs.clone() * xs.sigmoid()).to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    let mut bad = 0;
+    for i in 0..10 * 256 {
+        let want = xv[i] / (1.0 + (-xv[i]).exp());
+        if (zv[i] - want).abs() > 1e-3 * want.abs().max(1.0) {
+            if bad < 10 {
+                println!("silu z[{i}] = {}, expected {want} (x {})", zv[i], xv[i]);
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "silu lanes off");
+
+    Ok(())
+}
+
+#[test]
+fn gelu() -> Result<(), ZyxError> {
+    let x = activation_input();
+    let z = x.to(Dev::TT(0))?.gelu().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    let k = (2f32 / core::f32::consts::PI).sqrt();
+    let mut bad = 0;
+    for i in 0..10 * 256 {
+        let v = xv[i];
+        let want = 0.5 * v * (1.0 + (k * (v + v * v * v * 0.044_715)).tanh());
+        if (zv[i] - want).abs() > 1e-3 * want.abs().max(1.0) {
+            if bad < 10 {
+                println!("gelu z[{i}] = {}, expected {want} (x {v})", zv[i]);
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "gelu lanes off");
+
+    Ok(())
+}
+
+#[test]
+fn elu() -> Result<(), ZyxError> {
+    // Goes through `relu` = `cmpgt(0) * x`, so this is also the comparison
+    // tile's gate.
+    let x = activation_input();
+    let z = x.to(Dev::TT(0))?.elu(1.0f32).to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    let mut bad = 0;
+    for i in 0..10 * 256 {
+        let v = xv[i];
+        let want = if v > 0.0 { v } else { v.exp() - 1.0 };
+        if (zv[i] - want).abs() > 1e-3 * want.abs().max(1.0) {
+            if bad < 10 {
+                println!("elu z[{i}] = {}, expected {want} (x {v})", zv[i]);
+            }
+            bad += 1;
+        }
+    }
+    assert_eq!(bad, 0, "elu lanes off");
+
+    Ok(())
+}
+
 #[test]
 fn add() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 256], DType::F32)?;
