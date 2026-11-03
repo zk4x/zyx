@@ -3977,6 +3977,17 @@ impl Kernel {
                 // interleaving rows makes every part start from a dirty mask, so
                 // every part gets a reset (inside the merged body).
                 let mut needs_reset: Vec<usize> = Vec::new();
+                // A whole-tile move in a gap cannot be *inlined*: the merged
+                // body runs once per row, a tile copy once per tile. It can be
+                // **hoisted** in front of the merged body instead, where it
+                // still runs once per tile. That is sound when no part of the
+                // cone writes the tile it fills or its circular buffer: nothing
+                // in the body then depends on where the fill happens. This is
+                // what lets a kernel whose argument is the kernel input fold its
+                // whole chain (`exp2`): the input's unpack sits between the
+                // bodies that read it, and hoisting it in front makes the two
+                // bodies share the tile the way `sigmoid` already does.
+                let mut hoist: Vec<OpId> = Vec::new();
                 let mut ok = true;
                 for u in s + 1..=end {
                     let mut reset = false;
@@ -3986,6 +3997,15 @@ impl Kernel {
                             Op::TT(TTOp::Sfp(k)) if k.op == defs::SFPENCC.opcode() => {
                                 gap_words += 1;
                                 reset = true;
+                            }
+                            Op::TT(TTOp::Copy { src, dst, .. })
+                                // An unpack only: a pack writes a circular buffer
+                                // the cone reads from, and stays where it is.
+                                if self.tt_copy_kind(g) == TtCopy::Unpack
+                                    && !(s..=end)
+                                        .any(|p| stores[p].iter().any(|(slot, ..)| *slot == *dst || *slot == *src)) =>
+                            {
+                                hoist.push(g);
                             }
                             _ => {
                                 ok = false;
@@ -4048,11 +4068,13 @@ impl Kernel {
                     let Some(pos) = ops[start..units[first].1].iter().position(|&o| o == load_op) else {
                         continue;
                     };
-                    let flags_touched = ops[start..start + pos].iter().any(|&o| match self.at(o) {
-                        Op::TT(TTOp::SfpConst(_)) => false,
-                        Op::TT(TTOp::Sfp(k)) if k.op == defs::SFPENCC.opcode() => false,
-                        _ => true,
-                    });
+                    // Only the four flag opcodes can change the lane mask:
+                    // `SFPLOAD`, `SFPSTORE` and every arithmetic op leave it
+                    // alone (`tt_flag_effect` says `Keep`). Asking whether the
+                    // mask *could* have been narrowed is the real question; a
+                    // preceding load must not veto the carry, which is exactly
+                    // what `exp2`'s second `nf` read paid a reload for.
+                    let flags_touched = ops[start..start + pos].iter().any(|&o| tt_flag_effect(self.at(o)) != TtFlags::Keep);
                     if flags_touched {
                         continue;
                     }
@@ -4305,6 +4327,11 @@ impl Kernel {
                         range.extend_from_slice(&ops[units[u - 1].1..units[u].0]);
                     }
                     for &op in &range {
+                        // A hoisted unpack leaves the body; it has no lane
+                        // registers to rename.
+                        if hoist.contains(&op) {
+                            continue;
+                        }
                         tt_row_remap(&mut self.ops[op].op, &finals[u]);
                     }
                 }
@@ -4316,6 +4343,15 @@ impl Kernel {
                 }
                 for (load, src, carry) in cse_setup {
                     self.insert_after(load, Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [src, carry, 0, 0, 0] })));
+                }
+                // The hoisted unpacks run once per tile, in front of the row
+                // body -- which is where their readers (now inside one body)
+                // need them, and the role hand-off is the same seam a kernel
+                // input already gets.
+                for &op in &hoist {
+                    let copy = self.ops[op].op.clone();
+                    self.remove_op(op);
+                    self.insert_before(marker, copy);
                 }
                 self.ops[marker].op = Op::TT(TTOp::Replay { len: total as u16, count: counts[s] });
                 for u in s + 1..=end {
