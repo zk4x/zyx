@@ -153,6 +153,10 @@ impl Kernel {
             // arm has no program for.
             self.default_epilogue();
             self.tt_dataflow_select();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_dataflow_select ===");
+                self.debug();
+            }
             // Chains that write an intermediate tile only to read it back:
             // keep the value in its lane register. Before the allocator, so
             // the rows it frees are never allocated.

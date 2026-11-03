@@ -80,11 +80,23 @@ The store may drain the reduce directly or an accumulator load (the loop-carried
 Unroll axes are only a shape carrier (`strip_unrolls` zeroes them). The loop is
 a **CB transaction over K tiles**, not an element-offset rewrite.
 
+**`tt_slice` now trusts a reindexed index.** `strip_unrolls` and `tt_slice`
+share one predicate, `Kernel::tt_index_is_tile_units`: a **grid axis and the
+reduce's tile loop are both present**, and every grid term is a whole number of
+tiles. For such an index `strip_unrolls` does not rebase the group terms and
+`tt_slice` takes the grid strides from the index itself; every other (logical)
+index keeps the extent-map rebasing and the `1024 x inner extents` strides.
+
+The **loop is the discriminator** and it is load-bearing: a rebased logical
+index also has tile-multiple group strides (the old `32 * (g * 1024)` form
+reaches 32768), so "all grid terms are multiples of 1024" alone misclassifies
+elementwise kernels — that regressed 11 of the 23 gates before the loop test
+was added. Elementwise indices never carry a `Loop`; the reduce template always
+does.
+
 **The remaining softmax blocker is phase 1**: its index walk rejects the loop
 var (`tenstorrent.rs:1573`) and it emits one `Copy` per `Load` with a constant
-CB slot; it must emit the slot as the loop counter (the block `Copy`). And
-`tt_slice` still reconstructs grid strides from group extents — it must trust
-the rewritten index (the user approved this; both run in a fixed order).
+CB slot; it must emit the slot as the loop counter (the block `Copy`).
 
 ### Circular-buffer transactions (ported from `588110a9`)
 
@@ -304,10 +316,9 @@ adding an activation. It already caught `relu` at 2 loads.
    `tt_tile`, `tt_reindex` (loop-aware, tile units), the state machine and the
    batching pre-pass (`CbState`/`CbTransactions`/`Kernel::tt_cb_plan`) are in
    and unit-tested. What remains:
-   - **`tt_slice` must trust the rewritten index** (approved): use its const
-     term and strides instead of rebuilding grid strides from group extents.
-     The index now carries the correct tile strides (`8*g + i` for the input,
-     `g` for the output).
+   - ~~**`tt_slice` must trust the rewritten index**~~ — done: `strip_unrolls`
+     and `tt_slice` share `tt_index_is_tile_units` (grid + reduce loop), and
+     use the index's grid strides for those.
    - **phase 1**: accept the loop var in the index walk (`tenstorrent.rs:1573`)
      and emit the CB slot as the loop counter (one block `Copy`), not a
      constant slot per `Load`;

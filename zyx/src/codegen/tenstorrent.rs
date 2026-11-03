@@ -1366,11 +1366,15 @@ fn tt_narrow(cb: DType, param: DType) -> u8 {
 
 /// Byte offset and per-grid-axis byte strides of a boundary move's slice.
 ///
-/// The base is the index's constant term. The strides are *not* taken from
-/// the index expression: one grid point owns exactly one tile (the unit
-/// phase 1 sizes CBs, slots and byte counts in), so a group step advances by
-/// 1024 datums times the extents of the higher-axis groups — the same map
-/// `strip_unrolls` uses to place reader and writer slices. Trusting the
+/// The base is the index's constant term. For an index `tt_reindex` already
+/// rewrote to physical tile units, the grid strides are the index's own (a
+/// grid step there is a whole number of tiles: the reduce loop makes a row
+/// group advance `ntc` tiles, which the extent-only map cannot know).
+/// Otherwise the index is a *logical* one and the strides come from the
+/// physical tile map: one grid point owns exactly one tile (the unit phase 1
+/// sizes CBs, slots and byte counts in), so a group step advances by 1024
+/// datums times the extents of the higher-axis groups — the same map
+/// `strip_unrolls` uses to place reader and writer slices. Trusting a logical
 /// folded index here reads a 32-tile stride where one tile is meant.
 fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), BackendError> {
     let strides = k.get_strides(idx).ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not affine")))?;
@@ -1384,23 +1388,41 @@ fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), B
         }
     }
     let base = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
-    let mut axes: Vec<(u32, i64)> = Vec::new();
-    for (_, op) in k.iter_unordered() {
-        if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
-            let extent = k.resolve_const(*len).and_then(Constant::as_dim).ok_or_else(|| {
-                tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string())
-            })?;
-            axes.push((*axis, extent));
-        }
-    }
-    axes.sort();
     let mut per_axis = [0i64; 2];
-    let mut suffix = 1024i64;
-    for (axis, extent) in axes.iter().rev() {
-        let slot =
-            per_axis.get_mut(*axis as usize).ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
-        *slot = suffix;
-        suffix = suffix.checked_mul(*extent).ok_or_else(|| tt_err("tenstorrent: grid slice stride overflows".to_string()))?;
+    if k.tt_index_is_tile_units(idx) {
+        // The rewritten index is the truth: each grid term is its physical
+        // tile stride.
+        for (var, (_, stride)) in strides.iter() {
+            if *var == OpId::NULL {
+                continue;
+            }
+            let Op::Range { axis, kind: RangeKind::Group(_), .. } = k.at(*var) else {
+                return Err(tt_err(format!("tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}")));
+            };
+            let slot = per_axis
+                .get_mut(*axis as usize)
+                .ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
+            *slot = *stride;
+        }
+    } else {
+        let mut axes: Vec<(u32, i64)> = Vec::new();
+        for (_, op) in k.iter_unordered() {
+            if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
+                let extent = k.resolve_const(*len).and_then(Constant::as_dim).ok_or_else(|| {
+                    tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string())
+                })?;
+                axes.push((*axis, extent));
+            }
+        }
+        axes.sort();
+        let mut suffix = 1024i64;
+        for (axis, extent) in axes.iter().rev() {
+            let slot = per_axis
+                .get_mut(*axis as usize)
+                .ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
+            *slot = suffix;
+            suffix = suffix.checked_mul(*extent).ok_or_else(|| tt_err("tenstorrent: grid slice stride overflows".to_string()))?;
+        }
     }
     let to_bytes = |v: i64| -> Result<u32, BackendError> {
         let b =

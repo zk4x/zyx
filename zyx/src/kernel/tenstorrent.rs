@@ -1489,11 +1489,6 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
-        for (_, x) in self.iter_unordered() {
-            if let Op::Loop { .. } = x {
-                return;
-            }
-        }
         // CB Storage definitions live in the prologue (past leading
         // params/storages, before everything else): inserting before
         // `prologue` keeps it stable.
@@ -1573,14 +1568,36 @@ impl Kernel {
         // removes them with their index math). Tiled DRAM traffic
         // only — anything else bails the whole pass, since a
         // half-rewritten kernel is worse than none.
-        let mut loads: Vec<(OpId, OpId, OpId)> = Vec::new();
+        // (load, DRAM param, index, tiles published per pass, innermost loop).
+        // A load inside a constant-trip loop publishes one tile per iteration;
+        // its whole block is hoisted in front of that loop, because the reader
+        // section cannot share a loop with the compute section.
+        let mut loads: Vec<(OpId, OpId, OpId, i64, OpId)> = Vec::new();
+        let mut loop_trips: Vec<i64> = Vec::new();
+        let mut loop_ops: Vec<OpId> = Vec::new();
         let mut id = self.head;
         for _ in 0..250_000 {
             if id.is_null() {
                 break;
             }
-            if let Op::Load { src: base, src_idx: off, .. } = self.ops[id].op {
-                if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {
+            match self.ops[id].op {
+                Op::Loop { len } => {
+                    let Some(trip) = self.resolve_const(len).and_then(Constant::as_dim) else {
+                        return;
+                    };
+                    if trip <= 0 {
+                        return;
+                    }
+                    loop_trips.push(trip);
+                    loop_ops.push(id);
+                }
+                Op::EndLoop => {
+                    loop_trips.pop();
+                    loop_ops.pop();
+                }
+                Op::Load { src: base, src_idx: off, .. }
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) =>
+                {
                     // A `[32, 32]` tile, or a `[32]` vector — one tile row.
                     // The reader moves a whole tile in both cases (the DRAM
                     // buffers are page-sized), and row 0 of the unpacked tile
@@ -1590,8 +1607,15 @@ impl Kernel {
                     if shape != vec![32, 32] && shape != vec![32] {
                         return;
                     }
-                    loads.push((id, base, off));
+                    let mut tiles = 1i64;
+                    for trip in loop_trips.iter() {
+                        let Some(t) = tiles.checked_mul(*trip) else { return };
+                        tiles = t;
+                    }
+                    let hoist = loop_ops.last().copied().unwrap_or(OpId::NULL);
+                    loads.push((id, base, off, tiles, hoist));
                 }
+                _ => {}
             }
             id = self.ops[id].next;
         }
@@ -1599,12 +1623,13 @@ impl Kernel {
         // `reader_cb_of` survives for phase 2 (feeder → CB resolution).
         let mut reader_cb_of: Map<OpId, OpId> = Map::default();
         if !loads.is_empty() {
-            for (_, _, off) in loads.iter() {
+            for (_, _, off, _, _) in loads.iter() {
                 let mut stack = vec![*off];
                 for _ in 0..250_000 {
                     let Some(n) = stack.pop() else { break };
                     match self.ops[n].op {
-                        Op::Const(..) | Op::Range { .. } | Op::Param { .. } | Op::Unroll { .. } => {}
+                        // A loop var is a scalar leaf; it becomes the CB slot.
+                        Op::Const(..) | Op::Range { .. } | Op::Param { .. } | Op::Unroll { .. } | Op::Loop { .. } => {}
                         Op::Binary { x, y, .. } => {
                             stack.push(x);
                             stack.push(y);
@@ -1615,15 +1640,21 @@ impl Kernel {
                     }
                 }
             }
-            let anchor = loads[0].0;
+            // The reader section closes before the first compute op. A load
+            // inside a loop publishes its block from outside that loop, so the
+            // anchor is the loop header, not the load.
+            let anchor = match loads[0] {
+                (load, _, _, _, hoist) if !hoist.is_null() => hoist,
+                (load, ..) => load,
+            };
             // One CB per DRAM param, in first-load order; slots counted up front.
             let mut cbs: Vec<(OpId, DType, i64)> = Vec::new();
-            for (_, base, _) in loads.iter() {
+            for (_, base, _, tiles, _) in loads.iter() {
                 if let Some(entry) = cbs.iter_mut().find(|(b, _, _)| *b == *base) {
-                    entry.2 += 1;
+                    entry.2 += *tiles;
                 } else {
                     let Op::Param { dtype, .. } = self.ops[*base].op else { return };
-                    cbs.push((*base, dtype, 1));
+                    cbs.push((*base, dtype, *tiles));
                 }
             }
             let mut cb_of: Map<OpId, OpId> = Map::default();
@@ -1641,20 +1672,27 @@ impl Kernel {
                 reader_cb_of.insert(*base, cb);
                 slot_of.insert(*base, 0);
             }
-            for (_load, base, off) in loads.iter() {
-                let slot = slot_of[base];
-                slot_of.insert(*base, slot + 1);
+            for (_load, base, off, tiles, hoist) in loads.iter() {
                 let cb = cb_of[base];
                 let dtype = self.dtype(*base);
-                // CB indices are elementwise (uniform with vector traffic):
-                // tile k lives at element offset k*1024.
-                let slot_c = self.insert_const_idx_before(anchor, slot * 1024);
-                // Base address with lanes stripped; the transfer size is
-                // explicit, so no lane math rides along.
-                let Some(base_idx) = self.strip_unrolls(*off, anchor) else {
+                let tile_bytes = dtype.bit_size() as u32 / 8 * 1024;
+                let hoisted = !hoist.is_null();
+                // Base address with lanes stripped. A hoisted block also
+                // zeroes the loop variable: it starts at the block's first
+                // tile, and the tiles run consecutively along the reduce axis.
+                let Some(base_idx) = self.strip_unrolls(*off, anchor, hoisted) else {
                     return;
                 };
-                let bytes = dtype.bit_size() as u32 / 8 * 1024;
+                let (slot_c, bytes) = if hoisted {
+                    let Some(tiles) = u32::try_from(*tiles).ok() else { return };
+                    let Some(bytes) = tile_bytes.checked_mul(tiles) else { return };
+                    (self.insert_const_idx_before(anchor, 0i64), bytes)
+                } else {
+                    let slot = slot_of[base];
+                    slot_of.insert(*base, slot + 1);
+                    let slot_c = self.insert_const_idx_before(anchor, slot * 1024);
+                    (slot_c, tile_bytes)
+                };
                 self.insert_before(anchor, Op::TT(TTOp::Copy { src: *base, src_idx: base_idx, dst: cb, dst_idx: slot_c, bytes }));
             }
             self.insert_before(anchor, Op::TT(TTOp::EndReader));
@@ -1712,14 +1750,24 @@ impl Kernel {
                 break;
             }
             if let Op::Store { dst, src, .. } = self.ops[scan].op {
-                if matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. }) {
+                // A DRAM store drains a value, and a Register store is the
+                // loop-carried accumulator: its source is a root too, or a
+                // reduce that only feeds the accumulator is never lowered.
+                let interesting = matches!(
+                    self.ops[dst].op,
+                    Op::Param { kind: ParamKind::GlobalMut, .. } | Op::Storage { scope: MemScope::Register, .. }
+                );
+                if interesting {
                     roots.push(src);
                 }
             }
             scan = self.next_op(scan);
         }
         for root in roots {
-            let _ = self.tt_lower_value(root, &mut lower);
+            let lowered = self.tt_lower_value(root, &mut lower);
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("tt_dataflow_select: root {root:?} -> {:?}", lowered.as_ref().map(|(d, s)| (*d, *s)));
+            }
         }
         self.common_subexpression_elimination();
         // The high-level cones replaced by native ops are dead now. Drop
@@ -1834,7 +1882,7 @@ impl Kernel {
                     _ => return,
                 };
                 let tail = self.tail;
-                let Some(base_idx) = self.strip_unrolls(*off, tail) else {
+                let Some(base_idx) = self.strip_unrolls(*off, tail, false) else {
                     return;
                 };
                 if matches!(self.ops[storage].op, Op::Storage { scope: MemScope::Circular, .. }) {
@@ -2212,6 +2260,9 @@ impl Kernel {
             if let Some(v) = self.tt_emit(id, emit, &m, lower) {
                 return Some(v);
             }
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("lower {id:?}: recorded pattern #{i} did not emit {:?}", self.ops[id].op);
+            }
         }
         for i in 0..lower.pats.len() {
             let Some(m) = self.match_pat(id, &lower.pats[i].0) else {
@@ -2241,6 +2292,27 @@ impl Kernel {
         }
     }
 
+    /// The innermost open `Op::Loop` at `at`, if any. Linear over the kernel;
+    /// only the multi-tile CB path asks.
+    fn tt_enclosing_loop(&self, at: OpId) -> Option<OpId> {
+        let mut stack: Vec<OpId> = Vec::new();
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() || id == at {
+                break;
+            }
+            match self.ops[id].op {
+                Op::Loop { .. } => stack.push(id),
+                Op::EndLoop => {
+                    stack.pop();
+                }
+                _ => {}
+            }
+            id = self.next_op(id);
+        }
+        stack.last().copied()
+    }
+
     /// Resolve a value to a DST row, unpacking a CB if needed. This is the
     /// only CB -> DST conversion in compute; the copy is single-use and the
     /// reuse pass can coalesce its row with the producer.
@@ -2249,6 +2321,20 @@ impl Kernel {
         match self.ops[storage].op {
             Op::Storage { scope: MemScope::Register, .. } => Some((dtype, storage)),
             Op::Storage { scope: MemScope::Circular, .. } => {
+                // A multi-tile CB consumed inside a loop is a block: the slot
+                // is the loop counter, and every iteration unpacks afresh (so
+                // the one-DST-tile cache below does not apply).
+                if let Some(lv) = self.tt_enclosing_loop(consumer) {
+                    if matches!(self.ops[storage].op, Op::Storage { len, .. } if len > 1024) {
+                        let dst = self.tt_new_dst(dtype, lower.prologue);
+                        let stride = self.insert_const_idx_before(consumer, 1024i64);
+                        let src_idx = self.insert_before(consumer, Op::Binary { x: lv, y: stride, bop: BOp::Mul });
+                        let zero = self.insert_const_idx_before(consumer, 0i64);
+                        let bytes = (dtype.bit_size() as u32 / 8).checked_mul(1024)?;
+                        self.insert_before(consumer, Op::TT(TTOp::Copy { src: storage, src_idx, dst, dst_idx: zero, bytes }));
+                        return Some((dtype, dst));
+                    }
+                }
                 // One tile per CB: a kernel phase's CB holds one tile, and
                 // the unpack always reads slot 0, so every use of the same CB
                 // may share one unpacked DST tile.
@@ -5148,6 +5234,35 @@ impl Kernel {
         active.push((logical, phys, last_use.get(&logical).copied().unwrap_or(0)));
     }
 
+    /// True when an index already names **physical tiles**: it belongs to the
+    /// reduce template `tt_reindex` rewrote — a reduce over more than one
+    /// tile, so a grid axis **and** the reduce's tile loop are both present,
+    /// and every grid axis advances a whole number of 1024-element tiles.
+    ///
+    /// The loop is the discriminator: an elementwise index never has one, and
+    /// its logical grid terms are rebased from the group extents instead
+    /// (`strip_unrolls`, `tt_slice`).
+    pub(crate) fn tt_index_is_tile_units(&self, idx: OpId) -> bool {
+        let Some(strides) = self.get_strides(idx) else { return false };
+        let (mut grid, mut looped) = (false, false);
+        for (var, (_, stride)) in strides.iter() {
+            if *var == OpId::NULL {
+                continue;
+            }
+            match self.ops[*var].op {
+                Op::Range { kind: RangeKind::Group(_), .. } => {
+                    grid = true;
+                    if *stride <= 0 || *stride % 1024 != 0 {
+                        return false;
+                    }
+                }
+                Op::Loop { .. } => looped = true,
+                _ => {}
+            }
+        }
+        grid && looped
+    }
+
     /// Base index with lanes stripped: clone the index expression
     /// with every `Unroll` replaced by 0. No affinity assumption —
     /// substitution works on any expression shape; uncloneable leaves
@@ -5160,9 +5275,12 @@ impl Kernel {
     /// physical tile stride (one full [32, 32] tile per step, times
     /// inner-group extents) and a bare group id inside Add/Sub wraps
     /// to id * stride. Symbolic extents bail the caller.
-    fn strip_unrolls(&mut self, idx: OpId, before: OpId) -> Option<OpId> {
+    fn strip_unrolls(&mut self, idx: OpId, before: OpId, strip_loops: bool) -> Option<OpId> {
         // Clone memo per call (index math is small).
         let mut memo: Map<OpId, OpId> = Map::default();
+        // A reindexed index already names tiles; its group terms are the
+        // physical offsets and must not be rebased again.
+        let tile_units = self.tt_index_is_tile_units(idx);
         // Group axis -> physical tile stride (element units), built
         // lazily on first group use inside the walk below.
         let mut strides: Option<Map<u32, Dim>> = None;
@@ -5175,8 +5293,14 @@ impl Kernel {
                 continue;
             }
             match self.ops[n].op {
+                // A loop var is a scalar leaf. It stays in a stripped index
+                // that the emitter expands per iteration; a hoisted block
+                // transport zeroes it (the block starts at its base).
                 Op::Const(_) | Op::Range { .. } | Op::Param { .. } => {
                     memo.insert(n, n);
+                }
+                Op::Loop { .. } => {
+                    memo.insert(n, if strip_loops { zero } else { n });
                 }
                 Op::Unroll { .. } => {
                     memo.insert(n, zero);
@@ -5207,7 +5331,7 @@ impl Kernel {
                         // split keeps the outer on the original axis.
                         // Unresolvable (symbolic) extents bail the pass:
                         // never silent wrong code.
-                        if (gx.is_some() || gy.is_some()) && strides.is_none() {
+                        if !tile_units && (gx.is_some() || gy.is_some()) && strides.is_none() {
                             let mut axes: Vec<(u32, Dim)> = Vec::new();
                             for (_, op) in self.iter_unordered() {
                                 if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
@@ -5237,36 +5361,38 @@ impl Kernel {
                         // downstream checks loudly.
                         let mut ax = nx;
                         let mut ay = ny;
-                        match bop {
-                            BOp::Mul => {
-                                if let Some(a) = gx {
-                                    if gy.is_none() && matches!(self.ops[ny].op, Op::Const(_)) {
-                                        let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
-                                        let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
-                                        ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop });
+                        if !tile_units {
+                            match bop {
+                                BOp::Mul => {
+                                    if let Some(a) = gx {
+                                        if gy.is_none() && matches!(self.ops[ny].op, Op::Const(_)) {
+                                            let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
+                                            let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                            ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop });
+                                        }
+                                    }
+                                    if let Some(a) = gy {
+                                        if gx.is_none() && matches!(self.ops[nx].op, Op::Const(_)) {
+                                            let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
+                                            let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                            ay = self.insert_before(before, Op::Binary { x: sc, y: ny, bop });
+                                        }
                                     }
                                 }
-                                if let Some(a) = gy {
-                                    if gx.is_none() && matches!(self.ops[nx].op, Op::Const(_)) {
+                                BOp::Add | BOp::Sub => {
+                                    if let Some(a) = gx {
                                         let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
                                         let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
-                                        ay = self.insert_before(before, Op::Binary { x: sc, y: ny, bop });
+                                        ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop: BOp::Mul });
+                                    }
+                                    if let Some(a) = gy {
+                                        let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
+                                        let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                        ay = self.insert_before(before, Op::Binary { x: ny, y: sc, bop: BOp::Mul });
                                     }
                                 }
+                                _ => {}
                             }
-                            BOp::Add | BOp::Sub => {
-                                if let Some(a) = gx {
-                                    let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
-                                    let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
-                                    ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop: BOp::Mul });
-                                }
-                                if let Some(a) = gy {
-                                    let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
-                                    let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
-                                    ay = self.insert_before(before, Op::Binary { x: ny, y: sc, bop: BOp::Mul });
-                                }
-                            }
-                            _ => {}
                         }
                         // Fold constant lanes away: the base is fully
                         // static exactly when the index is.
@@ -6795,6 +6921,7 @@ mod reindex_tests {
         assert_eq!(s[&l].1, 1024, "a loop step is one tile");
         assert_eq!(s[&row_lane].1, 32, "the row lane is a shape carrier");
         assert_eq!(s[&k_lane].1, 1);
+        assert!(k.tt_index_is_tile_units(src_idx), "a grid + loop index is physical");
 
         // Output tile = the grid axis alone; the row is a shape carrier.
         let Op::Store { dst_idx, .. } = k.ops[store].op else {

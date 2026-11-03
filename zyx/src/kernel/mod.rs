@@ -2222,7 +2222,8 @@ impl Kernel {
             }
             match self.ops[n].op {
                 Op::Unroll { .. } => return true,
-                Op::Const(_) | Op::Param { .. } | Op::Range { .. } | Op::Storage { .. } => {}
+                // A loop var is a scalar iterator, not a lane.
+                Op::Const(_) | Op::Param { .. } | Op::Range { .. } | Op::Storage { .. } | Op::Loop { .. } => {}
                 Op::Binary { x, y, .. } => {
                     stack.push(x);
                     stack.push(y);
