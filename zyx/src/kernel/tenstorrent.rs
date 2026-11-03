@@ -5951,6 +5951,282 @@ mod lreg_spill {
     }
 }
 
+// ── Circular-buffer transactions ─────────────────────────────────────────────
+//
+// Ported from `zyx/src/codegen/tenstorrent.rs` at `588110a9` ("multitile cbs
+// continuation"), where this was the state behind the tt-metal
+// `reserve_back` / `push_back` / `wait_front` / `pop_front` calls. The old
+// emitter also chose the batches (which traffic op becomes a block spanning a
+// loop) and anchored the events; this is the machine those events drive, kept
+// separate so it is testable without emitting anything.
+
+/// One circular buffer's state in a pass over the emitted traffic.
+///
+/// A CB is a FIFO of tiles: a producer `reserve`s a block, writes every tile,
+/// then `push`es it; a consumer `wait`s for a block, reads every tile, then
+/// `pop`s it. The machine follows **one** pass over the traffic text: a loop
+/// body runs that text once per iteration on the device, so a transaction
+/// that spans a loop is opened before the `Loop` and closed after its
+/// `EndLoop`.
+///
+/// `avail` is the ring occupancy, tiles pushed minus tiles popped. It
+/// persists across transactions so a reader can run ahead of its consumer;
+/// `Popped` is exactly `avail == 0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code, reason = "the batching pre-pass wires this in next")]
+pub(crate) enum CbState {
+    /// Free: no live transaction, no unread tiles.
+    #[default]
+    Popped,
+    /// `reserve_back(n)` emitted; `filled` of the block's tiles written.
+    Reserved { n: u32, filled: u32, avail: u32 },
+    /// `avail` tiles sit unconsumed at the front.
+    Pushed { avail: u32 },
+    /// `wait_front(m)` emitted; `filled` of the `m` waited tiles read.
+    Waiting { waited: u32, filled: u32, avail: u32 },
+}
+
+#[allow(dead_code, reason = "the batching pre-pass wires this in next")]
+impl CbState {
+    /// `reserve_back(n)`: from the free state, or stacked on unread tiles
+    /// (`Pushed` — the ring wraps, the producer runs ahead).
+    #[track_caller]
+    pub(crate) fn reserve(self, cb: OpId, n: u32) -> Self {
+        let avail = match self {
+            Self::Popped => 0,
+            Self::Pushed { avail } => avail,
+            s => panic!("CB{cb:?}: reserve_back in {s:?}, must be free or pushed"),
+        };
+        assert!(n > 0, "CB{cb:?}: reserve_back(0) is not a transaction");
+        Self::Reserved { n, filled: 0, avail }
+    }
+
+    /// `push_back(n)`: closes the open reservation; every tile must have
+    /// been written (`moved` accounted them).
+    #[track_caller]
+    pub(crate) fn push(self, cb: OpId, n: u32) -> Self {
+        match self {
+            Self::Reserved { n: rn, filled, avail } if rn == n => {
+                assert_eq!(filled, n, "CB{cb:?}: push_back with {filled}/{n} tiles written");
+                Self::Pushed { avail: avail + n }
+            }
+            s => panic!("CB{cb:?}: push_back in {s:?}, must be Reserved with matching block size"),
+        }
+    }
+
+    /// `wait_front(m)`: waits for `m` unread tiles, which must be available.
+    #[track_caller]
+    pub(crate) fn wait(self, cb: OpId, m: u32) -> Self {
+        match self {
+            Self::Pushed { avail } => {
+                assert!(m <= avail, "CB{cb:?}: wait_front({m}) with only {avail} tiles available");
+                assert!(m > 0, "CB{cb:?}: wait_front(0) is not a transaction");
+                Self::Waiting { waited: m, filled: 0, avail }
+            }
+            s => panic!("CB{cb:?}: wait_front in {s:?}, must be Pushed"),
+        }
+    }
+
+    /// `pop_front(m)`: drains the waited block. Tiles left over wrap back to
+    /// `Pushed`; an empty front wraps to free.
+    #[track_caller]
+    pub(crate) fn pop(self, cb: OpId, m: u32) -> Self {
+        match self {
+            Self::Waiting { waited, filled, avail } if waited == m => {
+                assert_eq!(filled, m, "CB{cb:?}: pop_front with {filled}/{m} tiles read");
+                let rest = avail - m;
+                if rest == 0 {
+                    Self::Popped
+                } else {
+                    Self::Pushed { avail: rest }
+                }
+            }
+            s => panic!("CB{cb:?}: pop_front in {s:?}, must be Waiting with matching block size"),
+        }
+    }
+
+    /// Accounts the tiles one execution of a data-movement text moves: fills
+    /// the open reservation (producer) or drains the waited block (consumer).
+    #[track_caller]
+    pub(crate) fn moved(self, cb: OpId, count: u32) -> Self {
+        match self {
+            Self::Reserved { n, filled, avail } => {
+                let filled = filled + count;
+                assert!(filled <= n, "CB{cb:?}: block overfill {filled}/{n}");
+                Self::Reserved { n, filled, avail }
+            }
+            Self::Waiting { waited, filled, avail } => {
+                let filled = filled + count;
+                assert!(filled <= waited, "CB{cb:?}: block overdrain {filled}/{waited}");
+                Self::Waiting { waited, filled, avail }
+            }
+            s => panic!("CB{cb:?}: a move in {s:?}, must be Reserved or Waiting"),
+        }
+    }
+
+    /// A section may end only between transactions (`Popped`/`Pushed`); a
+    /// `Reserved`/`Waiting` remainder is a leaked transaction.
+    pub(crate) fn settled(self) -> bool {
+        matches!(self, Self::Popped | Self::Pushed { .. })
+    }
+}
+
+/// Every circular buffer's state in one kernel, keyed by its `Circular`
+/// storage. One entry per buffer, created on first touch.
+#[derive(Debug, Default)]
+#[allow(dead_code, reason = "the batching pre-pass wires this in next")]
+pub(crate) struct CbTransactions {
+    states: Map<OpId, CbState>,
+}
+
+#[allow(dead_code, reason = "the batching pre-pass wires this in next")]
+impl CbTransactions {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// The current state, or `Popped` for a buffer not touched yet.
+    pub(crate) fn state(&self, cb: OpId) -> CbState {
+        self.states.get(&cb).copied().unwrap_or_default()
+    }
+
+    pub(crate) fn set(&mut self, cb: OpId, state: CbState) {
+        self.states.insert(cb, state);
+    }
+
+    pub(crate) fn reserve(&mut self, cb: OpId, n: u32) {
+        let s = self.state(cb).reserve(cb, n);
+        self.set(cb, s);
+    }
+
+    pub(crate) fn push(&mut self, cb: OpId, n: u32) {
+        let s = self.state(cb).push(cb, n);
+        self.set(cb, s);
+    }
+
+    pub(crate) fn wait(&mut self, cb: OpId, m: u32) {
+        let s = self.state(cb).wait(cb, m);
+        self.set(cb, s);
+    }
+
+    pub(crate) fn pop(&mut self, cb: OpId, m: u32) {
+        let s = self.state(cb).pop(cb, m);
+        self.set(cb, s);
+    }
+
+    /// Accounts `count` moved tiles against the open transaction on `cb`.
+    pub(crate) fn moved(&mut self, cb: OpId, count: u32) {
+        let s = self.state(cb).moved(cb, count);
+        self.set(cb, s);
+    }
+
+    /// End-of-section gate: no buffer may hold a mid-transaction state.
+    #[track_caller]
+    pub(crate) fn assert_settled(&self, section: &str) {
+        for (&cb, &state) in self.states.iter() {
+            assert!(state.settled(), "{section} ends with CB{cb:?} in {state:?}; a transaction leaked");
+        }
+    }
+}
+
+#[cfg(test)]
+mod cb_tests {
+    use super::*;
+
+    fn cb(n: usize) -> OpId {
+        OpId::from(n)
+    }
+
+    #[test]
+    fn a_transaction_cycles_back_to_free() {
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.reserve(c, 2);
+        assert_eq!(m.state(c), CbState::Reserved { n: 2, filled: 0, avail: 0 });
+        m.moved(c, 2);
+        m.push(c, 2);
+        assert_eq!(m.state(c), CbState::Pushed { avail: 2 });
+        m.wait(c, 2);
+        m.moved(c, 2);
+        m.pop(c, 2);
+        assert_eq!(m.state(c), CbState::Popped);
+        m.assert_settled("test");
+    }
+
+    #[test]
+    fn unread_tiles_carry_the_ring_forward() {
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.reserve(c, 4);
+        m.moved(c, 4);
+        m.push(c, 4);
+        m.wait(c, 2);
+        m.moved(c, 2);
+        m.pop(c, 2);
+        assert_eq!(m.state(c), CbState::Pushed { avail: 2 });
+        // The producer runs ahead of the consumer: the next block stacks.
+        m.reserve(c, 2);
+        m.moved(c, 2);
+        m.push(c, 2);
+        assert_eq!(m.state(c), CbState::Pushed { avail: 4 });
+    }
+
+    #[test]
+    fn a_block_spanning_a_loop_is_one_transaction() {
+        // The hoisted form the old emitter chose: reserve/push outside the
+        // loop, one `moved` per iteration.
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.reserve(c, 8);
+        for _ in 0..8 {
+            m.moved(c, 1);
+        }
+        m.push(c, 8);
+        assert_eq!(m.state(c), CbState::Pushed { avail: 8 });
+        m.wait(c, 8);
+        for _ in 0..8 {
+            m.moved(c, 1);
+        }
+        m.pop(c, 8);
+        assert_eq!(m.state(c), CbState::Popped);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be free or pushed")]
+    fn reserving_mid_transaction_is_loud() {
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.reserve(c, 1);
+        m.reserve(c, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be Reserved with matching block size")]
+    fn pushing_an_unreserved_block_is_loud() {
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.push(c, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "block overfill")]
+    fn writing_past_the_reserved_block_is_loud() {
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.reserve(c, 1);
+        m.moved(c, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "must be Pushed")]
+    fn waiting_without_pushed_tiles_is_loud() {
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.wait(c, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "a transaction leaked")]
+    fn a_mid_transaction_section_end_is_loud() {
+        let (c, mut m) = (cb(0), CbTransactions::new());
+        m.reserve(c, 1);
+        m.assert_settled("compute");
+    }
+}
+
 #[cfg(test)]
 mod acceptance {
     use super::*;

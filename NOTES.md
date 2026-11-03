@@ -5,8 +5,9 @@
 rewrite, the comparison-into-predicate fold, `exp2` back at `1e-5`, the
 acceptance unit test, the select register/constant reuse) plus uncommitted: the
 `matmul_add` fixes (`zyx/src/codegen/tenstorrent.rs`, `tests/23_tt_lowering.rs`),
-the `tt_tile` contract change below (`zyx/src/kernel/tenstorrent.rs`), the
-`debug` indentation fix (`zyx/src/kernel/debug.rs`), the `ZYX_TT_IR` dumps
+the `tt_tile` contract change and the CB transaction state machine
+(`zyx/src/kernel/tenstorrent.rs`), the `debug` indentation fix
+(`zyx/src/kernel/debug.rs`), the `ZYX_TT_IR` dumps
 (`zyx/src/kernel/autotune.rs`), and this file. **23/23 ttsim gates green**
 (`matmul_add` included), `cargo test --lib` = 83.
 
@@ -62,11 +63,52 @@ store vec32 r4[r11] = load vec32 r1[r38]
 
 The remaining softmax blocker is **`tt_reindex`'s `Op::Loop` early return**
 (`tenstorrent.rs:1105`) plus phase 1's index walk, which rejects the loop var
-(`tenstorrent.rs:1573`). The physical address needs one more term than
-`row*32 + lane`: with K tiles along the reduced axis, tile `(row_tile, i)` is
-at `(row_tile*K + i)*1024`, so loop-aware reindex must emit
-`row_tile*K*TILE + i*TILE + row_lane*32 + k_lane` (or hand the tile advance to
-the reader). That is the next step.
+(`tenstorrent.rs:1573`).
+
+**The address model is tiles, not elements.** A TT buffer is a sequence of
+1024-element tiles in 16x16 face order (`tilize_transfer`,
+`backend/tenstorrent/mod.rs:1454`); the traffic unit is one whole tile, and
+`strip_unrolls` zeroes the Unroll axes (they only carry the value's `[32,32]`
+shape). `tt_slice` takes the index's **const term** as the base and the grid
+strides from `1024 x higher group extents`. So loop-aware reindex only has to
+name the **tile number**: with `ntc` tiles along the reduced axis, tile
+`(row_tile, i)` is `row_tile*ntc + i`. The loop is a **CB transaction over K
+tiles**, not an element-offset rewrite.
+
+### Circular-buffer transactions (ported from `588110a9`)
+
+The general multi-tile CB handling existed in this repo before the native
+rewrite. Source: `588110a9` "multitile cbs continuation",
+`zyx/src/codegen/tenstorrent.rs` — `CBState`, `CBBatch`, `CBEvent`,
+`CBEmitter`, and a batching pre-pass. It was deleted with the generated-kernel
+path (`tenstorrent2.rs`, `67bb272a` / `4ed3200e`). The Rust wire format for the
+same model survives in metalium-rs: `crates/tt-kernels/src/session.rs`
+(`op::PAIR` + `op::CB` credits Reserve/Push/Wait/Pop with a ring `depth`,
+`RELEASED`, `KERNEL` generations) and `dm.rs` (chunking to `LIST_MAX`).
+
+Mapping to today's IR:
+
+| old (`588110a9`) | now |
+|---|---|
+| sections split by `Op::Barrier` | `TTOp::EndReader` / `EndCompute` |
+| `Op::Store` into `MemScope::Circular` = produce | `TTOp::Copy` whose `dst` is `Circular` |
+| `Op::Load` from `MemScope::Circular` = consume | `TTOp::Copy` whose `src` is `Circular` |
+| `CBId` from first touch | the `Storage` `OpId` (until `tt_place_cbs`) |
+| `CBBatch { cb, per_op = trip, hoist }` | same, `hoist` = the `Op::Loop` |
+| block iff `trip <= config[cb].2`, else one tile per iteration | same |
+| slot = `index + counter`; index must depend on the loop counter or be 0 | same |
+| events: open before `Loop`, close after `EndLoop` | same |
+| `reserve_back`/`push_back`/`wait_front`/`pop_front` calls | `op::CB` credits in the DM list |
+
+**Done:** the transaction state machine, ported as `CbState` +
+`CbTransactions` in `kernel/tenstorrent.rs` (one pass over the traffic text;
+`avail` carries the ring; `moved` fills/drains; a section end must be settled).
+8 unit tests: the cycle, the run-ahead ring, a block spanning a loop, and the
+loud refusals (reserve mid-transaction, push unmatched, overfill, wait without
+push, leaked transaction at a section end).
+
+**Next:** the batching pre-pass over today's IR (classify `Copy` traffic,
+choose the hoisted blocks), then the wire encoding into the DM list.
 
 ### The result
 
@@ -224,14 +266,16 @@ adding an activation. It already caught `relu` at 2 loads.
 
 ### Open work
 
-1. **`tt_reindex` / loop-aware traffic** — the softmax blocker, and the next
-   step. `tt_tile` now produces the right shape (see the top section): one tile
-   per loop iteration, `Loop(k_tiles) + Unroll(32)`, grid over output tiles.
-   `tt_reindex` still returns early on any `Op::Loop` (`tenstorrent.rs:1105`),
-   and phase 1's index walk rejects the loop var (`tenstorrent.rs:1573`). The
-   physical address needs the tile term: with K k-tiles, tile `(row_tile, i)`
-   is `(row_tile*K + i)*1024`, so the rewrite is
-   `row_tile*K*TILE + i*TILE + row_lane*32 + k_lane`.
+1. **CB transactions: the batching pre-pass** — the softmax blocker, and the
+   next step. `tt_tile` now produces the right shape (see the top section): one
+   tile per loop iteration, `Loop(k_tiles) + Unroll(32)`, grid over output
+   tiles. The transaction state machine is in (`CbState`/`CbTransactions`, see
+   "Circular-buffer transactions"); what remains is the pre-pass over today's
+   IR that classifies the `Copy` traffic per CB, chooses the hoisted blocks
+   (trip count vs CB capacity, slot = index + counter), and anchors the events;
+   then `tt_reindex` can name the tile number (`row_tile*ntc + i`) instead of
+   firing the loop var through an element index. Phase 1's index walk also has
+   to accept the loop var (`tenstorrent.rs:1573`).
 2. **Beyond the simulator** (in rough order): BF16/F16 staging — the backend is
    F32-only and the pinned ttsim models only three 32-bit `(in, out)` DST pairs;
    a **silicon run** (everything so far is ttsim); concurrency/waves (grid
