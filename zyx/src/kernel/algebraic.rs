@@ -352,6 +352,39 @@ impl Kernel {
                         self.remap(op_id, x);
                     }
                 }
+            } else if let &Op::Binary { x, y, bop: BOp::Mul } = self.at(op_id)
+                && let Some((cond, keep, zero)) = {
+                    // `bool * x` is a pick, not a product: a Bool is 0/1, so
+                    // the product is `select(cond, x, 0)` elementwise. The
+                    // frontend writes `relu` (and `leaky_relu`, `selu`,
+                    // `hard_sigmoid`, every `elu` shape) as
+                    // `cast(cmp, dtype) * x`, and the *cast* is what forces
+                    // `tt_sfp_compare`'s whole IEEE comparison tile -- ~40
+                    // instructions holding `L0..L7` -- to be materialised for
+                    // a single predicate. `Select` lowers to a masked move,
+                    // which is the cheaper spelling on every backend.
+                    let dt = self.dtype(op_id);
+                    let zero = match dt {
+                        DType::F32 => Some(Constant::new(0.0f32)),
+                        DType::I32 => Some(Constant::new(0i32)),
+                        _ => None,
+                    };
+                    let pred = |k: &Kernel, o: OpId| match k.at(o) {
+                        Op::Cast { x: c, dtype } if *dtype == dt && k.dtype(*c) == DType::Bool => Some(*c),
+                        _ => None,
+                    };
+                    zero.and_then(|z| {
+                        // `if_true` must be the tile: `Select` follows it for
+                        // the result shape.
+                        pred(self, x)
+                            .filter(|_| !matches!(self.ops[y].op, Op::Const(_)))
+                            .map(|c| (c, y, z))
+                            .or_else(|| pred(self, y).filter(|_| !matches!(self.ops[x].op, Op::Const(_))).map(|c| (c, x, z)))
+                    })
+                }
+            {
+                let zero = self.insert_before(op_id, Op::Const(zero));
+                self.ops[op_id].op = Op::Select { cond, if_true: keep, if_false: zero };
             } else if let &Op::Binary { x, y, bop } = self.at(op_id)
                 && !self.dtype(x).is_float()
             {

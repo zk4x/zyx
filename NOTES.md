@@ -1,9 +1,10 @@
 ## HANDOFF (2026-11-03) — elementwise parity: sigmoid/exp2/log2 at 1 load + 1 store
 
 **Tree state:** committed at `78878bca` (which carries the fusion fixes, the
-`log2` rewrite, the `unfold_pows` move and the activation gates) plus one
-uncommitted change: the `Bool`/identity cast lowering in
-`zyx/src/kernel/tenstorrent.rs`. 22/22 of the ttsim gates listed under "How to
+`log2` rewrite, the `unfold_pows` move and the activation gates) plus two
+uncommitted changes: the `Bool`/identity cast lowering in
+`zyx/src/kernel/tenstorrent.rs`, and `cast(cmp) * x` -> `select(cmp, x, 0)` in
+`zyx/src/kernel/algebraic.rs`. 22/22 of the ttsim gates listed under "How to
 run things" are green, `cargo test --lib` = 82, changed files fmt clean.
 (`23_tt_lowering` has 24 tests; `matmul_add` and `softmax` fail at HEAD too --
 `Zeroacc` CLR_ALL with live DST rows, and `missing EndReader` -- so they are
@@ -91,8 +92,20 @@ an alias to the source tile.
 The remaining 3/3 is **width**, not fusion: the comparison sequence itself uses
 `L0..L7` (both operands, the three constants, the two magnitude scratches), so
 fusing it with `exp2` and the two `relu` multiplies pushes the peak past eight.
-A one-instruction `relu`/`max(x,0)` kind (the SFPU has `LEAKY_RELU`) would
-remove it; the frontend's `cmpgt(0) * x` shape is what the pattern table sees.
+
+The first half of the fix is in (`algebraic_simplifications`, general, not
+elu-specific): **`cast(cmp, dtype) * x` becomes `select(cmp, x, 0)`**, because a
+Bool is 0/1 and the product is a pick. The frontend writes every relu-shaped
+activation (`relu`, `leaky_relu`, `selu`, `hard_sigmoid`, and both halves of
+`elu`) that way, and it is the *cast* that forced the whole IEEE comparison
+tile to be materialised for one predicate. `elu`'s body went 288 -> **258
+words**, but it is still 3/3: the compare is the width, so the next half is
+**folding a single-use comparison into the `Select`'s predicate** -- emit
+`SFPSETCC` on the comparison's operands instead of building the Bool tile
+(tt-metal's own relu is exactly that: `SFPLOAD; SFPSETCC(x); SFPMUL; SFPENCC;
+SFPSTORE`). Then relu is ~4 instructions / 2 registers and `elu` should reach
+1+1 without an `elu` op -- which is the bar tt-tiny's README sets
+(`self.elu()` must cost what `self.relu()` costs).
 
 ### The pipeline as it stands (`device_epilogue`, `autotune.rs`)
 
@@ -178,12 +191,14 @@ Fusion rules (this session, both are *semantic*, not tuning):
 ### Open work, in order
 
 1. **`elu`'s 3 loads / 3 stores are the comparison's width.** The cast lowering
-   is fixed, so `elu` (and `relu`, `leaky_relu`, `selu`, `hard_sigmoid`) lower
-   and fuse to one body, but `tt_sfp_compare` needs `L0..L7` by itself, so the
-   fused `elu` peaks over eight and `tt_lreg_alloc` splits twice. Direction: a
-   one-instruction `relu` SFPU kind (`LEAKY_RELU` with `0`), or a narrower
-   comparison (fewer live constants), or a `max(x,0)` kind in the pattern table.
-   Do not "fix" it by shrinking the cone.
+   is fixed and `bool * x` now lowers as a `Select`, so `elu` (and `relu`,
+   `leaky_relu`, `selu`, `hard_sigmoid`) fuse to one body; what is left is
+   `tt_sfp_compare` holding `L0..L7` by itself. Next: **fold a single-use
+   comparison into its `Select`/mask consumer** (predicate on the operands, no
+   Bool tile) -- a general rewrite on `(Select, Bool)` and `(Mul, Bool)`, not an
+   `elu` pattern. Expected: relu ~4 instructions, `elu` 1+1. Do not "fix" it by
+   shrinking the cone, and do not add an `ELU` kind (tt-tiny's README: ELU must
+   stay a composition).
 2. **`sin_cos`'s cost is pressure, not fusion.** (Corrected -- the old note said
    "2 replays"; it is **two kernels**, `xs.sin()` and `xs.cos()`, one replay
    each.) Each kernel has **two register splits** (3 loads / 3 stores): e.g. the
