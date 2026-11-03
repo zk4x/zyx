@@ -1,16 +1,80 @@
-## HANDOFF (2026-11-03, end of session) — every elementwise chain is 1 load + 1 store
+## HANDOFF (2026-11-03, session 2) — loop lowering: softmax is one broadcast away
 
-**Tree state:** committed through `c350690d` (fusion fixes, `log2` rewrite,
-`unfold_pows` move, activation gates, the cast lowering, the algebraic `select`
-rewrite, the comparison-into-predicate fold, `exp2` back at `1e-5`, the
-acceptance unit test, the select register/constant reuse, the `matmul_add`
-fixes, the `debug` indentation fix, the `ZYX_TT_IR` dumps) plus uncommitted:
-the `tt_tile` contract change, the CB transaction state machine + batching
-pre-pass, and loop-aware `tt_reindex` (all in `zyx/src/kernel/tenstorrent.rs`),
-and this file. **23/23 ttsim gates green**, `cargo test --lib` = 101.
+**Tree state:** committed through `7ab4ea82` ("more tt work"); this file is the
+only uncommitted change. **23/23 ttsim gates green**, `cargo test --lib` = 101,
+fmt clean.
 
-`23_tt_lowering` has 24 tests. **Only `softmax` is red** (`tt_verify: missing
-EndReader`). That is the next thing.
+`23_tt_lowering` has 24 tests. **Only `softmax` is red**, and it is no longer
+the old loop-shape failure: the max-reduce kernel lowers, packs and runs on
+ttsim, and the test dies on the **third** kernel, `exp(x - max)`, at
+`tt_verify: DRAM read in compute`. The `[256]` max vector is a `[32]` operand
+against a `[32,32]` tile, and no lowering path broadcasts it.
+
+### What this session established (all committed)
+
+- **`tt_tile` emits (tile axis, 32-lane axis) only.** The one-group sqrt
+  pre-split is deleted; a lone group becomes `Group(L/32) x Unroll(32)`, and a
+  reduce over >32 is `Loop(k_tiles) + Unroll(32)`. That made softmax's IR the
+  hand-written shape (grid over output tiles, one tile per iteration).
+- **`tt_reindex` is loop-aware and writes tile units**:
+  `load = (Σ grid*tile_stride + i)*1024 + row*32 + lane`,
+  `store = (Σ grid*out_tile_stride)*1024 + row*32`. It also accepts a store
+  that drains an accumulator load. `tt_slice`/`strip_unrolls` share
+  `tt_index_is_tile_units` (grid **and** reduce loop) and trust the rewritten
+  index for those; everything else keeps the extent map. The loop is the
+  discriminator: tile-multiple strides alone misclassify elementwise kernels
+  (11 gates went red on that).
+- **CB transaction model ported from `588110a9`**: `CbState`/`CbTransactions`
+  (one pass over the traffic, ring `avail`, `moved`, settled sections) and
+  `Kernel::tt_cb_plan` (classifies `Copy` traffic, hoists a block over its only
+  loop when it fits the CB, enforces produced == consumed, anchors
+  opens/closes). 16 unit tests.
+- **Phase 1 publishes a looped load as a block from outside the loop** (the
+  reader section cannot share a loop with compute): one `Copy` with
+  `bytes = tiles*4096`, slot 0, `EndReader` before the loop; `strip_unrolls`
+  has a `strip_loops` flag; `contains_unroll` accepts `Op::Loop`; looped
+  compute unpacks with the loop counter as its slot.
+- **The generic `verify` no longer runs past the phase boundary** (user's
+  rule): CSE does not verify, `Kernel::verify` early-returns once
+  `TTOp::EndReader` exists, and `device_epilogue`'s TT branch ends with
+  `tt_verify`. The early return reads `self.dev_info` — `device_info()` panics
+  on an unbound test kernel.
+- **`Max → Select(a > b, a, b)` is spelled in `tt_unfold`, after `tt_tile`.**
+  Putting it in `algebraic_simplifications` (before `tt_tile`) breaks `split`'s
+  accumulator pattern and the `max`/`max_scalar` gates.
+- **Loop accumulator hand-off**: `TtLowering::reg_slot` gives a loop-written
+  `Register` storage one DST slot; loads resolve to it, the producer's slot is
+  redirected onto it (`tt_redirect_slot`), the pre-loop initialiser is filled
+  there (`tt_fill_const_into`), symbolic stores are dropped, and a DCE after
+  phase 3 clears the dead post-loop load.
+
+### Next step, in order — the broadcast
+
+Agreed design: re-materialise the existing `Op::Expand` and let the **mover**
+broadcast (`dm::op::READ_BROADCAST_COL` / `Transform::BroadcastCol0`), which
+the B-mover firmware already implements on ttsim (`tt-firmware/src/mover.rs`).
+No SFPU `BCAST_COL` sequence, no per-activation code.
+
+1. **`tt_tile`**: at the *end* of the pass (after its final
+   `default_epilogue` calls), wrap a broadcast operand of an elementwise op in
+   `Op::Expand { x, shape: <the other operand's tiled shape> }`, so the binary
+   is `[32,32] op [32,32]` downstream. Do not insert it before the splits —
+   the shapes must be final. (`Op::Expand` already verifies/hashes/costs; it is
+   not a new op.)
+2. **`tt_lower_value`**: `Op::Expand { x, .. } => tt_lower_value(x)` — the
+   broadcast view resolves to the reader CB.
+3. **Phase 1**: recognise `Op::Expand` over a DRAM load, publish that tile as
+   a broadcast copy, and fix the vector param's tile index (today `r62*256`
+   for the `[32]` param is meaningless).
+4. **`TTDmMove` + `tt_pages`/`tt_boundary_moves`**: carry a transform so the
+   reader move encodes `READ_BROADCAST_COL`.
+5. **`NativeRun.reads` + `mover_list`**: per-segment op instead of the
+   hardcoded `READ`.
+
+Steps 1–3 are lowering-side and testable first; 4–5 are traffic encoding.
+After softmax is green, the rest of the loop work is the DM-list emitter
+(expand a block into per-tile entries, emit `op::CB` credits from `CbPlan`,
+drive `CbTransactions` as the per-section check), then llama.
 
 ### The `tt_tile` contract change (2026-11-03, this session)
 
@@ -40,7 +104,7 @@ The rule now:
   tile per iteration, and `tt_reindex`'s `row2` arm (`load [32,32] -> root
   [32]`) is the target, not `drop3`.
 
-Verified after the change: all 23 gates green, `cargo test --lib` = 83, and
+Verified after the change: all 23 gates green, `cargo test --lib` = 101, and
 softmax's IR is now the intended shape:
 
 ```
@@ -94,9 +158,65 @@ elementwise kernels — that regressed 11 of the 23 gates before the loop test
 was added. Elementwise indices never carry a `Loop`; the reduce template always
 does.
 
-**The remaining softmax blocker is phase 1**: its index walk rejects the loop
-var (`tenstorrent.rs:1573`) and it emits one `Copy` per `Load` with a constant
-CB slot; it must emit the slot as the loop counter (the block `Copy`).
+**Phase 1 is loop-aware now**, and the reader section can never share a loop
+with compute, so a looped load publishes its **block from outside the loop**:
+
+- the load scan tracks the enclosing loops and sizes the CB by the product of
+  their trips;
+- a looped load emits one `Copy` before the loop header with `bytes = tiles *
+  4096` and slot 0, and `EndReader` lands after it (before the loop);
+- `strip_unrolls` takes a `strip_loops` flag: the block base zeroes the loop
+  var, the per-iteration consumers keep it;
+- `contains_unroll` accepts `Op::Loop` (a scalar iterator, not a lane);
+- phase 2 collects **Register stores** as roots too (the loop-carried
+  accumulator), or a reduce that only feeds the accumulator is never lowered;
+- the compute-side unpack of a multi-tile CB inside a loop uses the loop
+  counter as its slot (`tt_resolve_dst` + `tt_enclosing_loop`) and skips the
+  one-DST-tile cache.
+
+**The elementwise `Max` has no SFPU kind** (`bop_kind(BOp::Max) => None`), so
+`max(reduce_result, acc)` used to reach `tt_dataflow_select` unmatched.
+
+**Decision (user): no special max lowering.** The spelling is IR, in
+`tt_unfold`, *after* `tt_tile`: `Binary Max(a,b) -> Select(a > b, a, b)`.
+The placement matters twice:
+
+- **after `tt_tile`**, because `split`'s loop arm needs the `Binary Max`
+  accumulator form to build the lane fold; rewriting it earlier (the first
+  attempt was in `algebraic_simplifications`) makes `split` bail and breaks the
+  `max`/`max_scalar` gates;
+- `Reduce { rop: Max }` is a different op and is untouched.
+
+Gates are 23/23 with this.
+
+**The generic `verify` no longer runs past the phase boundary** (user's rule):
+`common_subexpression_elimination` dropped its trailing `verify`, `Kernel::verify`
+early-returns for a TT kernel that already has `TTOp::EndReader`, and
+`device_epilogue`'s TT branch ends with `tt_verify` only. That removed the
+store-shape false positive; the Register-store relaxation in `verify.rs` was
+reverted. The early-return must read `self.dev_info` (not `device_info()`,
+which panics on an unbound test kernel).
+
+**The loop-carried accumulator hand-off is in.** A `Register` storage written
+inside a loop gets one DST slot up front (`TtLowering::reg_slot`); the loop's
+next-iteration load resolves to that slot, the producer's DST slot is
+redirected onto it (`tt_redirect_slot`), the pre-loop initialiser is filled
+there (`tt_fill_const_into`), the symbolic store is dropped, and a DCE after
+phase 3 clears the now-dead post-loop load.
+
+**softmax's max kernel now lowers and runs.** The test gets through the first
+kernels and fails on the *third* — the `exp(x - max)` kernel — with
+`tt_verify: DRAM read in compute`: its vector operands (`load vec32` of the
+`[256]` max vector) survive, because the phase-2 table has no pattern for a
+`[32]` vector broadcast against a `[32,32]` tile. Phase 1's reader block for
+those vector params also looks wrong (`r62*256` reaches 1e9).
+
+**Decision (user): `Op::Expand` + the mover, not an SFPU bcast.** `Op::Expand`
+already exists and `linearize` consumes it (a broadcast axis reads a constant
+index), which is why the tiled IR has the bare `[32]` operand. Re-materialise
+it at the **end of `tt_tile`** (final shapes) and let the B mover broadcast
+(`READ_BROADCAST_COL`, already implemented in the firmware). The five steps are
+in the handoff at the top.
 
 ### Circular-buffer transactions (ported from `588110a9`)
 
@@ -151,10 +271,11 @@ the lowered stream once:
 the streaming fallback, the dirty (two ops, one CB) rule, and the five
 refusals.
 
-**Next:** wire it in — phase 1 must emit the CB slot as the loop counter (so a
-loop's traffic becomes one `Copy` with a block index), then the DM list emitter
+**Next:** after the broadcast (see the handoff at the top), the DM-list emitter
 expands a block into per-tile entries and emits the `op::CB` credits from
 `CbPlan`'s opens/closes, driving `CbTransactions` to verify each section.
+Phase 1 already emits the block (`bytes = tiles*4096`, slot 0) and the compute
+unpacks per iteration.
 
 ### The result
 
@@ -312,24 +433,19 @@ adding an activation. It already caught `relu` at 2 loads.
 
 ### Open work
 
-1. **CB transactions: the wiring** — the softmax blocker, and the next step.
-   `tt_tile`, `tt_reindex` (loop-aware, tile units), the state machine and the
-   batching pre-pass (`CbState`/`CbTransactions`/`Kernel::tt_cb_plan`) are in
-   and unit-tested. What remains:
-   - ~~**`tt_slice` must trust the rewritten index**~~ — done: `strip_unrolls`
-     and `tt_slice` share `tt_index_is_tile_units` (grid + reduce loop), and
-     use the index's grid strides for those.
-   - **phase 1**: accept the loop var in the index walk (`tenstorrent.rs:1573`)
-     and emit the CB slot as the loop counter (one block `Copy`), not a
-     constant slot per `Load`;
-   - **the DM-list emitter**: expand a block into per-tile entries and emit the
-     `op::CB` credits from `CbPlan`'s opens/closes, driving `CbTransactions` to
-     verify each section.
-2. **Beyond the simulator** (in rough order): BF16/F16 staging — the backend is
-   F32-only and the pinned ttsim models only three 32-bit `(in, out)` DST pairs;
-   a **silicon run** (everything so far is ttsim); concurrency/waves (grid
-   dispatch itself is done and sequential).
-3. `matmul_add`'s gate compares the sum of two TF32 accumulations, so its
+1. **Vector-operand broadcast** — the last softmax blocker; the five steps are
+   in the handoff at the top. `Op::Expand` at the end of `tt_tile`, its lowering
+   arm, phase-1's broadcast copy, then the mover transform.
+2. **The DM-list emitter** — after the broadcast: expand a block `Copy` into
+   per-tile entries, emit the `op::CB` credits from `CbPlan`'s opens/closes,
+   and drive `CbTransactions` per section. The state machine and the plan are
+   in and unit-tested; only the emission is missing.
+3. **Beyond the simulator** (in rough order): BF16/F16 staging — the backend is
+   F32-only and the pinned ttsim models only three 32-bit `(in, out)` DST pairs
+   (the speakrs write-up is a data point that FP16 was the single biggest
+   lever, and a precision decision, not free); a **silicon run** (everything so
+   far is ttsim); waves (grid dispatch itself is done and sequential).
+4. `matmul_add`'s gate compares the sum of two TF32 accumulations, so its
    tolerance is `2e-2` (measured worst 1.4e-2). Keep that reasoning if it moves.
 
 
@@ -337,7 +453,7 @@ adding an activation. It already caught `relu` at 2 loads.
 
 ```bash
 cd zyx && cargo build
-cd zyx && AGENT=1 cargo test --lib            # 99, includes the acceptance gate and cb_tests
+cd zyx && AGENT=1 cargo test --lib            # 101, includes acceptance + cb_tests + reindex_tests
 cd zyx && AGENT=1 cargo test --lib acceptance # just the 1/1 property
 cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
 cd zyx && BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
@@ -354,6 +470,10 @@ DST traffic per row is measured from the `ZYX_DEBUG=264` dump: count `^ sfp_load
 / `^ sfp_store` / `^ replay`. That dump is **post-epilogue**, so it is the real
 program. The acceptance unit test does the same thing structurally, no dump
 needed — prefer it.
+
+`ZYX_TT_IR=1` prints the IR before/after `tt_tile`, before/after `tt_reindex`,
+and after `tt_dataflow_select` (all gated; no output otherwise). That is the
+first thing to reach for when a lower pass bails.
 
 ## TARGET DESIGN — the register/memory hierarchy and the pass pipeline
 

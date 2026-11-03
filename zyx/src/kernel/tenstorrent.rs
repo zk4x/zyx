@@ -843,6 +843,10 @@ struct TtLowering<'a> {
     /// use of the same value copies it in again, one `UNPACKED` hand-off each,
     /// and a 4-bit semaphore cannot carry that many.
     unpacked: Map<OpId, OpId>,
+    /// A loop-carried `Register` accumulator's DST slot. The storage is a
+    /// logical name; the value lives in the slot its producer writes, and the
+    /// loop's next iteration reads that slot in place.
+    reg_slot: Map<OpId, OpId>,
     /// Matmul feeder index patterns (A plain, B K-scaled).
     pat_a: Pat,
     pat_b: Pat,
@@ -1267,6 +1271,24 @@ impl Kernel {
     pub fn tt_unfold(&mut self) {
         if !self.device_info().tenstorrent {
             return;
+        }
+        // No Tensix SFPU has a tensor max: spell `max(a, b)` as
+        // `a > b ? a : b`. This runs *after* `tt_tile`, so the reduce's loop
+        // and its lane fold are already shaped — `split` needs the `Binary
+        // Max` accumulator form to build the fold, and `Reduce { rop: Max }`
+        // is a different op and stays untouched.
+        let mut maxes: Vec<OpId> = Vec::new();
+        for (id, x) in self.iter_unordered() {
+            if matches!(x, Op::Binary { bop: BOp::Max, .. }) {
+                maxes.push(id);
+            }
+        }
+        for id in maxes {
+            let Op::Binary { x, y, .. } = self.ops[id].op else {
+                unreachable!("tt_unfold collected a non-Binary op");
+            };
+            let cond = self.insert_before(id, Op::Binary { x, y, bop: BOp::Cmpgt });
+            self.ops[id].op = Op::Select { cond, if_true: x, if_false: y };
         }
         let mut ids: Vec<OpId> = Vec::new();
         for (id, x) in self.iter_unordered() {
@@ -1732,6 +1754,42 @@ impl Kernel {
             }
             scan = self.next_op(scan);
         }
+        // Loop-carried accumulators: a `Register` storage written inside a
+        // loop is read by the next iteration in place. Give it one DST slot up
+        // front, so its loads resolve there and its producer is redirected to
+        // it; the pre-loop initialiser fills the same slot.
+        let mut accumulators: Map<OpId, (OpId, OpId)> = Map::default(); // storage -> (slot, loop header)
+        let mut loop_stack: Vec<OpId> = Vec::new();
+        let mut pending: Vec<(OpId, OpId)> = Vec::new();
+        let mut scan = self.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            match self.ops[scan].op {
+                Op::Loop { .. } => loop_stack.push(scan),
+                Op::EndLoop => {
+                    loop_stack.pop();
+                }
+                Op::Store { dst, .. } if matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }) => {
+                    if let Some(&header) = loop_stack.last() {
+                        pending.push((dst, header));
+                    }
+                }
+                _ => {}
+            }
+            scan = self.next_op(scan);
+        }
+        for (storage, header) in pending {
+            if accumulators.contains_key(&storage) {
+                continue;
+            }
+            let Op::Storage { dtype, .. } = self.ops[storage].op else {
+                unreachable!("an accumulator is a storage")
+            };
+            let slot = self.tt_new_dst(dtype, prologue);
+            accumulators.insert(storage, (slot, header));
+        }
         let mut lower = TtLowering {
             pats: &pats,
             matched: &matched,
@@ -1740,6 +1798,7 @@ impl Kernel {
             rcs: &rcs,
             materialized: Map::default(),
             unpacked: Map::default(),
+            reg_slot: accumulators.iter().map(|(&s, &(slot, _))| (s, slot)).collect(),
             pat_a,
             pat_b,
         };
@@ -1764,10 +1823,36 @@ impl Kernel {
             scan = self.next_op(scan);
         }
         for root in roots {
-            let lowered = self.tt_lower_value(root, &mut lower);
-            if std::env::var_os("ZYX_TT_IR").is_some() {
-                eprintln!("tt_dataflow_select: root {root:?} -> {:?}", lowered.as_ref().map(|(d, s)| (*d, *s)));
+            let _ = self.tt_lower_value(root, &mut lower);
+        }
+        // Accumulator hand-off: the produced value lives in a DST slot; move
+        // it onto the accumulator's slot, fill the pre-loop initialiser there,
+        // and drop the symbolic store. The loads already resolved through
+        // `reg_slot`.
+        let mut removes: Vec<OpId> = Vec::new();
+        let mut scan = self.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
             }
+            if let Op::Store { dst, src, .. } = self.ops[scan].op
+                && let Some(&(slot, header)) = accumulators.get(&dst)
+            {
+                if matches!(self.ops[src].op, Op::Const(_)) {
+                    self.tt_fill_const_into(src, slot, header);
+                } else if let Some((_, produced)) = self.tt_lowered_storage(src, &lower) {
+                    let produced_is_slot = matches!(self.ops[produced].op, Op::Storage { scope: MemScope::Register, .. });
+                    if produced_is_slot && produced != slot {
+                        self.tt_redirect_slot(produced, slot);
+                        self.remove_op(produced);
+                    }
+                }
+                removes.push(scan);
+            }
+            scan = self.next_op(scan);
+        }
+        for op in removes {
+            self.remove_op(op);
         }
         self.common_subexpression_elimination();
         // The high-level cones replaced by native ops are dead now. Drop
@@ -1930,7 +2015,15 @@ impl Kernel {
                 self.remove_op(*store);
             }
         }
-        self.verify();
+        // The drains are moves now, so the high-level value chains they
+        // replaced (an accumulator load, its index math) are dead. This DCE
+        // runs after phase 3, unlike the phase-2 one, which still saw the
+        // store as a root.
+        self.dead_code_elimination();
+        // No generic `verify` here: the phase boundary has been crossed. The
+        // lowered IR is not generic SSA — a value is a DST tile, a `[32]`
+        // vector is only a shape carrier, and row ops own their values — so
+        // `tt_verify` is the checker from here on.
     }
 
     /// Fresh logical DST storage, inserted in the prologue so it dominates
@@ -1976,11 +2069,52 @@ impl Kernel {
         };
         let dtype = c.dtype();
         let slot = self.tt_new_dst(dtype, prologue);
-        self.insert_before(consumer, Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L0, bits }))));
-        for o in (0..64u16).step_by(2) {
-            self.insert_before(consumer, Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L0, fmt }))));
-        }
+        self.tt_fill_const_into(konst, slot, consumer);
         Some((dtype, slot))
+    }
+
+    /// Fill `slot` with `konst`'s value (one lane-register immediate, stored
+    /// to every row group), before `before`.
+    fn tt_fill_const_into(&mut self, konst: OpId, slot: OpId, before: OpId) {
+        let Op::Const(c) = self.ops[konst].op else {
+            return;
+        };
+        let (bits, fmt) = match c {
+            Constant::F32(b) => (u32::from_le_bytes(b), FP32),
+            Constant::I32(v) => (v as u32, INT32),
+            other => todo!("a fill of a {other:?} constant has no native form"),
+        };
+        self.insert_before(before, Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L0, bits }))));
+        for o in (0..64u16).step_by(2) {
+            self.insert_before(before, Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L0, fmt }))));
+        }
+    }
+
+    /// Rewrite every reference to DST storage `from` to `to`.
+    fn tt_redirect_slot(&mut self, from: OpId, to: OpId) {
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                break;
+            }
+            let next = self.next_op(id);
+            match &mut self.ops[id].op {
+                Op::TT(TTOp::SfpLoad(load)) if load.slot == from => load.slot = to,
+                Op::TT(TTOp::SfpStore(store)) if store.slot == from => store.slot = to,
+                Op::TT(TTOp::Sfpu { slot, .. }) if *slot == from => *slot = to,
+                Op::TT(TTOp::Setrwc { dst }) if *dst == from => *dst = to,
+                Op::TT(TTOp::Copy { src, dst, .. }) => {
+                    if *src == from {
+                        *src = to;
+                    }
+                    if *dst == from {
+                        *dst = to;
+                    }
+                }
+                _ => {}
+            }
+            id = next;
+        }
     }
 
     /// Fresh Circular CB, inserted in the prologue. Used for multi-use
@@ -2260,9 +2394,6 @@ impl Kernel {
             if let Some(v) = self.tt_emit(id, emit, &m, lower) {
                 return Some(v);
             }
-            if std::env::var_os("ZYX_TT_IR").is_some() {
-                eprintln!("lower {id:?}: recorded pattern #{i} did not emit {:?}", self.ops[id].op);
-            }
         }
         for i in 0..lower.pats.len() {
             let Some(m) = self.match_pat(id, &lower.pats[i].0) else {
@@ -2287,7 +2418,8 @@ impl Kernel {
                 let cb = lower.reader_cb_of.get(&base).copied()?;
                 Some((dtype, cb))
             }
-            Op::Storage { dtype, .. } => Some((dtype, base)),
+            // A loop accumulator's logical storage resolves to its DST slot.
+            Op::Storage { dtype, .. } => Some((dtype, lower.reg_slot.get(&base).copied().unwrap_or(base))),
             _ => None,
         }
     }

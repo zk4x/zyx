@@ -172,7 +172,9 @@ impl Kernel {
             // see where allocation put every tile, and it is the only pass
             // that emits `Semset`/`Wait`/`Post`.
             self.tt_reg_sync();
-            self.verify();
+            // Past the phase boundary the generic `verify` no longer applies:
+            // the lowered TT IR is native tiles/rows, and `tt_verify` is its
+            // checker.
             self.tt_verify();
         } else {
             self.devectorize();

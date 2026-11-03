@@ -22,6 +22,15 @@ impl Kernel {
         if !cfg!(debug_assertions) {
             return;
         }
+        // Past the Tenstorrent phase boundary the IR is native: a value is a
+        // DST tile, a `[32]` vector is only a shape carrier, and row ops own
+        // their results. None of the generic SSA/shape invariants below
+        // describe that form; `tt_verify` is its checker.
+        if self.dev_info.as_ref().is_some_and(|d| d.tenstorrent)
+            && self.iter_unordered().any(|(_, op)| matches!(op, Op::TT(TTOp::EndReader)))
+        {
+            return;
+        }
 
         // Detect the kernel's linearization state from its stores — the rule
         // that always holds: a pre-linearize store writes a whole view to a

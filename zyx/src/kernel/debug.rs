@@ -130,8 +130,12 @@ impl Kernel {
                     writeln!(f, "{indent}{blue}pack{reset} {} words", words.len()).unwrap();
                 }
                 Op::TT(TTOp::DmRead(ref page)) => {
-                    writeln!(f, "{indent}{blue}dm_read{reset} param:{} l1:{:#x} len:{} base:{}", page.param, page.l1, page.len, page.base)
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_read{reset} param:{} l1:{:#x} len:{} base:{}",
+                        page.param, page.l1, page.len, page.base
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::DmWrite(ref page)) => {
                     writeln!(
@@ -142,20 +146,12 @@ impl Kernel {
                     .unwrap();
                 }
                 Op::TT(TTOp::DmReadTransposed(ref t)) => {
-                    writeln!(
-                        f,
-                        "{indent}{blue}dm_read_transposed{reset} param:{} dst:{:#x} base:{}",
-                        t.param, t.dst, t.base
-                    )
-                    .unwrap();
+                    writeln!(f, "{indent}{blue}dm_read_transposed{reset} param:{} dst:{:#x} base:{}", t.param, t.dst, t.base)
+                        .unwrap();
                 }
                 Op::TT(TTOp::DmReadBroadcastCol(ref t)) => {
-                    writeln!(
-                        f,
-                        "{indent}{blue}dm_read_broadcast_col{reset} param:{} dst:{:#x} base:{}",
-                        t.param, t.dst, t.base
-                    )
-                    .unwrap();
+                    writeln!(f, "{indent}{blue}dm_read_broadcast_col{reset} param:{} dst:{:#x} base:{}", t.param, t.dst, t.base)
+                        .unwrap();
                 }
                 Op::TT(TTOp::DmFill(ref fill)) => {
                     writeln!(
@@ -166,12 +162,8 @@ impl Kernel {
                     .unwrap();
                 }
                 Op::TT(TTOp::DmCopyWords(ref copy)) => {
-                    writeln!(
-                        f,
-                        "{indent}{blue}dm_copy_words{reset} {:#x}->{:#x} count:{}",
-                        copy.src, copy.dst, copy.count
-                    )
-                    .unwrap();
+                    writeln!(f, "{indent}{blue}dm_copy_words{reset} {:#x}->{:#x} count:{}", copy.src, copy.dst, copy.count)
+                        .unwrap();
                 }
                 Op::TT(TTOp::DmIndexPick(ref pick)) => {
                     writeln!(
@@ -182,18 +174,31 @@ impl Kernel {
                     .unwrap();
                 }
                 Op::TT(TTOp::DmKernel(ref kernel)) => {
-                    writeln!(f, "{indent}{blue}dm_kernel{reset} generation:{} at:{:?} len:{:?}", kernel.generation, kernel.at, kernel.len)
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_kernel{reset} generation:{} at:{:?} len:{:?}",
+                        kernel.generation, kernel.at, kernel.len
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::DmWait) => {
                     writeln!(f, "{indent}{blue}dm_wait{reset}").unwrap();
                 }
                 Op::TT(TTOp::SfpLoad(ref load)) => {
-                    writeln!(f, "{indent}{blue}sfp_load{reset} r{} <- slot:{} at:{} fmt:{}", load.reg, load.slot, load.at, load.fmt).unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}sfp_load{reset} r{} <- slot:{} at:{} fmt:{}",
+                        load.reg, load.slot, load.at, load.fmt
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::SfpStore(ref store)) => {
-                    writeln!(f, "{indent}{blue}sfp_store{reset} r{} -> slot:{} at:{} fmt:{}", store.reg, store.slot, store.at, store.fmt)
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}sfp_store{reset} r{} -> slot:{} at:{} fmt:{}",
+                        store.reg, store.slot, store.at, store.fmt
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::SfpConst(ref c)) => {
                     writeln!(f, "{indent}{blue}sfp_const{reset} r{} = {:#x}", c.reg, c.bits).unwrap();

@@ -228,7 +228,8 @@ impl Kernel {
             }
             None => self.head,
         };
-        let loc_acc = self.insert_before(insert_at, Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim, id: 0 });
+        let loc_acc =
+            self.insert_before(insert_at, Op::Storage { dtype: acc_dtype, scope: MemScope::Local, len: factor as Dim, id: 0 });
         let lidx = self.insert_before(insert_at, Op::Range { axis: laxis, kind: RangeKind::Local(factor) });
 
         // Divide reduce loop by factor

@@ -761,8 +761,9 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-
-        self.verify();
+        // No `verify` here: CSE also runs inside the backend lowering
+        // (`tt_dataflow_select`), where the IR is no longer generic SSA and
+        // the backend's own verifier owns it.
     }
 
     /// Move constant operations to the beginning of the kernel.
