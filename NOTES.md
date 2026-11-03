@@ -176,14 +176,51 @@ copies tile bits in both formats; only an `FP32` *store* transforms (flushes
 denormals). `FP32` store -> `INT32` load is still refused (a register hand-over
 would skip the flush).
 
+### Allocation is now LLVM-shaped: linear scan with spilling
+
+`tt_alloc_spill` is the classic block-local scan (Poletto/Sarkar, the shape of
+LLVM's `RegAllocLinearScan`): intervals are exact because a row body is one
+straight-line block; when no register is free at an interval's start, the value
+whose last use is farthest away loses its register (it is spilled), unless the
+incoming interval is itself the farthest, in which case the incoming one is
+spilled and every active register stays.
+
+`tt_lreg_alloc` applies it iteratively: plan, materialize every spilled name
+(one `SFPSTORE` after each definition, one `SFPLOAD` into a fresh name before
+each use, a store after a read-modify-write), plan again, until no spills are
+left. Spill tiles are ordinary `Storage { Register }` tiles created in the
+prologue, so `tt_dst_reuse` allocates them like any other value (the user's rule:
+lreg spills to DST). Budget `ASSIGN_SPILL_LIMIT = 8` per body, loud `todo!()`
+past it (and that is a bug: spilling everything always fits).
+
+`tt_plan_spills` is the fusion's copy of the same loop on the abstract body, so
+the fusion's feasibility decision matches what the allocator will do. It returns
+the words the spills will add; those are counted separately from `total`,
+because `total` must stay the emitted body's exact length (a mismatch makes the
+pass after it walk into the next `Copy` and panic).
+
+Two traps found here, both load-bearing:
+
+- **Do not reuse packed names.** An earlier version packed a body's names by
+  liveness (two disjoint intervals sharing one name). The allocator recomputes
+  liveness from the emitted names, so a reused name looks like one long value:
+  pressure is overstated, and spilling it re-materializes a store that reads the
+  same name -- an endless spill loop (9 rounds, then `todo!()`). Every build now
+  restarts the counter at 16 and names are not reused, which is dense enough.
+- **Format-agnostic hand-overs.** A register hand-over does not go through a
+  tile, so the store format is irrelevant. The only tile-side difference is
+  `FP32`'s denormal flush below `2^-126`; skipping it is closer to IEEE and far
+  below any ML tolerance (the user's rule: approximate math is fine). Dropping
+  the format test was worth about one load and one store on each kernel.
+
 ### Measured now (per row)
 
 | kernel | replays | loads | stores | eighth-pass start |
 |---|---|---|---|---|
-| `sigmoid` | **1** | **9** | **3** | 2 / 15 / 8 |
-| `exp2` | 2 | **7** | **3** | 3 / 13 / 6 |
-| `log2` | 2 | **14** | **7** | 3 / 18 / 9 |
-| `sin_cos` | 2 | **10** | **8** | 4 / 26 / 18 |
+| `sigmoid` | **1** | **8** | **2** | 2 / 15 / 8 |
+| `exp2` | 2 | **6** | **3** | 3 / 13 / 6 |
+| `log2` | 2 | **9** | **4** | 3 / 18 / 9 |
+| `sin_cos` | 2 | **6** | **6** | 4 / 26 / 18 |
 
 Handwritten reference (metalium-rs, per row group) is 1/1 for `relu` and 2/2 for
 `sigmoid` (input load, spill store, spill load, output store). Note metalium-rs
@@ -201,51 +238,39 @@ the cone is rebuilt. Budget: at most 2 demotions per cone, cheapest first
 mechanism alone changes nothing on the four kernels (they already fit), which is
 the honest result -- it is infrastructure.
 
-On top of it, **local tile-read CSE**: when the same tile slot is read by units
+On top of it, **tile-read CSE**: when the same tile slot is read by units
 `first..last` with no store to that slot in the cone, the first load keeps its
 `SFPLOAD` and copies to a carry *at the load's position* (`insert_after`, so a
 later write to that body register cannot destroy it), and later readers get an
 `SFPMOV`. The carry must be complete for every lane, so its producing load may
 only be preceded in its unit by constants / `SFPENCC` (a load and a mov are both
-lane-masked). **The carry is limited to `last - first <= 2` units**: a carry
-live across the whole body raises the register floor everywhere, and the
-allocator then fails in regions where no interior carry is live, so nothing can
-be demoted -- that was the `log2 -inf` / 4-replay failure, now understood.
-
-That catches the close repeats: `log2` 16 -> 14 loads, `exp2` 9 -> 7 loads.
-`sigmoid` is unchanged: all 9 of its loads are the same input slot but spread
-across the whole body, so the local window does not apply.
+lane-masked). The earlier 2-unit window is gone now that spills exist: the carry
+may span the whole body and the allocator spills around it if needed.
 
 ### What is left for parity
 
-`sigmoid`'s remaining 7 extra loads are one long-lived input value. Carrying it
-needs a register across the whole body, and the body's peak is already 8; the
-peak region contains no interior carry to demote. Two ways forward, both real
-work:
+`sigmoid` is at one replay, 8 loads / 2 stores. The loads are all reads of **one
+logical tile** (they alias to the same physical slot in the dump), but that slot
+is also **written inside the cone** (an in-place update), and the CSE rule skips
+any slot with a store in the cone -- correctly, because a load after the store
+reads a different value. What is missing is **segment-aware CSE**: partition the
+readers of a slot by the stores that precede them, carry within a segment, and
+let the store's own `carry_over` handle the next segment. That is the next
+change, and it needs no new allocator work (the spill plan already handles the
+extra live value).
 
-1. **Reduce peak liveness** (better than spilling): the fusion emits units in
-   program order and places every `carry_over` copy at the store's position,
-   which keeps values live from producer to last consumer. Re-scheduling the
-   body (delaying copies to just before use where the register is provably free,
-   or reordering independent units) is what a hand-written kernel does by
-   construction.
-2. **A real spill** (a new DST tile, not a demotion): store a value at its
-   definition and reload before each use, which can evict a *load-based* value
-   too. That is the `tt_lreg_alloc` `todo!()`, and it is the only way to keep a
-   long carry when the peak has no interior carry to give up.
-
-The next measurement to watch: `sigmoid` at 1 replay / 2 / 2 (or 3 stores if the
-spill store is counted) is the handwritten shape.
+After that the remaining checks are the acceptance gate (absolute numbers: relu
+1/1, sigmoid 2/2, one replay) and `sin_cos`/`log2`'s second replay (find out
+which limit splits them: gap, repeat count, or `loops::MAX`).
 
 ### Status of the old next steps
 
-1. **Spill** — demotion is in (above). A full spill of a non-carry value is still
-   `todo!()` in `tt_lreg_alloc`, and is item 2 above.
+1. **Spill** — done in `tt_lreg_alloc` (linear scan + materialization, above).
+   The demotion retry stays as the fusion's cheaper alternative for carries.
 2. **Acceptance gate** — still missing, and it should assert absolute numbers
    (relu 1/1, sigmoid 2/2, one replay), not a ratio. `sigmoid` is at 1 replay /
-   9 / 3 now.
-3. **Name space** — done (above). Nothing else to do here unless a body ever
-   needs >240 simultaneously live values.
+   8 / 2 now.
+3. **Name space** — done (above): dense per build, `u16` internally, no reuse.
 4. `tt_sink_const_splats` is still on and still needed; it runs right after
    reclaim.
 

@@ -68,6 +68,13 @@ const LREG_ONE: u16 = tt_isa::sfpu::LREG_ONE as u16;
 const FP32: u8 = tt_isa::sfpu::mod0_fmt::FP32 as u8;
 const INT32: u8 = tt_isa::sfpu::mod0_fmt::INT32 as u8;
 
+/// Spills the fusion accepts in one cone: each costs one store and one load per
+/// reader, so a cone that needs more is not worth keeping whole.
+const FUSE_SPILL_LIMIT: usize = 4;
+/// Spills the allocator may materialize in one body. Past this the body is
+/// mis-shaped and must fail loudly rather than spill forever.
+const ASSIGN_SPILL_LIMIT: usize = 8;
+
 /// The lane registers one SFPU instruction reads and writes, as 16-bit sets
 /// over `LReg::index()` (`bit i` is `L[i]`).
 ///
@@ -158,40 +165,29 @@ fn tt_row_regs(op: &Op) -> (Set<u16>, Set<u16>) {
     }
 }
 
-/// Greedy linear scan of the eight general-purpose lane registers over a
-/// straight-line body, given each instruction's `(reads, writes)` in *virtual*
-/// space (register numbers `>= 16`; `0..8` are ignored, they are already
-/// physical). Returns the assignment indexed by virtual name, or `None` when
-/// nine values are live at once.
-///
-/// One implementation, used twice: `tt_fuse_cone` runs it on the body it is
-/// about to build (and forms a shorter cone when it does not fit), and
-/// `tt_lreg_alloc` runs the same scan on the body it emitted (where `None` is
-/// a bug). Liveness is exact because a row body is one block: every virtual
-/// has exactly one interval, `def -> last use`, and a register frees when its
-/// interval ends.
-fn tt_alloc_regs(body: &[(Set<u16>, Set<u16>)]) -> Option<Map<u16, u8>> {
+/// Linear-scan allocation with spilling: the classic block-local algorithm
+/// (Poletto/Sarkar, LLVM's `RegAllocLinearScan`). Intervals are exact because a
+/// row body is one straight-line block; at each start the active list expires
+/// what has ended, and when no register is free the interval that *loses* is
+/// the one whose last use is farthest away. A spilled name keeps no register:
+/// the caller stores it at each definition and reloads it before each use.
+/// Returns the assignment and the names to spill, or `None` when more than
+/// `max_spills` values would have to be spilled.
+fn tt_alloc_spill(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(Map<u16, u8>, Vec<u16>)> {
     let mut def: Map<u16, i64> = Map::default();
     let mut last: Map<u16, i64> = Map::default();
     let mut first_use: Map<u16, i64> = Map::default();
-    let mut any = false;
     for (k, (reads, writes)) in body.iter().enumerate() {
         for &r in writes {
             def.entry(r).or_insert(k as i64);
             last.insert(r, k as i64);
-            any |= r >= 16;
         }
         for &r in reads {
             first_use.entry(r).or_insert(k as i64);
             last.insert(r, k as i64);
         }
     }
-    let mut assign: Map<u16, u8> = Map::default();
-    if !any {
-        return Some(assign);
-    }
-    // Read before any write: the value is live from the body's start, and the
-    // interval must cover that read.
+    // Read before any write in the body: live from the start.
     for (&r, &use_at) in &first_use {
         if def.get(&r).is_none_or(|&d| use_at < d) {
             def.insert(r, -1);
@@ -199,78 +195,94 @@ fn tt_alloc_regs(body: &[(Set<u16>, Set<u16>)]) -> Option<Map<u16, u8>> {
     }
     let mut order: Vec<u16> = last.keys().copied().filter(|r| *r >= 16).collect();
     order.sort_by_key(|r| (def.get(r).copied().unwrap_or(-1), *r));
-    let mut active: Vec<(u16, u8, i64)> = Vec::new(); // (vreg, phys, last)
+    let mut assign: Map<u16, u8> = Map::default();
+    let mut spills: Vec<u16> = Vec::new();
+    let mut active: Vec<(u16, u8, i64)> = Vec::new(); // (name, phys, last use)
     for r in order {
         let start = def.get(&r).copied().unwrap_or(-1);
+        let end = last.get(&r).copied().unwrap_or(start);
         active.retain(|&(_, _, l)| l >= start);
         let used: u16 = active.iter().fold(0, |m, &(_, p, _)| m | 1u16 << p);
-        let p = (0..8u8).find(|p| used & (1u16 << p) == 0)?;
-        assign.insert(r, p);
-        active.push((r, p, last.get(&r).copied().unwrap_or(start)));
+        if let Some(p) = (0..8u8).find(|p| used & (1u16 << p) == 0) {
+            assign.insert(r, p);
+            active.push((r, p, end));
+            continue;
+        }
+        // No free register: the interval with the farthest last use is the one
+        // that goes to memory -- unless this one is itself the farthest, in
+        // which case it is the one spilled and every active register stays.
+        let victim = active.iter().enumerate().max_by_key(|(_, (_, _, l))| *l);
+        match victim {
+            Some((i, &(v, p, lv))) if lv > end => {
+                active.remove(i);
+                spills.push(v);
+                assign.insert(r, p);
+                active.push((r, p, end));
+            }
+            _ => spills.push(r),
+        }
     }
-    Some(assign)
+    if spills.len() > max_spills {
+        return None;
+    }
+    Some((assign, spills))
 }
 
-/// Pack a straight-line body's temporary register names (`>= 16`) into the
-/// ISA's 8-bit register field by liveness. Two names share a final name when
-/// their `def -> last use` intervals are disjoint, so a body uses as many names
-/// as it has values live at once, not as many as it defines across its units.
-/// Returns the map indexed by temporary name and the first unused final name.
-fn tt_pack_reg_names(body: &[(Set<u16>, Set<u16>)], names: u16) -> (Vec<u16>, u16) {
-    let n = usize::from(names);
-    let mut pack = vec![u16::MAX; n];
-    let mut def = vec![-1i64; n];
-    let mut last = vec![-1i64; n];
-    let mut first_use = vec![-1i64; n];
-    for (k, (reads, writes)) in body.iter().enumerate() {
-        for &r in writes {
-            let r = usize::from(r);
-            if r < 16 {
+/// Simulate [`tt_alloc_spill`] plus its materialization on an abstract body:
+/// spill, splice a reload before each read and a store after each write, and
+/// plan again -- exactly what `tt_lreg_alloc` does to the real ops. Returns the
+/// number of words the spills will add, or `None` when more than `max_spills`
+/// values would have to be spilled. The fusion uses this to decide whether a
+/// cone is worth keeping before any op is touched.
+fn tt_plan_spills(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<usize> {
+    let mut body: Vec<(Set<u16>, Set<u16>)> = body.to_vec();
+    let mut next = body.iter().flat_map(|(r, w)| r.iter().chain(w)).copied().filter(|r| *r >= 16).max().map_or(16, |m| m + 1);
+    let mut added = 0usize;
+    let mut spilled = 0usize;
+    loop {
+        let spills = tt_alloc_spill(&body, usize::MAX).expect("no limit").1;
+        if spills.is_empty() {
+            return Some(added);
+        }
+        spilled += spills.len();
+        if spilled > max_spills {
+            return None;
+        }
+        let mut grown: Vec<(Set<u16>, Set<u16>)> = Vec::with_capacity(body.len() * 2);
+        for (reads, writes) in &body {
+            let read = spills.iter().find(|s| reads.contains(s)).copied();
+            let write = spills.iter().find(|s| writes.contains(s)).copied();
+            if read.is_none() && write.is_none() {
+                grown.push((reads.clone(), writes.clone()));
                 continue;
             }
-            if def[r] < 0 {
-                def[r] = k as i64;
-            }
-            last[r] = k as i64;
-        }
-        for &r in reads {
-            let r = usize::from(r);
-            if r < 16 {
-                continue;
-            }
-            if first_use[r] < 0 {
-                first_use[r] = k as i64;
-            }
-            if last[r] < k as i64 {
-                last[r] = k as i64;
-            }
-        }
-    }
-    // Read before any write: live from the body's start.
-    for r in 16..n {
-        if first_use[r] >= 0 && (def[r] < 0 || first_use[r] < def[r]) {
-            def[r] = -1;
-        }
-    }
-    let mut order: Vec<usize> = (16..n).filter(|r| last[*r] >= 0).collect();
-    order.sort_by_key(|r| (def[*r], *r));
-    let mut active: Vec<(u16, i64)> = Vec::new(); // (final name, last use)
-    let mut next = 16u16;
-    for r in order {
-        let start = def[r];
-        let reuse = active.iter().enumerate().filter(|(_, (_, l))| *l < start).min_by_key(|(_, (name, _))| *name).map(|(i, _)| i);
-        let name = match reuse {
-            Some(i) => active.remove(i).0,
-            None => {
-                let name = next;
+            let mut reg = None;
+            let mut r = reads.clone();
+            if let Some(name) = read {
+                let fresh = next;
                 next += 1;
-                name
+                grown.push((Set::default(), Set::from_iter([fresh])));
+                added += 1;
+                r.remove(&name);
+                r.insert(fresh);
+                reg = Some(fresh);
             }
-        };
-        pack[r] = name;
-        active.push((name, last[r]));
+            let mut w = writes.clone();
+            if let Some(name) = write {
+                // A read-modify-write is renamed whole, as the allocator does.
+                w.remove(&name);
+                if let Some(fresh) = reg {
+                    w.insert(fresh);
+                }
+            }
+            grown.push((r, w));
+            if let Some(name) = write {
+                grown.push((Set::from_iter([reg.unwrap_or(name)]), Set::default()));
+                added += 1;
+            }
+        }
+        body = grown;
     }
-    (pack, next)
 }
 
 /// Rename lane register `from` to `to` in one row op's register operands.
@@ -3601,16 +3613,14 @@ impl Kernel {
         // Who reads and who writes each slot, over the whole kernel.
         let mut readers: Map<OpId, Vec<usize>> = Map::default();
         let mut producers: Map<OpId, Vec<usize>> = Map::default();
-        // Every read's format. A hand-over is `SFPMOV` between lane registers,
-        // so it is bit-equal when the producer's store left the bits alone:
-        // `INT32` is a raw copy (and any load format then reads the same bits),
-        // while any other format is equal only to a load reading that same
-        // format (`FP32` flushes denormals on the way into the tile).
-        let mut load_fmts: Map<OpId, Vec<u8>> = Map::default();
+        // A register hand-over ignores the tile formats. `SFPLOAD` copies the
+        // tile's bits in either format, and the only store-side difference
+        // (`FP32` flushes denormals on the way into the tile) is a flush of
+        // values below 2^-126, which is below any ML tolerance -- and not doing
+        // it is closer to IEEE than the tile path, not further.
         for u in 0..n {
-            for (slot, _, fmt, _) in &loads[u] {
+            for (slot, _, _, _) in &loads[u] {
                 readers.entry(*slot).or_default().push(u);
-                load_fmts.entry(*slot).or_default().push(*fmt);
             }
             for (slot, _, _, _) in &stores[u] {
                 producers.entry(*slot).or_default().push(u);
@@ -3697,13 +3707,6 @@ impl Kernel {
                     if first == last {
                         continue;
                     }
-                    // Keep the carry's live range local: a value held across
-                    // the whole body raises the register floor everywhere,
-                    // which the allocator cannot pay for. Close readers are
-                    // exactly where the repeated loads are.
-                    if last - first > 2 {
-                        continue;
-                    }
                     let Some(&(_, reg, _, load_op)) = loads[first].iter().find(|(sl, _, _, _)| sl == slot) else {
                         continue;
                     };
@@ -3754,6 +3757,7 @@ impl Kernel {
                     // interleaving rows leaves the previous part's lane flags
                     // behind.
                     let mut total = gap_words + 1;
+                    let mut spilled_words = 0u32;
                     let mut carry_over: Vec<(OpId, u16, u16)> = Vec::new();
                     let mut hand: Vec<(OpId, u16, u16)> = Vec::new();
                     let mut cse_setup: Vec<(OpId, u16, u16)> = Vec::new(); // load, source, carry
@@ -3818,13 +3822,12 @@ impl Kernel {
                                 }
                             }
                         }
-                        // Retire stores whose value never leaves the cone.
-                        for (slot, reg, fmt, op) in &stores[u] {
-                            let fmt_ok = *fmt == INT32 || load_fmts.get(slot).is_some_and(|fs| fs.iter().all(|f| f == fmt));
+                        // Retire stores whose value never leaves the cone. The
+                        // register hand-over is format-agnostic (see above).
+                        for (slot, reg, _fmt, op) in &stores[u] {
                             let interior = !demoted.contains(slot)
                                 && producers.get(slot).is_some_and(|ps| ps.len() == 1 && ps[0] == u)
-                                && readers.get(slot).is_some_and(|rs| rs.iter().all(|&r| r > u && r <= end))
-                                && fmt_ok;
+                                && readers.get(slot).is_some_and(|rs| rs.iter().all(|&r| r > u && r <= end));
                             if !interior {
                                 continue;
                             }
@@ -3879,8 +3882,21 @@ impl Kernel {
                             }
                         }
                     }
-                    if tt_alloc_regs(&shadow).is_some() {
-                        break Some((maps, hand, carry_over, total, shadow, next, cse_setup));
+                    // The temp names are already dense from 16 (every build
+                    // restarts the counter). Do not reuse a name across
+                    // disjoint intervals here: `tt_lreg_alloc` recomputes
+                    // liveness from the emitted names, and a reused name would
+                    // look like one long value, which both overstates pressure
+                    // and makes spilling it a self-feeding loop.
+                    if next > 256 {
+                        break None;
+                    }
+                    if let Some(added) = tt_plan_spills(&shadow, FUSE_SPILL_LIMIT) {
+                        // The allocator will insert those stores/loads; they are
+                        // budgeted apart from `total`, which must stay the
+                        // emitted body's exact length.
+                        spilled_words = added as u32;
+                        break Some((maps, hand, carry_over, total, shadow, next, cse_setup, spilled_words));
                     }
                     // Demote the carried value whose spill is cheapest -- one
                     // store plus one load per reader -- and try the same cone
@@ -3900,11 +3916,12 @@ impl Kernel {
                     };
                     demoted.insert(victim);
                 };
-                let Some((maps, hand, carry_over, total, shadow, next, cse_setup)) = built else {
+                let Some((maps, hand, carry_over, total, shadow, next, cse_setup, spilled_words)) = built else {
                     end -= 1;
                     continue;
                 };
-                if total == 0 || total >= 1 << tt_isa::mailbox::loops::LEN_BITS {
+                let emitted = total + spilled_words;
+                if emitted == 0 || emitted >= 1 << tt_isa::mailbox::loops::LEN_BITS {
                     end -= 1;
                     continue;
                 }
@@ -3916,22 +3933,13 @@ impl Kernel {
                         projected -= 1;
                     }
                 }
-                projected += usize::from(total > buffer);
+                projected += usize::from(emitted > buffer);
                 if projected > tt_isa::mailbox::loops::MAX {
                     end -= 1;
                     continue;
                 }
-                // The emitted body's names. The temporary space above is as
-                // wide as the cone needs; the ISA's register field is not, so
-                // pack by liveness: a name is reused once its interval ends,
-                // and the body needs as many names as it has values live at
-                // once, not as many as its units define in total. This is what
-                // stops a long cone from being cut by name count.
-                let (pack, packed) = tt_pack_reg_names(&shadow, next);
-                if packed > 256 {
-                    end -= 1;
-                    continue;
-                }
+                // The names are already packed (the spill plan had to see the
+                // same intervals the allocator will); `pack` is part of `built`.
                 // Apply.
                 let mov = defs::SFPMOV.opcode();
                 let marker = ops[units[s].0];
@@ -3948,16 +3956,12 @@ impl Kernel {
                         Op::TT(TTOp::Sfp(TTSfpInsn { op: defs::SFPENCC.opcode(), args: [3, 0, 10, 0, 0] })),
                     );
                 }
-                // One composed map per unit: old register -> temporary -> final.
-                // `tt_row_remap` looks each operand up once, so no rename can
-                // chain into another even though both spaces are `>= 16`.
+                // One map per unit: old register -> emitted name. `tt_row_remap`
+                // looks each operand up once, so no rename can chain.
                 let mut finals: Vec<Vec<u16>> = vec![vec![u16::MAX; 256]; n];
                 for u in s..=end {
                     for r in 0..256usize {
-                        let temp = maps[u][r];
-                        if temp != u16::MAX {
-                            finals[u][r] = pack[usize::from(temp)];
-                        }
+                        finals[u][r] = maps[u][r];
                     }
                     // The unit's own body plus the gap of constants that now
                     // precedes it (the marker between them is not a row op).
@@ -3970,15 +3974,12 @@ impl Kernel {
                     }
                 }
                 for (load, from, to) in hand {
-                    let (from, to) = (pack[usize::from(from)], pack[usize::from(to)]);
                     self.ops[load].op = Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [from, to, 0, 0, 0] }));
                 }
                 for (store, from, to) in carry_over {
-                    let (from, to) = (pack[usize::from(from)], pack[usize::from(to)]);
                     self.ops[store].op = Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [from, to, 0, 0, 0] }));
                 }
                 for (load, src, carry) in cse_setup {
-                    let (src, carry) = (pack[usize::from(src)], pack[usize::from(carry)]);
                     self.insert_after(load, Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [src, carry, 0, 0, 0] })));
                 }
                 self.ops[marker].op = Op::TT(TTOp::Replay { len: total as u16, count: counts[s] });
@@ -4010,37 +4011,119 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
-        let mut ops: Vec<OpId> = Vec::new();
-        let mut id = self.head;
+        // Spill tiles go in the prologue, like every other logical Register
+        // tile: `tt_dst_reuse` later assigns them a physical row.
+        let mut prologue = self.head;
         for _ in 0..250_000 {
-            if id.is_null() {
+            if prologue.is_null() {
                 break;
             }
-            ops.push(id);
-            id = self.next_op(id);
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
         }
-        let mut i = 0;
-        while i < ops.len() {
-            let Op::TT(TTOp::Replay { len, count }) = self.at(ops[i]) else {
-                i += 1;
+        let dtype = {
+            let mut id = self.head;
+            let mut found = None;
+            for _ in 0..250_000 {
+                if id.is_null() {
+                    break;
+                }
+                if let Op::Storage { dtype, scope: MemScope::Register, .. } = self.ops[id].op {
+                    found = Some(dtype);
+                    break;
+                }
+                id = self.next_op(id);
+            }
+            found.unwrap_or(DType::F32)
+        };
+        let mut id = self.head;
+        while !id.is_null() {
+            let Op::TT(TTOp::Replay { len, count }) = self.at(id) else {
+                id = self.next_op(id);
                 continue;
             };
-            let (marker, count) = (ops[i], *count);
+            let (marker, count) = (id, *count);
+            let len = u32::from(*len);
+            let mut body: Vec<OpId> = Vec::new();
             let mut words = 0u32;
-            let mut j = i + 1;
-            while j < ops.len() && words < u32::from(*len) {
-                words += tt_row_words(self.at(ops[j]));
-                j += 1;
+            let mut cur = self.next_op(marker);
+            while !cur.is_null() && words < len {
+                words += tt_row_words(self.at(cur));
+                body.push(cur);
+                cur = self.next_op(cur);
             }
-            let body: Vec<OpId> = ops[i + 1..j].to_vec();
-            i = j;
-            let regs: Vec<(Set<u16>, Set<u16>)> = body.iter().map(|&op| tt_row_regs(self.at(op))).collect();
-            // The same scan the fusion used to prove the cone fits, now on the
-            // emitted body: here `None` is a bug, not a reason to shrink.
-            let Some(assign) = tt_alloc_regs(&regs) else {
-                todo!("tt_lreg_alloc: no free lane register in the body of {} ops; spilling is not implemented", body.len());
+            // Allocate, spill what does not fit, and allocate again. A spilled
+            // name gets no register: every definition stores it to its own DST
+            // tile and every use reloads it into a fresh short-lived name, so
+            // the next scan sees the pressure it really has.
+            let mut next = body
+                .iter()
+                .flat_map(|&op| {
+                    let (r, w) = tt_row_regs(self.at(op));
+                    r.into_iter().chain(w)
+                })
+                .filter(|r| *r >= 16)
+                .max()
+                .map_or(16, |m| m + 1);
+            let mut spilled = 0usize;
+            let assign = loop {
+                let regs: Vec<(Set<u16>, Set<u16>)> = body.iter().map(|&op| tt_row_regs(self.at(op))).collect();
+                let Some((assign, spills)) = tt_alloc_spill(&regs, ASSIGN_SPILL_LIMIT) else {
+                    todo!("tt_lreg_alloc: a body of {} ops needs more than {ASSIGN_SPILL_LIMIT} spills", body.len());
+                };
+                if spills.is_empty() {
+                    break assign;
+                }
+                for name in spills {
+                    spilled += 1;
+                    if spilled > ASSIGN_SPILL_LIMIT {
+                        todo!("tt_lreg_alloc: spill budget exhausted after {spilled} spills");
+                    }
+                    let tile = self.tt_new_dst(dtype, prologue);
+                    let mut grown: Vec<OpId> = Vec::with_capacity(body.len() * 2);
+                    for &op in &body {
+                        let (reads, writes) = tt_row_regs(self.at(op));
+                        let read = reads.contains(&name);
+                        let write = writes.contains(&name);
+                        if !read && !write {
+                            grown.push(op);
+                            continue;
+                        }
+                        let mut reg = name;
+                        if read {
+                            // Reload into a fresh name: it lives for this one
+                            // instruction, so it never adds pressure.
+                            let fresh = next;
+                            next += 1;
+                            if fresh > 255 {
+                                todo!("tt_lreg_alloc: out of register names for reloads");
+                            }
+                            let load = self.insert_before(
+                                op,
+                                Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: tile, at: 0, reg: fresh as u8, fmt: INT32 }))),
+                            );
+                            grown.push(load);
+                            tt_row_rename(&mut self.ops[op].op, name as u8, fresh as u8);
+                            reg = fresh;
+                        }
+                        grown.push(op);
+                        if write {
+                            // A read-modify-write stores the value it just
+                            // wrote; a plain definition stores its own register.
+                            let store = self.insert_after(
+                                op,
+                                Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot: tile, at: 0, reg: reg as u8, fmt: INT32 }))),
+                            );
+                            grown.push(store);
+                        }
+                    }
+                    body = grown;
+                }
             };
             if assign.is_empty() {
+                id = cur;
                 continue;
             }
             let mut map = vec![u16::MAX; 256];
@@ -4078,6 +4161,7 @@ impl Kernel {
                 }
             }
             self.ops[marker].op = Op::TT(TTOp::Replay { len: words as u16, count });
+            id = cur;
         }
     }
 
