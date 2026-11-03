@@ -1,11 +1,12 @@
 ## HANDOFF (2026-11-03) — elementwise parity: sigmoid/exp2/log2 at 1 load + 1 store
 
-**Tree state:** committed through `fbd88805` (fusion fixes, `log2` rewrite,
+**Tree state:** committed through `2e47f8d1` (fusion fixes, `log2` rewrite,
 `unfold_pows` move, activation gates, the cast lowering, the algebraic
-`select` rewrite) plus two uncommitted pieces: the comparison-into-predicate
-fold in `zyx/src/kernel/tenstorrent.rs`, and the `exp2` gate at `1e-5` plus this
-file. 22/22 of the ttsim gates listed under "How to
-run things" are green, `cargo test --lib` = 82, changed files fmt clean.
+`select` rewrite, the comparison-into-predicate fold, `exp2` back at `1e-5`)
+plus one uncommitted piece: the acceptance unit test and the folded select's
+register/constant reuse in `zyx/src/kernel/tenstorrent.rs`, and this file.
+22/22 of the ttsim gates listed under "How to run things" are green, `cargo test
+--lib` = 83, changed files fmt clean.
 (`23_tt_lowering` has 24 tests; `matmul_add` and `softmax` fail at HEAD too --
 `Zeroacc` CLR_ALL with live DST rows, and `missing EndReader` -- so they are
 pre-existing, not gates.)
@@ -211,16 +212,31 @@ a truncated 16-bit constant would show >= 1.5e-5, so the sink is not spending
 precision. The sink is still on (the body's constants are `sfp_const`; 1 replay,
 1+1). Keep the `1e-5` gate permanently.
 
-1. **The acceptance gate**: for a pure elementwise kernel the compiled T1 stream
-   must have one `SFPLOAD` + one `SFPSTORE` per row (every kernel in the table
-   above is). Needs a test-visible accessor for the compiled stream (the user
-   approved adding one).
+**No gates left.** The acceptance gate is in, as a **pure-IR unit test** (no
+device, no public API): `#[cfg(test)] mod acceptance` at the end of
+   `zyx/src/kernel/tenstorrent.rs`. It builds one `[32, 32]` F32 input through
+   each activation (`sigmoid`, `silu`, `exp2`, `log2`, `tanh`, `relu`, `elu`,
+   `gelu`), runs the real `device_epilogue` on a kernel bound to a fake TT
+   `DeviceInfo` (the lowering only reads `device_info().tenstorrent`), and
+   asserts exactly `(1 replay, 1 load, 1 store)`. It runs in `cargo test --lib`
+   (83 now) in ~30 ms.
+
+   It immediately earned its keep: `relu` came out **2 loads**, because the
+   comparison's operand and the select's branch are the same `x`, and a
+   `cmpgt(x, 0)` zero operand was a *filled DST tile*. Fixed in the folded
+   select by (a) assigning registers per **value** (`t == a` reuses `L0`, so
+   `x` is loaded once) and (b) putting a scalar **0/1** operand in the
+   hardware's read-only `LREG_ZERO`/`LREG_ONE` with a move, never a tile.
+
+   What remains outside the gates is pre-existing and unrelated (`matmul_add`'s
+   `Zeroacc` guard, `softmax`'s `missing EndReader`).
 
 Done this session: the two fusion fixes, `exp2` 1/1/1, `log2`'s specials *and*
 its polynomial (1/1/1), the four activation gates, the `Bool`/identity cast
 lowering, `cast(cmp) * x` -> `select(cmp, x, 0)`, the comparison-into-predicate
-fold (`elu` and `sin_cos` now 1+1), and the `exp2` gate tightened back to
-`1e-5` (worst 1.1e-7, so the sink's precision bug is closed).
+fold (`elu` and `sin_cos` now 1+1), the `exp2` gate tightened back to `1e-5`
+(worst 1.1e-7, so the sink's precision bug is closed), and the acceptance unit
+test (which then removed `relu`'s duplicate load).
 
 ### How to run things
 

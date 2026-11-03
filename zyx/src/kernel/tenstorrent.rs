@@ -2059,39 +2059,80 @@ impl Kernel {
                     let sfp = |ops: &mut Vec<Op>, op: u8, args: [u16; 5]| {
                         ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op, args })));
                     };
-                    let (dtype, t) = if matches!(self.ops[if_true].op, Op::Const(_)) {
-                        self.tt_fill_const(if_true, id, lower.prologue)?
-                    } else {
-                        self.tt_resolve_dst(if_true, id, lower)?
+                    /// What a select operand costs to put in a lane register:
+                    /// a load of its tile, or (for a scalar 0/1) a move from the
+                    /// hardware's read-only constant register -- no tile, no
+                    /// DST traffic.
+                    #[derive(Clone, Copy, PartialEq)]
+                    enum Put {
+                        Load(OpId),
+                        Mov(u16),
+                    }
+                    let plan = |k: &mut Kernel, o: OpId, at: OpId, lower: &mut TtLowering| -> Option<Put> {
+                        if let Op::Const(c) = *k.at(o) {
+                            let bits = match c {
+                                Constant::F32(b) => u32::from_le_bytes(b),
+                                Constant::I32(v) => v as u32,
+                                _ => 1,
+                            };
+                            if bits == 0 {
+                                return Some(Put::Mov(LREG_ZERO));
+                            }
+                            if bits == 0x3f80_0000 {
+                                return Some(Put::Mov(LREG_ONE));
+                            }
+                        }
+                        let (_, slot) = if matches!(k.ops[o].op, Op::Const(_)) {
+                            k.tt_fill_const(o, at, lower.prologue)?
+                        } else {
+                            k.tt_resolve_dst(o, at, lower)?
+                        };
+                        Some(Put::Load(slot))
                     };
-                    let (_, f) = if matches!(self.ops[if_false].op, Op::Const(_)) {
-                        self.tt_fill_const(if_false, id, lower.prologue)?
+                    let dtype = self.dtype(if_true);
+                    let (a, b) = (plan(self, ca, id, lower)?, plan(self, cb, id, lower)?);
+                    let (t, f) = (plan(self, if_true, id, lower)?, plan(self, if_false, id, lower)?);
+                    // `a` and `b` live in `L0`/`L1` because the predicate's
+                    // encoding names them; `t`/`f` reuse a register when they
+                    // are the same value, so `cmpgt(x, 0) * x` loads `x` once.
+                    let rt = if t == a {
+                        L0
+                    } else if t == b {
+                        L1
+                    } else if t == f {
+                        L2
                     } else {
-                        self.tt_resolve_dst(if_false, id, lower)?
+                        L2
                     };
-                    // A comparison operand may be a scalar constant (`cmpgt(x,
-                    // 0)`); like the `Select` branches, it is filled into a
-                    // tile here rather than resolved.
-                    let (_, a) = if matches!(self.ops[ca].op, Op::Const(_)) {
-                        self.tt_fill_const(ca, id, lower.prologue)?
+                    let rf = if f == a {
+                        L0
+                    } else if f == b {
+                        L1
+                    } else if f == t {
+                        rt
                     } else {
-                        self.tt_resolve_dst(ca, id, lower)?
-                    };
-                    let (_, b) = if matches!(self.ops[cb].op, Op::Const(_)) {
-                        self.tt_fill_const(cb, id, lower.prologue)?
-                    } else {
-                        self.tt_resolve_dst(cb, id, lower)?
+                        L3
                     };
                     let slot = self.tt_new_dst(dtype, lower.prologue);
                     // `ne`'s predicate is equality, so it starts from the true
                     // word and overwrites with the false one; every other kind
                     // starts from the false word.
-                    let (dflt, pick) = if bop == BOp::NotEq { (L2, L3) } else { (L3, L2) };
+                    let (dflt, pick) = if bop == BOp::NotEq { (rt, rf) } else { (rf, rt) };
                     let mut ops = self.tt_row_loop(|ops, o| {
-                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
-                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
-                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: t, at: o, reg: L2, fmt: INT32 }))));
-                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: f, at: o, reg: L3, fmt: INT32 }))));
+                        let mut put = |ops: &mut Vec<Op>, p: Put, reg: u8| match p {
+                            Put::Load(slot) => {
+                                ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at: o, reg, fmt: INT32 }))));
+                            }
+                            Put::Mov(c) => sfp(ops, mov, [c, u16::from(reg), 0, 0, 0]),
+                        };
+                        put(ops, a, L0);
+                        put(ops, b, L1);
+                        if rt != L0 && rt != L1 {
+                            put(ops, t, rt);
+                        }
+                        if rf != rt && rf != L0 && rf != L1 {
+                            put(ops, f, rf);
+                        }
                         sfp(ops, mov, [u16::from(dflt), u16::from(L4), 0, 0, 0]);
                         // `SFPGT [p, q]` is `q > p` and `SFPLE [p, q]` is
                         // `p <= q` (the first operand is the object), so each
@@ -5959,5 +6000,152 @@ mod lreg_spill {
     #[test]
     fn the_spill_cap_is_a_loud_refusal() {
         assert!(tt_alloc_spill(&body_that_spills_once(), 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod acceptance {
+    use super::*;
+    use crate::kernel::Dev;
+
+    /// A kernel bound to a Tenstorrent device without owning one: the whole
+    /// `device_epilogue` consults `device_info().tenstorrent` and nothing else,
+    /// so a pure-IR test can run the real lowering with no simulator.
+    fn tt_kernel() -> Kernel {
+        use crate::backend::{DTypeCapability, DeviceInfo};
+        use crate::shape::Dim;
+        use std::sync::Arc;
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(DeviceInfo {
+            compute: 1_000_000,
+            max_global_work_dims: vec![Dim::from(1_000_000_000); 3],
+            max_local_threads: 1024,
+            max_local_work_dims: vec![1024, 1024, 1024],
+            preferred_vector_size: 8,
+            local_mem_size: 8192,
+            max_register_bytes: 256_000,
+            tensor_cores: false,
+            warp_size: 1,
+            cc: [0, 0],
+            dtype_capability: [DTypeCapability::all(); DType::N_DTYPES],
+            has_native_exp2: false,
+            supported_vec_lens: vec![2, 4, 8, 16],
+            vector_depth: 1,
+            tenstorrent: true,
+            tile: [Dim::from(32), Dim::from(32)],
+            tile_sizes: vec![[Dim::from(32), Dim::from(32)]],
+            wmma_layouts: vec![],
+            num_circular_buffers: 8,
+            has_openmp: false,
+        }));
+        k
+    }
+
+    /// One `[32, 32]` F32 input through one activation into one output: the
+    /// shape the frontend hands `device_epilogue` for a single elementwise op.
+    fn kernel_of(f: impl FnOnce(&mut Kernel, OpId) -> OpId) -> Kernel {
+        let mut k = tt_kernel();
+        // Read-only globals come first (see `verify`).
+        let src = k.param(DType::F32);
+        let dst = k.param_mut(DType::F32);
+        // The `[32, 32]` tile index the frontend's linearize builds: i64 unroll
+        // lanes and an i64 stride (`lane_tree`'s block form uses a `u16` stride,
+        // which is a scalar-only shape).
+        let zero = k.const_val(0i64);
+        let stride = k.const_val(32i64);
+        let row = k.push_back(Op::Unroll { axis: 0, len: 32 });
+        let col = k.push_back(Op::Unroll { axis: 1, len: 32 });
+        let row = k.binary(row, stride, BOp::Mul);
+        let idx = k.binary(zero, row, BOp::Add);
+        let idx = k.binary(idx, col, BOp::Add);
+        let x = k.load(src, idx);
+        let y = f(&mut k, x);
+        k.store(dst, y, idx);
+        k.device_epilogue();
+        k
+    }
+
+    /// `(replays, loads, stores)` over the whole kernel. A pure elementwise op
+    /// must be one row body with one `SFPLOAD` and one `SFPSTORE`.
+    fn traffic(k: &Kernel) -> (usize, usize, usize) {
+        let (mut replays, mut loads, mut stores) = (0, 0, 0);
+        let mut id = k.head;
+        while !id.is_null() {
+            match k.at(id) {
+                Op::TT(TTOp::Replay { .. }) => replays += 1,
+                Op::TT(TTOp::SfpLoad(_)) => loads += 1,
+                Op::TT(TTOp::SfpStore(_)) => stores += 1,
+                _ => {}
+            }
+            id = k.next_op(id);
+        }
+        (replays, loads, stores)
+    }
+
+    /// `Tensor::relu` as the frontend writes it: `cmpgt(x, 0) * x`, with the
+    /// `float_cast` on the mask that the `Op::Cast` arm has to translate.
+    fn relu_src(k: &mut Kernel, x: OpId) -> OpId {
+        let zero = k.const_val(0.0f32);
+        let mask = k.binary(x, zero, BOp::Cmpgt);
+        let mask = k.cast(mask, DType::F32);
+        k.binary(mask, x, BOp::Mul)
+    }
+
+    /// `Tensor::tanh`: `sigmoid(2x) * 2 - 1`.
+    fn tanh_src(k: &mut Kernel, x: OpId) -> OpId {
+        let doubled = k.binary(x, x, BOp::Add);
+        let s = k.sigmoid(doubled);
+        let two = k.const_val(2.0f32);
+        let m = k.binary(s, two, BOp::Mul);
+        let one = k.const_val(1.0f32);
+        k.binary(m, one, BOp::Sub)
+    }
+
+    /// Every activation is composed from primitives, so this is the fuser's
+    /// acceptance gate: no hand-written program, one row body, one tile in and
+    /// one tile out. Anything that pays a DST round trip fails here.
+    #[test]
+    fn activations_are_one_row_body() {
+        let cases: [(&str, fn(&mut Kernel, OpId) -> OpId); 8] = [
+            ("sigmoid", |k, x| k.sigmoid(x)),
+            ("silu", |k, x| k.silu(x)),
+            ("exp2", |k, x| k.exp2(x)),
+            ("log2", |k, x| k.log2(x)),
+            ("tanh", tanh_src),
+            ("relu", relu_src),
+            ("elu", |k, x| {
+                let positive = relu_src(k, x);
+                let e = k.exp(x);
+                let n = k.neg(e);
+                let one = k.const_val(1.0f32);
+                let t = k.binary(n, one, BOp::Add); // 1 - e^x
+                let negative = relu_src(k, t);
+                k.binary(positive, negative, BOp::Sub)
+            }),
+            ("gelu", |k, x| {
+                let half = k.const_val(0.5f32);
+                let xh = k.binary(x, half, BOp::Mul);
+                let x2 = k.binary(x, x, BOp::Mul);
+                let x3 = k.binary(x2, x, BOp::Mul);
+                let c = k.const_val(0.044_715f32);
+                let cx3 = k.binary(x3, c, BOp::Mul);
+                let inner = k.binary(x, cx3, BOp::Add);
+                let kk = k.const_val((2.0f32 / core::f32::consts::PI).sqrt());
+                let arg = k.binary(inner, kk, BOp::Mul);
+                let t = tanh_src(k, arg);
+                let one = k.const_val(1.0f32);
+                let t1 = k.binary(t, one, BOp::Add);
+                k.binary(xh, t1, BOp::Mul)
+            }),
+        ];
+        let mut bad: Vec<(&str, (usize, usize, usize))> = Vec::new();
+        for (name, f) in cases {
+            let k = kernel_of(f);
+            let t = traffic(&k);
+            if t != (1, 1, 1) {
+                bad.push((name, t));
+            }
+        }
+        assert!(bad.is_empty(), "expected one row body, one load, one store; got {bad:?}");
     }
 }
