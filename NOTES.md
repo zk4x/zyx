@@ -181,8 +181,8 @@ would skip the flush).
 | kernel | replays | loads | stores | eighth-pass start |
 |---|---|---|---|---|
 | `sigmoid` | **1** | **9** | **3** | 2 / 15 / 8 |
-| `exp2` | 2 | **9** | **3** | 3 / 13 / 6 |
-| `log2` | 2 | **16** | **7** | 3 / 18 / 9 |
+| `exp2` | 2 | **7** | **3** | 3 / 13 / 6 |
+| `log2` | 2 | **14** | **7** | 3 / 18 / 9 |
 | `sin_cos` | 2 | **10** | **8** | 4 / 26 / 18 |
 
 Handwritten reference (metalium-rs, per row group) is 1/1 for `relu` and 2/2 for
@@ -191,38 +191,56 @@ has **no general chain fuser** (B13b is add+relu only); a composed `elu` there i
 N kernels, N launches, N L1 round trips. That is the baseline zyx must beat, and
 the per-op handcoded programs are the budget for the *inside* of one body.
 
-### Why sigmoid is still 9/3, not 2/2
+### Spill-by-demotion and local tile-read CSE (both in the tree)
 
-All 9 loads are the **same input slot**, re-read by different units: the fusion
-has no producer inside the cone for a tile written by the unpack copy, so each
-unit that needs `x` loads it again. I tried a tile-read CSE (first load copies
-to a carry at the load's position, later loads become `SFPMOV`): it cut
-`sin_cos` loads 10->8 but **regressed `log2`** (lane 16 `-inf`) and, worse, it
-raised register pressure so the feasibility check split the cone into 4 replays
-instead of 2. Reverted; the code is not in the tree.
+`tt_fuse_cone` now builds a cone in a retry loop. If the shadow does not fit the
+eight lane registers, it **demotes** an interior carry: that unit's store stays,
+consumers load from the tile again (the store/load pair that already exists), and
+the cone is rebuilt. Budget: at most 2 demotions per cone, cheapest first
+(fewest readers); past that the cone shrinks as before. Measured: the demotion
+mechanism alone changes nothing on the four kernels (they already fit), which is
+the honest result -- it is infrastructure.
 
-The two conditions for CSE that the experiment exposed, which the next attempt
-must handle:
+On top of it, **local tile-read CSE**: when the same tile slot is read by units
+`first..last` with no store to that slot in the cone, the first load keeps its
+`SFPLOAD` and copies to a carry *at the load's position* (`insert_after`, so a
+later write to that body register cannot destroy it), and later readers get an
+`SFPMOV`. The carry must be complete for every lane, so its producing load may
+only be preceded in its unit by constants / `SFPENCC` (a load and a mov are both
+lane-masked). **The carry is limited to `last - first <= 2` units**: a carry
+live across the whole body raises the register floor everywhere, and the
+allocator then fails in regions where no interior carry is live, so nothing can
+be demoted -- that was the `log2 -inf` / 4-replay failure, now understood.
 
-1. **Spilling first.** Keeping `x` live across the whole body costs a register,
-   and without a spill the cone shrinks (more replays = worse than the loads it
-   saves). The right spill for this pipeline is not a new mechanism: **demote an
-   interior carry back to its tile** (leave the unit's store in place and let the
-   consumer load from the tile, as today). That keeps one body and costs exactly
-   the handwritten spill pair. Implement it as a retry inside `tt_fuse_cone`:
-   if `tt_alloc_regs` says the cone does not fit, pick the interior value with
-   the longest live range, remove it from `carry_over`, rebuild; repeat.
-2. **Lane flags.** A load is lane-masked (as is `SFPMOV`), so a tile carry is
-   complete for every lane only when the producer's load runs with the flags
-   reset. The experiment's guard (only constants/`SFPENCC` before the load) is a
-   candidate, but the `log2` failure was not proven to be the flag case, so
-   verify independently.
+That catches the close repeats: `log2` 16 -> 14 loads, `exp2` 9 -> 7 loads.
+`sigmoid` is unchanged: all 9 of its loads are the same input slot but spread
+across the whole body, so the local window does not apply.
+
+### What is left for parity
+
+`sigmoid`'s remaining 7 extra loads are one long-lived input value. Carrying it
+needs a register across the whole body, and the body's peak is already 8; the
+peak region contains no interior carry to demote. Two ways forward, both real
+work:
+
+1. **Reduce peak liveness** (better than spilling): the fusion emits units in
+   program order and places every `carry_over` copy at the store's position,
+   which keeps values live from producer to last consumer. Re-scheduling the
+   body (delaying copies to just before use where the register is provably free,
+   or reordering independent units) is what a hand-written kernel does by
+   construction.
+2. **A real spill** (a new DST tile, not a demotion): store a value at its
+   definition and reload before each use, which can evict a *load-based* value
+   too. That is the `tt_lreg_alloc` `todo!()`, and it is the only way to keep a
+   long carry when the peak has no interior carry to give up.
+
+The next measurement to watch: `sigmoid` at 1 replay / 2 / 2 (or 3 stores if the
+spill store is counted) is the handwritten shape.
 
 ### Status of the old next steps
 
-1. **Spill** — still `todo!()` in `tt_lreg_alloc` and still inert, because the
-   fusion shrinks cones instead. The demotion retry above is the version this
-   pipeline needs, and it is the prerequisite for the tile-read CSE.
+1. **Spill** — demotion is in (above). A full spill of a non-carry value is still
+   `todo!()` in `tt_lreg_alloc`, and is item 2 above.
 2. **Acceptance gate** — still missing, and it should assert absolute numbers
    (relu 1/1, sigmoid 2/2, one replay), not a ratio. `sigmoid` is at 1 replay /
    9 / 3 now.

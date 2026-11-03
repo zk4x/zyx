@@ -3678,90 +3678,172 @@ impl Kernel {
                     end -= 1;
                     continue;
                 }
-                // Virtualize. Every register a merged unit touches becomes a
-                // temporary name (`>= 16`) in a space wider than the ISA's
-                // 8-bit register field, so units cannot collide no matter how
-                // many values the whole cone defines; the pack below turns the
-                // temporaries into emitted names by liveness. Nothing here
-                // reasons about the eight-register file: `tt_lreg_alloc`
-                // assigns the physical ones after this pass. An interior value
-                // crosses on one `SFPMOV`, per row, between temporaries. A body
-                // is straight-line, so the merged body is one block and
-                // liveness there is exact.
-                let mut maps: Vec<Vec<u16>> = vec![vec![u16::MAX; 256]; n];
-                let mut live: Vec<(OpId, u16, usize)> = Vec::new(); // slot, name, last reader
-                // Every row of the merged body starts with the flags reset: a
-                // body's own preamble did exactly that once, and interleaving
-                // rows leaves the previous part's lane flags behind.
-                let mut total = gap_words + 1;
-                let mut carry_over: Vec<(OpId, u16, u16)> = Vec::new();
-                let mut hand: Vec<(OpId, u16, u16)> = Vec::new();
-                let mut next = 16u16;
-                let mut feasible = true;
-                // The body as the allocator will see it, in temporary space: it
-                // is what decides whether this cone fits the eight registers.
-                let mut shadow: Vec<(Set<u16>, Set<u16>)> = Vec::new();
-                for u in s..=end {
-                    live.retain(|(_, _, last)| *last >= u);
-                    total += words[u];
-                    // Fresh names for every register this unit touches,
-                    // including the gap's constants, which are now part of it.
-                    let mut used = writes[u].clone();
-                    if u > s {
-                        used.extend(gap_writes[u].iter().copied());
+                // One tile read by several units of the cone: the first read
+                // keeps its `SFPLOAD` and copies the value into a carry right
+                // there, every later read is handed the register. Only when no
+                // unit of the cone stores to the slot: a store changes what a
+                // later load would read. The formats need not agree -- a load
+                // only copies the tile's bits, so the first load sees exactly
+                // what any later one would.
+                let mut tile_carry: Map<OpId, (usize, u8, usize)> = Map::default();
+                for (slot, units_of) in &readers {
+                    if producers.get(slot).is_some_and(|ps| ps.iter().any(|&p| p >= s && p <= end)) {
+                        continue;
                     }
-                    for (_, reg, _, _) in &loads[u] {
-                        used.insert(u16::from(*reg));
+                    let inside: Vec<usize> = units_of.iter().copied().filter(|&r| r >= s && r <= end).collect();
+                    let (Some(&first), Some(&last)) = (inside.iter().min(), inside.iter().max()) else {
+                        continue;
+                    };
+                    if first == last {
+                        continue;
                     }
-                    for &op in &ops[units[u].0 + 1..units[u].1] {
-                        used.extend(tt_row_regs(self.at(op)).0);
+                    // Keep the carry's live range local: a value held across
+                    // the whole body raises the register floor everywhere,
+                    // which the allocator cannot pay for. Close readers are
+                    // exactly where the repeated loads are.
+                    if last - first > 2 {
+                        continue;
                     }
-                    for r in used {
-                        // `8..15` are the hardware's read-only constants
-                        // (`LREG_ZERO` = 9, `LREG_ONE` = 10, ...): they appear in
-                        // a body's read set and must never be renamed, which is
-                        // why they are not part of the allocatable file. A
-                        // body an earlier merge already virtualized is entitled
-                        // to a fresh name too: its old one is unique, but the
-                        // pack gives both bodies new, disjoint names anyway.
-                        if (8..16).contains(&r) {
-                            continue;
-                        }
-                        maps[u][usize::from(r)] = next;
-                        next += 1;
+                    let Some(&(_, reg, _, load_op)) = loads[first].iter().find(|(sl, _, _, _)| sl == slot) else {
+                        continue;
+                    };
+                    // The carry is a copy right after the load, and the copy is
+                    // lane-masked like the load: it fills every lane only when
+                    // the load runs with the flags reset. Anything that can set
+                    // a lane flag before it makes the carry partial, and a
+                    // consumer that enables a lane this load did not would read
+                    // a stale register instead of the tile.
+                    let start = units[first].0 + 1;
+                    let Some(pos) = ops[start..units[first].1].iter().position(|&o| o == load_op) else {
+                        continue;
+                    };
+                    let flags_touched = ops[start..start + pos].iter().any(|&o| match self.at(o) {
+                        Op::TT(TTOp::SfpConst(_)) => false,
+                        Op::TT(TTOp::Sfp(k)) if k.op == defs::SFPENCC.opcode() => false,
+                        _ => true,
+                    });
+                    if flags_touched {
+                        continue;
                     }
-                    // Hand each interior value to this unit, in a register.
-                    for (slot, reg, _, op) in &loads[u] {
-                        let Some(&(_, src, _)) = live.iter().find(|(sl, _, _)| sl == slot) else {
-                            continue;
-                        };
-                        hand.push((*op, src, maps[u][usize::from(*reg)]));
-                    }
-                    // Retire stores whose value never leaves the cone.
-                    for (slot, reg, fmt, op) in &stores[u] {
-                        let fmt_ok = *fmt == INT32 || load_fmts.get(slot).is_some_and(|fs| fs.iter().all(|f| f == fmt));
-                        let interior = producers.get(slot).is_some_and(|ps| ps.len() == 1 && ps[0] == u)
-                            && readers.get(slot).is_some_and(|rs| rs.iter().all(|&r| r > u && r <= end))
-                            && fmt_ok;
-                        if !interior {
-                            continue;
-                        }
-                        let Some(last) = readers.get(slot).and_then(|rs| rs.iter().max()) else {
-                            continue;
-                        };
-                        // The store becomes the copy that hands the value on, at
-                        // the store's own position -- not "whatever is in the
-                        // register at the end of the body", which a later write
-                        // in the same unit would break.
-                        let carry = next;
-                        next += 1;
-                        carry_over.push((*op, maps[u][usize::from(*reg)], carry));
-                        live.push((*slot, carry, *last));
-                    }
+                    tile_carry.insert(*slot, (first, reg, last));
                 }
-                // The body as the allocator will see it, in temporary space: it
-                // is what decides whether this cone fits the eight registers.
-                if feasible {
+                // Build the cone. If it needs more lane registers than exist,
+                // do not shrink it: demote an interior value (the one whose
+                // live range is longest) back to a tile round trip and build
+                // again. The store is already in the body; demoting leaves it
+                // there and lets the consumer load from the tile again, which
+                // costs one store/load pair -- exactly the handwritten spill --
+                // while keeping the whole chain in one row body. Shrinking is
+                // the last resort, because it costs a separate replay.
+                let mut demoted: Set<OpId> = Set::default();
+                let built = loop {
+                    // Virtualize. Every register a merged unit touches becomes a
+                    // temporary name (`>= 16`) in a space wider than the ISA's
+                    // 8-bit register field, so units cannot collide no matter
+                    // how many values the whole cone defines; the pack below
+                    // turns the temporaries into emitted names by liveness.
+                    // Nothing here reasons about the eight-register file:
+                    // `tt_lreg_alloc` assigns the physical ones after this
+                    // pass. An interior value crosses on one `SFPMOV`, per row,
+                    // between temporaries. A body is straight-line, so the
+                    // merged body is one block and liveness there is exact.
+                    let mut maps: Vec<Vec<u16>> = vec![vec![u16::MAX; 256]; n];
+                    let mut live: Vec<(OpId, u16, usize)> = Vec::new(); // slot, name, last reader
+                    // Every row of the merged body starts with the flags reset:
+                    // a body's own preamble did exactly that once, and
+                    // interleaving rows leaves the previous part's lane flags
+                    // behind.
+                    let mut total = gap_words + 1;
+                    let mut carry_over: Vec<(OpId, u16, u16)> = Vec::new();
+                    let mut hand: Vec<(OpId, u16, u16)> = Vec::new();
+                    let mut cse_setup: Vec<(OpId, u16, u16)> = Vec::new(); // load, source, carry
+                    // The values retired as register carries, as
+                    // `(slot, producer unit, last reader unit)`; a demotion
+                    // candidate is picked from here by live-range length.
+                    let mut retired: Vec<(OpId, usize, usize)> = Vec::new();
+                    let mut next = 16u16;
+                    // The body as the allocator will see it, in temporary
+                    // space: it is what decides whether this cone fits the
+                    // eight registers.
+                    let mut shadow: Vec<(Set<u16>, Set<u16>)> = Vec::new();
+                    for u in s..=end {
+                        live.retain(|(_, _, last)| *last >= u);
+                        total += words[u];
+                        // Fresh names for every register this unit touches,
+                        // including the gap's constants, which are now part of it.
+                        let mut used = writes[u].clone();
+                        if u > s {
+                            used.extend(gap_writes[u].iter().copied());
+                        }
+                        for (_, reg, _, _) in &loads[u] {
+                            used.insert(u16::from(*reg));
+                        }
+                        for &op in &ops[units[u].0 + 1..units[u].1] {
+                            used.extend(tt_row_regs(self.at(op)).0);
+                        }
+                        for r in used {
+                            // `8..15` are the hardware's read-only constants
+                            // (`LREG_ZERO` = 9, `LREG_ONE` = 10, ...): they
+                            // appear in a body's read set and must never be
+                            // renamed, which is why they are not part of the
+                            // allocatable file. A body an earlier merge already
+                            // virtualized is entitled to a fresh name too: its
+                            // old one is unique, but the pack gives both bodies
+                            // new, disjoint names anyway.
+                            if (8..16).contains(&r) {
+                                continue;
+                            }
+                            maps[u][usize::from(r)] = next;
+                            next += 1;
+                        }
+                        // Hand each interior value to this unit, in a register;
+                        // the first reader of a tile keeps its load, copies it
+                        // into a carry at that position, and later readers are
+                        // handed the carry.
+                        for (slot, reg, _, op) in &loads[u] {
+                            if let Some(&(_, src, _)) = live.iter().find(|(sl, _, _)| sl == slot) {
+                                hand.push((*op, src, maps[u][usize::from(*reg)]));
+                                continue;
+                            }
+                            if let Some(&(first, first_reg, last)) = tile_carry.get(slot) {
+                                if u == first && *reg == first_reg {
+                                    // The load's own register is a body register
+                                    // and may be rewritten before the unit ends,
+                                    // so the carry is a copy at the load's
+                                    // position.
+                                    let carry = next;
+                                    next += 1;
+                                    cse_setup.push((*op, maps[u][usize::from(*reg)], carry));
+                                    live.push((*slot, carry, last));
+                                }
+                            }
+                        }
+                        // Retire stores whose value never leaves the cone.
+                        for (slot, reg, fmt, op) in &stores[u] {
+                            let fmt_ok = *fmt == INT32 || load_fmts.get(slot).is_some_and(|fs| fs.iter().all(|f| f == fmt));
+                            let interior = !demoted.contains(slot)
+                                && producers.get(slot).is_some_and(|ps| ps.len() == 1 && ps[0] == u)
+                                && readers.get(slot).is_some_and(|rs| rs.iter().all(|&r| r > u && r <= end))
+                                && fmt_ok;
+                            if !interior {
+                                continue;
+                            }
+                            let Some(last) = readers.get(slot).and_then(|rs| rs.iter().max()) else {
+                                continue;
+                            };
+                            // The store becomes the copy that hands the value
+                            // on, at the store's own position -- not "whatever
+                            // is in the register at the end of the body", which
+                            // a later write in the same unit would break.
+                            let carry = next;
+                            next += 1;
+                            carry_over.push((*op, maps[u][usize::from(*reg)], carry));
+                            live.push((*slot, carry, *last));
+                            retired.push((*slot, u, *last));
+                        }
+                    }
+                    // Each tile carry is one more `SFPMOV` word in the body.
+                    total += cse_setup.len() as u32;
                     let ren = |set: &Set<u16>, map: &[u16]| -> Set<u16> {
                         set.iter()
                             .map(|&r| {
@@ -3791,13 +3873,38 @@ impl Kernel {
                             }
                             let (reads, writes) = tt_row_regs(self.at(op));
                             shadow.push((ren(&reads, &maps[u]), ren(&writes, &maps[u])));
+                            // The tile carry's copy sits at the load's position.
+                            if let Some(&(_, src, carry)) = cse_setup.iter().find(|(o, _, _)| *o == op) {
+                                shadow.push((Set::from_iter([src]), Set::from_iter([carry])));
+                            }
                         }
                     }
-                }
-                if feasible && tt_alloc_regs(&shadow).is_none() {
-                    feasible = false;
-                }
-                if !feasible || total == 0 || total >= 1 << tt_isa::mailbox::loops::LEN_BITS {
+                    if tt_alloc_regs(&shadow).is_some() {
+                        break Some((maps, hand, carry_over, total, shadow, next, cse_setup));
+                    }
+                    // Demote the carried value whose spill is cheapest -- one
+                    // store plus one load per reader -- and try the same cone
+                    // again. A cone that needs many spills is not worth keeping:
+                    // past a small budget, shrink instead. No candidate left:
+                    // the pressure is in values the cone cannot give up.
+                    if demoted.len() >= 2 {
+                        break None;
+                    }
+                    let victim = retired
+                        .iter()
+                        .filter(|(slot, _, _)| !demoted.contains(slot))
+                        .min_by_key(|(slot, _, _)| readers.get(slot).map_or(0, |rs| rs.len()))
+                        .map(|(slot, _, _)| *slot);
+                    let Some(victim) = victim else {
+                        break None;
+                    };
+                    demoted.insert(victim);
+                };
+                let Some((maps, hand, carry_over, total, shadow, next, cse_setup)) = built else {
+                    end -= 1;
+                    continue;
+                };
+                if total == 0 || total >= 1 << tt_isa::mailbox::loops::LEN_BITS {
                     end -= 1;
                     continue;
                 }
@@ -3869,6 +3976,10 @@ impl Kernel {
                 for (store, from, to) in carry_over {
                     let (from, to) = (pack[usize::from(from)], pack[usize::from(to)]);
                     self.ops[store].op = Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [from, to, 0, 0, 0] }));
+                }
+                for (load, src, carry) in cse_setup {
+                    let (src, carry) = (pack[usize::from(src)], pack[usize::from(carry)]);
+                    self.insert_after(load, Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [src, carry, 0, 0, 0] })));
                 }
                 self.ops[marker].op = Op::TT(TTOp::Replay { len: total as u16, count: counts[s] });
                 for u in s + 1..=end {
