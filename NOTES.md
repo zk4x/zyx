@@ -1,127 +1,76 @@
-## HANDOFF (2026-11-03) — elementwise parity: sigmoid/exp2/log2 at 1 load + 1 store
+## HANDOFF (2026-11-03, end of session) — every elementwise chain is 1 load + 1 store
 
-**Tree state:** committed through `2e47f8d1` (fusion fixes, `log2` rewrite,
-`unfold_pows` move, activation gates, the cast lowering, the algebraic
-`select` rewrite, the comparison-into-predicate fold, `exp2` back at `1e-5`)
-plus one uncommitted piece: the acceptance unit test and the folded select's
-register/constant reuse in `zyx/src/kernel/tenstorrent.rs`, and this file.
-22/22 of the ttsim gates listed under "How to run things" are green, `cargo test
---lib` = 83, changed files fmt clean.
-(`23_tt_lowering` has 24 tests; `matmul_add` and `softmax` fail at HEAD too --
-`Zeroacc` CLR_ALL with live DST rows, and `missing EndReader` -- so they are
-pre-existing, not gates.)
+**Tree state:** committed through `0c75a8ec` (fusion fixes, `log2` rewrite,
+`unfold_pows` move, activation gates, the cast lowering, the algebraic `select`
+rewrite, the comparison-into-predicate fold, `exp2` back at `1e-5`, the
+acceptance unit test, the select register/constant reuse) plus uncommitted: the
+`matmul_add` fixes (`zyx/src/codegen/tenstorrent.rs`, `tests/23_tt_lowering.rs`)
+and this file. **23/23 ttsim gates green** (`matmul_add` included),
+`cargo test --lib` = 83, changed files fmt clean.
+
+`23_tt_lowering` has 24 tests. **Only `softmax` is red** (`tt_verify: missing
+EndReader`: phase 1 bails on its reduce/loop shape, so no reader section forms).
+That is the next thing.
 
 ### The result
 
-These are tensor-graph kernels (no hand-written programs): one tile in, one tile
-out, everything else in `L0..L7`.
+Tensor-graph kernels, no hand-written programs: one tile in, one tile out,
+everything else in `L0..L7`.
 
 | kernel | replays | loads | stores |
 |---|---|---|---|
-| `sigmoid` | **1** | **1** | **1** |
-| `exp2` | **1** | **1** | **1** |
-| `log2` | **1** | **1** | **1** |
-| `sin_cos` | 1 per kernel | **1** | **1** |
+| `sigmoid` | 1 | **1** | **1** |
+| `exp2` | 1 | **1** | **1** |
+| `log2` | 1 | **1** | **1** |
+| `sin_cos` (2 kernels) | 1 each | **1** | **1** |
+| `tanh` | 1 | **1** | **1** |
+| `silu` | 1 | **1** | **1** |
+| `gelu` | 1 | **1** | **1** |
+| `elu` | 1 | **1** | **1** |
 
-Handwritten reference (metalium-rs): `sigmoid_program` 2 loads + 2 stores (it
-spills `x`), `relu`'s floor is 1 + 1. Every kernel above is at that floor with
-no `tt_lreg_alloc` split. The `sin_cos` *test* compiles **two kernels**
-(`xs.sin()`, `xs.cos()`), one replay and 1+1 each (they were 3/3 until the
-comparison-predicate fold below removed their quadrant `Bool` tiles).
+Handwritten reference (metalium-rs): `sigmoid_program` is 2 loads + 2 stores
+(it spills `x`); `relu`'s floor is 1+1. So the graph path is at or below the
+hand-written floor for every composed activation. `elu` is geohot's bar from
+`~/Dev/python/tt-tiny/README` (`self.elu()` costing what `self.relu()` costs),
+met with **no `elu` op anywhere** — it is `relu(x) - (1 - exp(x)).relu()`.
 
-### What made the difference, in one line each
+`matmul_add` (two matmuls summed in one kernel) also passes: two accumulators
+live in DST at once, which is the first multi-accumulator kernel.
 
-1. **Width, not the allocator** (`sigmoid`). The five `Select`s in `tt_exp2` (two
-   clamps + the denormal/overflow/NaN specials) kept 9 values live at a point;
-   removing them (the ML approximation the user asked for) put the fused body
-   inside eight registers, so `tt_lreg_alloc` splits nothing.
-2. **The fusion's two rules were the `exp2` blocker**, not pressure: its body
-   peaked at 5 registers against a budget of 8, yet the chain came out as two
-   row bodies, because the kernel *input* is read both before and after the
-   rounding (`t = x + magic`, `r = x - nf`) and its unpack `Copy` was emitted
-   between the two bodies -- and a cone's gap may only hold `SfpConst`/`SFPENCC`.
-   Fix (a): the segment-CSE carry guard now asks `tt_flag_effect(..) != Keep`
-   instead of "is it a const", so a preceding `SFPLOAD` no longer vetoes a carry
-   (`exp2` 4 -> 3 loads). Fix (b): a whole-tile `Unpack` in a gap is **hoisted in
-   front of the merged body** (it runs once per tile there, not per row) when no
-   part of the cone writes the tile it fills or its circular buffer; that closes
-   the cone (`exp2` 2 replays 4/2 -> 1 replay 1/1).
-3. **`tt_log2` was rebuilt on tt-metal's own algorithm.** First its specials went
-   (the `tiny`/`neg`/`inf`/NaN `Select`s, like `tt_exp2`'s): 2 replays 7/6 ->
-   1 replay 2/2. The 2/2 was one *register* split from the two `sqrt 2`
-   `Select`s that the atanh series needed. Then the series itself was replaced by
-   the LLK's `calculate_log_body` (Norbert Juffa's `logf`): `bits(x) -
-   bits(0.75)` with the mantissa cleared gives the exponent as `k << 23`,
-   `bits(x) - e` gives `m in [0.75, 1.5)`, one degree-9 Horner chain in
-   `m - 1` gives `log1p`, and `log2 x = k + log2(m)` folds the `ln2`/`log2 e`
-   round trip into one multiply. No `Select` at all, fewer live values:
-   **1 replay, 1 load, 1 store**. Accuracy is the LLK's (measured worst
-   **1.4e-7** on the gate's metric over `x in [0.01, 100]`).
-   Trap for next time: `BOp::And` is the **logical** and and types its result
-   `Bool`; the bitwise mask is `BOp::BitAnd` (both lower to `INT_AND`).
+### Why it works — six mechanisms, none of them per-activation
 
-### Activations are composed, and they fuse (new gates)
+1. **Width.** `tt_exp2`'s five `Select`s (two clamps + denormal/overflow/NaN
+   specials) kept 9 values live; dropping them (the ML approximation) put the
+   fused body inside eight lane registers, so `tt_lreg_alloc` splits nothing.
+2. **The fusion's gap rule was the `exp2` blocker, not pressure** (body peak 5,
+   budget 8). `x` is read both before and after the rounding, so its unpack
+   `Copy` was emitted between the two bodies and a cone's gap may only hold
+   `SfpConst`/`SFPENCC`. Fixes: the segment-CSE guard now asks
+   `tt_flag_effect(..) != Keep` (a `SFPLOAD` no longer vetoes a carry), and a
+   whole-tile `Unpack` in a gap is **hoisted in front of the merged body**.
+3. **`tt_log2` was rebuilt on tt-metal's `calculate_log_body`** (Norbert Juffa's
+   `logf`): `bits(x) - bits(0.75)` with the mantissa cleared is the exponent as
+   `k << 23`, `bits(x) - e` gives `m in [0.75, 1.5)`, one degree-9 Horner chain
+   in `m - 1` gives `log1p`, and `log2 x = k + log2(m)` folds the `ln2`/`log2 e`
+   round trip into one multiply. No `Select` at all. Worst **1.4e-7** on the
+   gate's metric over `x in [0.01, 100]`.
+4. **`f32(bool)` is a real conversion.** `Tensor::relu` is `cmpgt(0) * x`, so
+   the graph has `f32(bool_tile)`. A `Bool` is a **raw 1/0 word** in its tile
+   (comparison programs store `fmt: INT32`, `L6 = 1` is "a Bool's true"), so the
+   cast is int -> float even though the tile is labelled F32 — which is why
+   `tt_resolve_dst` reporting `F32 -> F32` was a red herring.
+5. **`cast(cmp, dtype) * x` -> `select(cmp, x, 0)`** in
+   `algebraic_simplifications` (a Bool is 0/1, so the product is a pick), and a
+   **single-use comparison folds into the `Select`'s predicate** in
+   `tt_lower_value` (`SFPPUSHC; SFPGT/SFPLE; SFPMOV; SFPPOPC` on the operands,
+   no Bool tile, no IEEE specials). This removed `elu`'s two register splits and
+   `sin_cos`'s quadrant-tile splits.
+6. **Register/constant reuse in the folded select**: registers are assigned per
+   *value* (`t == a` reuses `L0`), and a scalar 0/1 operand uses the hardware's
+   read-only `LREG_ZERO`/`LREG_ONE` (a move, never a tile). That is what took
+   `relu` from 2 loads to 1.
 
-Four new gates in `23_tt_lowering`, on `[-4, 4]` input: `tanh`, `silu`
-(`x*sigmoid(x)`), `gelu` (the tanh form) and `elu`. The frontend composes every
-activation from primitives, so these test the *fuser*, not a hand-written
-program:
-
-| gate | kernels | replays | loads | stores | body |
-|---|---|---|---|---|---|
-| `tanh` | 1 | 1 | 1 | 1 | 230 words |
-| `silu` | 1 | 1 | 1 | 1 | 220 words |
-| `gelu` | 1 | 1 | 1 | 1 | 272 words |
-| `elu` | 1 | 1 | **1** | **1** | 196 words |
-
-`silu` is the interesting one: `x` is used twice (once directly, once through
-the sigmoid), and it is still 1+1 -- the second use is a register carry, which
-is the segment CSE doing its job. `elu` is now 1+1 too: the same bar tt-tiny's
-README sets (`self.elu()` costing what `self.relu()` costs), with no `elu` op
-anywhere -- it is `relu(x) - (1 - exp(x)).relu()` all the way down.
-
-Getting `elu` there took two general changes, neither of them an activation
-pattern:
-
-The cast was the first blocker, and it needed a *conversion*, not a fold:
-`Tensor::elu` goes through `Tensor::relu` = `cmpgt(0) * x`, so the graph has
-`f32(bool_tile)`. A `Bool` is a **raw 1/0 word** in its tile (the comparison
-programs store with `fmt: INT32`, and `L6 = 1` is "a Bool's true"), so
-`f32(bool)` is an int -> float conversion even though the tile is labelled F32
--- which is why `tt_resolve_dst` reporting `F32 -> F32` was a red herring, and
-why no optimizer could remove it. The `Op::Cast` arm now reads the source's
-**IR** dtype *before* lowering it (a lowered value only reports its tile's
-dtype) and routes `Bool|I32 -> F32` through `tt_sfp_cast_i32_f32`; same-dtype is
-an alias to the source tile.
-
-The next blocker was **width**: after the cast fix `elu` was 1 replay but 3/3,
-because the comparison itself uses `L0..L7` (both operands, the three constants,
-the two magnitude scratches), so fusing it with `exp2` and two multiplies pushed
-the peak past eight.
-
-Both fixes are general (no activation pattern):
-
-1. **`cast(cmp, dtype) * x` -> `select(cmp, x, 0)`** in
-   `algebraic_simplifications` (2026-11-03). A Bool is 0/1, so the product is a
-   pick, and the *cast* was what forced the comparison tile to be materialised
-   for a single predicate. This is the spelling of every relu-shaped activation
-   (`relu`, `leaky_relu`, `selu`, `hard_sigmoid`, both halves of `elu`).
-   `elu`: 288 -> 258 words, still 3/3.
-2. **A single-use comparison folds into its `Select`'s predicate** (in
-   `tt_lower_value`'s `Op::Select` arm). When `cond` has one use and is a
-   comparison, the select emits the predicate *directly* on the comparison's
-   operands (`SFPPUSHC; SFPGT/SFPLE; SFPMOV; SFPPOPC`) instead of building the
-   Bool tile -- `SFPSETCC` on operands, as tt-metal's own relu does. Scalar
-   constant operands (`cmpgt(x, 0)`) are filled with `tt_fill_const`, the same
-   as the `Select` branches. The NaN/`+0` canonicalisation is not emitted: ML
-   semantics, same as `tt_exp2`/`tt_log2`.
-   `elu`: **1 replay, 1 load, 1 store, 196 words**; `sin_cos` (whose quadrant
-   selects were its two splits) also dropped to **1+1 per kernel**.
-
-What is left of `tt_sfp_compare` only runs when a `Bool` is genuinely multi-use
-(several consumers), where the tile has to exist.
-
-### The pipeline as it stands (`device_epilogue`, `autotune.rs`)
+### The pipeline (`device_epilogue`, `autotune.rs`)
 
 ```
 unfold_pows                     (in device_epilogue, for every backend)
@@ -129,129 +78,131 @@ tt_tile -> tt_unfold -> tt_reindex -> default_epilogue -> tt_dataflow_select
   -> tt_sfpu_fusion -> tt_lreg_alloc -> tt_dst_reuse -> tt_reg_sync -> verify
 ```
 
-- **`unfold_pows` is a lowering decision, so it lives in `device_epilogue`**,
-  once, for every backend (TT's `tt_unfold` then turns the resulting
-  `Exp2`/`Log2` into primitives; elsewhere `devectorize` follows). It is gone
-  from `default_epilogue`, which is now device-independent -- no exp conversion,
-  and it can be run many times during the search without re-expanding `Pow`.
+- **`unfold_pows` is a lowering decision**: once, in `device_epilogue`, for every
+  backend (TT's `tt_unfold` then turns the resulting `Exp2`/`Log2` into
+  primitives; elsewhere `devectorize` follows). It is gone from
+  `default_epilogue`, which is device-independent (no exp conversion) and can run
+  many times during the search without re-expanding `Pow`.
 - **`tt_dataflow_select` gets the minimal IR**: the TT path runs the whole
   `default_epilogue` (constant folding, LICM, algebraic simplification, CSE,
   DCE) right before it, not just CSE + DCE.
-
 - **`tt_dataflow_select`** is the phase boundary/emitter driver: pattern table ->
   `tt_sfp_*` emitters -> one `Replay` body per op.
-- **`tt_sfpu_fusion`** merges adjacent bodies into cones: every register of every
-  merged unit becomes a **virtual name (`>= 16`, `u16` space, never `8..15`)**;
-  an interior value crosses on one `SFPMOV`; the producer's store becomes
-  `SFPMOV carry <- reg` **at the store's position**; segment-aware tile CSE; a
-  demotion retry (budget 2) when a cone would not fit. The cone's feasibility
-  uses `tt_plan_splits` (same model as the allocator).
-- **`tt_lreg_alloc`** = `tt_assign_regs` (interval scan, reuse only) + the
-  **split-at-pressure fixpoint**: find the over-budget run (8 registers, 16 for
-  16-bit tiles), split one value around it (store before, reload after), rerun.
-  `tt_split_at_pressure` is mask-aware via `TtFlags`/`tt_mask_states`.
-- **`tt_dst_reuse`** allocates the 8 DST rows and now **asserts** when the file
-  is full instead of silently allocating a 9th row.
+- **`tt_sfpu_fusion`** merges adjacent bodies into cones: virtual names `>= 16`
+  (`u16` space, never `8..15`), an interior value crosses on one `SFPMOV`, the
+  producer's store becomes the carry **at the store's position**, segment-aware
+  tile CSE, demotion retry (budget 2), feasibility via `tt_plan_splits`.
+- **`tt_lreg_alloc`** = interval scan + split-at-pressure fixpoint (8 registers,
+  16 for 16-bit tiles); `tt_split_at_pressure` is mask-aware.
+- **`tt_dst_reuse`** allocates DST rows and **asserts** when the file is full.
+- **`tt_reg_sync`** adds the role seams (`Semset`/`Wait`/`Post`).
 
 ### Load-bearing invariants and bugs (do not undo)
 
-Allocator/split (each cost a bug this session):
+Allocator/split (each cost a bug):
 
-1. The split value must be **live at the peak**; dead values have huge windows and
-   loop forever (observed: 33 splits, pressure rising).
+1. The split value must be **live at the peak**; dead values have huge windows
+   and loop forever.
 2. Not read **or written** inside the window.
-3. **Defined under a full mask** (lane registers are lane-masked; stale lanes are
-   copied by a full-mask store and handed to consumers that never saw them).
-4. The store must be **strictly before the peak** (a store at the peak keeps the
-   value live there; the fixpoint loops).
-5. Both window ends full-mask (`SFPENCC` reset, `SFPSETCC`/`SFPCOMPC` mask,
-   `SFPPUSHC`/`SFPPOPC` stack).
-6. The DST file is a second budget; `tt_dst_reuse` over-allocating silently was
-   the "every value wrong" corruption.
+3. **Defined under a full mask** (lane registers are lane-masked).
+4. The store must be **strictly before the peak**.
+5. Both window ends full-mask (`SFPENCC`/`SFPSETCC`/`SFPCOMPC`/`SFPPUSHC`/`SFPPOPC`).
+6. The DST file is a second budget; over-allocating silently was the "every
+   value wrong" corruption.
 
-Fusion (from earlier sessions, still load-bearing): never virtualize `8..15`;
-carry copy at the store's position; per-part `SFPENCC` **inside** the body;
-`SFPENCC` is a predicate reset, not a scope; hand-over only when formats allow;
-coalescing must not drop an `SFPMOV` whose `Mod1` is set (log2 was off by `-2e`).
+Fusion:
 
-Fusion rules (this session, both are *semantic*, not tuning):
-
-7. **The carry guard is about the mask, not about op kinds.** Only `SFPENCC`
+7. **The carry guard is about the mask, not op kinds.** Only `SFPENCC`
    (`Reset`), `SFPSETCC`/`SFPCOMPC` (`Mask`) and `SFPPUSHC`/`SFPPOPC`
-   (`Push`/`Pop`) change the lane mask -- `tt_flag_effect` is the one place that
-   knows this. `SFPLOAD`/`SFPSTORE`/arithmetic are `Keep`; treating them as
-   flag-touching is what made `exp2` reload `nf`.
+   (`Push`/`Pop`) change the mask — `tt_flag_effect` is the one place that knows
+   this; `SFPLOAD`/`SFPSTORE`/arithmetic are `Keep`.
 8. **A tile move cannot be inlined into a row body, but it can be hoisted out of
-   one.** The gap rule (`SfpConst` + `SFPENCC` only) exists because gap ops are
-   inlined and a merged body runs once per row: a `Copy` moved inside would run
-   once per row and clobber the tile mid-body. Hoisting it *in front of* the
-   merged body keeps it once per tile and is sound exactly when no part of the
-   cone writes the tile it fills (or its circular buffer); the hoisted op has no
-   lane registers, so the body's remap must skip it. Only `Unpack` is eligible
-   (a `Pack` writes a circular buffer the cone reads).
+   one.** Only `Unpack` is eligible (a `Pack` writes a CB the cone reads);
+   hoisting is sound when no part of the cone writes the tile it fills or its CB,
+   and the body's remap must skip the hoisted op.
+9. Never virtualize `8..15`; carry copy at the store's position; per-part
+   `SFPENCC` **inside** the body (`SFPENCC` is a predicate reset, not a scope);
+   coalescing must not drop an `SFPMOV` whose `Mod1` is set (log2 was off by `-2e`).
+
+Lowering/codegen:
+
+10. **`Bool` is a raw 1/0 word**; `f32(bool)` must go through
+    `tt_sfp_cast_i32_f32`. Read the source's **IR** dtype *before*
+    `tt_resolve_dst` (a lowered value reports only its tile's dtype). Same-dtype
+    cast = alias the source tile.
+11. Scalar 0/1 operands use `LREG_ZERO`/`LREG_ONE`; a folded `Select` assigns
+    registers per value, so one value used twice is loaded once.
+12. **`SETRWC.DstVal` must be 0.** Each `MVMUL` carries its accumulator row
+    absolutely in `DstRow` and the hardware adds `DstVal` on top — with both set,
+    a second accumulator at row 64 became 66 on ttsim (`dst_row=66`). tt-metal's
+    `math_prelude` also sets `dst_val(0)`.
+13. **`ZEROACC` `CLR_ALL` is only safe with no live DST value.** Otherwise clear
+    *this* accumulator's 64 rows: eight `CLR_16` blocks at `row / 8` with
+    `UseDst32b = 0` — the recipe tt-metal measured on silicon (`step97`: one-row
+    clears invalidate earlier rows; sixteen-physical-row blocks survive).
 
 ### Dead ends (measured, do not retry)
 
 - **Scheduling the bodies** (per instruction, or per `PUSHC..POPC` scope): the
   peak sits inside a conditional and cannot be moved out; moving a scope is
-  *unsafe* because a conditional write only updates enabled lanes (order is
-  non-commutative in a way a read/write-set scheduler cannot model). Gate-broke.
-- **Cheapest / use-count spill eviction**: cascades (dead value chosen, no drop).
+  *unsafe* because a conditional write only updates enabled lanes. Gate-broke.
+- **Cheapest / use-count spill eviction**: cascades.
 - **Cone shrinking instead of splitting**: `sigmoid` 3 replays / `log2` 4 replays
-  both miscompile -- do not use "make the cone smaller" as a pressure fix.
+  both miscompile.
 - **Scheduling in `instr_sched`** (high-level topological order) does not reach
   the lowered body's pressure.
+- **"No optimizer can remove the `F32 -> F32` cast"**: correct but misleading —
+  the cast is a real `Bool -> F32` conversion; the fix is in the lowering.
+- **`tt_sink_const_splats` precision**: does not reproduce. `exp2` is **1.1e-7**
+  relative (one fp32 ulp) with the sink on, so the `1e-5` gate is permanent.
 
-### Open work, in order
+### The acceptance gate is now a test, not a measurement
 
-Closed 2026-11-03: **`tt_sink_const_splats`' precision bug does not reproduce.**
-The `exp2` gate is back at its original `1e-5` and passes with a worst relative
-error of **1.1e-7** (one fp32 ulp). The old ~5e-5 was measured on the
-pre-narrowing body, which still had the five `Select`s and two register splits;
-a truncated 16-bit constant would show >= 1.5e-5, so the sink is not spending
-precision. The sink is still on (the body's constants are `sfp_const`; 1 replay,
-1+1). Keep the `1e-5` gate permanently.
+`#[cfg(test)] mod acceptance` at the end of `zyx/src/kernel/tenstorrent.rs`
+(pure IR: no device, no public API, ~30 ms in `cargo test --lib`). It builds one
+`[32, 32]` F32 input through each of `sigmoid`, `silu`, `exp2`, `log2`, `tanh`,
+`relu`, `elu`, `gelu` with the same `custom.rs` builders the frontend uses, runs
+the real `device_epilogue` on a kernel bound to a fake TT `DeviceInfo`, and
+asserts exactly `(1 replay, 1 load, 1 store)`. Extend the `cases` array when
+adding an activation. It already caught `relu` at 2 loads.
 
-**No gates left.** The acceptance gate is in, as a **pure-IR unit test** (no
-device, no public API): `#[cfg(test)] mod acceptance` at the end of
-   `zyx/src/kernel/tenstorrent.rs`. It builds one `[32, 32]` F32 input through
-   each activation (`sigmoid`, `silu`, `exp2`, `log2`, `tanh`, `relu`, `elu`,
-   `gelu`), runs the real `device_epilogue` on a kernel bound to a fake TT
-   `DeviceInfo` (the lowering only reads `device_info().tenstorrent`), and
-   asserts exactly `(1 replay, 1 load, 1 store)`. It runs in `cargo test --lib`
-   (83 now) in ~30 ms.
+### Open work
 
-   It immediately earned its keep: `relu` came out **2 loads**, because the
-   comparison's operand and the select's branch are the same `x`, and a
-   `cmpgt(x, 0)` zero operand was a *filled DST tile*. Fixed in the folded
-   select by (a) assigning registers per **value** (`t == a` reuses `L0`, so
-   `x` is loaded once) and (b) putting a scalar **0/1** operand in the
-   hardware's read-only `LREG_ZERO`/`LREG_ONE` with a move, never a tile.
+1. **`softmax`** — the only red test in `23_tt_lowering`:
+   `tt_verify: missing EndReader`. Phase 1 (the reader publish) bails on the
+   kernel's shape, so no reader section is emitted. Diagnose with the pre-tile IR
+   (`ZYX_DEBUG=4`) and the phase-1 bail points in `tt_dataflow_select`; softmax
+   lowers to a reduce over an axis plus a loop, so expect the multi-tile/loop
+   shape to be the trigger.
+2. **Beyond the simulator** (in rough order): BF16/F16 staging — the backend is
+   F32-only and the pinned ttsim models only three 32-bit `(in, out)` DST pairs;
+   a **silicon run** (everything so far is ttsim); grid dispatch (a launch is one
+   tile today).
+3. `matmul_add`'s gate compares the sum of two TF32 accumulations, so its
+   tolerance is `2e-2` (measured worst 1.4e-2). Keep that reasoning if it moves.
 
-   What remains outside the gates is pre-existing and unrelated (`matmul_add`'s
-   `Zeroacc` guard, `softmax`'s `missing EndReader`).
-
-Done this session: the two fusion fixes, `exp2` 1/1/1, `log2`'s specials *and*
-its polynomial (1/1/1), the four activation gates, the `Bool`/identity cast
-lowering, `cast(cmp) * x` -> `select(cmp, x, 0)`, the comparison-into-predicate
-fold (`elu` and `sin_cos` now 1+1), the `exp2` gate tightened back to `1e-5`
-(worst 1.1e-7, so the sink's precision bug is closed), and the acceptance unit
-test (which then removed `relu`'s duplicate load).
 
 ### How to run things
 
 ```bash
 cd zyx && cargo build
-cd zyx && AGENT=1 cargo test --lib
+cd zyx && AGENT=1 cargo test --lib            # 83, includes the acceptance gate
+cd zyx && AGENT=1 cargo test --lib acceptance # just the 1/1 property
 cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
 cd zyx && BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
 # one gate at a time (a failed ttsim thread poisons later ones):
 TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so AGENT=1 $BIN sigmoid --exact
 ```
 
+The 23 green gates are: `log2 exp2 sin_cos sigmoid tanh silu gelu elu sum_sigmoid
+matmul_sigmoid matmul matmul_add add unary_math neg_sub_mul shared_input tiling
+transfer_roundtrip sum max sum_scalar max_scalar sum_all`. `softmax` is the one
+that fails.
+
 DST traffic per row is measured from the `ZYX_DEBUG=264` dump: count `^ sfp_load`
 / `^ sfp_store` / `^ replay`. That dump is **post-epilogue**, so it is the real
-program.
+program. The acceptance unit test does the same thing structurally, no dump
+needed — prefer it.
 
 ## TARGET DESIGN — the register/memory hierarchy and the pass pipeline
 

@@ -28,8 +28,7 @@ use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TTSfpInsn,
-    UOp,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TTSfpInsn, UOp,
 };
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
@@ -1110,7 +1109,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     // `SETRWC`'s `DstVal` is four bits, so one unit is a 32-row
                     // half-tile, not a row: a `Dst` row cannot be encoded at
                     // all. Pinned by `setrwc_names_the_accumulator_in_dst_halves`.
-                    .dst_val(row / 32)
+                    .dst_val(0)
                     .fidelity(1)
                     .encode()
                     .map_err(|e| sec.err(format!("setrwc {id:?}: {e:?}")))?;
@@ -1119,16 +1118,25 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             }
             Op::TT(TTOp::Zeroacc { mode, imm10 }) => {
                 if *mode == 3 && sec.compute_ops > 0 {
-                    // `CLR_ALL` wipes every DST row, including live SSA
-                    // values from earlier compute ops in a fused kernel.
-                    return Err(sec.err(format!(
-                        "zeroacc {id:?}: CLR_ALL after {} compute op(s) would destroy live DST rows",
-                        sec.compute_ops
-                    )));
+                    // `CLR_ALL` wipes every `Dst` row, including live SSA
+                    // values from earlier compute ops in a fused kernel (two
+                    // matmuls feeding one add, say). Clear only this
+                    // accumulator's own tile instead: 64 `Dst` rows from the
+                    // `Setrwc` base, eight F32 rows per `CLR_16` block
+                    // (`UseDst32b = 0`, block = `row / 8`). That is the recipe
+                    // tt-metal measured on silicon (`step97`: one-row clears
+                    // invalidate earlier rows; sixteen-physical-row blocks at
+                    // `dst_row / 8` survive).
+                    for block in 0..8 {
+                        let insn = tt_isa::isa::generated::encode::zeroacc(1, 0, 0, sec.acc_row / 8 + block)
+                            .map_err(|e| sec.err(format!("zeroacc {id:?}: {e:?}")))?;
+                        sec.native.push(insn.word());
+                    }
+                } else {
+                    let insn = tt_isa::isa::generated::encode::zeroacc(*mode as u32, 0, 0, *imm10)
+                        .map_err(|e| sec.err(format!("zeroacc {id:?}: {e:?}")))?;
+                    sec.native.push(insn.word());
                 }
-                let insn = tt_isa::isa::generated::encode::zeroacc(*mode as u32, 0, 0, *imm10)
-                    .map_err(|e| sec.err(format!("zeroacc {id:?}: {e:?}")))?;
-                sec.native.push(insn.word());
                 sec.last_role = 1;
             }
             Op::TT(TTOp::Mvmul { dst_row, addr_mod, flip_a, flip_b, broadcast_b }) => {
@@ -2352,8 +2360,13 @@ mod tests {
             .map(|&word| tt_isa::isa::Instruction::new(word, &tt_isa::isa::generated::defs::SETRWC))
             .filter(|insn| insn.def().mnemonic() == "SETRWC");
         let insn = setrwc.find(|insn| insn.operand("Dst") == Some(1)).expect("the accumulator pointer is in the math stream");
-        assert_eq!(insn.operand("DstVal"), Some(2));
-        // The row itself cannot be encoded: `DstVal` is 0..15.
+        // `DstVal` must stay zero: each `MVMUL` carries its accumulator row
+        // absolutely in `DstRow`, and the hardware adds `DstVal` on top (ttsim
+        // adds it raw, and a second accumulator at row 64 failed as
+        // `dst_row=66` when both encoded the base). `tt-metal`'s own
+        // `math_prelude` sets `dst_val(0)` for the same reason.
+        assert_eq!(insn.operand("DstVal"), Some(0));
+        // The row itself cannot be encoded anyway: `DstVal` is 0..15.
         assert!(tt_isa::isa::generated::encode::Setrwc::ZERO.dst(1).dst_val(64).encode().is_err());
     }
 }
