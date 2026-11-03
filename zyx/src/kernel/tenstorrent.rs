@@ -165,6 +165,237 @@ fn tt_row_regs(op: &Op) -> (Set<u16>, Set<u16>) {
     }
 }
 
+/// What an instruction does to the lane flags (`use_flags` + `lane_flags`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TtFlags {
+    Keep,
+    /// `SFPENCC`: every lane is enabled again.
+    Reset,
+    /// `SFPSETCC` / `SFPCOMPC`: a subset of the lanes is enabled.
+    Mask,
+    Push,
+    Pop,
+}
+
+fn tt_flag_effect(op: &Op) -> TtFlags {
+    use tt_isa::isa::generated::defs;
+    let Op::TT(TTOp::Sfp(insn)) = op else {
+        return TtFlags::Keep;
+    };
+    if insn.op == defs::SFPENCC.opcode() {
+        TtFlags::Reset
+    } else if insn.op == defs::SFPSETCC.opcode() || insn.op == defs::SFPCOMPC.opcode() {
+        TtFlags::Mask
+    } else if insn.op == defs::SFPPUSHC.opcode() {
+        TtFlags::Push
+    } else if insn.op == defs::SFPPOPC.opcode() {
+        TtFlags::Pop
+    } else {
+        TtFlags::Keep
+    }
+}
+
+/// The mask state before and after each instruction: `true` means every lane is
+/// enabled. A split may only store/reload at such a point, because a lane-masked
+/// store copies only the enabled lanes and a lane-masked load writes only them.
+fn tt_mask_states(effects: &[TtFlags]) -> (Vec<bool>, Vec<bool>) {
+    let mut full = false;
+    let mut stack: Vec<bool> = Vec::new();
+    let mut before = Vec::with_capacity(effects.len());
+    let mut after = Vec::with_capacity(effects.len());
+    for &e in effects {
+        before.push(full);
+        match e {
+            TtFlags::Reset => full = true,
+            TtFlags::Mask => full = false,
+            TtFlags::Push => stack.push(full),
+            TtFlags::Pop => full = stack.pop().unwrap_or(false),
+            TtFlags::Keep => {}
+        }
+        after.push(full);
+    }
+    (before, after)
+}
+
+/// Assign the lane registers to a straight-line body: intervals in, registers
+/// out, no policy. Liveness is exact (one block), so the scan is optimal and
+/// `None` means the body needs more registers than exist -- which the caller
+/// removes by splitting, not by guessing here.
+fn tt_assign_regs(body: &[(Set<u16>, Set<u16>)]) -> Option<Map<u16, u8>> {
+    let mut def: Map<u16, i64> = Map::default();
+    let mut last: Map<u16, i64> = Map::default();
+    let mut first_use: Map<u16, i64> = Map::default();
+    for (k, (reads, writes)) in body.iter().enumerate() {
+        for &r in writes {
+            def.entry(r).or_insert(k as i64);
+            last.insert(r, k as i64);
+        }
+        for &r in reads {
+            first_use.entry(r).or_insert(k as i64);
+            last.insert(r, k as i64);
+        }
+    }
+    for (&r, &use_at) in &first_use {
+        if def.get(&r).is_none_or(|&d| use_at < d) {
+            def.insert(r, -1);
+        }
+    }
+    let mut order: Vec<u16> = last.keys().copied().filter(|r| *r >= 16).collect();
+    order.sort_by_key(|r| (def.get(r).copied().unwrap_or(-1), *r));
+    let mut assign: Map<u16, u8> = Map::default();
+    let mut active: Vec<(u16, u8, i64)> = Vec::new();
+    for r in order {
+        let start = def.get(&r).copied().unwrap_or(-1);
+        let end = last.get(&r).copied().unwrap_or(start);
+        active.retain(|&(_, _, l)| l >= start);
+        let used: u16 = active.iter().fold(0, |m, &(_, p, _)| m | 1u16 << p);
+        let p = (0..8u8).find(|p| used & (1u16 << p) == 0)?;
+        assign.insert(r, p);
+        active.push((r, p, end));
+    }
+    Some(assign)
+}
+
+/// The value to split and the window to split it over, as `(name, a, b)`:
+/// store it before `a`, reload it after `b`. One store and one reload take it
+/// out of the register file across the body's over-budget run, instead of one
+/// reload per use.
+///
+/// Constraints, each of which cost a bug to find:
+/// - the value must be **live at the peak** (a dead value cannot lower it);
+/// - it must not be read or written anywhere in the window;
+/// - it must be **defined under a full mask**, so every lane is valid;
+/// - the store must be **strictly before the peak** (a store at the peak keeps
+///   the value live there and the fixpoint would loop);
+/// - the window ends must be **full-mask** points (a lane-masked store/load is
+///   not a bit-exact move).
+fn tt_split_at_pressure(
+    body: &[(Set<u16>, Set<u16>)],
+    before: &[bool],
+    after: &[bool],
+    budget: usize,
+) -> Option<(u16, usize, usize)> {
+    let n = body.len();
+    let mut def: Map<u16, i64> = Map::default();
+    let mut last: Map<u16, i64> = Map::default();
+    let mut first_use: Map<u16, i64> = Map::default();
+    for (k, (reads, writes)) in body.iter().enumerate() {
+        for &r in writes {
+            def.entry(r).or_insert(k as i64);
+            last.insert(r, k as i64);
+        }
+        for &r in reads {
+            first_use.entry(r).or_insert(k as i64);
+            last.insert(r, k as i64);
+        }
+    }
+    for (&r, &use_at) in &first_use {
+        if def.get(&r).is_none_or(|&d| use_at < d) {
+            def.insert(r, -1);
+        }
+    }
+    let names: Vec<u16> = last.keys().copied().filter(|r| *r >= 16).collect();
+    let counts: Vec<usize> = (0..n as i64)
+        .map(|k| {
+            names.iter().filter(|r| def.get(r).copied().unwrap_or(-1) <= k && last.get(r).copied().unwrap_or(-1) >= k).count()
+        })
+        .collect();
+    let (peak, pressure) = counts.iter().enumerate().max_by_key(|(_, c)| **c)?;
+    if *pressure <= budget {
+        return None;
+    }
+    let (mut ra, mut rb) = (peak, peak);
+    while ra > 0 && counts[ra - 1] > budget {
+        ra -= 1;
+    }
+    while rb + 1 < n && counts[rb + 1] > budget {
+        rb += 1;
+    }
+    let mut best: Option<(usize, u16, usize, usize)> = None; // (coverage, name, a, b)
+    for &r in &names {
+        let d = def.get(&r).copied().unwrap_or(-1);
+        let l = last.get(&r).copied().unwrap_or(-1);
+        if d < 0 || !before.get(d as usize).copied().unwrap_or(false) {
+            continue;
+        }
+        if d > peak as i64 || l < peak as i64 {
+            continue;
+        }
+        let uses: Vec<usize> = (0..n).filter(|&k| body[k].0.contains(&r) || body[k].1.contains(&r)).collect();
+        if uses.iter().any(|&k| k >= ra && k <= rb) {
+            continue;
+        }
+        let prev = uses.iter().copied().filter(|&k| k < ra).max().unwrap_or(d as usize);
+        let next = uses.iter().copied().filter(|&k| k > rb).min().unwrap_or(n);
+        let Some(a) = (prev + 1..=ra).find(|&k| before.get(k).copied().unwrap_or(false)) else {
+            continue;
+        };
+        let Some(b) = (rb..next).rev().find(|&k| after.get(k).copied().unwrap_or(false)) else {
+            continue;
+        };
+        if a >= peak || b < peak {
+            continue;
+        }
+        let cover = b - a + 1;
+        if best.is_none_or(|(c, _, _, _)| cover > c) {
+            best = Some((cover, r, a, b));
+        }
+    }
+    best.map(|(_, name, a, b)| (name, a, b))
+}
+
+/// Simulate the split loop on an abstract body: find the over-budget run, split
+/// one value around it, repeat until the body fits. Returns the words the
+/// splits add, or `None` when more than `max_splits` would be needed (or no
+/// split can lower the peak). The fusion uses this to decide whether a cone is
+/// worth keeping before any op is touched.
+fn tt_plan_splits(body: &[(Set<u16>, Set<u16>)], effects: &[TtFlags], budget: usize, max_splits: usize) -> Option<usize> {
+    let mut body: Vec<(Set<u16>, Set<u16>)> = body.to_vec();
+    let mut effects: Vec<TtFlags> = effects.to_vec();
+    let mut next = body.iter().flat_map(|(r, w)| r.iter().chain(w)).copied().filter(|r| *r >= 16).max().map_or(16, |m| m + 1);
+    let mut added = 0usize;
+    for splits in 0..=max_splits {
+        let (before, after) = tt_mask_states(&effects);
+        let Some((name, a, b)) = tt_split_at_pressure(&body, &before, &after, budget) else {
+            // No split left: feasible only if the body already fits.
+            return tt_assign_regs(&body).is_some().then_some(added);
+        };
+        if splits == max_splits {
+            return None;
+        }
+        // Simulate: store before `a`, reload after `b`, later uses renamed.
+        let fresh = next;
+        next += 1;
+        let mut grown: Vec<(Set<u16>, Set<u16>)> = Vec::with_capacity(body.len() + 2);
+        let mut grown_effects: Vec<TtFlags> = Vec::with_capacity(effects.len() + 2);
+        for (i, (reads, writes)) in body.iter().enumerate() {
+            if i == a {
+                grown.push((Set::from_iter([name]), Set::default()));
+                grown_effects.push(TtFlags::Keep);
+            }
+            let (mut r, mut w) = (reads.clone(), writes.clone());
+            if i > b {
+                if r.remove(&name) {
+                    r.insert(fresh);
+                }
+                if w.remove(&name) {
+                    w.insert(fresh);
+                }
+            }
+            grown.push((r, w));
+            grown_effects.push(effects[i]);
+            if i == b {
+                grown.push((Set::default(), Set::from_iter([fresh])));
+                grown_effects.push(TtFlags::Keep);
+            }
+        }
+        body = grown;
+        effects = grown_effects;
+        added += 2;
+    }
+    None
+}
+
 /// Linear-scan allocation with spilling: the classic block-local algorithm
 /// (Poletto/Sarkar, LLVM's `RegAllocLinearScan`). Intervals are exact because a
 /// row body is one straight-line block; at each start the active list expires
@@ -1043,28 +1274,25 @@ impl Kernel {
     }
 
     /// `2^x` by `exp_program`: the reduction and polynomial of `e^r`, the
-    /// exponent assembled into the result's bit pattern. `x < -126` is `+0`
-    /// (a denormal, which the unit's arithmetic flushes), `x >= 128` is
-    /// `+inf`, a NaN stays one.
+    /// exponent assembled into the result's bit pattern.
+    ///
+    /// No `Select` anywhere: the clamps and the three specials of the exact
+    /// version (denormal -> +0, overflow -> +inf, NaN) are dropped as an ML
+    /// approximation (tt-metal's exp2 clamps with `vec_min_max`; the SFPU has
+    /// no `Min`, and a conditional clamp is exactly the wide form being
+    /// removed). Removing five selects removes the SSA values that kept the
+    /// fused body wide.
     fn tt_exp2(&mut self, at: OpId, x: OpId) -> OpId {
         let konst = |k: &mut Kernel, v: f32| k.insert_before(at, Op::Const(Constant::new(v)));
         let bin = |k: &mut Kernel, x: OpId, y: OpId, bop: BOp| k.insert_before(at, Op::Binary { x, y, bop });
-        let sel = |k: &mut Kernel, cond: OpId, if_true: OpId, if_false: OpId| {
-            k.insert_before(at, Op::Select { cond, if_true, if_false })
-        };
         let magic = konst(self, 12_582_912.0); // 1.5 * 2^23
-        let lo = konst(self, -126.0);
-        let hi = konst(self, 128.0);
-        // Clamp only the reduction's input; the selects below restore the
-        // specials, so the clamped path's value never escapes.
-        let over = bin(self, x, hi, BOp::Cmpgt);
-        let xc = sel(self, over, hi, x);
-        let under = bin(self, xc, lo, BOp::Cmplt);
-        let xc = sel(self, under, lo, xc);
-        // `n = round(xc)` by the magic constant, `r = xc - n` exactly.
-        let t = bin(self, xc, magic, BOp::Add);
+        // `n = round(x)` by the magic constant, `r = x - n` exactly. No clamp:
+        // the magic rounding is exact for |x| < 2^22, and the ML range is far
+        // inside it. Out-of-range inputs saturate through the exponent add
+        // (wrapping past `f32::MAX` is the one accepted approximation).
+        let t = bin(self, x, magic, BOp::Add);
         let nf = bin(self, t, magic, BOp::Sub);
-        let r = bin(self, xc, nf, BOp::Sub);
+        let r = bin(self, x, nf, BOp::Sub);
         // `2^r = e^(r ln 2)`, `exp_program`'s Horner form.
         let ln2 = konst(self, std::f32::consts::LN_2);
         let s = bin(self, r, ln2, BOp::Mul);
@@ -1086,17 +1314,7 @@ impl Kernel {
         let c23 = self.insert_before(at, Op::Const(Constant::new(23i32)));
         let n23 = bin(self, n, c23, BOp::BitShiftLeft);
         let scale = bin(self, bits, n23, BOp::Add);
-        let base = self.insert_before(at, Op::Bitcast { x: scale, dtype: DType::F32 });
-        // The specials, each its own lanes.
-        let zero = konst(self, 0.0);
-        let small = bin(self, x, lo, BOp::Cmplt);
-        let out = sel(self, small, zero, base);
-        let inf = konst(self, f32::INFINITY);
-        let large = bin(self, x, hi, BOp::Cmpge);
-        let out = sel(self, large, inf, out);
-        // A NaN input stays that NaN (its own payload and sign).
-        let is_nan = bin(self, x, x, BOp::NotEq);
-        sel(self, is_nan, x, out)
+        self.insert_before(at, Op::Bitcast { x: scale, dtype: DType::F32 })
     }
 
     /// `log2 x` by `log_program`: the exponent and mantissa by the bit form of
@@ -3880,6 +4098,7 @@ impl Kernel {
                     // space: it is what decides whether this cone fits the
                     // eight registers.
                     let mut shadow: Vec<(Set<u16>, Set<u16>)> = Vec::new();
+                    let mut shadow_flags: Vec<TtFlags> = Vec::new();
                     for u in s..=end {
                         live.retain(|(_, _, last)| *last >= u);
                         total += words[u];
@@ -3964,29 +4183,37 @@ impl Kernel {
                             .collect()
                     };
                     for u in s..=end {
+                        // Every part starts with a flags reset in the emitted
+                        // body (the fusion inserts one where the gap has none).
+                        shadow_flags.push(TtFlags::Reset);
                         if u > s {
                             for &g in &ops[units[u - 1].1..units[u].0] {
                                 if let Op::TT(TTOp::SfpConst(c)) = self.at(g) {
                                     let to = maps[u][usize::from(c.reg)];
                                     let to = if to == u16::MAX { u16::from(c.reg) } else { to };
                                     shadow.push((Set::default(), Set::from_iter([to])));
+                                    shadow_flags.push(TtFlags::Keep);
                                 }
                             }
                         }
                         for &op in &ops[units[u].0 + 1..units[u].1] {
                             if let Some(&(_, src, dst)) = hand.iter().find(|(o, _, _)| *o == op) {
                                 shadow.push((Set::from_iter([src]), Set::from_iter([dst])));
+                                shadow_flags.push(TtFlags::Keep);
                                 continue;
                             }
                             if let Some(&(_, src, dst)) = carry_over.iter().find(|(o, _, _)| *o == op) {
                                 shadow.push((Set::from_iter([src]), Set::from_iter([dst])));
+                                shadow_flags.push(TtFlags::Keep);
                                 continue;
                             }
                             let (reads, writes) = tt_row_regs(self.at(op));
                             shadow.push((ren(&reads, &maps[u]), ren(&writes, &maps[u])));
+                            shadow_flags.push(tt_flag_effect(self.at(op)));
                             // The tile carry's copy sits at the load's position.
                             if let Some(&(_, src, carry)) = cse_setup.iter().find(|(o, _, _)| *o == op) {
                                 shadow.push((Set::from_iter([src]), Set::from_iter([carry])));
+                                shadow_flags.push(TtFlags::Keep);
                             }
                         }
                     }
@@ -3999,7 +4226,7 @@ impl Kernel {
                     if next > 256 {
                         break None;
                     }
-                    if let Some((added, _spills)) = tt_plan_spills(&shadow, FUSE_SPILL_LIMIT) {
+                    if let Some(added) = tt_plan_splits(&shadow, &shadow_flags, 8, FUSE_SPILL_LIMIT) {
                         // The allocator will insert those stores/loads; they are
                         // budgeted apart from `total`, which must stay the
                         // emitted body's exact length.
@@ -4162,10 +4389,11 @@ impl Kernel {
                 body.push(cur);
                 cur = self.next_op(cur);
             }
-            // Allocate, spill what does not fit, and allocate again. A spilled
-            // name gets no register: every definition stores it to its own DST
-            // tile and every use reloads it into a fresh short-lived name, so
-            // the next scan sees the pressure it really has.
+            // Allocate with reuse; wherever the body still needs more than the
+            // register budget, split one value around that over-budget run
+            // (store before it, reload after it) and allocate again, until the
+            // body fits. One pair per run, not one reload per use.
+            let budget = if dtype.bit_size() > 16 { 8 } else { 16 };
             let mut next = body
                 .iter()
                 .flat_map(|&op| {
@@ -4175,60 +4403,47 @@ impl Kernel {
                 .filter(|r| *r >= 16)
                 .max()
                 .map_or(16, |m| m + 1);
-            let mut spilled = 0usize;
+            let mut splits = 0usize;
             let assign = loop {
                 let regs: Vec<(Set<u16>, Set<u16>)> = body.iter().map(|&op| tt_row_regs(self.at(op))).collect();
-                let Some((assign, spills)) = tt_alloc_spill(&regs, ASSIGN_SPILL_LIMIT) else {
-                    todo!("tt_lreg_alloc: a body of {} ops needs more than {ASSIGN_SPILL_LIMIT} spills", body.len());
+                let effects: Vec<TtFlags> = body.iter().map(|&op| tt_flag_effect(self.at(op))).collect();
+                let (before, after) = tt_mask_states(&effects);
+                let Some((name, a, b)) = tt_split_at_pressure(&regs, &before, &after, budget) else {
+                    break tt_assign_regs(&regs).unwrap_or_else(|| {
+                        todo!(
+                            "tt_lreg_alloc: body of {} ops still does not fit {budget} registers after {splits} splits",
+                            body.len()
+                        )
+                    });
                 };
-                if spills.is_empty() {
-                    break assign;
+                splits += 1;
+                if splits > ASSIGN_SPILL_LIMIT {
+                    todo!("tt_lreg_alloc: split budget exhausted after {splits} splits");
                 }
-                for name in spills {
-                    spilled += 1;
-                    if spilled > ASSIGN_SPILL_LIMIT {
-                        todo!("tt_lreg_alloc: spill budget exhausted after {spilled} spills");
-                    }
-                    let tile = self.tt_new_dst(dtype, prologue);
-                    let mut grown: Vec<OpId> = Vec::with_capacity(body.len() * 2);
-                    for &op in &body {
-                        let (reads, writes) = tt_row_regs(self.at(op));
-                        let read = reads.contains(&name);
-                        let write = writes.contains(&name);
-                        if !read && !write {
-                            grown.push(op);
-                            continue;
-                        }
-                        let mut reg = name;
-                        if read {
-                            // Reload into a fresh name: it lives for this one
-                            // instruction, so it never adds pressure.
-                            let fresh = next;
-                            next += 1;
-                            if fresh > 255 {
-                                todo!("tt_lreg_alloc: out of register names for reloads");
-                            }
-                            let load = self.insert_before(
-                                op,
-                                Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: tile, at: 0, reg: fresh as u8, fmt: INT32 }))),
-                            );
-                            grown.push(load);
-                            tt_row_rename(&mut self.ops[op].op, name as u8, fresh as u8);
-                            reg = fresh;
-                        }
-                        grown.push(op);
-                        if write {
-                            // A read-modify-write stores the value it just
-                            // wrote; a plain definition stores its own register.
-                            let store = self.insert_after(
-                                op,
-                                Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot: tile, at: 0, reg: reg as u8, fmt: INT32 }))),
-                            );
-                            grown.push(store);
-                        }
-                    }
-                    body = grown;
+                let fresh = next;
+                next += 1;
+                if fresh > 255 {
+                    todo!("tt_lreg_alloc: out of register names for reloads");
                 }
+                let tile = self.tt_new_dst(dtype, prologue);
+                let store = self.insert_before(
+                    body[a],
+                    Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot: tile, at: 0, reg: name as u8, fmt: INT32 }))),
+                );
+                let load = self.insert_after(
+                    body[b],
+                    Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: tile, at: 0, reg: fresh as u8, fmt: INT32 }))),
+                );
+                for &op in &body[b + 1..] {
+                    tt_row_rename(&mut self.ops[op].op, name as u8, fresh as u8);
+                }
+                let mut grown: Vec<OpId> = Vec::with_capacity(body.len() + 2);
+                grown.extend_from_slice(&body[..a]);
+                grown.push(store);
+                grown.extend_from_slice(&body[a..=b]);
+                grown.push(load);
+                grown.extend_from_slice(&body[b + 1..]);
+                body = grown;
             };
             if assign.is_empty() {
                 id = cur;
@@ -4733,6 +4948,15 @@ impl Kernel {
         let phys = if let Some(i) = free.iter().position(|(d, _)| *d == dtype) {
             free.remove(i).1
         } else {
+            // The DST file is 8 rows (16 for 16-bit tiles). Allocating past it
+            // would write outside the file: a compile error, not silent extra
+            // state.
+            let budget = if dtype.bit_size() > 16 { 8 } else { 16 };
+            let rows = physical.values().copied().collect::<Set<OpId>>().len();
+            assert!(
+                rows < budget,
+                "tt_dst_reuse: the register file is full ({rows} of {budget} rows) and {logical:?} needs another"
+            );
             self.tt_new_dst(dtype, prologue)
         };
         physical.insert(logical, phys);
