@@ -1,12 +1,13 @@
 ## HANDOFF (2026-11-03) — elementwise parity: sigmoid/exp2/log2 at 1 load + 1 store
 
-**Tree state:** uncommitted changes in `zyx/src/kernel/tenstorrent.rs` (the two
-fusion fixes below + `tt_log2`'s specials and its new polynomial),
-`zyx/src/kernel/autotune.rs` (`unfold_pows` moved into `device_epilogue`, whole
-`default_epilogue` before `tt_dataflow_select`), `zyx/tests/23_tt_lowering.rs`
-(the four activation gates) and this file. 21 of 22 ttsim gates green (`elu` is
-the red bug doc below), `cargo test --lib` = 82, changed files fmt clean.
-Committing partial state is allowed (the user squashes later).
+**Tree state:** committed at `78878bca` (which carries the fusion fixes, the
+`log2` rewrite, the `unfold_pows` move and the activation gates) plus one
+uncommitted change: the `Bool`/identity cast lowering in
+`zyx/src/kernel/tenstorrent.rs`. 22/22 of the ttsim gates listed under "How to
+run things" are green, `cargo test --lib` = 82, changed files fmt clean.
+(`23_tt_lowering` has 24 tests; `matmul_add` and `softmax` fail at HEAD too --
+`Zeroacc` CLR_ALL with live DST rows, and `missing EndReader` -- so they are
+pre-existing, not gates.)
 
 ### The result
 
@@ -69,25 +70,29 @@ program:
 | `tanh` | 1 | 1 | 1 | 1 | 230 words |
 | `silu` | 1 | 1 | 1 | 1 | 220 words |
 | `gelu` | 1 | 1 | 1 | 1 | 272 words |
-| `elu` | -- | -- | -- | -- | **blocked** |
+| `elu` | 1 | 1 | 3 | 3 | 288 words |
 
 `silu` is the interesting one: `x` is used twice (once directly, once through
 the sigmoid), and it is still 1+1 -- the second use is a register carry, which
 is the segment CSE doing its job.
 
-`elu` does not lower yet. `Tensor::elu` goes through `Tensor::relu`, which is
-`cmpgt(0) * x`, so the graph contains `f32(bool_tile)`. By the time it reaches
-`tt_lower_value` the Bool has been materialised in an F32 tile, so the `Cast`
-resolves to `F32 -> F32` and hits the `todo!()` in the `Op::Cast` arm
-(`tenstorrent.rs:1969`, "cast F32 -> F32 has no native row-op program").
+`elu` lowers now, but pays **3 loads / 3 stores** (two register splits) instead
+of 1+1. The cast was the blocker, and it needed a *conversion*, not a fold:
+`Tensor::elu` goes through `Tensor::relu` = `cmpgt(0) * x`, so the graph has
+`f32(bool_tile)`. A `Bool` is a **raw 1/0 word** in its tile (the comparison
+programs store with `fmt: INT32`, and `L6 = 1` is "a Bool's true"), so
+`f32(bool)` is an int -> float conversion even though the tile is labelled F32
+-- which is why `tt_resolve_dst` reporting `F32 -> F32` was a red herring, and
+why no optimizer could remove it. The `Op::Cast` arm now reads the source's
+**IR** dtype *before* lowering it (a lowered value only reports its tile's
+dtype) and routes `Bool|I32 -> F32` through `tt_sfp_cast_i32_f32`; same-dtype is
+an alias to the source tile.
 
-**No optimizer can remove it**: the IR cast is `Bool -> F32`, and `F32 -> F32` is
-only what `tt_resolve_dst` reports for the *tile* the Bool already lives in
-(comparisons write 0.0/1.0 into an F32 DST tile). Running `default_epilogue`
-before `tt_dataflow_select` (which the TT path now does) leaves it untouched --
-verified. The fix is in the lowering: a same-tile-dtype cast is a remap, and the
-`Bool` case should be named explicitly. The gate is left **red on purpose** as the
-bug doc.
+The remaining 3/3 is **width**, not fusion: the comparison sequence itself uses
+`L0..L7` (both operands, the three constants, the two magnitude scratches), so
+fusing it with `exp2` and the two `relu` multiplies pushes the peak past eight.
+A one-instruction `relu`/`max(x,0)` kind (the SFPU has `LEAKY_RELU`) would
+remove it; the frontend's `cmpgt(0) * x` shape is what the pattern table sees.
 
 ### The pipeline as it stands (`device_epilogue`, `autotune.rs`)
 
@@ -172,11 +177,13 @@ Fusion rules (this session, both are *semantic*, not tuning):
 
 ### Open work, in order
 
-1. **`elu` is blocked by a no-op `Cast`** (see the activation table above):
-   `tt_lower_value`'s `Op::Cast` arm has no `F32 -> F32` case, and the frontend's
-   `relu` (`cmpgt(0) * x`) produces exactly that after the Bool is materialised in
-   an F32 tile. Tiny fix, but it blocks `elu`, `relu`, `leaky_relu`, `selu` and
-   anything else composing `relu`.
+1. **`elu`'s 3 loads / 3 stores are the comparison's width.** The cast lowering
+   is fixed, so `elu` (and `relu`, `leaky_relu`, `selu`, `hard_sigmoid`) lower
+   and fuse to one body, but `tt_sfp_compare` needs `L0..L7` by itself, so the
+   fused `elu` peaks over eight and `tt_lreg_alloc` splits twice. Direction: a
+   one-instruction `relu` SFPU kind (`LEAKY_RELU` with `0`), or a narrower
+   comparison (fewer live constants), or a `max(x,0)` kind in the pattern table.
+   Do not "fix" it by shrinking the cone.
 2. **`sin_cos`'s cost is pressure, not fusion.** (Corrected -- the old note said
    "2 replays"; it is **two kernels**, `xs.sin()` and `xs.cos()`, one replay
    each.) Each kernel has **two register splits** (3 loads / 3 stores): e.g. the

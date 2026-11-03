@@ -1961,12 +1961,30 @@ impl Kernel {
                 return self.tt_materialize(id, dtype, slot, lower);
             }
             Op::Cast { x, dtype } => {
+                // The source's *IR* dtype is what the cast means, and it must
+                // be read **before** `tt_resolve_dst`: that lowers `x` in
+                // place, and a lowered value reports its tile's dtype (a
+                // comparison's tile is labelled F32 and holds the raw word).
+                //
+                // A `Bool` is a raw 1/0 word there, not 1.0/0.0 -- the
+                // comparison programs store with `fmt: INT32` and `L6 = 1`
+                // is "a Bool's true" -- so `f32(bool)` (`Tensor::relu` is
+                // `cmpgt(0) * x`) is a real int -> float conversion, even
+                // though nothing about the tile says so.
+                let src = self.dtype(x);
                 let (from, a) = self.tt_resolve_dst(x, id, lower)?;
+                if src == dtype {
+                    // Identity: the result *is* the source tile. Recording it
+                    // in `materialized` resolves every later use to that tile,
+                    // and the now-dead `Cast` goes with the DCE below.
+                    lower.materialized.insert(id, a);
+                    return Some((dtype, a));
+                }
                 let slot = self.tt_new_dst(dtype, lower.prologue);
-                let mut ops = match (from, dtype) {
-                    (DType::I32, DType::F32) => self.tt_sfp_cast_i32_f32(a, slot),
+                let mut ops = match (src, dtype) {
+                    (DType::I32 | DType::Bool, DType::F32) => self.tt_sfp_cast_i32_f32(a, slot),
                     (DType::F32, DType::I32) => self.tt_sfp_cast_f32_i32(a, slot),
-                    _ => todo!("cast {from:?} -> {dtype:?} has no native row-op program"),
+                    _ => todo!("cast {src:?} -> {dtype:?} has no native row-op program (tile {from:?})"),
                 };
                 let last = ops.pop().expect("the sequence is never empty");
                 for op in ops {
