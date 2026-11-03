@@ -107,68 +107,245 @@ the pipeline above exists.
   hardware's fixed constants (never remapped), `>= 16` virtual until allocation;
   codegen must assert no virtual survives.
 
-**Step 2 (lreg virtual space + allocator) is IN the tree and green.** All 18
-ttsim gates pass, `cargo test --lib` = 78, fmt clean.
+## HANDOFF (2026-11-03, eighth pass) — the fusion barrier was the L1 round trip
 
-What it does now:
+**Tree state:** uncommitted in `AGENTS.md`, `NOTES.md`,
+`zyx/src/kernel/tenstorrent.rs`. 18/18 ttsim gates green, `cargo test --lib` =
+78, fmt clean. The user commits.
 
-- `tt_sfpu_fusion` gives every register of every merged unit a **fresh virtual**
-  (`>= 16`; `8..15` are the hardware's read-only constants and are never
-  touched). An interior value crosses a body on one `SFPMOV`; the producer's
-  store is replaced by `SFPMOV carry <- reg` **at the store's position** (not
-  read at body end), and the consumer's load by `SFPMOV dst <- carry`.
-- `tt_lreg_alloc` (registered right after the fusion in `device_epilogue`)
-  linear-scans `(def, last_use)` per virtual into `L0..L7` on each straight-line
-  row body, drops `SFPMOV x -> x`, and recomputes each `Replay`'s length.
-- Feasibility is the *same* scan: `tt_alloc_regs` is one free function used
-  twice -- the fusion builds the body it is about to emit in virtual space
-  (`shadow`) and forms a shorter cone when it would not fit; the allocator
-  re-runs it on the real body. Nine values live at once is still a hard error
-  (no spilling yet).
+### What was measured before touching anything
 
-Six bugs were found and fixed on the way; all are load-bearing, do not undo:
+Temporary counters (removed again) at every `tt_fuse_cone` refusal, on the four
+measured kernels:
 
-1. **`8..15` must never be virtualized.** `LREG_ZERO` (9) / `LREG_ONE` (10) are
-   in a body's read mask; renaming them makes every `1.0` read an unwritten
-   register (`exp2` miscompiles everywhere).
-2. **Virtual numbers must not restart per merge.** A body an earlier merge
-   already virtualized keeps its numbers, so a new cone starts above the highest
-   one in it.
-3. **The carry copy belongs at the store's position** (see above). Reading the
-   register at body end is wrong: a unit may rewrite it after the store.
+| reason | sigmoid | log2 | sin_cos | exp2 |
+|---|---|---|---|---|
+| `tt_alloc_regs` = None | 0 | 0 | 0 | 0 |
+| name exhaustion (`next >= 128`) | 0 | 0 | 0 | 0 |
+| gap holds something else | 9 | 411 | 432 | 5 |
+
+So **spilling (the old item 1) never triggers**: the limiter was not register
+pressure. The gap offender is always a `TT(Copy { .., bytes: 4096 })`, i.e. the
+pack/unpack pair `tt_materialize` inserts for a value with more than one use.
+
+### The fix (in the tree)
+
+`tt_reclaim_round_trips()` now runs at the **top of `tt_sfpu_fusion`**, before
+sinking constants and before any cone is tried. It used to run only inside
+`tt_dst_reuse`, i.e. *after* fusion, so every materialised value was a
+`Copy`-shaped wall between two bodies and was refused as a gap. This is the
+target design's pass order (dst allocation = step 3, grouping = step 5) and the
+old order contradicted it. `tt_dst_reuse` still calls it again afterwards;
+removing an interior store there can make a new pair reclaimable.
+
+### Measured after (DST accesses per row; same method as before)
+
+| kernel | replays | loads | stores | before (seventh pass) |
+|---|---|---|---|---|
+| `sigmoid` | 2 | **15** | **8** | 7 / 25 / 10 |
+| `exp2` | 3 | **13** | **6** | 6 / 22 / 7 |
+| `log2` | 3 | **18** | **9** | 16 / 39 / 19 |
+| `sin_cos` | 4 | **26** | **18** | 18 / 59 / 27 |
+
+`sigmoid`'s committed-pass baseline was 21 / 36 / 21, so it is now ~2.4x fewer
+loads and ~2.6x fewer stores. `sin_cos`, the regression from the seventh pass,
+is now the biggest winner.
+
+### Design A is in the tree (name space + liveness packing)
+
+The blocker is gone, implemented as design A:
+
+- The register model is a `Set<u16>` (`tt_sfp_regs`, `tt_row_regs`), not a
+  `u128` bit mask: no 127-name encoding limit and no bit-twiddling.
+- `tt_fuse_cone` numbers every touched register of every unit in a `u16`
+  temporary space (as many names as the cone needs), builds the body's shadow
+  there, and then `tt_pack_reg_names` packs the temporaries into the ISA's 8-bit
+  register field **by liveness**: a name is reused once its `def -> last use`
+  interval ends. The emitted body uses as many names as it has values live at
+  once (~10), not the sum over its units.
+- `tt_lreg_alloc` now calls the same `tt_alloc_regs` scan (it used to duplicate
+  it) and remaps through `tt_row_remap`, which looks each operand up once so no
+  rename can chain (needed because both spaces are `>= 16` now).
+- Emitted names are still `u8` (ISA field); only a body with >240 *simultaneous*
+  values would be refused, which spilling should remove.
+
+One more condition relaxed in the same pass: a hand-over is bit-equal when the
+producer's store is `INT32` (raw copy) even if the loads use another format. The
+old rule demanded every format match. That is safe by construction: `SFPLOAD`
+copies tile bits in both formats; only an `FP32` *store* transforms (flushes
+denormals). `FP32` store -> `INT32` load is still refused (a register hand-over
+would skip the flush).
+
+### Measured now (per row)
+
+| kernel | replays | loads | stores | eighth-pass start |
+|---|---|---|---|---|
+| `sigmoid` | **1** | **9** | **3** | 2 / 15 / 8 |
+| `exp2` | 2 | **9** | **3** | 3 / 13 / 6 |
+| `log2` | 2 | **16** | **7** | 3 / 18 / 9 |
+| `sin_cos` | 2 | **10** | **8** | 4 / 26 / 18 |
+
+Handwritten reference (metalium-rs, per row group) is 1/1 for `relu` and 2/2 for
+`sigmoid` (input load, spill store, spill load, output store). Note metalium-rs
+has **no general chain fuser** (B13b is add+relu only); a composed `elu` there is
+N kernels, N launches, N L1 round trips. That is the baseline zyx must beat, and
+the per-op handcoded programs are the budget for the *inside* of one body.
+
+### Why sigmoid is still 9/3, not 2/2
+
+All 9 loads are the **same input slot**, re-read by different units: the fusion
+has no producer inside the cone for a tile written by the unpack copy, so each
+unit that needs `x` loads it again. I tried a tile-read CSE (first load copies
+to a carry at the load's position, later loads become `SFPMOV`): it cut
+`sin_cos` loads 10->8 but **regressed `log2`** (lane 16 `-inf`) and, worse, it
+raised register pressure so the feasibility check split the cone into 4 replays
+instead of 2. Reverted; the code is not in the tree.
+
+The two conditions for CSE that the experiment exposed, which the next attempt
+must handle:
+
+1. **Spilling first.** Keeping `x` live across the whole body costs a register,
+   and without a spill the cone shrinks (more replays = worse than the loads it
+   saves). The right spill for this pipeline is not a new mechanism: **demote an
+   interior carry back to its tile** (leave the unit's store in place and let the
+   consumer load from the tile, as today). That keeps one body and costs exactly
+   the handwritten spill pair. Implement it as a retry inside `tt_fuse_cone`:
+   if `tt_alloc_regs` says the cone does not fit, pick the interior value with
+   the longest live range, remove it from `carry_over`, rebuild; repeat.
+2. **Lane flags.** A load is lane-masked (as is `SFPMOV`), so a tile carry is
+   complete for every lane only when the producer's load runs with the flags
+   reset. The experiment's guard (only constants/`SFPENCC` before the load) is a
+   candidate, but the `log2` failure was not proven to be the flag case, so
+   verify independently.
+
+### Status of the old next steps
+
+1. **Spill** — still `todo!()` in `tt_lreg_alloc` and still inert, because the
+   fusion shrinks cones instead. The demotion retry above is the version this
+   pipeline needs, and it is the prerequisite for the tile-read CSE.
+2. **Acceptance gate** — still missing, and it should assert absolute numbers
+   (relu 1/1, sigmoid 2/2, one replay), not a ratio. `sigmoid` is at 1 replay /
+   9 / 3 now.
+3. **Name space** — done (above). Nothing else to do here unless a body ever
+   needs >240 simultaneously live values.
+4. `tt_sink_const_splats` is still on and still needed; it runs right after
+   reclaim.
+
+Keep the practice: all 18 gates one at a time after any fusion/allocator change,
+then re-measure the DST table.
+
+## HANDOFF (2026-11-02, seventh pass) — virtual registers are IN, all gates green
+
+**Tree state:** uncommitted work in `zyx/src/kernel/tenstorrent.rs`,
+`zyx/src/kernel/autotune.rs`, `NOTES.md`, `AGENTS.md`. 18/18 ttsim gates green,
+`cargo test --lib` = 78, fmt clean. The user commits; nothing is committed by the
+agent.
+
+### What is in place
+
+1. **`tt_sfpu_fusion` emits virtual registers.** Every register of every merged
+   unit becomes a fresh virtual (`>= 16`); `8..15` are the hardware's read-only
+   constants (`LREG_ZERO` = 9, `LREG_ONE` = 10, ...) and are never touched.
+   An interior value crosses a body on one `SFPMOV`; the producer's store is
+   replaced by `SFPMOV carry <- reg` **at the store's position** (not read at
+   body end), the consumer's load by `SFPMOV dst <- carry`.
+2. **`tt_lreg_alloc`** (registered right after the fusion in
+   `device_epilogue`, before `tt_dst_reuse`) linear-scans `(def, last_use)` per
+   virtual into `L0..L7` on each straight-line row body, drops the coalesced
+   moves, and recomputes each `Replay`'s length.
+3. **`tt_alloc_regs`** is one free function used twice: the fusion builds the
+   body it is about to emit in virtual space (`shadow`) and forms a shorter cone
+   when it would not fit; the allocator re-runs it on the real body. Nine live
+   values is still a hard error -- **spilling is the next step** (lreg spills to
+   a DST tile, never to L1; the tile allocator already runs after this pass).
+4. **The second `tt_sfpu_fusion()` call in `device_epilogue` is gone** (fusion
+   now leaves virtuals, which must be allocated exactly once).
+
+### Measured (DST accesses per row -- the metric that matters)
+
+| kernel | replays | loads | stores | committed pass |
+|---|---|---|---|---|
+| `sigmoid` | 7 | **25** | **10** | 21 / 36 / 21 |
+| `exp2` | 6 | 22 | 7 | 17 / 32 / 17 |
+| `log2` | 16 | 39 | 19 | 31 / 51 / 31 |
+| `sin_cos` | 18 | 59 | 27 | 18 / 34 / 18 |
+
+`sigmoid`'s stores are **halved** and loads down a third: that is the
+"one tile in, one tile out" direction. `sin_cos` went *up* -- it now keeps
+values in registers instead of fusing units, so check it before claiming a
+uniform win.
+
+### Seven bugs found this session (all load-bearing -- do not undo)
+
+1. **`8..15` must never be virtualized** (`LREG_ZERO`/`LREG_ONE` appear in a
+   body's read mask; renaming them makes every `1.0` read an unwritten
+   register).
+2. **Virtual numbers must not restart at 16 per merge** (a body an earlier merge
+   already virtualized keeps its numbers).
+3. **The carry copy belongs at the store's position**, not at body end: a unit
+   may rewrite that register after the store.
 4. **A per-part `SFPENCC` reset must be inserted *inside* the body** (before its
    first op, not before the marker): its word is counted in `len`, and a reset
    parked outside leaves the body one word short of its own length, so the
    replay never closes.
-5. **`SFPENCC` is a predicate reset, not a scope**: `mod1 2 | 8` sets
-   `use_flags` and sets every `lane_flags = true` (`kern/sfpu/interp.rs:766`).
-   Interleaving rows of two parts therefore needs a reset *per part*.
-6. **A register hand-over is only bit-equal when the store and every load use the
-   same 32-bit format** (`INT32`/`FP32` convert through a tile), and a virtual
-   read before its first write is live from the body's start.
+5. **`SFPENCC` is a predicate reset, not a scope** (`mod1 2 | 8` sets
+   `use_flags` and every `lane_flags = true`, `kern/sfpu/interp.rs:766`), so
+   each interleaved part needs one.
+6. **A hand-over is only bit-equal when the store and every load use the same
+   32-bit format** (`INT32`/`FP32` convert through a tile); and a virtual read
+   before its first write is live from the body's start.
+7. **Coalescing must not drop a `SFPMOV` whose `Mod1` is set.** `SFPMOV x -> x`
+   with `Mod1 = 0` is a no-op, but `Mod1 = 1` is the *negate*. Dropping it made
+   `cast(i32 -> f32)` return `|e|`, which is why `log2` was wrong by exactly
+   `-2e` for negative exponents (`0.5 -> 1` instead of `-1`, `0.3 -> 2.263`
+   instead of `-1.737`), while `e >= 0` and every `big`-mantissa case looked
+   fine. This was the last red gate; the fix is in `tt_lreg_alloc`'s drop test
+   (`insn.args[2] == 0`).
 
-**Measured (DST accesses per row, the metric that matters):** `sigmoid` 38 loads
-/ 23 stores / 20 replays; `sin_cos` 71/39/33; `log2` 50/30/28; `exp2` 34/19/18.
-That is level with the committed pass (36/21/21 for `sigmoid`), **not** yet the
-win. The reason is now precise: **the virtual name space is the limiter, not
-register pressure.** Numbering is per `(unit, register)`, so a 20-unit cone needs
-~100 names and `u128` gives 112 (`16..127`); cones therefore split by *name
-exhaustion* instead of live count. A previous build that restarted numbering at
-16 per merge (bug 2 above) measured `sigmoid` at 25 loads / 10 stores / 7
-replays -- that is the number to recover once names stop being the limit.
+### Debugging recipe that worked (re-add these; they were removed)
 
-**Next issues, in order:**
+- **Bisect merges, not cones**: a counter in `tt_sfpu_fusion` that returns after
+  N successful `tt_fuse_cone` calls. `log2` was fine for N<=5 and wrong from
+  N=6 -- that pinned it to one merge, not to "big bodies".
+- **Bisect body size**: refuse a cone whose `total` exceeds a cap. 24 passed,
+  25 failed. (Both knobs are temporary; delete them again.)
+- **Dump the *applied* body**, not a candidate: print inside the apply path
+  (after the feasibility check), with `maps` applied, else you inspect a plan
+  that was discarded.
+- **Shrink the repro to values**: a 32x32 tile with hand-picked constants showed
+  the error was `-2e` (value-dependent), not lane 27 (position) -- the
+  `[10, 256]` gate's "one lane" was a red herring. `Tensor::from(vec)
+  .reshape([10, 256])?` avoids the 10-grid limit.
+- Coalescing, allocation and liveness are per-body; if a merged body looks
+  right on inspection, suspect the *pass after it* (the allocator's peepholes)
+  before the fusion.
 
-1. **Names out of the way**: compact a cone's virtuals into a dense range before
-   committing (collect the `maps` targets, renumber `16..`), and/or reuse names
-   for non-overlapping ranges. `u128` masks cap it at 127; widening the mask (or
-   a small set type) is the alternative.
-2. **Spill instead of refusing**: a body that needs a ninth live value should
+### What is left, in order
+
+1. **Spill instead of `todo!()`**: a body needing a ninth live value should
    store it to an ordinary `Storage{Register}` tile and reload before use (the
-   user's rule: lreg spills to DST, never to L1).
-3. Then re-measure `sigmoid` against the 25/10 target and add the acceptance
-   gate (count `SFPLOAD`/`SFPSTORE` in the T1 program: 1/1 for a pure
-   elementwise kernel).
+   user's rule: lreg spills to DST, never to L1; `tt_dst_reuse` runs after this
+   pass, so a spill tile is allocated like any other value).
+2. **The acceptance gate**: for a pure elementwise kernel the emitted T1 must be
+   one `SFPLOAD` + one `SFPSTORE` per row. Needs a test-visible accessor for the
+   compiled instruction stream (the user approved adding one).
+3. **The virtual name space**: numbering is per `(unit, register)` and the mask
+   is `u128` (so `16..127`, 112 names); a large cone can be cut by name
+   exhaustion rather than by live count. The user's preference is a `Set`/`Map`
+   instead of the mask (`device_epilogue` is NOT under the 30us budget --
+   `AGENTS.md` was updated to say so). Compacting a cone's virtuals into a dense
+   range after each merge is the cheap half of that fix.
+4. `tt_sink_const_splats` + interior carrying are on by default; if a
+   regression shows up, the two are separable (`ZYX_NOSINK`/`ZYX_NOINTERIOR`
+   existed for exactly that bisection).
+
+### Handoff honesty
+
+The direction is right and the numbers are better, but this pass now owns a real
+register allocator, so its failure modes are compiler failure modes (silent
+miscompiles, not loud panics). Every fix above came from a *gate*; keep the
+practice: after any change to fusion, allocation or `SFPENCC` handling, run all
+18 gates one at a time, and re-measure the DST table above.
 
 ### Start here — session handoff (2026-11-02, fifth pass — end of session)
 

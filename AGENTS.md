@@ -81,8 +81,12 @@
   (`let nid = RT.lock().f(cur.id)?; cur = Tensor { id: nid };`).
 - Forbidden words: "Actually", "wait", "key insight", "let me", "Hmm", "But wait".
 
-## Pass budget: 30us max per invocation in `zyx/src/kernel/`
-- Applies to `default_epilogue` as a whole. Blowout = performance bug.
+## Pass budget: 30us max per invocation for the REPEATED passes
+- Applies to `default_epilogue` and the `default_optimizations` list as a
+  whole: those run once per candidate inside the search, so a blowout is a
+  performance bug.
+- Does NOT apply to `device_epilogue` (the hardware lowering: `tt_*`). It runs
+  once, after the search, so a `Map`/`Set` where it reads better is fine.
 - Fix algorithmic cost. Measure with `time_pass!`/Instant (stderr).
 
 ## Commands (run cargo from `zyx/`; root has no Cargo.toml)
