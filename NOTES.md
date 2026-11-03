@@ -247,39 +247,92 @@ only be preceded in its unit by constants / `SFPENCC` (a load and a mov are both
 lane-masked). The earlier 2-unit window is gone now that spills exist: the carry
 may span the whole body and the allocator spills around it if needed.
 
-### What is left for parity
+### Spill choice moved to the pressure peak (in the tree)
 
-The 8 remaining `sigmoid` loads are **one value, not eight**: the body needs a
-ninth register, the allocator spills by the farthest-last-use rule (the long
-carried input), and every one of its reads becomes a reload. So the remaining
-traffic is the spill policy, not CSE.
+The allocator no longer picks a victim when an interval starts. `tt_peak_spills`
+computes the pressure of every instruction under the current spill set (a
+spilled value counts only at its definition and at its reads, which is what
+materialization produces) and evicts at the **peak**. `tt_alloc_spill` then
+assigns registers to the rest; the whole-`tt_lreg_alloc` loop materializes and
+re-plans until nothing is spilled, exactly as before.
 
-Two attempts were made and backed out (both from the same tree, so the exact
-culprit was not isolated):
+Why this matters, measured on `sigmoid`: the peak is **11 live names at one
+`SFPAND`**, of which 2 are the hardware constants (`LREG_ZERO`/`LREG_ONE`) and 2
+are read there, leaving 9 allocatable -- one too many. Evicting at interval
+starts cannot see that (every start looked fine) and cascaded.
 
-- **Segment-aware CSE + store retirement** (split each slot's readers by the
-  stores in the cone, retire a store into a carry for its own segment). It
-  miscompiled `log2` (lane 0: `127.47` instead of `5.47`) and did not reduce
-  `sigmoid`'s load count at all, because the repeats were the spill's reloads.
-- **Cheapest-spill eviction** (fewest reads, then farthest last use) instead of
-  farthest-last-use. It changed the spill set enough that `sigmoid` hit the
-  8-spill `todo!()` and `log2` stayed wrong.
+Two victim rules were measured at the peak:
 
-Both were reverted; the tree is the green state (numbers below). Next time:
+- **fewest reads** (cheapest spill): still cascades -- `sigmoid` 10 loads / 9
+  stores, `log2` 14 / 10, and three gates fail. A cheap eviction just moves the
+  peak to that value's next read.
+- **fewest reads with lookahead**: a candidate is accepted only if re-running the
+  whole pressure model with it spilled keeps every instruction <= 8. This is in
+  the tree. It is stable (all gates green) and improved `log2` 9 -> 8 loads.
+  When no candidate passes the lookahead the loop takes the cheapest anyway and
+  lets the next round (which has the same lookahead) fix the new peak.
 
-1. **Isolate the spill policy** before touching anything else. `tt_alloc_spill`
-   and `tt_lreg_alloc`'s materialization deserve a unit test that forces a
-   spill on a hand-built body (9 live values, one with many reads) and checks
-   the emitted ops and the values. That is the missing coverage -- every
-   correctness failure so far came from this area and was only caught by two
-   gates.
-2. Then decide the policy with a measurement: farthest-last-use spills the
-   value with 7 reads (7 reloads); a use-count weight would spill the cheap
-   value instead. The earlier attempt conflated it with CSE.
-3. Only then re-attempt segment CSE, on its own, against the green tree.
+Measured now: `sigmoid` 1 replay / 8 / 2, `log2` 2 / 8 / 4, `exp2` 2 / 6 / 3,
+`sin_cos` 2 / 6 / 6. All 18 gates green, `cargo test --lib` = 82, fmt clean.
 
-The acceptance gate (relu 1/1, sigmoid 2/2, one replay) is still missing and
-would have caught all of this faster.
+`sigmoid` still spills one value (name 22) with 7 reads, because no *single*
+cheap eviction passes the lookahead: the cheap candidates each create a new peak
+at their own read. That is the remaining problem, and it is a lookahead-depth
+problem, not a model problem: evicting *two* cheap values can be feasible when
+neither alone is. Next step, in order:
+
+1. **Multi-eviction lookahead**: when no single candidate is feasible, try pairs
+   (or run the lookahead on the candidate set greedily) so the cheap values can
+   be spilled together and name 22 stays in a register. Expected: `sigmoid`
+   around 1-2 loads / 2-3 stores.
+2. If pairs still do not fit, the peak is real and has to come down in the
+   emitter/schedule (the unfolded chain keeps 9 values live at that `SFPAND`).
+
+### Status of the old next steps
+
+#### The measurement chain, exactly
+
+Counting `SfpLoad` at every pass boundary in `device_epilogue` (temporary
+instrumentation, removed) gives, for `sigmoid`:
+
+| after | loads |
+|---|---|
+| `tt_sfpu_fusion` | **1** |
+| `tt_lreg_alloc` | **8** |
+| `tt_dst_reuse` | 8 |
+| `tt_reg_sync` | 8 |
+
+So the fusion is one load -- the kernel input -- and `tt_lreg_alloc` adds the
+other seven. It spills **one** value that is read seven times: one store to a
+spill tile plus seven reloads. `tt_dst_reuse`/`tt_reg_sync` change nothing.
+The earlier "the allocator does not spill in sigmoid" note was wrong: it was
+measured before the spilling changes landed. This table is the ground truth to
+re-derive the numbers from.
+
+So `sigmoid` = one input load + (spill store + 7 reloads) + output store. To reach
+handwritten's 2/2 the 7-read value must stay in a register through the peak,
+i.e. the *peak liveness* must come down by one, or the value must be
+live-range-split rather than spilled whole.
+
+### Segment-aware CSE: in the tree, green, neutral
+
+The rule is general: reads of a tile are grouped by the store that precedes them,
+each group carries from its first read, and a read in a unit that also stores the
+slot is skipped. Keyed by the starting *load op* (not the slot: the earlier
+attempt keyed by slot and the second segment overwrote the first, which is why
+seeding never fired). All 18 gates pass; measured neutral on the four kernels
+(the fusion already hands these reads off; the extra traffic is the spill above).
+
+### Spill policy: farthest-use stays
+
+A `use-count` eviction (fewest reads, then farthest last use) was implemented
+twice, alone and with segment CSE, and both times it cascaded: `sigmoid` hit the
+8-spill `todo!()` and `log2` miscompiled. The reason is structural -- freeing a
+cheap value's register does not free it where the pressure is, so the scan spills
+again and again. The sub-optimal farthest-use choice is the stable one. The real
+fix is live-range splitting (LLVM's greedy allocator: split at the conflict,
+keep the hot part in a register) or reducing the peak, not a different weight in
+the linear scan.
 
 ### Status of the old next steps
 

@@ -174,6 +174,16 @@ fn tt_row_regs(op: &Op) -> (Set<u16>, Set<u16>) {
 /// Returns the assignment and the names to spill, or `None` when more than
 /// `max_spills` values would have to be spilled.
 fn tt_alloc_spill(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(Map<u16, u8>, Vec<u16>)> {
+    // Which values go to memory: the ones that are live at the body's peak but
+    // not used there. This is the peak, not the interval start -- a straight
+    // line body can have nine values alive at one instruction while every
+    // interval start looks fine, and evicting by interval start then cascades
+    // (the freed register is needed again before the next use).
+    let spills = tt_peak_spills(body);
+    if spills.len() > max_spills {
+        return None;
+    }
+    let spilled: Set<u16> = spills.iter().copied().collect();
     let mut def: Map<u16, i64> = Map::default();
     let mut last: Map<u16, i64> = Map::default();
     let mut first_use: Map<u16, i64> = Map::default();
@@ -193,10 +203,9 @@ fn tt_alloc_spill(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(M
             def.insert(r, -1);
         }
     }
-    let mut order: Vec<u16> = last.keys().copied().filter(|r| *r >= 16).collect();
+    let mut order: Vec<u16> = last.keys().copied().filter(|r| *r >= 16 && !spilled.contains(r)).collect();
     order.sort_by_key(|r| (def.get(r).copied().unwrap_or(-1), *r));
     let mut assign: Map<u16, u8> = Map::default();
-    let mut spills: Vec<u16> = Vec::new();
     let mut active: Vec<(u16, u8, i64)> = Vec::new(); // (name, phys, last use)
     for r in order {
         let start = def.get(&r).copied().unwrap_or(-1);
@@ -206,26 +215,114 @@ fn tt_alloc_spill(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(M
         if let Some(p) = (0..8u8).find(|p| used & (1u16 << p) == 0) {
             assign.insert(r, p);
             active.push((r, p, end));
-            continue;
+        } else {
+            // The peak set was supposed to make this unreachable; if it is
+            // reached the body needs more than eight *simultaneous* reads and
+            // the caller must refuse it rather than guess.
+            return None;
         }
-        // No free register: the interval with the farthest last use is the one
-        // that goes to memory -- unless this one is itself the farthest, in
-        // which case it is the one spilled and every active register stays.
-        let victim = active.iter().enumerate().max_by_key(|(_, (_, _, l))| *l);
-        match victim {
-            Some((i, &(v, p, lv))) if lv > end => {
-                active.remove(i);
-                spills.push(v);
-                assign.insert(r, p);
-                active.push((r, p, end));
-            }
-            _ => spills.push(r),
-        }
-    }
-    if spills.len() > max_spills {
-        return None;
     }
     Some((assign, spills))
+}
+
+/// The values to keep in memory so the body fits eight registers, chosen at the
+/// body's pressure peak. A spilled value is live only at its defining
+/// instruction and at each read (that is what materialization produces: one
+/// store at the definition, one reload per read), so spilling removes it from
+/// every other point.
+fn tt_peak_spills(body: &[(Set<u16>, Set<u16>)]) -> Vec<u16> {
+    let mut def: Map<u16, i64> = Map::default();
+    let mut last: Map<u16, i64> = Map::default();
+    let mut first_use: Map<u16, i64> = Map::default();
+    for (k, (reads, writes)) in body.iter().enumerate() {
+        for &r in writes {
+            def.entry(r).or_insert(k as i64);
+            last.insert(r, k as i64);
+        }
+        for &r in reads {
+            first_use.entry(r).or_insert(k as i64);
+            last.insert(r, k as i64);
+        }
+    }
+    for (&r, &use_at) in &first_use {
+        if def.get(&r).is_none_or(|&d| use_at < d) {
+            def.insert(r, -1);
+        }
+    }
+    let mut names: Vec<u16> = last.keys().copied().filter(|r| *r >= 16).collect();
+    names.sort_unstable();
+    let mut reads_count: Map<u16, usize> = Map::default();
+    for (reads, _) in body {
+        for r in reads {
+            *reads_count.entry(*r).or_default() += 1;
+        }
+    }
+    let mut spilled: Set<u16> = Set::default();
+    // Pressure at each instruction under a spill set: values used there (a
+    // spilled value at its definition still needs a register for the store)
+    // plus the ones merely live through it.
+    let pressure = |spilled: &Set<u16>| -> (usize, usize, Vec<u16>) {
+        let mut peak: (usize, usize, Vec<u16>) = (0, 0, Vec::new());
+        for (k, (reads, _)) in body.iter().enumerate() {
+            let mut here = 0usize;
+            let mut live: Vec<u16> = Vec::new();
+            for &n in &names {
+                let used = reads.contains(&n) || (spilled.contains(&n) && def.get(&n).copied().unwrap_or(-1) == k as i64);
+                if used {
+                    here += 1;
+                    continue;
+                }
+                let alive = !spilled.contains(&n)
+                    && def.get(&n).copied().unwrap_or(-1) <= k as i64
+                    && last.get(&n).copied().unwrap_or(-1) >= k as i64;
+                if alive {
+                    live.push(n);
+                }
+            }
+            let total = here + live.len();
+            if total > peak.0 {
+                peak = (total, k, live);
+            }
+        }
+        peak
+    };
+    loop {
+        let peak = pressure(&spilled);
+        if peak.0 <= 8 {
+            return spilled.into_iter().collect();
+        }
+        // Choose at the peak, with lookahead: the cheapest candidate (fewest
+        // reads; a spill is one store plus one reload per read) whose eviction
+        // keeps *every* instruction at eight or fewer. Without the lookahead a
+        // cheap eviction just moves the peak to the evicted value's next read.
+        let mut best: Option<(usize, std::cmp::Reverse<i64>, u16)> = None;
+        for &c in &peak.2 {
+            let mut trial = spilled.clone();
+            trial.insert(c);
+            if pressure(&trial).0 > 8 {
+                continue;
+            }
+            let key = (reads_count.get(&c).copied().unwrap_or(0), std::cmp::Reverse(last.get(&c).copied().unwrap_or(-1)), c);
+            if best.is_none_or(|b| key < b) {
+                best = Some(key);
+            }
+        }
+        // Nothing is feasible on its own: take the cheapest candidate anyway and
+        // let the next iteration fix the peak the eviction creates (the next
+        // round also has the lookahead, so this does not cascade blindly).
+        let victim = best.map(|(_, _, c)| c).or_else(|| {
+            peak.2
+                .iter()
+                .copied()
+                .min_by_key(|n| (reads_count.get(n).copied().unwrap_or(0), std::cmp::Reverse(last.get(n).copied().unwrap_or(-1))))
+        });
+        let Some(victim) = victim else {
+            // Every value at the peak is read there: more than eight reads in
+            // one instruction, which no spill can fix.
+            return spilled.into_iter().collect();
+        };
+        spilled.insert(victim);
+    }
 }
 
 /// Simulate [`tt_alloc_spill`] plus its materialization on an abstract body:
@@ -234,16 +331,18 @@ fn tt_alloc_spill(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(M
 /// number of words the spills will add, or `None` when more than `max_spills`
 /// values would have to be spilled. The fusion uses this to decide whether a
 /// cone is worth keeping before any op is touched.
-fn tt_plan_spills(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<usize> {
+fn tt_plan_spills(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(usize, Vec<u16>)> {
     let mut body: Vec<(Set<u16>, Set<u16>)> = body.to_vec();
     let mut next = body.iter().flat_map(|(r, w)| r.iter().chain(w)).copied().filter(|r| *r >= 16).max().map_or(16, |m| m + 1);
     let mut added = 0usize;
     let mut spilled = 0usize;
+    let mut names: Vec<u16> = Vec::new();
     loop {
         let spills = tt_alloc_spill(&body, usize::MAX).expect("no limit").1;
         if spills.is_empty() {
-            return Some(added);
+            return Some((added, names));
         }
+        names.extend(spills.iter().copied());
         spilled += spills.len();
         if spilled > max_spills {
             return None;
@@ -3688,27 +3787,39 @@ impl Kernel {
                     end -= 1;
                     continue;
                 }
-                // One tile read by several units of the cone: the first read
-                // keeps its `SFPLOAD` and copies the value into a carry right
-                // there, every later read is handed the register. Only when no
-                // unit of the cone stores to the slot: a store changes what a
-                // later load would read. The formats need not agree -- a load
+                // One tile read more than once in the cone: the first read keeps
+                // its `SFPLOAD` and copies the value into a carry right there,
+                // every later read is handed the register. When the cone stores
+                // to the slot, a read only sees the same value as an earlier one
+                // *within* a segment -- the stretch between two stores -- so the
+                // reads are grouped by the store that precedes them and each
+                // group carries separately. The formats need not agree: a load
                 // only copies the tile's bits.
-                let mut tile_carry: Map<OpId, (usize, u8, usize)> = Map::default();
-                for (slot, units_of) in &readers {
-                    if producers.get(slot).is_some_and(|ps| ps.iter().any(|&p| p >= s && p <= end)) {
+                //
+                // Keyed by the load that starts a segment; the value is that
+                // segment's last reading unit.
+                let mut segment_start: Map<OpId, (u8, usize)> = Map::default();
+                let mut segments: Map<(OpId, Option<usize>), Vec<(usize, u8, OpId)>> = Map::default();
+                for u in s..=end {
+                    for (slot, reg, _, op) in &loads[u] {
+                        let stores: Vec<usize> =
+                            producers.get(slot).into_iter().flatten().copied().filter(|&p| p >= s && p <= end).collect();
+                        // A read in a unit that also stores the slot is left
+                        // alone: inside one unit the op order decides which
+                        // value it sees.
+                        if stores.contains(&u) {
+                            continue;
+                        }
+                        let key = stores.iter().copied().filter(|&v| v < u).max();
+                        segments.entry((*slot, key)).or_default().push((u, *reg, *op));
+                    }
+                }
+                for ((slot, _), group) in &segments {
+                    if group.len() < 2 {
                         continue;
                     }
-                    let inside: Vec<usize> = units_of.iter().copied().filter(|&r| r >= s && r <= end).collect();
-                    let (Some(&first), Some(&last)) = (inside.iter().min(), inside.iter().max()) else {
-                        continue;
-                    };
-                    if first == last {
-                        continue;
-                    }
-                    let Some(&(_, reg, _, load_op)) = loads[first].iter().find(|(sl, _, _, _)| sl == slot) else {
-                        continue;
-                    };
+                    let (first, reg, load_op) = group[0];
+                    let last = group.iter().map(|(u, _, _)| *u).max().expect("group");
                     // The carry is a copy right after the load, and the copy is
                     // lane-masked like the load: it fills every lane only when
                     // the load runs with the flags reset. Anything that can set
@@ -3727,7 +3838,7 @@ impl Kernel {
                     if flags_touched {
                         continue;
                     }
-                    tile_carry.insert(*slot, (first, reg, last));
+                    segment_start.insert(load_op, (reg, last));
                 }
                 // Build the cone. If it needs more lane registers than exist,
                 // do not shrink it: demote an interior value (the one whose
@@ -3800,25 +3911,23 @@ impl Kernel {
                             next += 1;
                         }
                         // Hand each interior value to this unit, in a register;
-                        // the first reader of a tile keeps its load, copies it
-                        // into a carry at that position, and later readers are
-                        // handed the carry.
+                        // the first reader of a segment keeps its load, copies
+                        // it into a carry at that position, and later readers
+                        // of the segment are handed the carry.
                         for (slot, reg, _, op) in &loads[u] {
                             if let Some(&(_, src, _)) = live.iter().find(|(sl, _, _)| sl == slot) {
                                 hand.push((*op, src, maps[u][usize::from(*reg)]));
                                 continue;
                             }
-                            if let Some(&(first, first_reg, last)) = tile_carry.get(slot) {
-                                if u == first && *reg == first_reg {
-                                    // The load's own register is a body register
-                                    // and may be rewritten before the unit ends,
-                                    // so the carry is a copy at the load's
-                                    // position.
-                                    let carry = next;
-                                    next += 1;
-                                    cse_setup.push((*op, maps[u][usize::from(*reg)], carry));
-                                    live.push((*slot, carry, last));
-                                }
+                            if let Some(&(_first_reg, last)) = segment_start.get(op) {
+                                // The load's own register is a body register and
+                                // may be rewritten before the unit ends, so the
+                                // carry is a copy at the load's position.
+                                let carry = next;
+                                next += 1;
+                                cse_setup.push((*op, maps[u][usize::from(*reg)], carry));
+                                live.retain(|(sl, _, _)| sl != slot);
+                                live.push((*slot, carry, last));
                             }
                         }
                         // Retire stores whose value never leaves the cone. The
@@ -3890,12 +3999,12 @@ impl Kernel {
                     if next > 256 {
                         break None;
                     }
-                    if let Some(added) = tt_plan_spills(&shadow, FUSE_SPILL_LIMIT) {
+                    if let Some((added, _spills)) = tt_plan_spills(&shadow, FUSE_SPILL_LIMIT) {
                         // The allocator will insert those stores/loads; they are
                         // budgeted apart from `total`, which must stay the
                         // emitted body's exact length.
                         spilled_words = added as u32;
-                        break Some((maps, hand, carry_over, total, shadow, next, cse_setup, spilled_words));
+                        break Some((maps, hand, carry_over, total, cse_setup, spilled_words));
                     }
                     // Demote the carried value whose spill is cheapest -- one
                     // store plus one load per reader -- and try the same cone
@@ -3915,7 +4024,7 @@ impl Kernel {
                     };
                     demoted.insert(victim);
                 };
-                let Some((maps, hand, carry_over, total, shadow, next, cse_setup, spilled_words)) = built else {
+                let Some((maps, hand, carry_over, total, cse_setup, spilled_words)) = built else {
                     end -= 1;
                     continue;
                 };
@@ -5445,5 +5554,58 @@ mod tt_lower_ops {
         let got = run(&encode(ops, &rows), &cond, &t, &f);
         let want: Vec<u32> = (0..1024).map(|i| if cond[i] != 0 { t[i] } else { f[i] }).collect();
         assert_eq!(got, want);
+    }
+}
+
+#[cfg(test)]
+mod lreg_spill {
+    use super::*;
+
+    fn body_that_fits() -> Vec<(Set<u16>, Set<u16>)> {
+        vec![
+            (Set::default(), Set::from_iter([16])),
+            (Set::from_iter([16]), Set::from_iter([17])),
+            (Set::from_iter([17]), Set::default()),
+        ]
+    }
+
+    /// Nine live at once, with the *last* definition used first and the first
+    /// definition used last: spilling the farthest-ending value (16) leaves the
+    /// reload for a point where everything else is dead, so one spill is enough.
+    fn body_that_spills_once() -> Vec<(Set<u16>, Set<u16>)> {
+        let mut body: Vec<(Set<u16>, Set<u16>)> = Vec::new();
+        for name in 16..=24u16 {
+            body.push((Set::default(), Set::from_iter([name])));
+        }
+        for name in (16..=24u16).rev() {
+            body.push((Set::from_iter([name]), Set::default()));
+        }
+        body
+    }
+
+    #[test]
+    fn a_body_that_fits_needs_no_spill() {
+        let (assign, spills) = tt_alloc_spill(&body_that_fits(), 8).expect("fits");
+        assert!(spills.is_empty());
+        assert_eq!(assign.get(&16), Some(&0));
+        assert_ne!(assign.get(&16), assign.get(&17), "two values cannot share a register");
+    }
+
+    #[test]
+    fn nine_live_values_spill_the_one_that_ends_last() {
+        let (_, spills) = tt_alloc_spill(&body_that_spills_once(), 8).expect("one spill fits the cap");
+        assert_eq!(spills, vec![16], "the value used last is the one that goes to memory");
+    }
+
+    #[test]
+    fn planning_materializes_a_spill_and_converges() {
+        let (words, names) = tt_plan_spills(&body_that_spills_once(), 4).expect("one spill is enough");
+        assert_eq!(names, vec![16]);
+        assert_eq!(words, 2, "one store at the definition and one reload at the use");
+    }
+
+    #[test]
+    fn the_spill_cap_is_a_loud_refusal() {
+        assert!(tt_alloc_spill(&body_that_spills_once(), 0).is_none());
     }
 }
