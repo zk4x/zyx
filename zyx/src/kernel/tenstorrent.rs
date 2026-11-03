@@ -3693,8 +3693,7 @@ impl Kernel {
                 // there, every later read is handed the register. Only when no
                 // unit of the cone stores to the slot: a store changes what a
                 // later load would read. The formats need not agree -- a load
-                // only copies the tile's bits, so the first load sees exactly
-                // what any later one would.
+                // only copies the tile's bits.
                 let mut tile_carry: Map<OpId, (usize, u8, usize)> = Map::default();
                 for (slot, units_of) in &readers {
                     if producers.get(slot).is_some_and(|ps| ps.iter().any(|&p| p >= s && p <= end)) {

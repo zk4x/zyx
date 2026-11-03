@@ -249,19 +249,37 @@ may span the whole body and the allocator spills around it if needed.
 
 ### What is left for parity
 
-`sigmoid` is at one replay, 8 loads / 2 stores. The loads are all reads of **one
-logical tile** (they alias to the same physical slot in the dump), but that slot
-is also **written inside the cone** (an in-place update), and the CSE rule skips
-any slot with a store in the cone -- correctly, because a load after the store
-reads a different value. What is missing is **segment-aware CSE**: partition the
-readers of a slot by the stores that precede them, carry within a segment, and
-let the store's own `carry_over` handle the next segment. That is the next
-change, and it needs no new allocator work (the spill plan already handles the
-extra live value).
+The 8 remaining `sigmoid` loads are **one value, not eight**: the body needs a
+ninth register, the allocator spills by the farthest-last-use rule (the long
+carried input), and every one of its reads becomes a reload. So the remaining
+traffic is the spill policy, not CSE.
 
-After that the remaining checks are the acceptance gate (absolute numbers: relu
-1/1, sigmoid 2/2, one replay) and `sin_cos`/`log2`'s second replay (find out
-which limit splits them: gap, repeat count, or `loops::MAX`).
+Two attempts were made and backed out (both from the same tree, so the exact
+culprit was not isolated):
+
+- **Segment-aware CSE + store retirement** (split each slot's readers by the
+  stores in the cone, retire a store into a carry for its own segment). It
+  miscompiled `log2` (lane 0: `127.47` instead of `5.47`) and did not reduce
+  `sigmoid`'s load count at all, because the repeats were the spill's reloads.
+- **Cheapest-spill eviction** (fewest reads, then farthest last use) instead of
+  farthest-last-use. It changed the spill set enough that `sigmoid` hit the
+  8-spill `todo!()` and `log2` stayed wrong.
+
+Both were reverted; the tree is the green state (numbers below). Next time:
+
+1. **Isolate the spill policy** before touching anything else. `tt_alloc_spill`
+   and `tt_lreg_alloc`'s materialization deserve a unit test that forces a
+   spill on a hand-built body (9 live values, one with many reads) and checks
+   the emitted ops and the values. That is the missing coverage -- every
+   correctness failure so far came from this area and was only caught by two
+   gates.
+2. Then decide the policy with a measurement: farthest-last-use spills the
+   value with 7 reads (7 reloads); a use-count weight would spill the cheap
+   value instead. The earlier attempt conflated it with CSE.
+3. Only then re-attempt segment CSE, on its own, against the green tree.
+
+The acceptance gate (relu 1/1, sigmoid 2/2, one replay) is still missing and
+would have caught all of this faster.
 
 ### Status of the old next steps
 
