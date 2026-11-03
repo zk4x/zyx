@@ -85,6 +85,9 @@ cargo add zyx zyx-nn zyx-optim
 pip install zyx-py
 ```
 
+> The PyPI package is `zyx-py`, not `zyx` — `pip install zyx` installs an
+> unrelated project. The import name is still `zyx`.
+
 
 ## Configuration & Debugging
 
@@ -100,13 +103,19 @@ import zyx
 x = zyx.Tensor.randn(2, 3)
 y = zyx.Tensor.uniform_(2, 3, from_=-1.0, to_=1.0)
 z = x.relu() + y.tanh()
-print(z.shape())
+print(z.shape)          # [2, 3] — a list, and nothing has executed yet
 
-# Autograd with tape
-tape = zyx.Tape([x, y])
-result = x.gelu() * y
-grads = tape.gradient(result, [x, y])
+# Autograd with a tape
+tape = zyx.Tape()
+tape.add(x)
+tape.add(y)
+result = (x.gelu() * y).sum()
+gx, gy = tape.gradient(result, [x, y])
+tape.realize([result, gx, gy])
+print(gx.numpy())
 ```
+
+See [zyx-py/README.md](zyx-py/README.md) for the full Python guide.
 
 
 ## Neural Nets

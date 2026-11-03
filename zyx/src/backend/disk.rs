@@ -197,7 +197,7 @@ impl DiskMemoryPool {
                         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"));
                     }
                     remaining = &mut remaining[n..];
-                    off += n as i64;
+                    off += n as u64;
                 }
                 Ok(())
             })();

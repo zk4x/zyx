@@ -7,9 +7,10 @@
 library with automatic kernel fusion and autotuning, written in Rust, with
 backends for CUDA, Vulkan, OpenCL, CPU (C and CBLAS), WGPU, and Tenstorrent.
 
-The whole install is **2 MB and has no dependencies** — there is no bundled
-CUDA runtime, no BLAS to link, no toolchain to install. Backends are loaded
-from the drivers already on the machine.
+The whole install is **2 MB and has no required dependencies** — there is no
+bundled CUDA runtime, no BLAS to link, no toolchain to install. Backends are
+loaded from the drivers already on the machine. `numpy` is needed only if you
+call `.numpy()`; everything else works without it.
 
 ## Install
 
@@ -28,9 +29,22 @@ pip install zyx-py
 import zyx
 ```
 
+If you want to read values out as numpy arrays, install numpy too
+(`pip install numpy`); it is an optional dependency, only `.numpy()` needs it.
+
 Requirements: **Python 3.8+**. Wheels are published for Linux `x86_64` and
-macOS `arm64` for CPython 3.8–3.14. Other platforms (Windows, Linux `aarch64`,
-macOS Intel, PyPy) need a source build, which requires a Rust toolchain.
+macOS `arm64` for CPython 3.8–3.14.
+
+No wheel and no sdist is published for other platforms (Windows, Linux
+`aarch64`, macOS Intel, PyPy, musl), so `pip install zyx-py` fails there with
+`No matching distribution found`. On those platforms, build from the repository
+with `maturin`, which does need a Rust toolchain:
+
+```bash
+git clone https://github.com/zk4x/zyx
+pip install maturin
+maturin build --release -m zyx/zyx-py/Cargo.toml
+```
 
 ## Quick start
 

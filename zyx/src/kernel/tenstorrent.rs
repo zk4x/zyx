@@ -1034,25 +1034,21 @@ impl Kernel {
     ///
     /// This pass recognizes the one template zyx emits today — exactly one
     /// `Reduce` fed by exactly one DRAM load and drained by exactly one
-    /// DRAM store — and rewrites both indices to `row * 32 + lane`, so the
-    /// load publishes one tile and the store drains one row. The rewrite is
-    /// traffic-only: it does not care whether the fold is a sum or a maximum,
-    /// and `tt_dataflow_select`'s pattern table has both, so gating on `Add`
-    /// here would leave every other reduce at the logical pitch and unsuited
-    /// to the movers. Anything else is left untouched (multi-reduce, loops,
-    /// groups, matmul cubes).
+    /// DRAM store — and rewrites both indices to the physical **tile** pitch.
+    /// The rewrite is traffic-only: it does not care whether the fold is a sum
+    /// or a maximum, and `tt_dataflow_select`'s pattern table has both, so
+    /// gating on `Add` here would leave every other reduce at the logical
+    /// pitch and unsuited to the movers. Anything else is left untouched
+    /// (multi-reduce, matmul cubes).
+    ///
+    /// The rewritten index is the truth: `tt_slice` runs later, in a fixed
+    /// order, and reads the base and the grid strides from these indices
+    /// instead of reconstructing them. A tile is 1024 elements; the reduce's
+    /// tile loop advances one tile per iteration, and a grid axis advances by
+    /// whatever the input's stride says (whole tiles).
     pub fn tt_reindex(&mut self) {
         if !self.device_info().tenstorrent {
             return;
-        }
-        // Single-tile kernels only: loops and groups mean extents or
-        // multi-tile traffic this rewrite does not model.
-        for (_, x) in self.iter_unordered() {
-            match x {
-                Op::Loop { .. } => return,
-                Op::Range { kind: RangeKind::Group(_), .. } => return,
-                _ => {}
-            }
         }
         // Exactly one reduce, one DRAM load, one DRAM store.
         let mut reduces: Vec<OpId> = Vec::new();
@@ -1099,7 +1095,12 @@ impl Kernel {
             Op::Store { src, .. } => *src,
             _ => return,
         };
-        if ssrc != root {
+        // The store drains the reduce directly, or an accumulator tile that
+        // the loop updates (a reduce over more than one tile: the loop carries
+        // the partial result in a `Register` storage).
+        let drains_acc = matches!(self.ops[ssrc].op, Op::Load { src, .. }
+            if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. }));
+        if ssrc != root && !drains_acc {
             return;
         }
         // Rank-3 cube to a rank-2 result (axis drop), or a
@@ -1128,7 +1129,12 @@ impl Kernel {
             Some((32, 1)) => {}
             _ => return,
         }
+        // Classify every variable besides the reduce lane: a 32-lane Unroll
+        // is the output row axis, a Group is a grid (tile) axis, and a Loop
+        // is the reduce's tile loop. Anything else is not this template.
         let mut rows: Vec<(OpId, Dim)> = Vec::new();
+        let mut grids: Vec<(OpId, u32, Dim)> = Vec::new();
+        let mut loops: Vec<OpId> = Vec::new();
         for (var, (len, stride)) in strides.iter() {
             if *var == OpId::NULL {
                 if *stride != 0 {
@@ -1139,33 +1145,95 @@ impl Kernel {
             if *var == k {
                 continue;
             }
-            if !matches!(self.ops[*var].op, Op::Unroll { len: 32, .. }) {
-                return;
+            match self.ops[*var].op {
+                Op::Unroll { len: 32, .. } => {
+                    if *len != 32 || *stride <= 0 {
+                        return;
+                    }
+                    rows.push((*var, *stride));
+                }
+                Op::Range { axis, kind: RangeKind::Group(_) } => {
+                    // A grid axis is a whole number of tiles in the logical
+                    // index; the rewritten index carries its tile stride.
+                    if *stride <= 0 || *stride % 1024 != 0 {
+                        return;
+                    }
+                    grids.push((*var, axis, *stride / 1024));
+                }
+                Op::Loop { .. } => {
+                    // The reduce's tile loop advances one 32-lane chunk, which
+                    // is one physical tile.
+                    if *stride != 32 {
+                        return;
+                    }
+                    loops.push(*var);
+                }
+                _ => return,
             }
-            if *len != 32 || *stride <= 0 {
-                return;
-            }
-            rows.push((*var, *stride));
         }
-        // Keep the smallest stride above 1 as the row axis; every
-        // other axis must stride a multiple of it (pure upward row
-        // shift, never a new column structure).
+        // One row axis; one reduce loop at most (a second would be a nested
+        // tile walk, not this template).
+        if loops.len() > 1 {
+            return;
+        }
         rows.sort_by_key(|&(_, s)| s);
         let row = match rows.as_slice() {
             [(r, w)] if row2 && *w != 32 && *w > 1 => *r,
-            [(r, w), (_d, dw)] if drop3 && *w > 1 && *dw > *w && *dw % *w == 0 => *r,
+            [(r, w), (_d, dw)] if drop3 && loops.is_empty() && grids.is_empty() && *w > 1 && *dw > *w && *dw % *w == 0 => *r,
             _ => return,
         };
-        // Canonical traffic indices at the physical tile pitch.
-        let phys = self.insert_const_idx_before(load, 32i64);
-        let rk = self.insert_before(load, Op::Binary { x: row, y: phys, bop: BOp::Mul });
-        let new_idx = self.insert_before(load, Op::Binary { x: rk, y: k, bop: BOp::Add });
+        // The input's tile is `Σ grid * tile_stride + loop`; the store's is
+        // the output tile `Σ grid * out_tile_stride`. A tile is 1024 elements,
+        // and the 32-lane row and reduce axes stay as the shape carrier (the
+        // movers zero them; they only give the access its `[32,32]`/`[32]`
+        // shape).
+        let mul = |k: &mut Kernel, at: OpId, x: OpId, c: Dim| -> OpId {
+            let cc = k.insert_const_idx_before(at, c);
+            k.insert_before(at, Op::Binary { x, y: cc, bop: BOp::Mul })
+        };
+        let add =
+            |k: &mut Kernel, at: OpId, x: OpId, y: OpId| -> OpId { k.insert_before(at, Op::Binary { x, y, bop: BOp::Add }) };
+        let mut in_tile = self.insert_const_idx_before(load, 0i64);
+        for &(g, _, tile_stride) in grids.iter() {
+            let t = mul(self, load, g, tile_stride);
+            in_tile = add(self, load, in_tile, t);
+        }
+        if let Some(&i) = loops.first() {
+            in_tile = add(self, load, in_tile, i);
+        }
+        let lane = mul(self, load, row, 32);
+        let carrier = add(self, load, lane, k);
+        let base = mul(self, load, in_tile, 1024);
+        let new_idx = add(self, load, base, carrier);
         match &mut self.ops[load].op {
             Op::Load { src_idx, .. } => *src_idx = new_idx,
             _ => unreachable!("tt_reindex: load lost its index"),
         }
+        // Output tile strides: the innermost grid axis advances one tile, the
+        // next its inner extent, and so on (row-major tiles).
+        let mut gaxes: Vec<(OpId, u32, Dim)> = Vec::new();
+        for &(g, axis, _) in grids.iter() {
+            let Op::Range { kind: RangeKind::Group(len), .. } = self.ops[g].op else {
+                unreachable!("tt_reindex: a grid entry is not a group range")
+            };
+            let Some(extent) = self.resolve_const(len).and_then(Constant::as_dim) else {
+                return;
+            };
+            gaxes.push((g, axis, extent));
+        }
+        gaxes.sort_by_key(|&(_, axis, _)| axis);
+        let mut out_stride = 1i64;
+        let mut out_tile = self.insert_const_idx_before(store, 0i64);
+        for &(g, _, extent) in gaxes.iter().rev() {
+            let t = mul(self, store, g, out_stride);
+            out_tile = add(self, store, out_tile, t);
+            out_stride *= extent;
+        }
+        let out_base = mul(self, store, out_tile, 1024);
+        let out_lane = mul(self, store, row, 32);
+        let new_dst = add(self, store, out_base, out_lane);
         match &mut self.ops[store].op {
-            Op::Store { dst_idx, .. } => *dst_idx = row,
+            Op::Store { dst_idx, .. } => *dst_idx = new_dst,
             _ => unreachable!("tt_reindex: store lost its index"),
         }
         self.verify();
@@ -6129,12 +6197,461 @@ impl CbTransactions {
     }
 }
 
+/// Which side of a CB a traffic op moves tiles on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CbTraffic {
+    /// Into the buffer (reader publish, compute pack).
+    Produce,
+    /// Out of the buffer (compute unpack, writer drain).
+    Consume,
+}
+
+/// One traffic op's transaction.
+///
+/// `per_op` is how many tiles one execution of the op's movement text moves.
+/// `hoist` is the `Op::Loop` whose open/close brackets the block; for a
+/// single-tile transaction it is the traffic op itself, which opens and
+/// closes in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CbBatch {
+    pub(crate) cb: OpId,
+    pub(crate) per_op: u32,
+    pub(crate) hoist: OpId,
+    pub(crate) kind: CbTraffic,
+}
+
+/// An open or close event, anchored at an op. A producer reserves then
+/// pushes; a consumer waits then pops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CbEvent {
+    Produce { cb: OpId, n: u32 },
+    Consume { cb: OpId, n: u32 },
+}
+
+impl CbEvent {
+    fn cb(self) -> OpId {
+        match self {
+            Self::Produce { cb, .. } | Self::Consume { cb, .. } => cb,
+        }
+    }
+}
+
+/// The CB transactions of one kernel pass: which traffic op is a block, where
+/// its open/close events anchor, and the per-pass tile totals.
+#[derive(Debug, Default)]
+#[allow(dead_code, reason = "the emitter wires this in next")]
+pub(crate) struct CbPlan {
+    batches: Map<OpId, CbBatch>,
+    /// Open events, emitted before the anchored op's text.
+    opens: Map<OpId, Vec<CbEvent>>,
+    /// Close events, emitted after the anchored op's text.
+    closes: Map<OpId, Vec<CbEvent>>,
+    produced: Map<OpId, u32>,
+    consumed: Map<OpId, u32>,
+}
+
+#[allow(dead_code, reason = "the emitter wires this in next")]
+impl CbPlan {
+    pub(crate) fn batch(&self, op: OpId) -> Option<CbBatch> {
+        self.batches.get(&op).copied()
+    }
+
+    pub(crate) fn opens(&self, op: OpId) -> &[CbEvent] {
+        self.opens.get(&op).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn closes(&self, op: OpId) -> &[CbEvent] {
+        self.closes.get(&op).map_or(&[], Vec::as_slice)
+    }
+
+    pub(crate) fn produced(&self, cb: OpId) -> u32 {
+        self.produced.get(&cb).copied().unwrap_or(0)
+    }
+
+    pub(crate) fn consumed(&self, cb: OpId) -> u32 {
+        self.consumed.get(&cb).copied().unwrap_or(0)
+    }
+}
+
+/// The three traffic sections of a lowered TT kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CbSection {
+    Reader,
+    Compute,
+    Writer,
+}
+
+/// One enclosing loop of the batching walk.
+struct CbLoopFrame {
+    op: OpId,
+    trip: u32,
+    /// CB -> the (last) traffic op in this frame moving tiles on it.
+    traffic: Map<OpId, OpId>,
+    /// CBs with more than one traffic op in this frame: no hoist.
+    dirty: Set<OpId>,
+}
+
+/// True if the operand closure of `root` contains `target` (the loop counter
+/// appearing in a tile-slot index).
+#[allow(dead_code, reason = "the emitter wires this in next")]
+fn deps_contain(kernel: &Kernel, root: OpId, target: OpId) -> bool {
+    if root.is_null() {
+        return false;
+    }
+    let mut stack = vec![root];
+    for _ in 0..10_000 {
+        let Some(id) = stack.pop() else { return false };
+        if id == target {
+            return true;
+        }
+        stack.extend(kernel.ops[id].op.parameters());
+    }
+    panic!("tt_cb_plan: deps_contain did not finish in 10000 steps");
+}
+
+#[allow(dead_code, reason = "the emitter wires this in next")]
+impl Kernel {
+    /// Group the lowered traffic into CB transactions.
+    ///
+    /// Walks the reader/compute/writer stream once. A traffic op is any
+    /// `TTOp::Copy` touching a `Circular` storage (its `dst` = produce, its
+    /// `src` = consume). Every such op starts as a single-tile transaction; at
+    /// a loop's `EndLoop` it is upgraded to a block over the whole loop when
+    /// the loop is its only traffic on that CB, the trip count is constant and
+    /// fits the CB, and the CB-side index is the loop counter or 0.
+    ///
+    /// The pass also totals the tiles produced and consumed per CB and
+    /// refuses a kernel where they do not balance. A tile count that does not
+    /// fold to a constant is a compile error: the block is a compile-time
+    /// quantity.
+    pub(crate) fn tt_cb_plan(&self) -> CbPlan {
+        let mut plan = CbPlan::default();
+        let mut section = CbSection::Reader;
+        let mut stack: Vec<CbLoopFrame> = Vec::new();
+        let mut loop_end_of: Map<OpId, OpId> = Map::default();
+        // Traffic op -> its CB-side index (the tile-slot operand).
+        let mut traffic_index: Map<OpId, OpId> = Map::default();
+        let mut scan = self.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            match &self.ops[scan].op {
+                Op::TT(TTOp::EndReader) => {
+                    assert!(stack.is_empty(), "tt_cb_plan: a loop crosses EndReader");
+                    section = CbSection::Compute;
+                }
+                Op::TT(TTOp::EndCompute) => {
+                    assert!(stack.is_empty(), "tt_cb_plan: a loop crosses EndCompute");
+                    section = CbSection::Writer;
+                }
+                Op::Loop { len } => {
+                    let trip = self.resolve_const(*len).and_then(Constant::as_dim).unwrap_or_else(|| {
+                        panic!("tt_cb_plan: loop {scan:?} has a non-constant trip count; CB tile counts are compile-time")
+                    });
+                    let trip = u32::try_from(trip)
+                        .unwrap_or_else(|_| panic!("tt_cb_plan: loop {scan:?} has negative trip count {trip}"));
+                    stack.push(CbLoopFrame { op: scan, trip, traffic: Map::default(), dirty: Set::default() });
+                }
+                Op::EndLoop => {
+                    let frame = stack.pop().expect("tt_cb_plan: EndLoop without Loop");
+                    loop_end_of.insert(frame.op, scan);
+                    for (&cb, &op) in frame.traffic.iter() {
+                        if frame.dirty.contains(&cb) || frame.trip <= 1 {
+                            continue;
+                        }
+                        let Some(tiles) = self.cb_tiles(cb) else { continue };
+                        if frame.trip > tiles {
+                            // The CB cannot hold the whole block: one tile per
+                            // loop pass (streaming), which is always correct.
+                            continue;
+                        }
+                        let index = traffic_index[&op];
+                        if !deps_contain(self, index, frame.op) && !self.is_zero_index(index) {
+                            panic!("tt_cb_plan: CB{cb:?} block index {index:?} is neither the loop {scan:?} counter nor 0");
+                        }
+                        let kind = plan.batches[&op].kind;
+                        plan.batches.insert(op, CbBatch { cb, per_op: frame.trip, hoist: frame.op, kind });
+                    }
+                }
+                Op::TT(TTOp::Copy { src, dst, src_idx, dst_idx, .. }) => {
+                    let src_cb = self.is_circular(*src);
+                    let dst_cb = self.is_circular(*dst);
+                    let (kind, cb, index) = match (src_cb, dst_cb) {
+                        (false, true) => (CbTraffic::Produce, *dst, *dst_idx),
+                        (true, false) => (CbTraffic::Consume, *src, *src_idx),
+                        (true, true) => panic!("tt_cb_plan: copy {scan:?} moves between two CBs"),
+                        // Register traffic (DST) is not a CB transaction.
+                        (false, false) => {
+                            scan = self.next_op(scan);
+                            continue;
+                        }
+                    };
+                    let sect_ok = match (section, kind) {
+                        (CbSection::Reader, CbTraffic::Produce)
+                        | (CbSection::Compute, CbTraffic::Produce | CbTraffic::Consume)
+                        | (CbSection::Writer, CbTraffic::Consume) => true,
+                        _ => false,
+                    };
+                    assert!(sect_ok, "tt_cb_plan: {kind:?} on CB{cb:?} at {scan:?} is not in a valid section ({section:?})");
+                    // Per-pass count: the product of every enclosing trip.
+                    let mut count = 1u32;
+                    for f in &stack {
+                        count =
+                            count.checked_mul(f.trip).unwrap_or_else(|| panic!("tt_cb_plan: CB{cb:?} tile count overflows u32"));
+                    }
+                    match kind {
+                        CbTraffic::Produce => *plan.produced.entry(cb).or_insert(0) += count,
+                        CbTraffic::Consume => *plan.consumed.entry(cb).or_insert(0) += count,
+                    }
+                    plan.batches.insert(scan, CbBatch { cb, per_op: 1, hoist: scan, kind });
+                    traffic_index.insert(scan, index);
+                    if let Some(f) = stack.last_mut() {
+                        if f.traffic.insert(cb, scan).is_some() {
+                            f.dirty.insert(cb);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            scan = self.next_op(scan);
+        }
+        assert!(scan.is_null(), "tt_cb_plan: the walk did not finish in 250000 steps");
+        assert!(stack.is_empty(), "tt_cb_plan: unclosed loop at the kernel end");
+        // A single-tile transaction reuses slot 0; a larger block was either
+        // hoisted or is streaming one tile at a time. Anything else would
+        // silently address a slot the ring does not have.
+        for (&op, &b) in plan.batches.iter() {
+            if b.hoist == op && !self.is_zero_index(traffic_index[&op]) {
+                panic!("tt_cb_plan: single-tile transaction {op:?} on CB{:?} needs slot 0", b.cb);
+            }
+        }
+        // Producer/consumer correspondence, per pass, per CB.
+        for (&cb, &p) in plan.produced.iter() {
+            let c = plan.consumed.get(&cb).copied().unwrap_or(0);
+            assert_eq!(p, c, "tt_cb_plan: CB{cb:?} produces {p} but consumes {c} tiles per pass");
+        }
+        for (&cb, &c) in plan.consumed.iter() {
+            assert!(plan.produced.contains_key(&cb), "tt_cb_plan: CB{cb:?} is consumed but never produced");
+            assert_eq!(c, plan.produced[&cb], "tt_cb_plan: CB{cb:?} consumption has no producer");
+        }
+        // Anchor the events: a single-tile transaction opens and closes at
+        // its op; a hoisted block opens at the loop and closes at its
+        // EndLoop. Sorted by CB for determinism.
+        let mut anchored: Vec<(OpId, OpId, CbEvent)> = Vec::new();
+        for (&op, &b) in plan.batches.iter() {
+            let event = match b.kind {
+                CbTraffic::Produce => CbEvent::Produce { cb: b.cb, n: b.per_op },
+                CbTraffic::Consume => CbEvent::Consume { cb: b.cb, n: b.per_op },
+            };
+            let (open, close) = if b.hoist == op {
+                (op, op)
+            } else {
+                (b.hoist, loop_end_of[&b.hoist])
+            };
+            anchored.push((open, close, event));
+        }
+        anchored.sort_by_key(|&(open, close, event)| (open, close, event.cb()));
+        for (open, close, event) in anchored {
+            plan.opens.entry(open).or_default().push(event);
+            plan.closes.entry(close).or_default().push(event);
+        }
+        plan
+    }
+
+    /// Tiles a `Circular` storage holds, or `None` if `cb` is not one.
+    fn cb_tiles(&self, cb: OpId) -> Option<u32> {
+        match self.ops[cb].op {
+            Op::Storage { scope: MemScope::Circular, len, .. } => {
+                assert_eq!(len % 1024, 0, "tt_cb_plan: CB {cb:?} holds {len} elements, not whole tiles");
+                u32::try_from(len / 1024).ok()
+            }
+            _ => None,
+        }
+    }
+
+    fn is_circular(&self, op: OpId) -> bool {
+        matches!(self.ops[op].op, Op::Storage { scope: MemScope::Circular, .. })
+    }
+
+    /// True if `idx` resolves to the constant 0 (the slot a single-tile
+    /// transaction and a block's first slot use).
+    fn is_zero_index(&self, idx: OpId) -> bool {
+        self.resolve_const(idx).and_then(Constant::as_dim) == Some(0)
+    }
+}
+
 #[cfg(test)]
 mod cb_tests {
     use super::*;
+    use crate::kernel::Dev;
 
     fn cb(n: usize) -> OpId {
         OpId::from(n)
+    }
+
+    fn copy(k: &mut Kernel, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId) -> OpId {
+        k.push_back(Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes: 4096 }))
+    }
+
+    /// A kernel with a reader loop producing `trip` tiles into `cb` and a
+    /// compute loop consuming them, both with slot index `idx`.
+    fn looped(cb_elements: i64, trip: u32, idx_produce: bool, idx_consume: bool) -> (Kernel, OpId, OpId, OpId, OpId) {
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        let cb = k.storage(DType::F32, MemScope::Circular, cb_elements);
+        let dst = k.param_mut(DType::F32);
+        let zero = k.const_idx(0u32);
+        let len = k.const_idx(trip);
+        // Reader: produce one tile per pass.
+        let pl = k.push_back(Op::Loop { len });
+        let pidx = if idx_produce { pl } else { zero };
+        let produce = copy(&mut k, src, zero, cb, pidx);
+        k.push_back(Op::EndLoop);
+        k.push_back(Op::TT(TTOp::EndReader));
+        // Compute: consume one tile per pass.
+        let cl = k.push_back(Op::Loop { len });
+        let cidx = if idx_consume { cl } else { zero };
+        let consume = copy(&mut k, cb, cidx, dst, zero);
+        k.push_back(Op::EndLoop);
+        k.push_back(Op::TT(TTOp::EndCompute));
+        (k, pl, cl, produce, consume)
+    }
+
+    #[test]
+    fn a_producer_loop_becomes_one_block() {
+        let (k, pl, cl, produce, consume) = looped(4096, 4, false, false);
+        let plan = k.tt_cb_plan();
+        let cb = plan.batch(produce).expect("produce is traffic").cb;
+        assert_eq!(plan.produced(cb), 4);
+        assert_eq!(plan.consumed(cb), 4);
+        let p = plan.batch(produce).unwrap();
+        let c = plan.batch(consume).unwrap();
+        assert_eq!((p.per_op, p.hoist, p.kind), (4, pl, CbTraffic::Produce));
+        assert_eq!((c.per_op, c.hoist, c.kind), (4, cl, CbTraffic::Consume));
+        assert_eq!(plan.opens(pl), [CbEvent::Produce { cb, n: 4 }].as_slice());
+        assert_eq!(plan.opens(cl), [CbEvent::Consume { cb, n: 4 }].as_slice());
+        assert_eq!(plan.closes(k.next_op(produce)), [CbEvent::Produce { cb, n: 4 }].as_slice());
+        assert_eq!(plan.closes(k.next_op(consume)), [CbEvent::Consume { cb, n: 4 }].as_slice());
+    }
+
+    #[test]
+    fn two_ops_on_one_cb_in_a_loop_do_not_hoist() {
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        // Eight tiles, so the consumer's eight-iteration loop can be blocked;
+        // the producer's loop cannot, because two ops touch the same CB.
+        let cb = k.storage(DType::F32, MemScope::Circular, 8192);
+        let dst = k.param_mut(DType::F32);
+        let zero = k.const_idx(0u32);
+        let four = k.const_idx(4u32);
+        let eight = k.const_idx(8u32);
+        let pl = k.push_back(Op::Loop { len: four });
+        let a = copy(&mut k, src, zero, cb, zero);
+        let b = copy(&mut k, src, zero, cb, zero);
+        k.push_back(Op::EndLoop);
+        k.push_back(Op::TT(TTOp::EndReader));
+        let cl = k.push_back(Op::Loop { len: eight });
+        let _ = cl;
+        let c = copy(&mut k, cb, zero, dst, zero);
+        k.push_back(Op::EndLoop);
+        k.push_back(Op::TT(TTOp::EndCompute));
+        let plan = k.tt_cb_plan();
+        // Two traffic ops in one frame make the CB dirty: no block upgrade,
+        // each stays a one-tile transaction.
+        assert_eq!(plan.batch(a).unwrap().per_op, 1);
+        assert_eq!(plan.batch(b).unwrap().per_op, 1);
+        assert_ne!(plan.batch(a).unwrap().hoist, pl);
+        assert_eq!(plan.batch(c).unwrap().per_op, 8);
+        assert_eq!(plan.produced(plan.batch(a).unwrap().cb), 8);
+        assert_eq!(plan.consumed(plan.batch(a).unwrap().cb), 8);
+    }
+
+    #[test]
+    fn a_loop_counter_index_still_hoists() {
+        let (k, pl, _, produce, _) = looped(4096, 4, true, true);
+        let plan = k.tt_cb_plan();
+        assert_eq!(plan.batch(produce).unwrap().hoist, pl);
+        assert_eq!(plan.batch(produce).unwrap().per_op, 4);
+    }
+
+    #[test]
+    fn a_block_larger_than_the_cb_streams_one_tile_per_pass() {
+        // One tile of capacity, four iterations: no block, one transaction
+        // per iteration, anchored at the traffic op.
+        let (k, _, _, produce, consume) = looped(1024, 4, false, false);
+        let plan = k.tt_cb_plan();
+        let p = plan.batch(produce).unwrap();
+        assert_eq!((p.per_op, p.hoist), (1, produce));
+        assert_eq!(plan.batch(consume).unwrap().per_op, 1);
+        assert_eq!(plan.produced(p.cb), 4);
+        assert_eq!(plan.consumed(p.cb), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not in a valid section")]
+    fn traffic_in_the_wrong_section_is_loud() {
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        let cb = k.storage(DType::F32, MemScope::Circular, 1024);
+        let zero = k.const_idx(0u32);
+        // A reader-section consume has no producer yet.
+        copy(&mut k, cb, zero, src, zero);
+        k.push_back(Op::TT(TTOp::EndReader));
+        k.push_back(Op::TT(TTOp::EndCompute));
+        let _ = k.tt_cb_plan();
+    }
+
+    #[test]
+    #[should_panic(expected = "produces 1 but consumes 2")]
+    fn an_unbalanced_cb_is_loud() {
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        let cb = k.storage(DType::F32, MemScope::Circular, 4096);
+        let dst = k.param_mut(DType::F32);
+        let zero = k.const_idx(0u32);
+        let two = k.const_idx(2u32);
+        copy(&mut k, src, zero, cb, zero);
+        k.push_back(Op::TT(TTOp::EndReader));
+        let l = k.push_back(Op::Loop { len: two });
+        let _ = l;
+        copy(&mut k, cb, zero, dst, zero);
+        k.push_back(Op::EndLoop);
+        k.push_back(Op::TT(TTOp::EndCompute));
+        let _ = k.tt_cb_plan();
+    }
+
+    #[test]
+    #[should_panic(expected = "single-tile transaction")]
+    fn a_single_tile_transaction_needs_slot_zero() {
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        let cb = k.storage(DType::F32, MemScope::Circular, 4096);
+        let dst = k.param_mut(DType::F32);
+        let zero = k.const_idx(0u32);
+        let slot = k.const_idx(1024u32);
+        copy(&mut k, src, zero, cb, slot);
+        k.push_back(Op::TT(TTOp::EndReader));
+        copy(&mut k, cb, zero, dst, zero);
+        k.push_back(Op::TT(TTOp::EndCompute));
+        let _ = k.tt_cb_plan();
+    }
+
+    #[test]
+    #[should_panic(expected = "non-constant trip count")]
+    fn a_symbolic_trip_count_is_loud() {
+        let mut k = Kernel::new(Dev::Auto);
+        let src = k.param(DType::F32);
+        let cb = k.storage(DType::F32, MemScope::Circular, 4096);
+        let zero = k.const_idx(0u32);
+        let len = k.load(src, zero);
+        k.push_back(Op::Loop { len });
+        copy(&mut k, src, zero, cb, zero);
+        k.push_back(Op::EndLoop);
+        k.push_back(Op::TT(TTOp::EndReader));
+        copy(&mut k, cb, zero, src, zero);
+        k.push_back(Op::TT(TTOp::EndCompute));
+        let _ = k.tt_cb_plan();
     }
 
     #[test]
@@ -6228,6 +6745,102 @@ mod cb_tests {
 }
 
 #[cfg(test)]
+mod reindex_tests {
+    use super::acceptance::tt_kernel;
+    use super::*;
+
+    /// The post-`tt_tile` shape of softmax's max-reduce: an 8-tile grid over
+    /// the output rows, a 32-lane reduce axis, and the 8-iteration loop over
+    /// the reduced axis' tiles. The logical load index is
+    /// `(32*g + row) * 256 + lane + 32*i`.
+    #[test]
+    fn a_reduce_loop_rewrites_to_tile_numbers() {
+        let mut k = tt_kernel();
+        let src = k.param(DType::F32);
+        let dst = k.param_mut(DType::F32);
+        let row_len = k.const_idx(256u32);
+        let eight = k.const_idx(8u32);
+        let thirty_two = k.const_idx(32u32);
+        let k_lane = k.push_back(Op::Unroll { axis: 0, len: 32u16 });
+        let row_lane = k.push_back(Op::Unroll { axis: 1, len: 32u16 });
+        let g = k.push_back(Op::Range { axis: 0, kind: RangeKind::Group(eight) });
+        let g32 = k.push_back(Op::Binary { x: g, y: thirty_two, bop: BOp::Mul });
+        let out_idx = k.push_back(Op::Binary { x: g32, y: row_lane, bop: BOp::Add });
+        let base = k.push_back(Op::Binary { x: out_idx, y: row_len, bop: BOp::Mul });
+        // The loop-carried accumulator, exactly as linearize leaves it: a
+        // Register tile initialized before the loop, updated inside it, and
+        // loaded again for the drain.
+        let acc = k.storage(DType::F32, MemScope::Register, 32);
+        let l = k.push_back(Op::Loop { len: eight });
+        let i32 = k.push_back(Op::Binary { x: l, y: thirty_two, bop: BOp::Mul });
+        let kk = k.push_back(Op::Binary { x: k_lane, y: i32, bop: BOp::Add });
+        let idx = k.push_back(Op::Binary { x: base, y: kk, bop: BOp::Add });
+        let load = k.push_back(Op::Load { src, src_idx: idx });
+        let red = k.push_back(Op::Reduce { x: load, reduce_axis: k_lane, rop: BOp::Max });
+        k.push_back(Op::Store { dst: acc, dst_idx: row_lane, src: red });
+        k.push_back(Op::EndLoop);
+        let acc_out = k.push_back(Op::Load { src: acc, src_idx: row_lane });
+        let store = k.push_back(Op::Store { dst, dst_idx: out_idx, src: acc_out });
+
+        k.tt_reindex();
+
+        // Input tile = grid*8 (8 k-tiles per row group) + loop; the lanes are
+        // the shape carrier.
+        let Op::Load { src_idx, .. } = k.ops[load].op else {
+            panic!("load changed variant")
+        };
+        let s = k.get_strides(src_idx).expect("the rewritten index is affine");
+        assert_eq!(s[&OpId::NULL].1, 0, "the base is the grid/loop, not a const");
+        assert_eq!(s[&g].1, 8192, "a grid step is 8 tiles");
+        assert_eq!(s[&l].1, 1024, "a loop step is one tile");
+        assert_eq!(s[&row_lane].1, 32, "the row lane is a shape carrier");
+        assert_eq!(s[&k_lane].1, 1);
+
+        // Output tile = the grid axis alone; the row is a shape carrier.
+        let Op::Store { dst_idx, .. } = k.ops[store].op else {
+            panic!("store changed variant")
+        };
+        let s = k.get_strides(dst_idx).expect("the rewritten index is affine");
+        assert_eq!(s[&OpId::NULL].1, 0);
+        assert_eq!(s[&g].1, 1024, "one output tile per grid step");
+        assert_eq!(s[&row_lane].1, 32);
+    }
+
+    /// The single-tile reduce keeps its old rewrite: no grid, no loop, so the
+    /// base is 0 and only the shape carrier remains.
+    #[test]
+    fn a_single_tile_reduce_keeps_the_row_carrier() {
+        let mut k = tt_kernel();
+        let src = k.param(DType::F32);
+        let dst = k.param_mut(DType::F32);
+        let row_len = k.const_idx(20u32);
+        let thirty_two = k.const_idx(32u32);
+        let k_lane = k.push_back(Op::Unroll { axis: 0, len: 32u16 });
+        let row_lane = k.push_back(Op::Unroll { axis: 1, len: 32u16 });
+        let base = k.push_back(Op::Binary { x: row_lane, y: row_len, bop: BOp::Mul });
+        let idx = k.push_back(Op::Binary { x: base, y: k_lane, bop: BOp::Add });
+        let load = k.push_back(Op::Load { src, src_idx: idx });
+        let red = k.push_back(Op::Reduce { x: load, reduce_axis: k_lane, rop: BOp::Add });
+        let store = k.push_back(Op::Store { dst, dst_idx: row_lane, src: red });
+
+        k.tt_reindex();
+
+        let Op::Load { src_idx, .. } = k.ops[load].op else {
+            panic!("load changed variant")
+        };
+        let s = k.get_strides(src_idx).expect("affine");
+        assert_eq!(s[&OpId::NULL].1, 0);
+        assert_eq!(s[&row_lane].1, 32);
+        assert_eq!(s[&k_lane].1, 1);
+        let Op::Store { dst_idx, .. } = k.ops[store].op else {
+            panic!("store changed variant")
+        };
+        let s = k.get_strides(dst_idx).expect("affine");
+        assert_eq!(s[&row_lane].1, 32);
+    }
+}
+
+#[cfg(test)]
 mod acceptance {
     use super::*;
     use crate::kernel::Dev;
@@ -6235,7 +6848,7 @@ mod acceptance {
     /// A kernel bound to a Tenstorrent device without owning one: the whole
     /// `device_epilogue` consults `device_info().tenstorrent` and nothing else,
     /// so a pure-IR test can run the real lowering with no simulator.
-    fn tt_kernel() -> Kernel {
+    pub(super) fn tt_kernel() -> Kernel {
         use crate::backend::{DTypeCapability, DeviceInfo};
         use crate::shape::Dim;
         use std::sync::Arc;

@@ -1,15 +1,13 @@
 ## HANDOFF (2026-11-03, end of session) — every elementwise chain is 1 load + 1 store
 
-**Tree state:** committed through `0c75a8ec` (fusion fixes, `log2` rewrite,
+**Tree state:** committed through `c350690d` (fusion fixes, `log2` rewrite,
 `unfold_pows` move, activation gates, the cast lowering, the algebraic `select`
 rewrite, the comparison-into-predicate fold, `exp2` back at `1e-5`, the
-acceptance unit test, the select register/constant reuse) plus uncommitted: the
-`matmul_add` fixes (`zyx/src/codegen/tenstorrent.rs`, `tests/23_tt_lowering.rs`),
-the `tt_tile` contract change and the CB transaction state machine
-(`zyx/src/kernel/tenstorrent.rs`), the `debug` indentation fix
-(`zyx/src/kernel/debug.rs`), the `ZYX_TT_IR` dumps
-(`zyx/src/kernel/autotune.rs`), and this file. **23/23 ttsim gates green**
-(`matmul_add` included), `cargo test --lib` = 83.
+acceptance unit test, the select register/constant reuse, the `matmul_add`
+fixes, the `debug` indentation fix, the `ZYX_TT_IR` dumps) plus uncommitted:
+the `tt_tile` contract change, the CB transaction state machine + batching
+pre-pass, and loop-aware `tt_reindex` (all in `zyx/src/kernel/tenstorrent.rs`),
+and this file. **23/23 ttsim gates green**, `cargo test --lib` = 101.
 
 `23_tt_lowering` has 24 tests. **Only `softmax` is red** (`tt_verify: missing
 EndReader`). That is the next thing.
@@ -61,19 +59,32 @@ for r22 in 0..8 {
 store vec32 r4[r11] = load vec32 r1[r38]
 ```
 
-The remaining softmax blocker is **`tt_reindex`'s `Op::Loop` early return**
-(`tenstorrent.rs:1105`) plus phase 1's index walk, which rejects the loop var
-(`tenstorrent.rs:1573`).
+**`tt_reindex` is loop-aware now.** It no longer bails on `Op::Loop` /
+`Group`; it classifies the load index's variables — the reduce lane (stride 1),
+one 32-lane row axis, grid `Group`s (whole tiles: stride/1024), and at most one
+reduce loop (stride 32 = one tile per iteration) — and rewrites both indices in
+**tile units**:
+
+```
+load  = (Σ grid*tile_stride + i)*1024 + row*32 + lane
+store = (Σ grid*out_tile_stride)*1024 + row*32
+```
+
+The store may drain the reduce directly or an accumulator load (the loop-carried
+`Register` tile). Softmax's IR after the pass is exactly this:
+`r41 = 8*g + i`, `r12 = r41*1024 + (row*32 + k)`, `r45 = g*1024 + row*32`.
 
 **The address model is tiles, not elements.** A TT buffer is a sequence of
 1024-element tiles in 16x16 face order (`tilize_transfer`,
-`backend/tenstorrent/mod.rs:1454`); the traffic unit is one whole tile, and
-`strip_unrolls` zeroes the Unroll axes (they only carry the value's `[32,32]`
-shape). `tt_slice` takes the index's **const term** as the base and the grid
-strides from `1024 x higher group extents`. So loop-aware reindex only has to
-name the **tile number**: with `ntc` tiles along the reduced axis, tile
-`(row_tile, i)` is `row_tile*ntc + i`. The loop is a **CB transaction over K
-tiles**, not an element-offset rewrite.
+`backend/tenstorrent/mod.rs:1454`); the traffic unit is one whole tile, and the
+Unroll axes are only a shape carrier (`strip_unrolls` zeroes them). The loop is
+a **CB transaction over K tiles**, not an element-offset rewrite.
+
+**The remaining softmax blocker is phase 1**: its index walk rejects the loop
+var (`tenstorrent.rs:1573`) and it emits one `Copy` per `Load` with a constant
+CB slot; it must emit the slot as the loop counter (the block `Copy`). And
+`tt_slice` still reconstructs grid strides from group extents — it must trust
+the rewritten index (the user approved this; both run in a fixed order).
 
 ### Circular-buffer transactions (ported from `588110a9`)
 
@@ -107,8 +118,31 @@ Mapping to today's IR:
 loud refusals (reserve mid-transaction, push unmatched, overfill, wait without
 push, leaked transaction at a section end).
 
-**Next:** the batching pre-pass over today's IR (classify `Copy` traffic,
-choose the hoisted blocks), then the wire encoding into the DM list.
+**Done: the batching pre-pass** (`Kernel::tt_cb_plan`, same section). It walks
+the lowered stream once:
+
+- sections advance on `TTOp::EndReader` / `EndCompute`; traffic is any
+  `TTOp::Copy` touching a `Circular` storage (`dst` = produce, `src` =
+  consume; a copy between two CBs is loud, Register copies are ignored);
+- every traffic op starts as a single-tile transaction; at `EndLoop` it is
+  upgraded to a block over the loop when the loop is the *only* traffic on
+  that CB (otherwise "dirty"), the trip is constant, `trip <= CB tiles`, and
+  the CB-side index is the loop counter or 0;
+- a block larger than the CB stays streaming (one tile per pass);
+- totals are per pass (product of enclosing trips) and `produced == consumed`
+  per CB is enforced; a non-constant trip count and a single-tile transaction
+  with a nonzero slot are compile-time refusals;
+- opens/closes anchor at the hoist loop / `EndLoop` (or at the op for a
+  single-tile transaction), sorted by CB.
+
+8 more unit tests: a producer loop becoming one block, a loop-counter index,
+the streaming fallback, the dirty (two ops, one CB) rule, and the five
+refusals.
+
+**Next:** wire it in — phase 1 must emit the CB slot as the loop counter (so a
+loop's traffic becomes one `Copy` with a block index), then the DM list emitter
+expands a block into per-tile entries and emits the `op::CB` credits from
+`CbPlan`'s opens/closes, driving `CbTransactions` to verify each section.
 
 ### The result
 
@@ -266,16 +300,20 @@ adding an activation. It already caught `relu` at 2 loads.
 
 ### Open work
 
-1. **CB transactions: the batching pre-pass** — the softmax blocker, and the
-   next step. `tt_tile` now produces the right shape (see the top section): one
-   tile per loop iteration, `Loop(k_tiles) + Unroll(32)`, grid over output
-   tiles. The transaction state machine is in (`CbState`/`CbTransactions`, see
-   "Circular-buffer transactions"); what remains is the pre-pass over today's
-   IR that classifies the `Copy` traffic per CB, chooses the hoisted blocks
-   (trip count vs CB capacity, slot = index + counter), and anchors the events;
-   then `tt_reindex` can name the tile number (`row_tile*ntc + i`) instead of
-   firing the loop var through an element index. Phase 1's index walk also has
-   to accept the loop var (`tenstorrent.rs:1573`).
+1. **CB transactions: the wiring** — the softmax blocker, and the next step.
+   `tt_tile`, `tt_reindex` (loop-aware, tile units), the state machine and the
+   batching pre-pass (`CbState`/`CbTransactions`/`Kernel::tt_cb_plan`) are in
+   and unit-tested. What remains:
+   - **`tt_slice` must trust the rewritten index** (approved): use its const
+     term and strides instead of rebuilding grid strides from group extents.
+     The index now carries the correct tile strides (`8*g + i` for the input,
+     `g` for the output).
+   - **phase 1**: accept the loop var in the index walk (`tenstorrent.rs:1573`)
+     and emit the CB slot as the loop counter (one block `Copy`), not a
+     constant slot per `Load`;
+   - **the DM-list emitter**: expand a block into per-tile entries and emit the
+     `op::CB` credits from `CbPlan`'s opens/closes, driving `CbTransactions` to
+     verify each section.
 2. **Beyond the simulator** (in rough order): BF16/F16 staging — the backend is
    F32-only and the pinned ttsim models only three 32-bit `(in, out)` DST pairs;
    a **silicon run** (everything so far is ttsim); concurrency/waves (grid
@@ -288,7 +326,7 @@ adding an activation. It already caught `relu` at 2 loads.
 
 ```bash
 cd zyx && cargo build
-cd zyx && AGENT=1 cargo test --lib            # 83, includes the acceptance gate
+cd zyx && AGENT=1 cargo test --lib            # 99, includes the acceptance gate and cb_tests
 cd zyx && AGENT=1 cargo test --lib acceptance # just the 1/1 property
 cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
 cd zyx && BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
