@@ -1,10 +1,10 @@
 ## HANDOFF (2026-11-03) — elementwise parity: sigmoid/exp2/log2 at 1 load + 1 store
 
-**Tree state:** committed at `78878bca` (which carries the fusion fixes, the
-`log2` rewrite, the `unfold_pows` move and the activation gates) plus two
-uncommitted changes: the `Bool`/identity cast lowering in
-`zyx/src/kernel/tenstorrent.rs`, and `cast(cmp) * x` -> `select(cmp, x, 0)` in
-`zyx/src/kernel/algebraic.rs`. 22/22 of the ttsim gates listed under "How to
+**Tree state:** committed through `fbd88805` (fusion fixes, `log2` rewrite,
+`unfold_pows` move, activation gates, the cast lowering, the algebraic
+`select` rewrite) plus two uncommitted pieces: the comparison-into-predicate
+fold in `zyx/src/kernel/tenstorrent.rs`, and the `exp2` gate at `1e-5` plus this
+file. 22/22 of the ttsim gates listed under "How to
 run things" are green, `cargo test --lib` = 82, changed files fmt clean.
 (`23_tt_lowering` has 24 tests; `matmul_add` and `softmax` fail at HEAD too --
 `Zeroacc` CLR_ALL with live DST rows, and `missing EndReader` -- so they are
@@ -20,13 +20,13 @@ out, everything else in `L0..L7`.
 | `sigmoid` | **1** | **1** | **1** |
 | `exp2` | **1** | **1** | **1** |
 | `log2` | **1** | **1** | **1** |
-| `sin_cos` | 1 per kernel | 3 | 3 |
+| `sin_cos` | 1 per kernel | **1** | **1** |
 
 Handwritten reference (metalium-rs): `sigmoid_program` 2 loads + 2 stores (it
-spills `x`), `relu`'s floor is 1 + 1. `exp2` and `log2` now hit that floor, with
+spills `x`), `relu`'s floor is 1 + 1. Every kernel above is at that floor with
 no `tt_lreg_alloc` split. The `sin_cos` *test* compiles **two kernels**
-(`xs.sin()`, `xs.cos()`), so its 6/6 is 3/3 each, with two register splits per
-kernel -- also pressure, not fusion.
+(`xs.sin()`, `xs.cos()`), one replay and 1+1 each (they were 3/3 until the
+comparison-predicate fold below removed their quadrant `Bool` tiles).
 
 ### What made the difference, in one line each
 
@@ -71,14 +71,18 @@ program:
 | `tanh` | 1 | 1 | 1 | 1 | 230 words |
 | `silu` | 1 | 1 | 1 | 1 | 220 words |
 | `gelu` | 1 | 1 | 1 | 1 | 272 words |
-| `elu` | 1 | 1 | 3 | 3 | 288 words |
+| `elu` | 1 | 1 | **1** | **1** | 196 words |
 
 `silu` is the interesting one: `x` is used twice (once directly, once through
 the sigmoid), and it is still 1+1 -- the second use is a register carry, which
-is the segment CSE doing its job.
+is the segment CSE doing its job. `elu` is now 1+1 too: the same bar tt-tiny's
+README sets (`self.elu()` costing what `self.relu()` costs), with no `elu` op
+anywhere -- it is `relu(x) - (1 - exp(x)).relu()` all the way down.
 
-`elu` lowers now, but pays **3 loads / 3 stores** (two register splits) instead
-of 1+1. The cast was the blocker, and it needed a *conversion*, not a fold:
+Getting `elu` there took two general changes, neither of them an activation
+pattern:
+
+The cast was the first blocker, and it needed a *conversion*, not a fold:
 `Tensor::elu` goes through `Tensor::relu` = `cmpgt(0) * x`, so the graph has
 `f32(bool_tile)`. A `Bool` is a **raw 1/0 word** in its tile (the comparison
 programs store with `fmt: INT32`, and `L6 = 1` is "a Bool's true"), so
@@ -89,23 +93,32 @@ why no optimizer could remove it. The `Op::Cast` arm now reads the source's
 dtype) and routes `Bool|I32 -> F32` through `tt_sfp_cast_i32_f32`; same-dtype is
 an alias to the source tile.
 
-The remaining 3/3 is **width**, not fusion: the comparison sequence itself uses
-`L0..L7` (both operands, the three constants, the two magnitude scratches), so
-fusing it with `exp2` and the two `relu` multiplies pushes the peak past eight.
+The next blocker was **width**: after the cast fix `elu` was 1 replay but 3/3,
+because the comparison itself uses `L0..L7` (both operands, the three constants,
+the two magnitude scratches), so fusing it with `exp2` and two multiplies pushed
+the peak past eight.
 
-The first half of the fix is in (`algebraic_simplifications`, general, not
-elu-specific): **`cast(cmp, dtype) * x` becomes `select(cmp, x, 0)`**, because a
-Bool is 0/1 and the product is a pick. The frontend writes every relu-shaped
-activation (`relu`, `leaky_relu`, `selu`, `hard_sigmoid`, and both halves of
-`elu`) that way, and it is the *cast* that forced the whole IEEE comparison
-tile to be materialised for one predicate. `elu`'s body went 288 -> **258
-words**, but it is still 3/3: the compare is the width, so the next half is
-**folding a single-use comparison into the `Select`'s predicate** -- emit
-`SFPSETCC` on the comparison's operands instead of building the Bool tile
-(tt-metal's own relu is exactly that: `SFPLOAD; SFPSETCC(x); SFPMUL; SFPENCC;
-SFPSTORE`). Then relu is ~4 instructions / 2 registers and `elu` should reach
-1+1 without an `elu` op -- which is the bar tt-tiny's README sets
-(`self.elu()` must cost what `self.relu()` costs).
+Both fixes are general (no activation pattern):
+
+1. **`cast(cmp, dtype) * x` -> `select(cmp, x, 0)`** in
+   `algebraic_simplifications` (2026-11-03). A Bool is 0/1, so the product is a
+   pick, and the *cast* was what forced the comparison tile to be materialised
+   for a single predicate. This is the spelling of every relu-shaped activation
+   (`relu`, `leaky_relu`, `selu`, `hard_sigmoid`, both halves of `elu`).
+   `elu`: 288 -> 258 words, still 3/3.
+2. **A single-use comparison folds into its `Select`'s predicate** (in
+   `tt_lower_value`'s `Op::Select` arm). When `cond` has one use and is a
+   comparison, the select emits the predicate *directly* on the comparison's
+   operands (`SFPPUSHC; SFPGT/SFPLE; SFPMOV; SFPPOPC`) instead of building the
+   Bool tile -- `SFPSETCC` on operands, as tt-metal's own relu does. Scalar
+   constant operands (`cmpgt(x, 0)`) are filled with `tt_fill_const`, the same
+   as the `Select` branches. The NaN/`+0` canonicalisation is not emitted: ML
+   semantics, same as `tt_exp2`/`tt_log2`.
+   `elu`: **1 replay, 1 load, 1 store, 196 words**; `sin_cos` (whose quadrant
+   selects were its two splits) also dropped to **1+1 per kernel**.
+
+What is left of `tt_sfp_compare` only runs when a `Bool` is genuinely multi-use
+(several consumers), where the tile has to exist.
 
 ### The pipeline as it stands (`device_epilogue`, `autotune.rs`)
 
@@ -190,37 +203,24 @@ Fusion rules (this session, both are *semantic*, not tuning):
 
 ### Open work, in order
 
-1. **`elu`'s 3 loads / 3 stores are the comparison's width.** The cast lowering
-   is fixed and `bool * x` now lowers as a `Select`, so `elu` (and `relu`,
-   `leaky_relu`, `selu`, `hard_sigmoid`) fuse to one body; what is left is
-   `tt_sfp_compare` holding `L0..L7` by itself. Next: **fold a single-use
-   comparison into its `Select`/mask consumer** (predicate on the operands, no
-   Bool tile) -- a general rewrite on `(Select, Bool)` and `(Mul, Bool)`, not an
-   `elu` pattern. Expected: relu ~4 instructions, `elu` 1+1. Do not "fix" it by
-   shrinking the cone, and do not add an `ELU` kind (tt-tiny's README: ELU must
-   stay a composition).
-2. **`sin_cos`'s cost is pressure, not fusion.** (Corrected -- the old note said
-   "2 replays"; it is **two kernels**, `xs.sin()` and `xs.cos()`, one replay
-   each.) Each kernel has **two register splits** (3 loads / 3 stores): e.g. the
-   sin kernel stores tiles 841 and 656 at body ops ~217/223 and reloads them at
-   ~314/316. Its two `Select`s are the quadrant/sign choice (`q & 1` picks the
-   core, `q >> 1` flips the sign), so the `log2` trick does not apply. Next
-   diagnosis: which values keep the peak over 8 (two-limb pi/2 + quadrant i32 +
-   Taylor core), from the planner's peak, not a guess. The `log2` rewrite is the
-   template if the polynomial can be re-based to a narrower range.
-3. **`tt_sink_const_splats` has a precision bug**: with it, `exp2` is ~5e-5
-   relative; disabled, the same kernel is ~1e-9. Fine for ML, but it is a real
-   defect (suspect: the word-count/`len` bookkeeping when a 1-word load becomes a
-   2-word `SfpConst`, or the constant path). The `exp2` gate was relaxed from
-   `1e-5` to `1e-4` with a comment; do not leave it there once the sink is fixed.
-4. **The acceptance gate**: for a pure elementwise kernel the compiled T1 stream
-   must have one `SFPLOAD` + one `SFPSTORE` per row (`sigmoid`, `exp2` and `log2`
-   already are). Needs a test-visible accessor for the compiled stream (the user
+Closed 2026-11-03: **`tt_sink_const_splats`' precision bug does not reproduce.**
+The `exp2` gate is back at its original `1e-5` and passes with a worst relative
+error of **1.1e-7** (one fp32 ulp). The old ~5e-5 was measured on the
+pre-narrowing body, which still had the five `Select`s and two register splits;
+a truncated 16-bit constant would show >= 1.5e-5, so the sink is not spending
+precision. The sink is still on (the body's constants are `sfp_const`; 1 replay,
+1+1). Keep the `1e-5` gate permanently.
+
+1. **The acceptance gate**: for a pure elementwise kernel the compiled T1 stream
+   must have one `SFPLOAD` + one `SFPSTORE` per row (every kernel in the table
+   above is). Needs a test-visible accessor for the compiled stream (the user
    approved adding one).
 
 Done this session: the two fusion fixes, `exp2` 1/1/1, `log2`'s specials *and*
-its polynomial (1/1/1), the `sin_cos` correction above, and the four activation
-gates (`tanh`/`silu`/`gelu` 1/1/1, `elu` blocked by the no-op cast).
+its polynomial (1/1/1), the four activation gates, the `Bool`/identity cast
+lowering, `cast(cmp) * x` -> `select(cmp, x, 0)`, the comparison-into-predicate
+fold (`elu` and `sin_cos` now 1+1), and the `exp2` gate tightened back to
+`1e-5` (worst 1.1e-7, so the sink's precision bug is closed).
 
 ### How to run things
 

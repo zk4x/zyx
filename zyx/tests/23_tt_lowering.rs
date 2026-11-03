@@ -696,19 +696,23 @@ fn exp2() -> Result<(), ZyxError> {
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
     let mut bad = 0;
+    let mut worst = 0f32;
     for (i, &v) in zv.iter().enumerate().take(32 * 32) {
         let want = xv[i].exp2();
-        // ML approximation: `tt_exp2` drops the five selects (clamps and the
-        // denormal/overflow/NaN specials) so the fused body stays inside eight
-        // lane registers; the measured worst case on this tile is ~5e-5
-        // relative, well below fp32-for-ML needs.
-        if ((v - want) / want).abs() > 1e-4 {
+        // `tt_exp2` drops the five selects (clamps and the denormal/overflow/
+        // NaN specials) as an ML approximation, but the polynomial itself is
+        // fp32-accurate: 1e-5 is the pre-`tt_sink_const_splats` error, and the
+        // sink's constant path must not spend it.
+        let err = ((v - want) / want).abs();
+        worst = worst.max(err);
+        if err > 1e-5 {
             if bad < 10 {
-                println!("z[{i}] = {v}, expected {want}");
+                println!("z[{i}] = {v}, expected {want} (rel {err})");
             }
             bad += 1;
         }
     }
+    println!("exp2 bad: {bad} / {} (worst rel {worst})", 32 * 32);
     assert_eq!(bad, 0, "exp2 lanes off");
 
     Ok(())

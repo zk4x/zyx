@@ -2030,6 +2030,99 @@ impl Kernel {
                 return self.tt_materialize(id, dtype, slot, lower);
             }
             Op::Select { cond, if_true, if_false } => {
+                // A single-use comparison folds into the predicate: the Bool
+                // tile would exist only to become lane flags, and materialising
+                // it costs the whole IEEE comparison program -- ~40
+                // instructions holding `L0..L7`, plus the `NaN`/`+0`
+                // canonicalisation ML does not need. The predicate form is what
+                // tt-metal's own relu/leaky-relu uses (`SFPLOAD; SFPSETCC(x);
+                // SFPMUL; SFPENCC; SFPSTORE`), and it is what keeps a fused
+                // `relu`-composed chain (`elu`) inside the register file.
+                let fold = if lower.rcs.get(&cond).copied().unwrap_or(0) <= 1 {
+                    if let &Op::Binary { x: ca, y: cb, bop } = self.at(cond) {
+                        matches!(bop, BOp::Cmpgt | BOp::Cmpge | BOp::Cmplt | BOp::Eq | BOp::NotEq).then_some((ca, cb, bop))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some((ca, cb, bop)) = fold {
+                    use tt_isa::isa::generated::defs;
+                    let (mov, gt, ple, pushc, popc) = (
+                        defs::SFPMOV.opcode(),
+                        defs::SFPGT.opcode(),
+                        defs::SFPLE.opcode(),
+                        defs::SFPPUSHC.opcode(),
+                        defs::SFPPOPC.opcode(),
+                    );
+                    let sfp = |ops: &mut Vec<Op>, op: u8, args: [u16; 5]| {
+                        ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op, args })));
+                    };
+                    let (dtype, t) = if matches!(self.ops[if_true].op, Op::Const(_)) {
+                        self.tt_fill_const(if_true, id, lower.prologue)?
+                    } else {
+                        self.tt_resolve_dst(if_true, id, lower)?
+                    };
+                    let (_, f) = if matches!(self.ops[if_false].op, Op::Const(_)) {
+                        self.tt_fill_const(if_false, id, lower.prologue)?
+                    } else {
+                        self.tt_resolve_dst(if_false, id, lower)?
+                    };
+                    // A comparison operand may be a scalar constant (`cmpgt(x,
+                    // 0)`); like the `Select` branches, it is filled into a
+                    // tile here rather than resolved.
+                    let (_, a) = if matches!(self.ops[ca].op, Op::Const(_)) {
+                        self.tt_fill_const(ca, id, lower.prologue)?
+                    } else {
+                        self.tt_resolve_dst(ca, id, lower)?
+                    };
+                    let (_, b) = if matches!(self.ops[cb].op, Op::Const(_)) {
+                        self.tt_fill_const(cb, id, lower.prologue)?
+                    } else {
+                        self.tt_resolve_dst(cb, id, lower)?
+                    };
+                    let slot = self.tt_new_dst(dtype, lower.prologue);
+                    // `ne`'s predicate is equality, so it starts from the true
+                    // word and overwrites with the false one; every other kind
+                    // starts from the false word.
+                    let (dflt, pick) = if bop == BOp::NotEq { (L2, L3) } else { (L3, L2) };
+                    let mut ops = self.tt_row_loop(|ops, o| {
+                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
+                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: INT32 }))));
+                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: t, at: o, reg: L2, fmt: INT32 }))));
+                        ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: f, at: o, reg: L3, fmt: INT32 }))));
+                        sfp(ops, mov, [u16::from(dflt), u16::from(L4), 0, 0, 0]);
+                        // `SFPGT [p, q]` is `q > p` and `SFPLE [p, q]` is
+                        // `p <= q` (the first operand is the object), so each
+                        // kind is a pair pick, not an opcode per direction.
+                        let (first, second) = match bop {
+                            BOp::Cmpgt => (gt, [u16::from(L1), u16::from(L0)]),
+                            BOp::Cmpge => (ple, [u16::from(L0), u16::from(L1)]),
+                            BOp::Cmplt => (gt, [u16::from(L0), u16::from(L1)]),
+                            _ => (ple, [u16::from(L0), u16::from(L1)]),
+                        };
+                        sfp(ops, pushc, [0; 5]);
+                        sfp(ops, first, [second[0], second[1], 1, 0, 0]);
+                        if matches!(bop, BOp::Eq | BOp::NotEq) {
+                            // Equality is `a <= b` and `b <= a`.
+                            sfp(ops, pushc, [0; 5]);
+                            sfp(ops, ple, [u16::from(L1), u16::from(L0), 1, 0, 0]);
+                        }
+                        sfp(ops, mov, [u16::from(pick), u16::from(L4), 0, 0, 0]);
+                        sfp(ops, popc, [0; 5]);
+                        if matches!(bop, BOp::Eq | BOp::NotEq) {
+                            sfp(ops, popc, [0; 5]);
+                        }
+                        ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L4, fmt: INT32 }))));
+                    });
+                    let last = ops.pop().expect("the sequence is never empty");
+                    for op in ops {
+                        self.insert_before(id, op);
+                    }
+                    self.ops[id].op = last;
+                    return self.tt_materialize(id, dtype, slot, lower);
+                }
                 let (_, c) = self.tt_resolve_dst(cond, id, lower)?;
                 // A branch may be a scalar constant (`tt_unfold`'s specials):
                 // it has no storage, so it is filled into a tile here.
