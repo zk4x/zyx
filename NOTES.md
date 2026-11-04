@@ -1,3 +1,75 @@
+## HANDOFF (2026-11-04, session 6) — softmax: minimal reproducer is `exp` then `div`
+
+**Tree state:** uncommitted: `kernel/tenstorrent.rs` only (one real fix, below).
+**116 lib tests**, 23/24 gates (softmax is the hang).
+
+### Fixed: the writer-CB retarget was dead code
+
+`tt_dataflow_select` phase 3's direct-drain path (a multi-use value already in
+L1) rewrote the *SSA* `Op::Copy` so the writer CB could be dropped — but phase 1
+had already encoded that copy as `TTOp::Copy`. So the `if let Op::Copy` never
+matched, the encoded copy kept `src = writer_cb`, and the CB was then removed:
+a dangling `OpId` that later panics in `dead_code_elimination`'s worklist
+(`Key OpId(n) has been deleted from the slab`). Both forms are now rewritten and
+`bytes` is recomputed from the new source (`tt_dataflow_select` phase 3).
+
+Found via a reproducer graph (`exp(x - row) / row`); after the fix that graph
+stops crashing and hangs exactly like softmax, which gave the minimal case
+below.
+
+### Ruled out (do not re-try)
+
+1. **The role runner's push window.** Raising `SIM_PUSH_WINDOW` 256× (16 → 4096)
+   changes nothing.
+2. **Missing `SFPNOP`s.** Adding the reference builder's `Program::push` rule
+   (NOP after `SFPMAD`/`SFPMUL`/… when the next op's `VD` read is not seen by
+   the stalling logic) inserts **zero** NOPs in the div body — every pair there
+   stalls automatically — and nothing changes. Reverted.
+
+### The "hang" is a timeout, not a deadlock
+
+`softmax` (256×256) **passes in 16.9 s**. It never hung: the gate exceeds the
+10 s per-test cap. Same for the smaller graphs that looked like hangs:
+
+| graph | wall time |
+|---|---|
+| `x.exp()` on [256,256] (grid 8×8, one kernel) | **10.4 s** |
+| `x.exp() / 2.0` (two kernels) | ~17–20 s |
+| `softmax` (three kernels) | **16.9 s** |
+| `add`/`mul` on [256,256] | < 10 s |
+
+So the condition is **slowness per tile-run**, proportional to the emitted word
+count: the exp's row body is a **230-word block repeat** (body > the 32/64-word
+replay buffer), so the runner *pushes* 230 words × 32 row groups = 7 360 words
+per tile, ×64 tiles ×3 launches ≈ 1.4 M pushes at ~7 µs each in ttsim. Kernels
+with a few-word body (`add`, `div`) are ~100× cheaper.
+
+A `tick(512)` in the middle of that work costs ~0.3 s, which is why it *looked*
+like a stalled instruction; the role is executing, just very slowly, and
+`wait_for_mailbox`'s `RUNNING` is correct throughout.
+
+### Fixed (real bug, unrelated to the timeout)
+
+The writer-CB retarget in `tt_dataflow_select` phase 3 was dead code: it
+rewrote the **SSA** `Op::Copy`, but phase 1 had already encoded it as
+`TTOp::Copy`, so the encoded copy kept `src = writer_cb` while the CB was
+removed — a dangling `OpId` that panics later in `dead_code_elimination`
+(`Key OpId(n) has been deleted from the slab`). Both forms are now rewritten and
+`bytes` follows the new source. Reproduced with `exp(x - row) / row`.
+
+### Next (needs a decision)
+
+1. **Gate budget.** `softmax` is correct; it needs ~17 s on ttsim. Either the
+   gate's shape shrinks (e.g. [128,128]) or the TT gate budget grows. Shrinking
+   the shape is a test change, so it needs an explicit order.
+2. **Emitted program size.** The exp's 230-word block repeat is the cost. The
+   hardware `REPLAY` buffer holds 32/64 words; splitting the exp body into
+   replay-sized row loops would cut the push count ~32×. Only the last op of a
+   row loop carries the `Dst` stepping modifier, so a split needs its own
+   address stepping — a real emitter project, not a one-liner.
+3. ttsim does not implement the PC-snapshot registers (`0xffb13144`), so a
+   genuinely stalled role could not be located; that is still worth adding.
+
 ## HANDOFF (2026-11-04, session 5) — emission is out of the backend
 
 **Tree state:** uncommitted: the module move (renames + path/type edits; see

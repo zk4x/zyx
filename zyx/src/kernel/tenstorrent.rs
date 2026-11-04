@@ -2306,11 +2306,26 @@ impl Kernel {
                     if self.is_circular(storage) && storage != *base {
                         // Multi-use value already in L1: drain it directly by
                         // retargeting the planned copy, and drop the writer CB
-                        // it replaces.
+                        // it replaces. The drain may already be encoded
+                        // (`tt_dataflow_select` phase 1 runs before this), so
+                        // both forms are rewritten and the byte count follows
+                        // the tile it now moves.
                         let drain = drain_of[base];
                         let zero = self.insert_const_idx_before(drain, 0i64);
-                        if let Op::Copy { dst, dst_idx, .. } = self.ops[drain].op {
-                            self.ops[drain].op = Op::Copy { src: storage, src_idx: zero, dst, dst_idx };
+                        let Some(bytes) = (self.dtype(storage).bit_size() as u32 / 8).checked_mul(1024) else {
+                            return;
+                        };
+                        match &mut self.ops[drain].op {
+                            Op::Copy { src, src_idx, .. } => {
+                                *src = storage;
+                                *src_idx = zero;
+                            }
+                            Op::TT(TTOp::Copy { src, src_idx, bytes: b, .. }) => {
+                                *src = storage;
+                                *src_idx = zero;
+                                *b = bytes;
+                            }
+                            other => unreachable!("the planned drain is not a copy: {other:?}"),
                         }
                         self.remove_op(*base);
                     } else if !self.is_circular(storage) {
