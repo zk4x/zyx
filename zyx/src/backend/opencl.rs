@@ -764,7 +764,16 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         get_program_build_data(program, devices[0], clGetProgramBuildInfo, CL_PROGRAM_BUILD_LOG);
                                     match build_log {
                                         Ok(build_log) => {
-                                            panic!("{e:?} {}", String::from_utf8_lossy(&build_log));
+                                            // A build failure is a normal backend
+                                            // error: return it with the driver
+                                            // log. Panicking here would kill the
+                                            // worker and turn every later channel
+                                            // send into a second panic.
+                                            let _ = reply.send(Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("{e} {}", String::from_utf8_lossy(&build_log)).into(),
+                                            }));
+                                            continue 'work_thread_loop;
                                         }
                                         Err(status) => {
                                             let _ = reply.send(Err(status.check(ErrorStatus::KernelCompilation).err().unwrap()));

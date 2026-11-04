@@ -1190,6 +1190,9 @@ mod tests {
     /// (v == tokens[b,p])`. The loop must fold.
     #[test]
     fn test_llama_onehot_loop_folds() {
+        if !crate::Tensor::dtype_capability(DType::F16).any() {
+            return;
+        }
         let mut k = Kernel::new(Dev::Auto);
 
         let r67 = k.param(DType::U32);

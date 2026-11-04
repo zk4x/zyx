@@ -309,12 +309,26 @@ impl Kernel {
         if self.iter_unordered().any(|(_, op)| matches!(op, Op::Storage { scope: MemScope::Local, .. } | Op::Barrier)) {
             return Box::new(PadIndex { factors: Vec::new() });
         }
+        let info = self.device_info();
+        // Local thread budget: one length per local axis, as the split pass
+        // counts it. Padding a local axis changes the launched block size, so
+        // a factor is only offered when the padded total still fits.
+        let mut local_axis_lens: Vec<(u32, u32)> = Vec::new();
+        for (_, op) in self.iter_unordered() {
+            if let Op::Range { axis, kind: RangeKind::Local(len) } = *op
+                && !local_axis_lens.iter().any(|&(a, _)| a == axis)
+            {
+                local_axis_lens.push((axis, len));
+            }
+        }
+        let used_threads: u64 = local_axis_lens.iter().map(|&(_, len)| u64::from(len)).product();
+
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Range { kind, .. } => match kind {
+                Op::Range { axis, kind } => match kind {
                     // Symbolic lengths skip only when provably a multiple.
                     // Boolean lengths are 0/1 flags, never pad candidates.
                     RangeKind::Group(len) => {
@@ -327,10 +341,20 @@ impl Kernel {
                         }
                     }
                     RangeKind::Local(len) => {
-                        let len = Dim::from(len);
-                        for pad_to in [8, 16, 32] {
-                            if len % pad_to != 0 {
-                                factors.push((op_id, pad_to));
+                        let current_len = u64::from(len);
+                        // Every other local axis keeps its threads; this one
+                        // grows to the padded length.
+                        let other_threads = used_threads / current_len;
+                        let max_per_axis = info.max_local_work_dims.get(axis as usize).copied().unwrap_or(0);
+                        for pad_to in [8u32, 16, 32] {
+                            let pad = u64::from(pad_to);
+                            if current_len % pad != 0 {
+                                let padded_len = current_len.div_ceil(pad) * pad;
+                                if padded_len <= u64::from(max_per_axis)
+                                    && other_threads.saturating_mul(padded_len) <= u64::from(info.max_local_threads)
+                                {
+                                    factors.push((op_id, Dim::from(pad_to)));
+                                }
                             }
                         }
                     }

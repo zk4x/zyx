@@ -75,6 +75,9 @@ fn q4k_plane_pack() -> Result<(), ZyxError> {
 
 #[test]
 fn q4k_dmin_bitcast() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() || !Tensor::dtype_capability(DType::BF16).any() {
+        return Ok(());
+    }
     // Byte pairs -> U16 values -> F16 bits -> BF16 values, exact.
     let bytes: Vec<u8> = vec![0x00, 0x3c, 0x00, 0x38, 0x34, 0x56, 0x00, 0x00];
     let t = Tensor::from_vec(bytes, [4, 2])?;
@@ -91,6 +94,9 @@ fn q4k_dmin_bitcast() -> Result<(), ZyxError> {
 
 #[test]
 fn q4k_u8_to_bf16_cast() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::BF16).any() {
+        return Ok(());
+    }
     let v: Vec<u8> = (0..32).map(|i| (i * 7 + 3) as u8).collect();
     let t = Tensor::from_vec(v.clone(), [4, 8])?;
     let f: Vec<zyx::bf16> = t.cast(DType::BF16).to_vec()?;
@@ -102,6 +108,9 @@ fn q4k_u8_to_bf16_cast() -> Result<(), ZyxError> {
 
 #[test]
 fn q4k_bf16_bcast_mul() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::BF16).any() {
+        return Ok(());
+    }
     let a: Vec<f32> = vec![1.0, 0.5, 2.0, 3.0];
     let b: Vec<f32> = (0..32).map(|i| i as f32 + 1.0).collect();
     let ta = Tensor::from_vec(a.clone(), [4, 1])?.cast(DType::BF16);
@@ -119,6 +128,9 @@ fn q4k_bf16_bcast_mul() -> Result<(), ZyxError> {
 
 #[test]
 fn q4k_repack_whole() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() || !Tensor::dtype_capability(DType::BF16).any() {
+        return Ok(());
+    }
     // 16 super-blocks = 64x64 weights = 4 tiles = 1 page. Full pipeline
     // inline, byte-exact, strided per-page planes like `repack_q4k`.
     let (rows, cols) = (64i64, 64i64);
@@ -245,6 +257,9 @@ fn q4k_repack_whole() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_q3k_minimal() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     // Minimal structural reproducer: single zeroed Q3_K block.
     let t = Tensor::from_vec(vec![0u8; 110], [1i64, 110i64])?;
     let got = t.dequantize(QDType::Q3_K, DType::F32)?.to_vec::<f32>()?;
@@ -254,6 +269,9 @@ fn dequantize_q3k_minimal() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_4bit() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     // Reference vectors from gguf-py (one fixed-seed block per type,
     // ~10 evenly spaced spot checks).
     let cases: &[(QDType, &[u8], &[(usize, f32)])] = &[
@@ -377,6 +395,9 @@ fn dequantize_4bit() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_5bit() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     let cases: &[(QDType, &[u8], &[(usize, f32)])] = &[
         (
             QDType::Q5_0,
@@ -459,6 +480,9 @@ fn dequantize_5bit() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_8bit() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     // Q8_1 and Q8_K have no gguf-py class; vectors come from the 2-line
     // manual NumPy formulas (f16/f32 scale times signed bytes).
     let cases: &[(QDType, &[u8], &[(usize, f32)])] = &[
@@ -550,6 +574,9 @@ fn dequantize_8bit() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_2bit() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     let cases: &[(QDType, &[u8], &[(usize, f32)])] = &[
         (
             QDType::Q2_K,
@@ -654,6 +681,9 @@ fn dequantize_2bit() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_3bit() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     let cases: &[(QDType, &[u8], &[(usize, f32)])] = &[
         (
             QDType::Q3_K,
@@ -740,6 +770,9 @@ fn dequantize_3bit() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_1bit() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     let cases: &[(QDType, &[u8], &[(usize, f32)])] = &[
         (
             QDType::IQ1_S,
@@ -801,6 +834,9 @@ fn dequantize_1bit() -> Result<(), ZyxError> {
 
 #[test]
 fn dequantize_6bit() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
     let cases: &[(QDType, &[u8], &[(usize, f32)])] = &[(
         QDType::Q6_K,
         &[
