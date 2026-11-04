@@ -1073,8 +1073,4 @@ impl Kernel {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::DType;
-    use crate::kernel::{Dev, Kernel, MemScope, Op, TTOp};
-    use crate::types::{TinyString, TinyVec};
-}
+mod tests {}

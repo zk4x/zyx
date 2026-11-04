@@ -106,15 +106,12 @@ pub struct WGPUDevice {
     programs: Slab<DeviceProgramId, WGPUProgram>,
     queue: Arc<wgpu::Queue>,
     /// Pending micro-batch window: launches accumulate here in program order
-    /// until MICRO_BATCH_WINDOW is reached (or a sync point arrives), then
+    /// until the window is flushed (or a sync point arrives), then
     /// the whole window is recorded into ONE command encoder and submitted
     /// with a single `queue.submit` (the single in-order queue preserves
     /// ordering — no waits are needed).
     pending: Vec<(DeviceProgramId, Vec<LaunchArg>)>,
 }
-
-/// Pending commands accumulate until the micro-batch window is flushed.
-const MICRO_BATCH_WINDOW: usize = 100;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -262,9 +259,6 @@ pub(super) fn device_count() -> u16 {
 }
 
 impl WGPUMemoryPool {
-    #[allow(clippy::unused_self)]
-    pub const fn deinitialize(&mut self) {}
-
     pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
@@ -404,15 +398,8 @@ impl WGPUMemoryPool {
 }
 
 impl WGPUDevice {
-    #[allow(clippy::unused_self)]
-    pub const fn deinitialize(&mut self) {}
-
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.dev_info.clone()
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -561,19 +548,6 @@ impl WGPUDevice {
         // Staging is caller-owned: release it through the held guard
         // (Pool::release would re-lock the held host pool).
         hpool.release(stage);
-        Ok(())
-    }
-
-    /// Fire-and-forget launch: appended to the micro-batch window; the whole
-    /// window is recorded into one command encoder and submitted with a
-    /// single `queue.submit` when it flushes.
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
-        debug_assert_eq!(pool_handle, self.memory_pool);
-        self.pending.push((program_id, args.to_vec()));
-        if self.pending.len() >= MICRO_BATCH_WINDOW {
-            self.flush_window()?;
-        }
         Ok(())
     }
 

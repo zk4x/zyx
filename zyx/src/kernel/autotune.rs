@@ -301,7 +301,7 @@ fn sample_best<'a>(items: &'a [OptSeq], exhausted: &Set<OptSeq>, rng: &mut Rng) 
 ///
 /// Explores optimization sequences over the seed kernels, ranking candidates
 /// with the cost closure and measuring the most promising ones on the device.
-#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 #[derive(Debug, Clone, SerBin, DeBin, nanoserde::DeJson)]
 #[nserde(default)]
 pub struct BeamSearch {

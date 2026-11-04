@@ -3,6 +3,12 @@
 
 //! Python bindings for zyx - updated for symbolic shapes
 
+// Every entry point here is a thin `*_py` forwarder to an already-documented
+// Rust method on `Tensor`, `Tape`, `Kernel`, ...; the Python name lives in
+// `#[pyo3(name = "...")]`, so repeating the doc comment on the shim would only
+// duplicate the real one.
+#![allow(missing_docs)]
+
 use crate::DebugMask;
 use crate::Dev;
 use crate::GGUFMetadataValue;
@@ -1436,6 +1442,7 @@ impl Tensor {
     }
 
     #[pyo3(name = "shrink")]
+    #[allow(unused_variables)]
     pub fn shrink_py(&self, dims: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         // shrink expects ranges, simplified: accept list of (start,end)
         // For now not fully implemented; use slice
@@ -1942,7 +1949,7 @@ impl Tensor {
 // device bindings
 /// Python-visible device handle. Construct with `Dev.cpu()`, `Dev.cuda(0)`, ...
 /// and pass to `Tensor.to()` or `PyKernel()` instead of fragile integer ordinals.
-#[pyo3::pyclass(name = "Dev")]
+#[pyo3::pyclass(name = "Dev", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PyDev(pub Dev);
 
@@ -2204,7 +2211,7 @@ pub fn register_dtype(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// Re-export helper for zyx-py to register Tape class.
-pub fn register_tape(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn register_tape(_m: &Bound<'_, PyModule>) -> PyResult<()> {
     // already registered via register_tensor
     Ok(())
 }
