@@ -727,7 +727,14 @@ pub enum TTOp {
     /// counter is below its maximum (`SEMWAIT` C1). A counting hand-off on a
     /// 4-bit counter would otherwise wrap when one role runs more than fifteen
     /// epochs ahead of the other; this is the producer's half of the bound.
-    WaitBelowMax { sem: u8, before: u8, role: u8 },
+    WaitBelowMax {
+        /// Semaphore the wait is on.
+        sem: u8,
+        /// The producer role the wait holds back.
+        before: u8,
+        /// The role that runs the `SEMWAIT`.
+        role: u8,
+    },
     /// One recorded row loop (`REPLAY`): the next `len` instruction words of
     /// this role run once while being recorded, then `count - 1` more times.
     /// The body's last `Dst` access steps by two rows per iteration through
@@ -735,7 +742,12 @@ pub enum TTOp {
     /// replayed for the rest. `len` is a **word** count (a 32-bit `SFPLOADI`
     /// constant is two words) and must fit the replay buffer; `count` is 32
     /// for a 64-row tile. Operand-free: the body follows this marker.
-    Replay { len: u16, count: u16 },
+    Replay {
+        /// Body length in instruction words, including two-word constants.
+        len: u16,
+        /// How many times the body runs (the recording run included).
+        count: u16,
+    },
     /// The compute core's T0 program: raw instruction words in emission
     /// order, already encoded by codegen. The launch pushes them into the
     /// role's program slot; nothing decodes them. Operand-free effect like

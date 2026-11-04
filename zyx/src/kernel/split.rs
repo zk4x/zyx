@@ -35,6 +35,7 @@ pub enum SplitMode {
     /// Secondary part is a local thread range.
     Local,
     /// Secondary part is a nested group range.
+    #[allow(dead_code)] // no caller splits by group yet; `split` still handles it
     Group,
     /// Secondary part is unroll lanes; the lane axis is the next free one
     /// at apply time.

@@ -654,6 +654,7 @@ impl<'a> TtSection<'a> {
     /// Append one word to the role stream of the last emitted instruction.
     /// Semaphore ops carry no role of their own: a `Post` after an unpack is
     /// the unpack role's, one after a math program the math role's.
+    #[allow(dead_code)] // kept for callers that follow the last emitted role; `push_role_word_for` is the explicit form
     fn push_role_word(&mut self, word: u32) {
         match self.last_role {
             0 => self.native_t0.push(word),
@@ -1006,7 +1007,6 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             }
             Op::TT(TTOp::Unpacr { src, unit, count, flip }) => {
                 use crate::backend::tenstorrent::kern::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
-                use tt_isa::backend::{Before, cond, stallwait, wait_for_unpacker0, wait_for_unpacker1};
                 use tt_isa::cfg::generated::{alu, thcon};
                 if *count != 1024 {
                     return Err(sec.err(format!("unpacr {id:?} of {count} datums: only whole tiles are wired up")));

@@ -637,27 +637,47 @@ impl Kernel {
   }
   float r; memcpy(&r, &f, sizeof(r)); return r;
 }
+// Round to nearest, ties to even -- the same conversion `__float2half` and
+// `f16::from_f32` perform. Truncating here biases every store downwards, so a
+// reduction that stores its accumulator in F16 loses about half an ULP per
+// term and diverges on long sums.
 static inline unsigned short f32tof16(float v) {
   unsigned int f; memcpy(&f, &v, sizeof(f));
   unsigned int sign = (f >> 16) & 0x8000;
   unsigned int exp = (f >> 23) & 0xFF;
   unsigned int mantissa = f & 0x007FFFFF;
-  unsigned short h;
-  if (exp == 0) { h = (unsigned short)sign; }
-  else if (exp == 255) { h = (unsigned short)(sign | 0x7C00 | (mantissa >> 13)); }
-  else {
-    int new_exp = (int)exp - 127 + 15;
-    if (new_exp >= 31) { h = (unsigned short)(sign | 0x7C00); }
-    else if (new_exp <= 0) { h = (unsigned short)sign; }
-    else { h = (unsigned short)(sign | (new_exp << 10) | (mantissa >> 13)); }
+  if (exp == 255) { return (unsigned short)(sign | 0x7C00 | (mantissa ? 0x0200 : 0)); }
+  int new_exp = (int)exp - 127 + 15;
+  if (new_exp >= 31) { return (unsigned short)(sign | 0x7C00); }
+  if (new_exp <= 0) {
+    // Subnormal (or zero): shift the hidden bit out and round what remains.
+    if (new_exp < -10) { return (unsigned short)sign; }
+    mantissa |= 0x00800000;
+    int shift = 14 - new_exp;
+    unsigned int m = mantissa >> shift;
+    unsigned int rem = mantissa & ((1u << shift) - 1);
+    unsigned int half = 1u << (shift - 1);
+    if (rem > half || (rem == half && (m & 1u))) { m++; }
+    return (unsigned short)(sign | m);
   }
-  return h;
+  unsigned int m = mantissa >> 13;
+  unsigned int rem = mantissa & 0x1FFFu;
+  if (rem > 0x1000u || (rem == 0x1000u && (m & 1u))) { m++; }
+  return (unsigned short)(sign | ((unsigned int)new_exp << 10) + m);
 }
 static inline float bf16tof32(unsigned short h) {
   unsigned int b = (unsigned int)h << 16; float r; memcpy(&r, &b, sizeof(r)); return r;
 }
+// Round to nearest, ties to even, like `__float2bfloat16`. The discarded 16
+// bits are added back before the shift; truncation would bias every store
+// downwards and make long BF16 reductions drift.
 static inline unsigned short f32tobf16(float v) {
-  unsigned int b; memcpy(&b, &v, sizeof(b)); return (unsigned short)(b >> 16);
+  unsigned int b; memcpy(&b, &v, sizeof(b));
+  if ((b & 0x7F800000u) == 0x7F800000u && (b & 0x007FFFFFu)) {
+    return (unsigned short)((b >> 16) | 0x0040u); // quiet NaN, keep it a NaN
+  }
+  b += 0x7FFFu + ((b >> 16) & 1u);
+  return (unsigned short)(b >> 16);
 }
 "
             .to_string()

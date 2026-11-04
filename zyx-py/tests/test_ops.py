@@ -750,6 +750,32 @@ def test_mm(spec, dtype):
     run_spec(spec, dtype)
 
 
+def test_sum_accumulator_dtype():
+    """`sum` adds in `acc_dtype`, then restores the element dtype.
+
+    The pattern's running total leaves f16's range while the exact sum is
+    zero: a per-term f16 accumulator saturates to inf and stays there, while
+    an f32 accumulator (f16's `acc_dtype`) returns 0. Torch and tinygrad both
+    return 0 and both return f16, so this pins both the accumulator and the
+    result dtype.
+    """
+    pat = np.array([60000.0, 60000.0, -60000.0, -60000.0] * 32, dtype=np.float16)
+    z = make_zyx(pat, "f16").sum()
+    t = torch.sum(torch.from_numpy(pat))
+    assert z.dtype == zyx.DType.F16, f"sum dtype {z.dtype}, expected f16"
+    assert float(np.asarray(z.numpy())) == 0.0, "f16 reduction did not accumulate in f32"
+    assert float(np.asarray(z.numpy())) == float(t), f"zyx {z.numpy()} != torch {t}"
+
+
+def test_mean_accumulator_dtype():
+    """`mean` inherits the wide accumulator from `sum` and stays in f16."""
+    pat = np.array([60000.0, 60000.0, -60000.0, -60000.0] * 32, dtype=np.float16)
+    z = make_zyx(pat, "f16").mean()
+    t = torch.mean(torch.from_numpy(pat))
+    assert z.dtype == zyx.DType.F16, f"mean dtype {z.dtype}, expected f16"
+    assert float(np.asarray(z.numpy())) == float(t), f"zyx {z.numpy()} != torch {t}"
+
+
 @param(CONV_OPS)
 def test_conv(spec, dtype):
     run_spec(spec, dtype)

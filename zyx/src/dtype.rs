@@ -127,6 +127,27 @@ impl DType {
         }
     }
 
+    /// Accumulator dtype for a sum of this dtype.
+    ///
+    /// The sum itself returns this dtype (the caller casts back), but the
+    /// additions run in a wider one, so a long reduction does not round on
+    /// every term. Mirrors tinygrad's `sum_acc_dtype`: unsigned integers
+    /// widen to at least `U32`, signed integers and `Bool` to at least `I32`,
+    /// and floats to at least `F32` (`F64` stays `F64`). `F8` has no
+    /// accumulator of its own; it sums in `F32` like the other small floats.
+    #[must_use]
+    pub const fn acc_dtype(self) -> DType {
+        use DType::*;
+        match self {
+            Bool | I8 | I16 | I32 => I32,
+            I64 => I64,
+            U8 | U16 | U32 => U32,
+            U64 => U64,
+            F8E4M3 | F8E5M2 | F16 | BF16 | F32 => F32,
+            F64 => F64,
+        }
+    }
+
     /// Is `self -> dtype` cast value-preserving for every input?
     ///
     /// Used by Cast-of-Cast folding: collapsing `Cast(Cast(a→B)→C)` into

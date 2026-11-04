@@ -15,7 +15,7 @@
 //! These optimizations reduce redundant computations and improve performance.
 
 use super::autotune::Optimization;
-use crate::kernel::{Kernel, Op, OpId, TTOp};
+use crate::kernel::{Kernel, Op, OpId};
 use crate::{DType, Map, Set};
 
 /// Reassociate commutative operations (addition, multiplication)
@@ -102,7 +102,6 @@ impl Kernel {
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Copy { .. }
-                | Op::TT(_)
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Storage { .. } => loop_depth,
@@ -183,7 +182,6 @@ impl Kernel {
                 | Op::Load { .. }
                 | Op::Store { .. }
                 | Op::Copy { .. }
-                | Op::TT(_)
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Param { .. }

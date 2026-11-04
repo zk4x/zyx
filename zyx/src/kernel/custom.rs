@@ -23,7 +23,6 @@ use crate::backend::{Cmd, CmdQueue, DeviceInfo, LaunchArg, Placement, PlanDim, P
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
-use crate::kernel::TTOp;
 use crate::kernel::{
     BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp,
     ops::TileDim,
@@ -1063,7 +1062,7 @@ impl Kernel {
     /// slot filled by render. `x`/`y` are circular (`load_circular`)
     /// tiles. The op programs the unpacker itself and cannot consume
     /// DST registers.
-    pub fn matmul_tile(&mut self, x: OpId, y: OpId) -> OpId {
+    pub fn matmul_tile(&mut self, _x: OpId, _y: OpId) -> OpId {
         todo!("matmul_tile builder pending redesign")
     }
 
@@ -1085,7 +1084,7 @@ impl Kernel {
     /// lowered with its scaler CB by `tt_dataflow_select`. `x` is any rank-2
     /// (tile-shaped) value;
     /// CB attachment is the transport passes' job, never the builder's.
-    pub fn reduce_tile(&mut self, x: OpId, rop: BOp, kind: TileDim) -> OpId {
+    pub fn reduce_tile(&mut self, x: OpId, _rop: BOp, _kind: TileDim) -> OpId {
         debug_assert!(self.shape(x).len() == 2, "reduce_tile: x {x} is not a tile value");
         todo!("reduce_tile builder pending redesign")
     }

@@ -404,6 +404,7 @@ fn tt_plan_splits(body: &[(Set<u16>, Set<u16>)], effects: &[TtFlags], budget: us
 /// the caller stores it at each definition and reloads it before each use.
 /// Returns the assignment and the names to spill, or `None` when more than
 /// `max_spills` values would have to be spilled.
+#[allow(dead_code)] // exercised by the register-allocator unit tests; the fusion calls `tt_plan_spills`
 fn tt_alloc_spill(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(Map<u16, u8>, Vec<u16>)> {
     // Which values go to memory: the ones that are live at the body's peak but
     // not used there. This is the peak, not the interval start -- a straight
@@ -461,6 +462,7 @@ fn tt_alloc_spill(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(M
 /// instruction and at each read (that is what materialization produces: one
 /// store at the definition, one reload per read), so spilling removes it from
 /// every other point.
+#[allow(dead_code)] // called by `tt_alloc_spill`, itself test-only for now
 fn tt_peak_spills(body: &[(Set<u16>, Set<u16>)]) -> Vec<u16> {
     let mut def: Map<u16, i64> = Map::default();
     let mut last: Map<u16, i64> = Map::default();
@@ -562,6 +564,7 @@ fn tt_peak_spills(body: &[(Set<u16>, Set<u16>)]) -> Vec<u16> {
 /// number of words the spills will add, or `None` when more than `max_spills`
 /// values would have to be spilled. The fusion uses this to decide whether a
 /// cone is worth keeping before any op is touched.
+#[allow(dead_code)] // exercised by the register-allocator unit tests until the fusion calls it
 fn tt_plan_spills(body: &[(Set<u16>, Set<u16>)], max_spills: usize) -> Option<(usize, Vec<u16>)> {
     let mut body: Vec<(Set<u16>, Set<u16>)> = body.to_vec();
     let mut next = body.iter().flat_map(|(r, w)| r.iter().chain(w)).copied().filter(|r| *r >= 16).max().map_or(16, |m| m + 1);
@@ -1507,6 +1510,9 @@ impl Kernel {
         bin(self, q, one, BOp::Add)
     }
 
+    /// Lower the remaining plain ops of a TT kernel to their `TTOp` form:
+    /// elementwise/select to SFPU programs, copes to L1 moves, and the
+    /// phase sections around the reader and compute roles.
     pub fn tt_dataflow_select(&mut self) {
         if !self.device_info().tenstorrent {
             return;
@@ -1666,7 +1672,7 @@ impl Kernel {
             // inside a loop publishes its block from outside that loop, so the
             // anchor is the loop header, not the load.
             let anchor = match loads[0] {
-                (load, _, _, _, hoist) if !hoist.is_null() => hoist,
+                (_load, _, _, _, hoist) if !hoist.is_null() => hoist,
                 (load, ..) => load,
             };
             // One CB per DRAM param, in first-load order; slots counted up front.
@@ -2062,7 +2068,7 @@ impl Kernel {
         let Op::Const(c) = self.ops[konst].op else {
             return None;
         };
-        let (bits, fmt) = match c {
+        let (_bits, _fmt) = match c {
             Constant::F32(b) => (u32::from_le_bytes(b), FP32),
             Constant::I32(v) => (v as u32, INT32),
             other => todo!("a fill of a {other:?} constant has no native form"),
@@ -2317,7 +2323,7 @@ impl Kernel {
                     // starts from the false word.
                     let (dflt, pick) = if bop == BOp::NotEq { (rt, rf) } else { (rf, rt) };
                     let mut ops = self.tt_row_loop(|ops, o| {
-                        let mut put = |ops: &mut Vec<Op>, p: Put, reg: u8| match p {
+                        let put = |ops: &mut Vec<Op>, p: Put, reg: u8| match p {
                             Put::Load(slot) => {
                                 ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot, at: o, reg, fmt: INT32 }))));
                             }
@@ -2559,7 +2565,7 @@ impl Kernel {
         // `0`/`1` either way: `x ^ 1`, on raw bits.
         let xor = tt_isa::isa::generated::defs::SFPXOR.opcode();
         ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L3, bits: 1 }))));
-        let body = self.tt_row_loop(|mut ops, o| {
+        let body = self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L2, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: xor, args: [u16::from(L3), u16::from(L2), 0, 0, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -2574,7 +2580,7 @@ impl Kernel {
         // `d = 1 * a + b` (`SFPMAD` with the constant-one register), the
         // same words `Program::add` emits.
         let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
-        self.tt_row_loop(|mut ops, o| {
+        self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mad, args: [LREG_ONE, u16::from(L0), u16::from(L1), u16::from(L2), 0] })));
@@ -2588,7 +2594,7 @@ impl Kernel {
         // `d = 1 * a - b`: `SFPMAD` with the constant-one register and a
         // negated addend, the same words `Program::sub` emits.
         let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
-        self.tt_row_loop(|mut ops, o| {
+        self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mad, args: [LREG_ONE, u16::from(L0), u16::from(L1), u16::from(L2), 2] })));
@@ -2604,7 +2610,7 @@ impl Kernel {
         // zero negated (`Program::mul`): a plain `SFPMUL` adds a `+0`,
         // which turns a `-0` product into `+0`.
         let mad = tt_isa::isa::generated::defs::SFPMAD.opcode();
-        self.tt_row_loop(|mut ops, o| {
+        self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: b, at: o, reg: L1, fmt: FP32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mad, args: [u16::from(L0), u16::from(L1), LREG_ZERO, u16::from(L2), 2] })));
@@ -2620,7 +2626,7 @@ impl Kernel {
         // stays one (`SFPMOV` with `Mod1 = 1`). Loaded and stored as
         // `Int32`: an FP32 store would flush a denormal.
         let mov = tt_isa::isa::generated::defs::SFPMOV.opcode();
-        self.tt_row_loop(|mut ops, o| {
+        self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: mov, args: [u16::from(L0), u16::from(L2), 1, 0, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -2636,7 +2642,7 @@ impl Kernel {
         let mut ops: Vec<Op> = Vec::new();
         let and = tt_isa::isa::generated::defs::SFPAND.opcode();
         ops.push(Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L3, bits: 0x7fff_ffff }))));
-        let body = self.tt_row_loop(|mut ops, o| {
+        let body = self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: and, args: [u16::from(L3), u16::from(L0), u16::from(L2), 1, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -2649,7 +2655,7 @@ impl Kernel {
     fn tt_sfp_int_not(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
         // `integer::body`'s `NOT`: bitwise, raw bits.
         let not = tt_isa::isa::generated::defs::SFPNOT.opcode();
-        self.tt_row_loop(|mut ops, o| {
+        self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::Sfp(TTSfpInsn { op: not, args: [u16::from(L0), u16::from(L2), 0, 0, 0] })));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L2, fmt: INT32 }))));
@@ -3012,7 +3018,7 @@ impl Kernel {
     /// and no SFPU instruction: the copy gives the value its own storage and
     /// target dtype, and a later pass can coalesce it away.
     fn tt_sfp_bitcast(&mut self, a: OpId, slot: OpId) -> Vec<Op> {
-        self.tt_row_loop(|mut ops, o| {
+        self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot, at: o, reg: L0, fmt: INT32 }))));
         })
@@ -3040,7 +3046,7 @@ impl Kernel {
         };
         let mut ops: Vec<Op> = Vec::new();
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        let body = self.tt_row_loop(|mut ops, o| {
+        let body = self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: a, at: o, reg: L0, fmt: INT32 }))));
             sfp(ops, mov, [u16::from(L0), u16::from(L1), 0, 0, 0]);
             sfp(ops, pushc, [0; 5]);
@@ -3141,7 +3147,7 @@ impl Kernel {
         };
         let mut ops: Vec<Op> = Vec::new();
         sfp(&mut ops, defs::SFPENCC.opcode(), [3, 0, 10, 0, 0]);
-        let body = self.tt_row_loop(|mut ops, o| {
+        let body = self.tt_row_loop(|ops, o| {
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: cond, at: o, reg: L0, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: t, at: o, reg: L1, fmt: INT32 }))));
             ops.push(Op::TT(TTOp::SfpLoad(Box::new(TTSfpLoad { slot: f, at: o, reg: L2, fmt: INT32 }))));
@@ -3644,7 +3650,7 @@ impl Kernel {
                         }
                     }
                 }
-                let Some(((pa, dtype_a), (pb, dtype_b), k)) = fab else {
+                let Some(((pa, dtype_a), (pb, _dtype_b), k)) = fab else {
                     return None;
                 };
                 // The reduced axis must be the shared K lane: contracting
@@ -4419,7 +4425,7 @@ impl Kernel {
                         segments.entry((*slot, key)).or_default().push((u, *reg, *op));
                     }
                 }
-                for ((slot, _), group) in &segments {
+                for ((_slot, _), group) in &segments {
                     if group.len() < 2 {
                         continue;
                     }
@@ -4474,7 +4480,7 @@ impl Kernel {
                     // interleaving rows leaves the previous part's lane flags
                     // behind.
                     let mut total = gap_words + 1;
-                    let mut spilled_words = 0u32;
+                    let spilled_words;
                     let mut carry_over: Vec<(OpId, u16, u16)> = Vec::new();
                     let mut hand: Vec<(OpId, u16, u16)> = Vec::new();
                     let mut cse_setup: Vec<(OpId, u16, u16)> = Vec::new(); // load, source, carry

@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 use crate::{
-    Map, Set,
+    DType, Map, Set,
     dtype::Constant,
     graph::{Graph, GraphId, Op, OpId},
     kernel::{BOp, UOp},
@@ -184,11 +184,28 @@ impl Runtime {
                         let x_zero = self.push_const(graph_id, x_dtype.zero_constant());
                         let x_is_zero = self.push_binary_node(graph_id, x, x_zero, BOp::Eq);
                         let log2_x = self.push_op(graph_id, Op::Unary { x, uop: UOp::Log2 });
-                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f32::consts::LN_2));
+                        // `ln(2)` at the gradient's own precision: an F32
+                        // spelling in an F64 graph misses `grad_pow_*`'s
+                        // 1e-12 tolerance by the constant's own rounding.
+                        let ln2_cid = self.push_const(
+                            graph_id,
+                            match y_dtype {
+                                DType::F64 => Constant::new(std::f64::consts::LN_2),
+                                _ => Constant::new(std::f32::consts::LN_2),
+                            },
+                        );
                         let z_log2 = self.push_binary_node(graph_id, cid, log2_x, BOp::Mul);
                         let z_lnx = self.push_binary_node(graph_id, z_log2, ln2_cid, BOp::Mul);
                         let y_is_neg = self.push_binary_node(graph_id, y, y_zero, BOp::Cmplt);
                         let neg_inf = self.push_const(graph_id, Constant::new(f32::NEG_INFINITY));
+                        // `Select` arms must be dtype-exact (no promotion), and
+                        // the constant above is F32 while `y_zero` carries the
+                        // gradient's dtype, so widen it once here.
+                        let neg_inf = if y_dtype == DType::F32 {
+                            neg_inf
+                        } else {
+                            self.push_op(graph_id, Op::Cast { x: neg_inf, dtype: y_dtype })
+                        };
                         let inner = self.push_op(graph_id, Op::Select { cond: y_is_neg, if_true: neg_inf, if_false: y_zero });
                         let gy_numer = self.push_op(graph_id, Op::Select { cond: x_is_zero, if_true: inner, if_false: z_lnx });
                         let gy = self.push_binary_node(graph_id, grad, gy_numer, BOp::Mul);

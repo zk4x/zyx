@@ -98,13 +98,13 @@ impl Tensor {
         // Start with the base reduction for ops runtime supports
         let mut tensor = match op {
             Reduction::Sum => {
-                // Torch semantics: accumulate in the input dtype; only
-                // an explicit `dtype` (sum_dtype) changes it.
-                let x = if let Some(dtype) = dtype {
-                    self.cast(dtype)
-                } else {
-                    self.clone()
-                };
+                // Accumulate in `DType::acc_dtype` (tinygrad's
+                // `sum_acc_dtype`): the sum still returns the input dtype --
+                // the tail below casts it back -- but the additions do not
+                // round to it on every term. An explicit `dtype` wins over
+                // the default. `prod` and `cumsum` keep the input dtype, as
+                // tinygrad's do.
+                let x = self.cast(dtype.unwrap_or_else(|| x_dtype.acc_dtype()));
                 x.reduce_axes(axes_vec.clone(), BOp::Add)?
             }
             Reduction::Max => {
@@ -199,7 +199,13 @@ impl Tensor {
         };
 
         if dtype.is_none() && x_dtype != tensor.dtype() && !matches!(op, Reduction::All | Reduction::Any) {
-            tensor = tensor.cast(x_dtype);
+            // tinygrad's `sum` restores the element dtype only for the 16-bit
+            // floats; an integer sum keeps the accumulator dtype (`acc_dtype`).
+            // Every other reduction restores the element dtype as before.
+            let keep_acc = matches!(op, Reduction::Sum) && !matches!(x_dtype, DType::F16 | DType::BF16);
+            if !keep_acc {
+                tensor = tensor.cast(x_dtype);
+            }
         }
 
         // Apply keepdim — reduced axes become fresh 1 constants; kept axes

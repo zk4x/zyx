@@ -102,6 +102,7 @@ pub(crate) struct NativeOutcome {
     pub(crate) l1: Vec<Vec<u8>>,
     /// The `Dst` rows the math role dumped (`row * 16 + column`), empty when
     /// the program asked for none.
+    #[allow(dead_code)] // populated for post-mortem dumps; no reader needs it yet
     pub(crate) dst: Vec<u32>,
 }
 
