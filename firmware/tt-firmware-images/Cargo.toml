@@ -1,0 +1,29 @@
+[package]
+name = "tt-firmware-images"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+
+# The baby RISC-V firmware images, built from `../tt-firmware` by `build.rs`
+# and checked for instructions Blackhole cannot execute. Shippable: the role
+# images are what `tt-kernels` runs, so a backend needs them from a crate it can
+# depend on, not from the test harness (`cargo xtask check-no-sim-in-ship`).
+build = "build.rs"
+
+# Off by default. `ttinsn-experiment` also builds the `ttinsn_t1` image
+# (`docs/plans/ttinsn-push-experiment.md`) and relaxes the instruction-set gate for
+# that one image's `.ttinsn` words, and nothing else. Shippable builds never turn it on.
+[features]
+ttinsn-experiment = []
+# The B mover accepts host-encoded reads: see `tt-firmware`'s feature of the same name.
+# Off by default (the "safe" image). `encoded-guard` adds the semantic guard.
+fast-reads = []
+encoded-guard = ["fast-reads"]
+
+[dependencies]
+tt-isa = { path = "../../../metalium-rs/crates/tt-isa" }
+
+# The gate checks each admitted `.ttinsn` word against the instruction table.
+[build-dependencies]
+tt-isa = { path = "../../../metalium-rs/crates/tt-isa" }
