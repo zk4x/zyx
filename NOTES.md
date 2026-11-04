@@ -1,3 +1,273 @@
+## HANDOFF (2026-11-04, session 4) — the CB plan is SSA (`tt_cb_lower`)
+
+**Tree state:** uncommitted: `kernel/tenstorrent.rs`, `kernel/autotune.rs`, this
+file. **23/24 ttsim gates green**; `softmax` hangs on the device — it hangs
+identically on `2dc0f805` (built HEAD in `/tmp` and re-ran it), so this is
+pre-existing, not the refactor. `cargo test --lib` = 116. The user commits.
+
+### What landed
+
+- **`Kernel::tt_cb_lower()`** (`kernel/tenstorrent.rs`) runs between
+  `default_epilogue()` and `tt_dataflow_select()` in `device_epilogue`
+  (`ZYX_TT_IR=1` dumps `=== IR after tt_cb_lower ===`).
+  - *Reader*: one `Op::Copy { Param -> Circular }` per DRAM load, at slot 0,
+    moving the whole `Π trips × tile` block, hoisted before the innermost loop
+    (loop var zeroed through `strip_unrolls(.., true)`), then `EndReader`. Each
+    load keeps **its own access index** and only its `src` becomes the CB: the
+    index is the tile's logical descriptor and the matmul emitters read it to
+    tell A from B (`pat_a`/`pat_b`); the block slot is the unpack's own
+    (`tt_resolve_dst`).
+  - *Writer*: each DRAM store retargets to a fresh FP32 writer CB (slot 0); the
+    drain is `Op::Copy { writer CB -> Param }` at the tail, `EndCompute` before
+    it. Store-only kernels get an empty reader section.
+  - *Idempotent* for existing `Op::Copy` on `Circular` storages (custom API):
+    only their boundary index is normalised with `strip_unrolls(.., false)`; a
+    loop variable is kept, so a per-iteration copy fails loudly downstream
+    instead of being silently dropped.
+- **`tt_dataflow_select` phase 1 is now only an encoder**: an SSA `Op::Copy`
+  with a DRAM side becomes `TTOp::Copy`, bytes from `len(cb) × dtype` (reader)
+  or `1024 × dtype(cb)` (writer), `TILE_SLOT` when an `Op::Expand` consumes the
+  CB. Phase 3 only packs a DST value into the planned writer CB, or retargets
+  the drain to a materialised compute CB and removes the writer CB. The
+  remaining CB `Op::Load`s are dropped explicitly at the end of
+  `tt_dataflow_select`: DCE keeps a `Circular` load as a "pop" side effect.
+- **Roots now include stores to `Circular`** (the writer CB is a lowering
+  root, as the `Register` accumulator already was).
+- `Op::Load`/`Op::Store`/`Op::Copy` x `Circular` are otherwise untouched
+  generic SSA, so `cost()` and a later variant can see the traffic.
+
+### Verification
+
+- IR after `tt_dataflow_select` for softmax kernels 1 and 3 diffs against HEAD
+  only by OpId numbering (same ops, same order, same bytes/slots).
+- Gates run one at a time (`max` 10 s): 23 pass, `softmax` hangs.
+
+### Why the block form, not per-iteration
+
+A per-iteration boundary copy still cannot be encoded: `tt_slice` rejects a
+non-grid variable (`codegen/tenstorrent.rs:1409`) and `tt_boundary_moves` is a
+straight-line walk at slot 0. The block is the only form that lowers today;
+making the plan SSA is what lets the streaming form become a measured variant
+instead of a rewrite.
+
+### Next
+
+1. **`softmax` hang (pre-existing).** It is kernel 3 (the div kernel, grid
+   8×8): reader = two 4160 B shaped reads + one 4096 B read, straight-line
+   pack/drain. Same IR at HEAD. It compiles and `ZYX_DRY_RUN=1` passes, so the
+   hang is at launch/finish — compare against the two kernels that do run.
+2. **Streaming**: teach `tt_slice`/`tt_boundary_moves` a loop variable (per
+   entry slot and index; unroll a constant-trip boundary loop into entries),
+   split a loop into reader/compute/writer, then make block-vs-stream a
+   `default_optimizations` variant. `tt_cb_plan`'s block upgrade already has the
+   `trip <= tiles` rule.
+3. **Re-base `tt_cb_plan`/`CbTransactions`** from `TTOp::Copy` to SSA
+   `Op::Copy`; they can now run on real IR. Still no callers.
+4. **Revive `tests/14|15|18`**: `18` calls removed APIs (`tt_lock_dst`,
+   `tt_sync_cbs`, `TTOp::MathLock/ReserveBack/PushBack/WaitFront`); `14`/`15`
+   use builders that still exist, but their `Op::Copy` traffic needs (2) to
+   lower.
+
+## HANDOFF (2026-11-04, session 3) — tile images + broadcast in; CBs belong in SSA
+
+**Tree state:** committed at `2dc0f805` ("tt updates to softmax, unrolled CBs");
+this file is the only uncommitted change. That commit carries the six files this
+session touched: `kernel/tenstorrent.rs`, `codegen/tenstorrent.rs`,
+`kernel/mod.rs`, `backend/tenstorrent/mod.rs`, `backend/tenstorrent/ttsim.rs`,
+`runtime.rs`. **24/24 ttsim gates green** (`softmax` now passes), `cargo test
+--lib` = 116, the touched files are rustfmt-clean. The user commits.
+
+The previous handoff was stale: its "committed through 7ab4ea82 / 101 lib
+tests / only the third softmax kernel fails" described an older main. On
+`9564adc9` the softmax winner was a *different* search variant (a strip-mined
+reduce loop), and the first kernel died with
+`L1 data arena exhausted: CB 16 needs 4194304 bytes`. Treat any `softmax` IR in
+older notes as historical, not current.
+
+### What this session established
+
+1. **`tt_tile` normalizes any incoming loop tiling.** The search may leave the
+   reduce loop flat (`len` elements), lane-split (`Loop(n/32) + Unroll(32)`), or
+   strip-mined (`SplitMode::Loop`: `outer*32 + inner`). `tt_tile` now:
+   - **folds a strip-mined pair** back into one loop of `outer*inner` trips
+     (validated before mutating: the inner var's only use is the composition the
+     split leaves right after the inner header, no side effects in the outer
+     body outside the inner loop, and no *tainted* value — one that reaches the
+     outer var without going through the composition — inside the inner body or
+     after it), then pads + splits;
+   - **skips a loop already in tile units** (`split(Loop, Unroll, 32)`'s output:
+     loop var at stride 32, an `Unroll(32)` at stride 1) instead of padding its
+     trip count again. Padding 8 k-tiles to 32 is what made a 4 MB reader block.
+2. **`Op::Expand` is re-materialised at the phase boundary, not in `tt_tile`.**
+   A `[32]` operand of a `Binary`/`Select` is wrapped in
+   `Op::Expand { x, shape: <wide operand's tiled shape> }`, so the binary is
+   `[32,32] op [32,32]` and the pattern table matches. It lives at the top of
+   `tt_dataflow_select` because the generic `verify` (which `tt_reindex` still
+   runs) rejects graph-shape ops after linearization. `tt_lower_value` resolves
+   `Op::Expand { x, .. }` to `tt_lower_value(x)` — the reader CB.
+   The shapes come from `self.shape(wide)` (consts inserted before the consumer),
+   **not** `shape_ids`: `shape_ids` creates its consts at the tail, which breaks
+   head-order dtype resolution.
+3. **`strip_unrolls` / `tt_slice` group handling is fixed.**
+   - `c * g` -> `g * stride` (the element coefficient is *replaced*); it used to
+     produce `32 * (1024*g)`.
+   - a const times a **group-derived** expression is the logical row stride
+     (`(32*g0 + lane) * 256`) and is dropped, not applied a second time.
+   - the tile-stride map uses only the grid axes **the index names**. A `[32]`
+     row vector is addressed by the row group alone; the column axis must not
+     add a stride (it read tile 8 of an 8-tile buffer:
+     `DRAM access 32768..36864 of chunk 32780 bytes`). Same rule in
+     `codegen::tt_slice`.
+   - `strip_unrolls`' new `index_axes` must skip `OpId::NULL` keys
+     (`max_scalar`/`sum_scalar`/`sum_all` panicked on `ops[NULL]`).
+4. **TT DRAM tensors are tile *images* (16-byte header + 1024 datums + pad).**
+   Why, with sources: `UNPACR_Regular.md:115`
+   (`InAddr = (InAddr + 1 + DigestSize) * 16`) and `:688` (tile header size).
+   The header is not read by anything — the unpacker *steps over* it (that is why
+   `tt_src_base(cb) = cb - 16` existed). The mover's shaped reads are defined on
+   a whole slot: `Entry::decode` requires `len == TILE_SLOT` and the DRAM offset
+   ≡ `SCRATCH` mod 64 (= 0), and the firmware copies the 16-byte header then
+   transforms `+16..`. So the datum block must sit 16 bytes into a 64-aligned
+   slot. Layout paths that are **not** the problem: `tile_physical_dims` is used
+   only by `tilize_transfer`/`untilize_transfer`; padding/OOB logic is element
+   extents elsewhere. The byte size lives in
+   `runtime::materialize_kernel`'s TT branch (it was `outer*pr*pc*el + el`) and
+   in the host transfers — both now use `tiles × tt_isa::dm::TILE_SLOT` (the
+   existing one-element "trash" tail is kept on the store buffers).
+   `STRIPE` (the DRAM interleave page) is `TILE_SLOT` too, so one image is one
+   channel range.
+5. **`READ_BROADCAST_COL` end to end.** Phase 1 publishes a value wrapped by
+   `Op::Expand` as one `TILE_SLOT` (4160 B); `render_tt` emits
+   `TTOp::DmReadBroadcastCol(TTDmTileRead)`; `compile` maps it back to a
+   `TTDmMove` with `bytes = TILE_SLOT`; `mover_list` now picks the opcode **per
+   entry** (`READ_BROADCAST_COL` iff the range is `TILE_SLOT`, else `READ`/`WRITE`)
+   — putting it per *list* silently downgraded it to a plain `READ`.
+   Boundary moves are now **one DMA entry per tile** (tiles are no longer
+   contiguous on the DRAM side) with `+TILE_DATA` for plain moves; a `TILE_SLOT`
+   publish stays one shaped move. CB L1 bases are `align64(at) + TILE_DATA`, so
+   a datum read matches at ≡16 mod 64 and the shaped read writes header+datums
+   at `cb - 16`.
+
+### Softmax: gate green, values still wrong (open bug)
+
+The gate only asserts lengths, so it passes while wrong. A temporary host check
+(added and removed) showed: **the broadcast is correct** — the output is
+`want × k` with the same `k` across a whole row, row sums 8.76 instead of 1
+(worst 0.0492, all 65536 elements "bad"). So the max and its per-row
+application are right; the **divisor (the sum vector) is ~8.7× too small**, which
+points at the exp/sum kernel's loop accumulator over the 8 k-tiles (the
+`reg_slot` hand-off: init before the loop, `Store` per iteration), not at the
+CBs. Next session should reproduce with `ZYX_TT_IR=1` on the exp kernel and
+check the accumulator slot/init placement. Also: give the gate real value
+assertions.
+
+### NEXT SESSION — the CB design agreed with the user (do this)
+
+**Principle:** the CB *plan* is SSA (so a search variant can own it later); the
+*encoding* is mechanical. Today `tt_dataflow_select` invents everything (one CB
+per DRAM param, a `Π trips × tile` block hoisted before the loop, the slot = loop
+counter, and the section markers). That is machine-IR policy and can never be
+tuned, and it is why the custom API (`Op::Copy` in a loop) cannot lower.
+
+**The model:**
+
+- CB traffic is `Op::Copy { src, src_idx, dst, dst_idx }` between `Op::Storage`s
+  — *not* Load+Store. `Copy` is a DCE root, never CSE'd, invalidates load
+  pooling on both sides. `Load`/`Store` stay only where a **value** crosses
+  (unpack a tile, pack a DST tile). This is the mapping NOTES already wrote for
+  the native port: produce = a Copy whose `dst` is `Circular`, consume = a Copy
+  whose `src` is `Circular`.
+- A loop is ordinary IR: `Loop i { Copy{param, 1024*i, cb, i} }` (reader push),
+  `Loop i { v = Load(cb, i); ...; Store(cb_out, i, w) }` (compute pop/push),
+  `Loop i { Copy{cb_out, i, param, 1024*i} }` (writer drain). One tile per
+  iteration; **block is the optimization**, not the default, and only when the
+  whole trip product fits the ring.
+- Roles are derived from scopes: `Param → Circular` = reader,
+  `Circular → Param` = writer, `Circular → Circular` and Load/Store = compute.
+  `EndReader` after the last reader Copy, `EndCompute` after the last compute
+  op — derived, never declared.
+
+**One pass, after `tt_reindex`** (not after `tt_tile`): it adds the Copies to and
+from CBs *and* creates `EndReader`/`EndCompute`. Reasons:
+- `tt_reindex` is a template recognizer ("exactly one Reduce, one DRAM load, one
+  DRAM store"); with Copy traffic in place the load is `Load(cb)` and the DRAM
+  side is a Copy, so it would have to be reworked. Running after keeps it intact.
+- `tt_tile` needs the aggregate access shape (loop/group padding, unroll splits,
+  the acc pattern); adding per-iteration Copy traffic before it means tiling the
+  movement ops too.
+- One pass owning both makes the section invariant hold by construction (today
+  phase 1 and the markers are decided in two places).
+
+Pipeline: `unfold_pows → tt_tile → tt_unfold → tt_reindex → default_epilogue →
+<CB pass> → tt_dataflow_select → …`; `tt_dataflow_select` then only selects
+instruction forms.
+
+**Searchability (later, by design):** `device_epilogue` runs once per measured
+candidate (`autotune.rs:539-542`), so a pass there cannot offer alternatives.
+Keep the planner a separate function over SSA so that later it can be invoked
+from a `default_optimizations` variant (or its choice expressed as a marker that
+the boundary pass honors), and `cost()` can count the traffic. Do **not** put
+policy in the encoder.
+
+**Steps, in order:**
+1. Pass skeleton: replace SSA Param traffic with per-iteration `Copy` on
+   Circular storages (counter as slot), keep Load/Store for values, allocate the
+   CBs + ring length (capacity-driven: block iff `Π trips × tile ≤ len`), derive
+   the two section markers. Idempotent for existing Circular traffic (custom
+   API).
+2. Re-base `tt_cb_plan`/`CbTransactions` (currently **tests-only** — no caller)
+   on `Op::Copy`/Load/Store instead of `TTOp::Copy`, and add a credit pass that
+   emits `op::CB` Reserve/Push/Wait/Pop and checks `produced == consumed` per
+   section. The ISA has all of it: `op::CB` (0x42, stream 0 = input, 1 = output,
+   capacity), `LAUNCH` (14) + `KERNEL_WAIT` (15) to overlap the next tile's read
+   with the current tile's compute, `PAIR`/`PAIR_CALL`/`SHARED`/`RELEASED` if B
+   and NC share a ring, `CALL` (10) for captured-list loops.
+3. Search variant: move the planner into `default_optimizations` (or expose its
+   choice) so block vs stream vs ring depth is measured. 30 µs budget applies
+   there.
+4. Gates: revive `tests/14|15|18_tenstorrent_*` (`--features tenstorrent`; they
+   encode reader-push / compute-pop / writer-drain with `loop_over`, and the old
+   codegen emitted `cb_reserve_back/push_back/wait_front/pop_front` per
+   iteration — see commits `d96e9242`, `53fbb030`). They are the loop gate the
+   current pipeline does not have.
+
+### How to run things (this state)
+
+```bash
+cd zyx && cargo build
+cd zyx && AGENT=1 cargo test --lib                 # 116
+cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
+BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
+# one gate at a time (a failed ttsim thread poisons later ones):
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so AGENT=1 $BIN softmax --exact
+# IR dumps: ZYX_TT_IR=1 (before/after tt_tile, before/after tt_reindex, after
+# tt_dataflow_select). ZYX_DEBUG=264 is the post-epilogue dump.
+```
+
+The **24 green gates**: `log2 exp2 sin_cos sigmoid tanh silu gelu elu
+sum_sigmoid matmul_sigmoid matmul matmul_add add unary_math neg_sub_mul
+shared_input tiling transfer_roundtrip sum max sum_scalar max_scalar sum_all
+softmax`. `softmax` is green on its (length-only) assertions — see the value bug
+above.
+
+### Other open items / landmines
+
+- `tt_cb_plan` and `CbTransactions` have **no callers** outside their tests.
+- The C++ staged path (`codegen/tenstorrent.rs:render`/`render_load`,
+  `noc_async_read((idx*eb)/page)`) still assumes a linear element→byte mapping
+  and `TT_DRAM_PAGE_BYTES = 4096`; it is stale under the tile-image layout. It
+  is not used by ttsim, but it is a landmine if that path is revived.
+- `cargo fmt` on the crate fails on a pre-existing missing
+  `src/backend/tenstorrent/sim/fork_windows.rs`; plain `rustfmt <files>` follows
+  `mod` declarations and reformats unrelated files (it rewrote
+  `predict_cost.rs`, `mma.rs`, `autotune.rs`, `verify.rs` once — restored).
+  Use `rustfmt --config skip_children=true <files>`.
+- NOTES' gate count is now **24** (`softmax` included) and lib is **116**.
+- The old handoff's "23 gates / 101 lib" and its softmax IR dump are stale; the
+  current IR for the max kernel after `tt_tile` is
+  `Loop(8) + Unroll(32) + reduce max` with a 32 KB block, and the exp kernel
+  reads the max row through `READ_BROADCAST_COL`.
+
 ## HANDOFF (2026-11-03, session 2) — loop lowering: softmax is one broadcast away
 
 **Tree state:** committed through `7ab4ea82` ("more tt work"); this file is the

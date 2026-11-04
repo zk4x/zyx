@@ -158,6 +158,15 @@ impl Kernel {
             // once the Bool is materialised in an F32 tile, which the cast
             // arm has no program for.
             self.default_epilogue();
+            // The CB plan is SSA: `tt_cb_lower` writes the block copies, the
+            // writer drains and the two section markers as ordinary
+            // `Op::Copy`/`Load`/`Store` on `Circular` storages. The phase
+            // boundary below only encodes it.
+            self.tt_cb_lower();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_cb_lower ===");
+                self.debug();
+            }
             self.tt_dataflow_select();
             if std::env::var_os("ZYX_TT_IR").is_some() {
                 eprintln!("=== IR after tt_dataflow_select ===");
