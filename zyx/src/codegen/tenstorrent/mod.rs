@@ -906,6 +906,7 @@ impl<'a> TtSection<'a> {
 /// Render one section body: loops, traffic, sync, locks, compute.
 /// Locks are discipline-checked (compute-only, paired, closed at
 /// section end — the old verify lock block).
+
 fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError> {
     let mut loop_stack: Vec<OpId> = Vec::new();
     for id in ops.iter().copied() {
@@ -1474,24 +1475,41 @@ fn tt_narrow(cb: DType, param: DType) -> u8 {
 /// datums times the extents of the higher-axis groups — the same map
 /// `strip_unrolls` uses to place reader and writer slices. Trusting a logical
 /// folded index here reads a 32-tile stride where one tile is meant.
-fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), BackendError> {
+fn tt_slice(
+    k: &Kernel,
+    idx: OpId,
+    elem_bytes: u32,
+    bind: &Map<OpId, i64>,
+) -> Result<(u32, u32, u32), BackendError> {
     let strides = k.get_strides(idx).ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not affine")))?;
     for var in strides.keys() {
-        if *var == OpId::NULL {
+        if *var == OpId::NULL || bind.contains_key(var) {
             continue;
         }
         let is_group = matches!(k.at(*var), Op::Range { kind: RangeKind::Group(_), .. });
         if !is_group {
-            return Err(tt_err(format!("tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}")));
+            return Err(tt_err(format!(
+                "tenstorrent: boundary index {idx:?} keeps a variable {var:?} that is neither a grid axis nor a bound loop"
+            )));
         }
     }
-    let base = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+    // A bound loop variable is one concrete iteration, so its term joins the
+    // base instead of becoming a grid stride.
+    let mut base = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+    for (var, (_, stride)) in strides.iter() {
+        if let Some(value) = bind.get(var) {
+            base = value
+                .checked_mul(*stride)
+                .and_then(|t| base.checked_add(t))
+                .ok_or_else(|| tt_err("tenstorrent: a bound loop's boundary offset overflows".to_string()))?;
+        }
+    }
     let mut per_axis = [0i64; 2];
     if k.tt_index_is_tile_units(idx) {
         // The rewritten index is the truth: each grid term is its physical
         // tile stride.
         for (var, (_, stride)) in strides.iter() {
-            if *var == OpId::NULL {
+            if *var == OpId::NULL || bind.contains_key(var) {
                 continue;
             }
             let Op::Range { axis, kind: RangeKind::Group(_), .. } = k.at(*var) else {
@@ -1509,7 +1527,7 @@ fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), B
         // row of tiles). Unnamed axes keep a zero stride.
         let mut axes: Vec<(u32, i64)> = Vec::new();
         for var in strides.keys() {
-            if *var == OpId::NULL {
+            if *var == OpId::NULL || bind.contains_key(var) {
                 continue;
             }
             let Op::Range { axis, kind: RangeKind::Group(len), .. } = k.at(*var) else {
@@ -1548,6 +1566,38 @@ fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), B
     Ok((to_bytes(base)?, to_bytes(per_axis[0])?, to_bytes(per_axis[1])?))
 }
 
+/// The L1 byte offset a boundary copy's buffer-side index names, for one
+/// iteration of every bound loop.
+///
+/// The buffer side never moves with the grid: a grid axis there would mean a
+/// per-core slot, which the plan does not express. So every variable the index
+/// names must be a bound loop (or the constant term).
+fn tt_cb_offset(k: &Kernel, idx: OpId, elem_bytes: u32, bind: &Map<OpId, i64>) -> Result<u32, BackendError> {
+    if idx.is_null() {
+        return Ok(0);
+    }
+    let strides = k.get_strides(idx).ok_or_else(|| tt_err(format!("tenstorrent: buffer index {idx:?} is not affine")))?;
+    let mut elems = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+    for (var, (_, stride)) in strides.iter() {
+        if *var == OpId::NULL {
+            continue;
+        }
+        let Some(value) = bind.get(var) else {
+            return Err(tt_err(format!(
+                "tenstorrent: buffer index {idx:?} names {var:?}, which is neither the constant term nor a bound loop"
+            )));
+        };
+        elems = value
+            .checked_mul(*stride)
+            .and_then(|t| elems.checked_add(t))
+            .ok_or_else(|| tt_err("tenstorrent: a buffer slot offset overflows".to_string()))?;
+    }
+    let bytes = elems
+        .checked_mul(i64::from(elem_bytes))
+        .ok_or_else(|| tt_err("tenstorrent: a buffer slot offset overflows".to_string()))?;
+    u32::try_from(bytes).map_err(|_| tt_err(format!("tenstorrent: buffer offset {bytes} does not fit u32")))
+}
+
 fn tt_boundary_moves(
     k: &Kernel,
     cbs: &Map<OpId, u32>,
@@ -1557,15 +1607,29 @@ fn tt_boundary_moves(
     let mut reader: Vec<TTDmMove> = Vec::new();
     let mut writer: Vec<TTDmMove> = Vec::new();
     let mut section = 0u8;
+    // A boundary copy inside a constant-trip loop is one entry per iteration:
+    // the mover list is a static array, so a loop there is unrolled here.
+    let mut loops: Vec<(OpId, i64)> = Vec::new();
     let mut op_id = k.head;
     while !op_id.is_null() {
         match k.at(op_id) {
             Op::TT(TTOp::EndReader) => section = 1,
             Op::TT(TTOp::EndCompute) => section = 2,
+            Op::Loop { len } => {
+                let trip = k
+                    .resolve_const(*len)
+                    .and_then(Constant::as_dim)
+                    .filter(|t| *t > 0)
+                    .ok_or_else(|| tt_err(format!("tenstorrent: boundary loop {op_id:?} needs a positive constant trip count")))?;
+                loops.push((op_id, trip));
+            }
+            Op::EndLoop => {
+                loops.pop();
+            }
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) if section != 1 => {
-                let (param, cb, idx) = match section {
-                    0 => (*src, *dst, *src_idx),
-                    2 => (*dst, *src, *dst_idx),
+                let (param, cb, idx, cb_idx) = match section {
+                    0 => (*src, *dst, *src_idx, *dst_idx),
+                    2 => (*dst, *src, *dst_idx, *src_idx),
                     _ => unreachable!("section is 0 or 2 in this arm"),
                 };
                 let ord = param_ordinal_of
@@ -1588,7 +1652,7 @@ fn tt_boundary_moves(
                 // is the only per-core difference.
                 let elem_bytes = k.dtype(param).bit_size() as u32 / 8;
                 let tile_bytes = elem_bytes * 1024;
-                let (base, gstride0, gstride1) = tt_slice(k, idx, elem_bytes)?;
+                let cb_elem_bytes = k.dtype(cb).bit_size() as u32 / 8;
                 let slot = tt_isa::dm::TILE_SLOT as u32;
                 let data = tt_isa::dm::TILE_DATA as u32;
                 // One DMA entry carries one *tile image*: tiles are not
@@ -1607,21 +1671,48 @@ fn tt_boundary_moves(
                         "tenstorrent: boundary move {op_id:?} is {bytes} bytes, not a whole number of {tile_bytes}-byte tiles"
                     )));
                 }
-                for t in 0..n {
-                    // A shaped read writes the header too, so its L1 base is
-                    // the slot start, 16 bytes below the CB's datums.
-                    let l1 = if shaped {
-                        l1[cb_num as usize] - data
-                    } else {
-                        l1[cb_num as usize] + t * tile_bytes
-                    };
-                    let base = if shaped { base } else { base + t * slot + data };
-                    let bytes = if shaped { slot } else { tile_bytes };
-                    let move_ = TTDmMove { param: ord, l1, bytes, narrow, base, gstride0, gstride1 };
-                    match section {
-                        0 => reader.push(move_),
-                        2 => writer.push(move_),
-                        _ => unreachable!("section is 0 or 2 in this arm"),
+                // One entry per combination of the enclosing boundary loops'
+                // iterations; no loops means the one empty binding.
+                let mut combos: Vec<Map<OpId, i64>> = vec![Map::default()];
+                for (var, trip) in &loops {
+                    let mut next = Vec::with_capacity(combos.len().saturating_mul(*trip as usize));
+                    for bind in &combos {
+                        for i in 0..*trip {
+                            let mut b = bind.clone();
+                            b.insert(*var, i);
+                            next.push(b);
+                        }
+                    }
+                    combos = next;
+                }
+                for bind in &combos {
+                    let (base, gstride0, gstride1) = tt_slice(k, idx, elem_bytes, bind)?;
+                    // The buffer side is a slot inside the CB, never a grid
+                    // slice: only a bound loop moves it.
+                    let cb_off = if loops.is_empty() { 0 } else { tt_cb_offset(k, cb_idx, cb_elem_bytes, bind)? };
+                    for t in 0..n {
+                        // A shaped read writes the header too, so its L1 base is
+                        // the slot start, 16 bytes below the CB's datums.
+                        let l1 = if shaped {
+                            l1[cb_num as usize] - data
+                        } else {
+                            l1[cb_num as usize] + cb_off + t * tile_bytes
+                        };
+                        let base = if shaped { base } else { base + t * slot + data };
+                        let bytes = if shaped { slot } else { tile_bytes };
+                        let move_ = TTDmMove { param: ord, l1, bytes, narrow, base, gstride0, gstride1 };
+                        match section {
+                            0 => reader.push(move_),
+                            2 => writer.push(move_),
+                            _ => unreachable!("section is 0 or 2 in this arm"),
+                        }
+                        let entries = if section == 0 { reader.len() } else { writer.len() };
+                        if entries > tt_isa::dm::LIST_MAX as usize {
+                            return Err(tt_err(format!(
+                                "tenstorrent: {entries} boundary entries exceed the mover list (LIST_MAX {})",
+                                tt_isa::dm::LIST_MAX
+                            )));
+                        }
                     }
                 }
             }

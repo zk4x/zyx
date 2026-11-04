@@ -1,7 +1,141 @@
-## HANDOFF (2026-11-04, session 6) — softmax: minimal reproducer is `exp` then `div`
+## HANDOFF (2026-11-04, session 7) — CB streaming in loops; the reduce bug
 
-**Tree state:** uncommitted: `kernel/tenstorrent.rs` only (one real fix, below).
-**116 lib tests**, 23/24 gates (softmax is the hang).
+**Tree state:** uncommitted (the user commits): `kernel/tenstorrent.rs`,
+`codegen/tenstorrent/mod.rs`, this file. Based on `9f9e6aa6` ("backend cleanup").
+**116 lib tests green**, no warnings, all 23 non-`softmax` gates green;
+`softmax` **passes in ~17 s** (over the 10 s per-test cap — see "budget" below).
+
+### How to run things
+
+```bash
+cd zyx && cargo build
+cd zyx && AGENT=1 cargo test --lib                       # 116
+cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
+BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
+# One gate per process (a failed ttsim thread poisons later ones):
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so AGENT=1 timeout 10 $BIN <gate> --exact
+# IR: ZYX_TT_IR=1 (per compile stage), ZYX_DEBUG=8 (winner/seed post-opt IR),
+# ZYX_DRY_RUN=1 (skip launches), ZYX_DEBUG=16 (old C++ sections + role word counts).
+```
+`tests/14|15|18_tenstorrent_*` are gated on `#![cfg(feature = "tenstorrent")]`,
+but **that feature does not exist** in `Cargo.toml`, so they never compile. `18`
+also calls APIs that were deleted (`tt_lock_dst`, `tt_sync_cbs`,
+`TTOp::MathLock/ReserveBack/PushBack/WaitFront`). Reviving them is a rewrite.
+
+### Landed: per-iteration CB traffic in a loop
+
+`tt_cb_lower` (`kernel/tenstorrent.rs`) emits the **streaming** form when every
+DRAM load sits in the same single constant-trip loop:
+
+```
+for i in 0..n { copy param[tile i] -> cb[i*1024] }   # reader loop, own counter
+end_reader
+for i in 0..n { v = load cb[i*1024]; ... }           # compute loop, unchanged
+```
+
+- The reader loop is a **second** `Op::Loop` over the same trip count; the
+  compute loop keeps its slot arithmetic. The DRAM index cone is cloned by
+  `Kernel::tt_clone_index` (old counter → new counter, leaves shared).
+- The CB is still `trips × tile` (a full ring). A *smaller* ring is only correct
+  with per-tile credits, so traffic is unchanged — only the shape is the loop.
+- Loads outside a loop, loads split across different loops, and nested loops
+  keep the hoisted block (the old behaviour).
+- Codegen side: `tt_slice(k, idx, elem_bytes, bind)` binds loop counters (a
+  bound variable joins the base; unbound variables must still be grid axes);
+  `tt_boundary_moves` walks `Op::Loop`/`Op::EndLoop` in the reader/writer
+  sections and emits **one DMA entry per iteration** (constant trip required,
+  else loud), with `tt_cb_offset` resolving the CB-side slot per iteration and
+  `LIST_MAX` enforced; the encoder sizes a boundary copy inside a loop as one
+  tile, outside as `len(cb) × dtype`.
+- Coverage is thin: `softmax` is the only gate with an IR loop, and its gate
+  asserts lengths only. A value-checked loop gate is still missing.
+
+### CB-in-loop status after this session
+
+| case | today |
+|---|---|
+| per-iteration reader push | **yes** — own reader loop, one entry per iteration, full ring |
+| per-iteration writer drain | **no** — `tt_cb_lower` still drains at the tail; a store *inside* a loop keeps its loop counter in the DRAM index and the encoder refuses it (`tt_slice`: "neither a grid axis nor a bound loop", loud) |
+| ring smaller than the trip count | no — needs credits (a wrapped ring without them would overwrite unread tiles) |
+| credits / reader-compute overlap | no |
+| loop-carried accumulator across tiles | **broken** — the compute loop is emitted once (below) |
+| custom API (`14/15`) loop traffic | encoder can now unroll a boundary loop, but nothing creates the loop for a custom kernel and the tests do not compile |
+
+### Found: why softmax's values are wrong (not the CBs)
+
+A multi-tile row reduce returns **tile 0 only**:
+
+| graph | got | want |
+|---|---|---|
+| `ones([4,256]).sum([1])` | 32 | 256 |
+| `ramp([4,256]).max([1])` | 31 | 255 |
+| `softmax([8,256])` values | `want × 8.76` | — |
+
+Two independent compute-side gaps, both in `codegen/tenstorrent/mod.rs`:
+
+1. **IR loops are not emitted into the role programs.** `render_section`'s
+   `Op::Loop` arm writes only the C++ fallback (`sec.out`); the native word
+   streams (`sec.native`/`native_t0`/`native_t2`) get the body **once**. So the
+   k-tile loop never iterates in T0/T1/T2.
+2. **The native unpack/pack ignore the CB slot.** The unpack uses
+   `tt_src_base(sec.cb_l1(scb)?)` (slot 0) regardless of `src_idx`; the pack
+   uses `sec.cb_l1(dcb)?` regardless of `dst_idx`.
+
+Consequence: everything multi-tile in a loop is wrong today (reduce over >1
+tile, softmax values). Single-tile kernels — all the other gates — are fine,
+which is why this hid.
+
+### Tried and reverted (do not redo blindly)
+
+- Unrolling IR loops inside `render_section` (bind the counter, thread it into
+  the unpack/pack slot arithmetic). It compiles but **hangs** on the reduce
+  kernel (`x.sum([1])` on `[4,256]`), including under `ZYX_DRY_RUN=1`, and was
+  reverted. `tt_cb_offset` (the slot evaluator) is still in place; the
+  `TtSection::bind` field and the `sec.expr` binding were reverted with it.
+- Raising the role runner's push window (`SIM_PUSH_WINDOW` 16 → 4096): no
+  effect (that was aimed at a deadlock that turned out to be slow, not stuck).
+- Adding the reference builder's `SFPNOP` rule after MADs: inserts zero NOPs in
+  the emitted bodies and changes nothing.
+
+### Next, in order
+
+1. **Make the unpack/pack honour their slot** (independent of loops). In the two
+   `TTOp::Copy` arms of `render_section` (unpack uses `src_idx`, pack uses
+   `dst_idx`), add `tt_cb_offset(k, idx, cb_elem_bytes, bind)` to the L1 base.
+   `bind` is the per-section loop-binding map from item 2 — with it empty the
+   offset is 0, so this is a no-op today and correct once loops exist.
+2. **Give IR loops a representation in the role programs.** This is what the
+   reverted attempt above tried: unroll the body per iteration with the counter
+   bound, thread that binding through `TtSection` (a `bind: Map<OpId, i64>`
+   evaluated by `tt_cb_offset`, and `sec.expr` for `Op::Loop` returning the
+   constant). The hang it hit needs explaining first — it is *not* understood,
+   and only the reduce kernel (`x.sum([1])` on `[4,256]`) shows it. Options:
+   (a) keep unrolling but find the hang (start with `ZYX_DRY_RUN=1`, where it
+   already reproduces, and `thread apply all bt` — every thread parks, so it is
+   a deadlock in the host path, not the simulator); or
+   (b) per-role block repeats — `kern::code::Loop` already supports a table per
+   role, but `backend/tenstorrent/mod.rs`'s `compile` forwards only T1's
+   (`math_loops`), and `TTOp::Unpack`/`Pack` carry no loop table, so this needs
+   a shape change (ask first). Note a plain block repeat repeats the same words,
+   so the slot still has to advance per iteration.
+3. **Then** the stream/ring work: `op::CB` credits and `LAUNCH`/`KERNEL_WAIT`
+   for reader/compute overlap, and a ring smaller than the trip count.
+4. Re-base `tt_cb_plan`/`CbTransactions` (still `TTOp::Copy`-keyed and called
+   only from tests) on SSA `Op::Copy`; revive `14/15/18` as the loop gate.
+
+### Gate budget (open decision)
+
+`softmax` (256×256) is correct but needs ~17 s: the exp row body is a 230-word
+block repeat pushed 32× per tile over 64 tiles × 3 launches, and ttsim charges
+~7 µs per pushed word. Options, none taken yet: shrink the gate's shape, raise
+the TT gate budget, or split the exp body into replay-sized row loops (each
+split needs its own `Dst` stepping — an emitter project).
+
+## HANDOFF (2026-11-04, session 6) — softmax "hang": it is a timeout, plus a writer-CB fix
+
+**Tree state:** snapshot at that time — the fix described below shipped in
+session 7's uncommitted tree. **116 lib tests**; `softmax` passes in ~17 s (it
+only looked hung at the 10 s cap).
 
 ### Fixed: the writer-CB retarget was dead code
 
@@ -12,10 +146,8 @@ matched, the encoded copy kept `src = writer_cb`, and the CB was then removed:
 a dangling `OpId` that later panics in `dead_code_elimination`'s worklist
 (`Key OpId(n) has been deleted from the slab`). Both forms are now rewritten and
 `bytes` is recomputed from the new source (`tt_dataflow_select` phase 3).
-
-Found via a reproducer graph (`exp(x - row) / row`); after the fix that graph
-stops crashing and hangs exactly like softmax, which gave the minimal case
-below.
+Found with a reproducer graph (`exp(x - row) / row`), which used to crash the
+compiler before reaching the device.
 
 ### Ruled out (do not re-try)
 
@@ -47,15 +179,6 @@ with a few-word body (`add`, `div`) are ~100× cheaper.
 A `tick(512)` in the middle of that work costs ~0.3 s, which is why it *looked*
 like a stalled instruction; the role is executing, just very slowly, and
 `wait_for_mailbox`'s `RUNNING` is correct throughout.
-
-### Fixed (real bug, unrelated to the timeout)
-
-The writer-CB retarget in `tt_dataflow_select` phase 3 was dead code: it
-rewrote the **SSA** `Op::Copy`, but phase 1 had already encoded it as
-`TTOp::Copy`, so the encoded copy kept `src = writer_cb` while the CB was
-removed — a dangling `OpId` that panics later in `dead_code_elimination`
-(`Key OpId(n) has been deleted from the slab`). Both forms are now rewritten and
-`bytes` follows the new source. Reproduced with `exp(x - row) / row`.
 
 ### Next (needs a decision)
 

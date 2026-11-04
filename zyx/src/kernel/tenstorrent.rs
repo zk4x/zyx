@@ -1796,32 +1796,66 @@ impl Kernel {
             }
             id = self.ops[id].next;
         }
-        // Reader: publish each block, then close the section before the first
-        // compute op (a hoisted block's anchor is the loop header, not the
-        // load). A load inside a constant-trip loop publishes one tile per
-        // iteration; the whole block moves at once, because the reader section
-        // cannot share a loop with compute.
+        // Reader: publish each block — or, for a load inside a loop, one tile
+        // per iteration from its own reader loop — then close the section
+        // before the first compute op. A reader section cannot share a loop
+        // with compute, so streaming needs the separate loop; when the loads
+        // do not all sit in the same single loop, the block is hoisted as
+        // before.
         if !loads.is_empty() {
             let anchor = match loads[0] {
                 (_, _, _, _, hoist) if !hoist.is_null() => hoist,
                 (load, ..) => load,
             };
-            let slot_zero = self.insert_const_idx_before(anchor, 0i64);
+            let streaming = matches!(self.ops[anchor].op, Op::Loop { .. })
+                && loads.iter().all(|(_, _, _, _, hoist)| *hoist == anchor);
             let mut cb_of: Map<OpId, OpId> = Map::default();
-            for (load, base, off, tiles, _) in loads.iter().copied() {
-                let Op::Param { dtype, .. } = self.ops[base].op else { return };
-                let Some(len) = tiles.checked_mul(1024) else { return };
-                let storage = Op::Storage { dtype, scope: MemScope::Circular, len, id: 0 };
-                let cb = if prologue.is_null() {
-                    self.push_back(storage)
-                } else {
-                    self.insert_before(prologue, storage)
+            if streaming {
+                let Op::Loop { len } = self.ops[anchor].op else {
+                    unreachable!("tt_cb_lower: the streaming anchor is a loop")
                 };
-                let Some(base_idx) = self.strip_unrolls(off, anchor, true) else {
-                    return;
-                };
-                self.insert_before(anchor, Op::Copy { src: base, src_idx: base_idx, dst: cb, dst_idx: slot_zero });
-                cb_of.insert(load, cb);
+                // The reader's own induction variable: the compute loop keeps
+                // its slot arithmetic, and each entry advances one tile.
+                let reader_loop = self.insert_before(anchor, Op::Loop { len });
+                let mut cone: Map<OpId, OpId> = Map::default();
+                for (load, base, off, tiles, _) in loads.iter().copied() {
+                    let Op::Param { dtype, .. } = self.ops[base].op else { return };
+                    let Some(len) = tiles.checked_mul(1024) else { return };
+                    let storage = Op::Storage { dtype, scope: MemScope::Circular, len, id: 0 };
+                    let cb = if prologue.is_null() {
+                        self.push_back(storage)
+                    } else {
+                        self.insert_before(prologue, storage)
+                    };
+                    let Some(cloned) = self.tt_clone_index(off, anchor, reader_loop, anchor, &mut cone) else {
+                        return;
+                    };
+                    let Some(base_idx) = self.strip_unrolls(cloned, anchor, false) else {
+                        return;
+                    };
+                    let stride = self.insert_const_idx_before(anchor, 1024i64);
+                    let slot = self.insert_before(anchor, Op::Binary { x: reader_loop, y: stride, bop: BOp::Mul });
+                    self.insert_before(anchor, Op::Copy { src: base, src_idx: base_idx, dst: cb, dst_idx: slot });
+                    cb_of.insert(load, cb);
+                }
+                self.insert_before(anchor, Op::EndLoop);
+            } else {
+                let slot_zero = self.insert_const_idx_before(anchor, 0i64);
+                for (load, base, off, tiles, _) in loads.iter().copied() {
+                    let Op::Param { dtype, .. } = self.ops[base].op else { return };
+                    let Some(len) = tiles.checked_mul(1024) else { return };
+                    let storage = Op::Storage { dtype, scope: MemScope::Circular, len, id: 0 };
+                    let cb = if prologue.is_null() {
+                        self.push_back(storage)
+                    } else {
+                        self.insert_before(prologue, storage)
+                    };
+                    let Some(base_idx) = self.strip_unrolls(off, anchor, true) else {
+                        return;
+                    };
+                    self.insert_before(anchor, Op::Copy { src: base, src_idx: base_idx, dst: cb, dst_idx: slot_zero });
+                    cb_of.insert(load, cb);
+                }
             }
             self.insert_before(anchor, Op::TT(TTOp::EndReader));
             // The value reads from its block now. The access index stays the
@@ -2063,24 +2097,44 @@ impl Kernel {
                 broadcast.insert(src);
             }
         }
-        let mut boundary: Vec<(OpId, bool)> = Vec::new();
-        for (id, op) in self.iter_unordered() {
-            let Op::Copy { src, dst, .. } = *op else { continue };
-            let src_dram = matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
-            let dst_dram = matches!(self.ops[dst].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
-            if src_dram && self.is_circular(dst) {
-                boundary.push((id, true));
-            } else if self.is_circular(src) && dst_dram {
-                boundary.push((id, false));
+        // (copy, reader direction, inside a loop). A copy inside a loop moves
+        // one iteration's slice, so it is sized as one tile; the loop itself is
+        // unrolled into list entries at emission.
+        let mut boundary: Vec<(OpId, bool, bool)> = Vec::new();
+        let mut loop_depth = 0u32;
+        let mut scan = self.head;
+        while !scan.is_null() {
+            match self.ops[scan].op {
+                Op::Loop { .. } => loop_depth += 1,
+                Op::EndLoop => loop_depth = loop_depth.saturating_sub(1),
+                Op::Copy { src, dst, .. } => {
+                    let src_dram =
+                        matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
+                    let dst_dram =
+                        matches!(self.ops[dst].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
+                    if src_dram && self.is_circular(dst) {
+                        boundary.push((scan, true, loop_depth > 0));
+                    } else if self.is_circular(src) && dst_dram {
+                        boundary.push((scan, false, loop_depth > 0));
+                    }
+                }
+                _ => {}
             }
+            scan = self.next_op(scan);
         }
-        for (id, reader) in boundary {
+        for (id, reader, in_loop) in boundary {
             let Op::Copy { src, src_idx, dst, dst_idx } = self.ops[id].op else {
                 unreachable!("tt_dataflow_select: a boundary op is not a copy")
             };
             let bytes = if reader {
                 if broadcast.contains(&dst) {
                     tt_isa::dm::TILE_SLOT as u32
+                } else if in_loop {
+                    // One entry per iteration: one tile's datums.
+                    let Some(bytes) = (self.dtype(src).bit_size() as u32 / 8).checked_mul(1024) else {
+                        return;
+                    };
+                    bytes
                 } else {
                     let Op::Storage { len, .. } = self.ops[dst].op else {
                         unreachable!("tt_dataflow_select: a reader copy targets a storage")
@@ -5773,6 +5827,44 @@ impl Kernel {
     /// physical tile stride (one full [32, 32] tile per step, times
     /// inner-group extents) and a bare group id inside Add/Sub wraps
     /// to id * stride. Symbolic extents bail the caller.
+    /// Clone an index cone with `from` replaced by `to`.
+    ///
+    /// Every leaf other than the replaced variable is shared (it dominates
+    /// `before` exactly like the original cone does); only the expressions
+    /// above it are rebuilt, before `before`. Anything that is not index
+    /// arithmetic bails, so callers never invent a value.
+    fn tt_clone_index(&mut self, idx: OpId, from: OpId, to: OpId, before: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
+        if let Some(&done) = memo.get(&idx) {
+            return Some(done);
+        }
+        let op = self.ops[idx].op.clone();
+        let out = match op {
+            Op::Const(_) | Op::Range { .. } | Op::Param { .. } | Op::Unroll { .. } => idx,
+            Op::Loop { .. } => {
+                if idx != from {
+                    return None;
+                }
+                to
+            }
+            Op::Binary { x, y, bop } => {
+                let x = self.tt_clone_index(x, from, to, before, memo)?;
+                let y = self.tt_clone_index(y, from, to, before, memo)?;
+                self.insert_before(before, Op::Binary { x, y, bop })
+            }
+            Op::Unary { x, uop } => {
+                let x = self.tt_clone_index(x, from, to, before, memo)?;
+                self.insert_before(before, Op::Unary { x, uop })
+            }
+            Op::Cast { x, dtype } => {
+                let x = self.tt_clone_index(x, from, to, before, memo)?;
+                self.insert_before(before, Op::Cast { x, dtype })
+            }
+            _ => return None,
+        };
+        memo.insert(idx, out);
+        Some(out)
+    }
+
     fn strip_unrolls(&mut self, idx: OpId, before: OpId, strip_loops: bool) -> Option<OpId> {
         // Clone memo per call (index math is small).
         let mut memo: Map<OpId, OpId> = Map::default();
