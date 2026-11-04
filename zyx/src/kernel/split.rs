@@ -592,6 +592,24 @@ impl Kernel {
                         }
                         let (acc_side, prod_side) = if x_acc { (sx, sy) } else { (sy, sx) };
 
+                        // `depends_on` is transitive, so the acc can sit nested
+                        // inside a per-lane chain (`acc + (prod + acc)`, what
+                        // `simplify_accumulating_loop` leaves behind). The
+                        // operand classified as the acc is then itself
+                        // lane-varying, and reducing the other (invariant) side
+                        // leaves the lane on the value stored into the scalar
+                        // acc slot. Unrolling is a lane reduce only when the acc
+                        // operand *is* the acc load.
+                        if acc_side != acc_load_id {
+                            return OpId::NULL;
+                        }
+                        // ...and only when the other operand actually carries
+                        // the split axis: an axis-invariant prod would be added
+                        // once instead of once per iteration.
+                        if !self.depends_on(prod_side, axis_id, &mut Set::default()) {
+                            return OpId::NULL;
+                        }
+
                         // Next free lane axis for the Unroll node.
                         let mut next_lane_axis = 0u64;
                         for (_, op) in self.iter_unordered() {
