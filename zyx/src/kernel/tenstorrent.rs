@@ -879,19 +879,175 @@ impl Kernel {
         }
         self.default_epilogue();
         self.default_epilogue();
+        // Normalize the loop tiling the search left to the one shape the
+        // tile IR has: `Loop(k_tiles) + Unroll(32)`. Three input shapes
+        // reach here.
+        //
+        // - A loop in **element** units (the unsplit reduce): pad to 32 and
+        //   split. That is where the lane axis and the `Reduce` come from.
+        // - A loop the search **strip-mined** (`SplitMode::Loop`:
+        //   `factor*outer + inner`): fold the pair back into one loop of
+        //   `outer*inner` trips, then pad + split. Padding the outer alone
+        //   counts the inner trips again: softmax's 8-tile reduce became
+        //   32 iterations and a 4 MB reader block.
+        // - A loop the search already **split into lanes**
+        //   (`SplitMode::Unroll`): its trip count is tiles, not elements,
+        //   so it is left alone (same over-read if padded).
+        //
+        // Folding validates the whole pair before mutating: the inner var's
+        // only use is the composition split leaves right after the inner
+        // header, the outer var is used by nothing inside the inner body, and
+        // no side effect sits in the outer body between the two loops (it
+        // would run once per flat iteration instead of once per outer one).
+        for _ in 0..64 {
+            let mut inner_ops: Vec<OpId> = Vec::new();
+            for (op, x) in self.iter_unordered() {
+                if matches!(x, Op::Loop { .. }) {
+                    inner_ops.push(op);
+                }
+            }
+            let mut folded = false;
+            for inner in inner_ops {
+                let Some(outer) = self.tt_enclosing_loop(inner) else {
+                    continue;
+                };
+                let composed = self.next_op(inner);
+                if composed.is_null() {
+                    continue;
+                }
+                let Op::Binary { x, y, bop: BOp::Add } = self.ops[composed].op else {
+                    continue;
+                };
+                let acc = if y == inner {
+                    x
+                } else if x == inner {
+                    y
+                } else {
+                    continue;
+                };
+                if !self.depends_on(acc, outer, &mut Set::default()) {
+                    continue;
+                }
+                let (Op::Loop { len: outer_len }, Op::Loop { len: inner_len }) =
+                    (self.ops[outer].op.clone(), self.ops[inner].op.clone())
+                else {
+                    continue;
+                };
+                let (Some(ol), Some(il)) = (
+                    self.resolve_const(outer_len).and_then(Constant::as_dim),
+                    self.resolve_const(inner_len).and_then(Constant::as_dim),
+                ) else {
+                    continue;
+                };
+                let inner_end = self.get_last_dim_op(inner);
+                let outer_end = self.get_last_dim_op(outer);
+                // The inner var belongs to the composition alone.
+                let mut ok = true;
+                for (op, x) in self.iter_unordered() {
+                    if op != composed && x.parameters().any(|p| p == inner) {
+                        ok = false;
+                        break;
+                    }
+                }
+                // A value is *tainted* when it reaches the outer var without
+                // going through the composition. After folding the outer var
+                // enumerates the flat trips, so a tainted value read inside
+                // the inner body (or after it) would see the wrong index. The
+                // composition itself bridges the two loop names: its consumers
+                // are downstream of the flat index and stay correct.
+                let mut tainted: Set<OpId> = Set::default();
+                let mut walk = self.head;
+                while !walk.is_null() {
+                    if walk != composed
+                        && self.ops[walk].op.parameters().any(|p| p == outer || (p != composed && tainted.contains(&p)))
+                    {
+                        tainted.insert(walk);
+                    }
+                    walk = self.next_op(walk);
+                }
+                // Between the two loops: the composition's own math, pure.
+                let mut scan = self.next_op(outer);
+                while ok && !scan.is_null() && scan != inner {
+                    if matches!(self.ops[scan].op, Op::Store { .. } | Op::Copy { .. }) {
+                        ok = false;
+                    }
+                    scan = self.next_op(scan);
+                }
+                // The inner body may write its accumulator, but no tainted
+                // value may reach it.
+                let mut scan = self.next_op(inner);
+                while ok && !scan.is_null() && scan != inner_end {
+                    if scan != composed && tainted.contains(&scan) {
+                        ok = false;
+                    }
+                    scan = self.next_op(scan);
+                }
+                // After the inner loop, still in the outer body: no side
+                // effects (they would run per flat trip), no tainted value.
+                let mut scan = self.next_op(inner_end);
+                while ok && !scan.is_null() && scan != outer_end {
+                    if matches!(self.ops[scan].op, Op::Store { .. } | Op::Copy { .. }) || tainted.contains(&scan) {
+                        ok = false;
+                    }
+                    scan = self.next_op(scan);
+                }
+                if !ok {
+                    continue;
+                }
+                let flat = self.insert_const_idx_before(outer, ol * il);
+                self.ops[outer].op = Op::Loop { len: flat };
+                self.remap(composed, outer);
+                self.remove_op(composed);
+                self.remove_op(inner_end);
+                self.remove_op(inner);
+                folded = true;
+                break;
+            }
+            if !folded {
+                break;
+            }
+        }
         // Gather loops, pad to 32, split unroll-32 FIRST: split's
         // loop arm allows exactly one acc store per body, so it must
         // run before coarsening replicates the body. pad_to pads
         // lengths only on TT (no guards); already-multiples are
         // untouched. Non-reduce loops are a no-op inside (no acc
         // found); anything else keeps its shape for later cuts.
-        let mut pad_loops: Vec<OpId> = Vec::new();
+        let mut pad_loops: Vec<(OpId, bool)> = Vec::new();
         for (op, x) in self.iter_unordered() {
-            if matches!(x, Op::Loop { .. }) {
-                pad_loops.push(op);
+            if !matches!(x, Op::Loop { .. }) {
+                continue;
             }
+            // `split(Loop, Unroll, 32)` leaves `loop*32 + lane`: the loop
+            // advances one 32-lane chunk (one tile) per trip, so its length
+            // is tiles already.
+            let mut tiled = false;
+            let end = self.get_last_dim_op(op);
+            let mut scan = self.next_op(op);
+            while !scan.is_null() && scan != end && !tiled {
+                let idx = match self.ops[scan].op {
+                    Op::Load { src_idx, .. } => src_idx,
+                    Op::Store { dst_idx, .. } => dst_idx,
+                    Op::Copy { src_idx, .. } => src_idx,
+                    _ => OpId::NULL,
+                };
+                if !idx.is_null()
+                    && let Some(strides) = self.get_strides(idx)
+                    && strides.get(&op).is_some_and(|&(_, s)| s == 32)
+                    && strides
+                        .iter()
+                        .any(|(v, &(_, s))| *v != op && s == 1 && matches!(self.ops[*v].op, Op::Unroll { len: 32, .. }))
+                {
+                    tiled = true;
+                }
+                scan = self.next_op(scan);
+            }
+            pad_loops.push((op, tiled));
         }
-        for l in pad_loops {
+        for (l, tiled) in pad_loops {
+            if tiled {
+                continue;
+            }
             self.pad_to(l, 32);
             let len = match self.ops[l].op {
                 Op::Loop { len, .. } => len,
@@ -1517,6 +1673,66 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
+        // A **broadcast operand** is a value with fewer tile axes than the op
+        // it feeds (`exp(x - max)`: the `[32]` max row against a `[32,32]`
+        // tile). Re-materialise the `Op::Expand` the frontend wrote and
+        // `linearize` consumed, so the binary is `[32,32] op [32,32]`
+        // downstream: the pattern table matches, the lowering resolves the
+        // view to its reader CB, and the B mover broadcasts
+        // (`READ_BROADCAST_COL`). It happens here, not at the end of
+        // `tt_tile`, because the generic `verify` (which `tt_reindex` still
+        // runs) rejects graph-shape ops after linearization; this pass is the
+        // phase boundary. A scalar operand stays bare -- it is an `SfpuConst`.
+        let mut expands: Vec<(OpId, OpId, OpId)> = Vec::new();
+        for (id, x) in self.iter_unordered() {
+            let (a, b) = match *x {
+                Op::Binary { x, y, .. } => (x, y),
+                Op::Select { if_true, if_false, .. } => (if_true, if_false),
+                _ => continue,
+            };
+            let (ra, rb) = (self.shape(a).len(), self.shape(b).len());
+            if ra == rb {
+                continue;
+            }
+            let (narrow, wide) = if ra < rb { (a, b) } else { (b, a) };
+            if self.shape(narrow).is_empty() {
+                continue;
+            }
+            expands.push((id, narrow, wide));
+        }
+        for (id, narrow, wide) in expands {
+            let dims = self.shape(wide);
+            if dims.is_empty() || dims.iter().any(|d| *d <= 0) {
+                continue;
+            }
+            let mut shape_ops: Vec<OpId> = Vec::with_capacity(dims.len());
+            for d in dims {
+                shape_ops.push(self.insert_const_idx_before(id, d));
+            }
+            let shape = if shape_ops.len() == 1 {
+                shape_ops[0]
+            } else {
+                self.insert_before(id, Op::Stack { ops: shape_ops.into() })
+            };
+            let expand = self.insert_before(id, Op::Expand { x: narrow, shape });
+            match &mut self.ops[id].op {
+                Op::Binary { x, y, .. } => {
+                    if *x == narrow {
+                        *x = expand;
+                    } else {
+                        *y = expand;
+                    }
+                }
+                Op::Select { if_true, if_false, .. } => {
+                    if *if_true == narrow {
+                        *if_true = expand;
+                    } else {
+                        *if_false = expand;
+                    }
+                }
+                other => unreachable!("tt_dataflow_select: broadcast wrap on {other:?}"),
+            }
+        }
         // CB Storage definitions live in the prologue (past leading
         // params/storages, before everything else): inserting before
         // `prologue` keeps it stable.
@@ -1700,6 +1916,18 @@ impl Kernel {
                 reader_cb_of.insert(*base, cb);
                 slot_of.insert(*base, 0);
             }
+            // A value the broadcast wrap (`Op::Expand`) reads is published as a
+            // whole **tile image**: the reader's shaped `READ_BROADCAST_COL`
+            // takes exactly one `tt_isa::dm::TILE_SLOT`, copies the 16-byte
+            // header and writes datum `(r, c)` from `(r, 0)`.
+            let mut broadcast: Set<OpId> = Set::default();
+            for (_, op) in self.iter_unordered() {
+                if let Op::Expand { x, .. } = *op
+                    && let Op::Load { src: base, .. } = self.ops[x].op
+                {
+                    broadcast.insert(base);
+                }
+            }
             for (_load, base, off, tiles, hoist) in loads.iter() {
                 let cb = cb_of[base];
                 let dtype = self.dtype(*base);
@@ -1711,7 +1939,9 @@ impl Kernel {
                 let Some(base_idx) = self.strip_unrolls(*off, anchor, hoisted) else {
                     return;
                 };
-                let (slot_c, bytes) = if hoisted {
+                let (slot_c, bytes) = if broadcast.contains(base) {
+                    (self.insert_const_idx_before(anchor, 0i64), tt_isa::dm::TILE_SLOT as u32)
+                } else if hoisted {
                     let Some(tiles) = u32::try_from(*tiles).ok() else { return };
                     let Some(bytes) = tile_bytes.checked_mul(tiles) else { return };
                     (self.insert_const_idx_before(anchor, 0i64), bytes)
@@ -2150,6 +2380,10 @@ impl Kernel {
             Op::TT(TTOp::Setrwc { dst }) => return Some((self.dtype(id), dst)),
             Op::Storage { dtype, .. } => return Some((dtype, id)),
             Op::Load { .. } => return self.tt_lower_load(id, lower),
+            // A broadcast view is the value it wraps: the reader publishes the
+            // `[32]` row as one tile, the mover replicates it across the
+            // tile's lanes, and every consumer reads the same reader CB.
+            Op::Expand { x, .. } => return self.tt_lower_value(x, lower),
             // The three value-preserving/reinterpreting ops are `Op`s, not
             // `UOp`/`BOp` kinds, so they lower here rather than through the
             // kind-keyed pattern table.
@@ -5419,6 +5653,24 @@ impl Kernel {
         // A reindexed index already names tiles; its group terms are the
         // physical offsets and must not be rebased again.
         let tile_units = self.tt_index_is_tile_units(idx);
+        // The group axes **this index names**. A parameter's tile pitch only
+        // counts the extents of the grid axes that index it: the `[32]` row
+        // vector of `exp(x - max)` is addressed by the row group alone, so its
+        // stride is one tile even though the kernel has a second (column)
+        // group axis.
+        let index_axes: Option<Set<u32>> = self.get_strides(idx).map(|s| {
+            s.keys()
+                .filter_map(|v| {
+                    if v.is_null() {
+                        return None;
+                    }
+                    match self.ops[*v].op {
+                        Op::Range { axis, kind: RangeKind::Group(_), .. } => Some(axis),
+                        _ => None,
+                    }
+                })
+                .collect()
+        });
         // Group axis -> physical tile stride (element units), built
         // lazily on first group use inside the walk below.
         let mut strides: Option<Map<u32, Dim>> = None;
@@ -5473,6 +5725,9 @@ impl Kernel {
                             let mut axes: Vec<(u32, Dim)> = Vec::new();
                             for (_, op) in self.iter_unordered() {
                                 if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
+                                    if index_axes.as_ref().is_some_and(|set| !set.contains(axis)) {
+                                        continue;
+                                    }
                                     let Some(e) = self.resolve_const(*len).and_then(Constant::as_dim) else {
                                         return None;
                                     };
@@ -5502,18 +5757,45 @@ impl Kernel {
                         if !tile_units {
                             match bop {
                                 BOp::Mul => {
+                                    // `c * g` -> `g * stride`: the group steps
+                                    // whole tiles, so the element coefficient
+                                    // `c` is *replaced* by the physical stride.
+                                    // Keeping it multiplies the live range twice
+                                    // (softmax's `[32]` max row: `32 * (1024*g)`).
                                     if let Some(a) = gx {
                                         if gy.is_none() && matches!(self.ops[ny].op, Op::Const(_)) {
                                             let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
-                                            let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
-                                            ax = self.insert_before(before, Op::Binary { x: nx, y: sc, bop });
+                                            ay = self.insert_before(before, Op::Const(Constant::idx(s)));
                                         }
                                     }
                                     if let Some(a) = gy {
                                         if gx.is_none() && matches!(self.ops[nx].op, Op::Const(_)) {
                                             let s = strides.as_ref().expect("strip_unrolls: stride map missing")[&a];
-                                            let sc = self.insert_before(before, Op::Const(Constant::idx(s)));
-                                            ay = self.insert_before(before, Op::Binary { x: sc, y: ny, bop });
+                                            ax = self.insert_before(before, Op::Const(Constant::idx(s)));
+                                        }
+                                    }
+                                    // A const times a **group-derived**
+                                    // expression is the logical row stride
+                                    // (`(32*g0 + lane) * 256`): the physical
+                                    // stride the group just took already carries
+                                    // the inner extents, so the multiplier is
+                                    // dropped rather than applied a second time.
+                                    if gx.is_none() && gy.is_none() {
+                                        let (keep, other) = if matches!(self.ops[ny].op, Op::Const(_)) {
+                                            (nx, ny)
+                                        } else {
+                                            (ny, nx)
+                                        };
+                                        if matches!(self.ops[other].op, Op::Const(_))
+                                            && self.get_strides(keep).is_some_and(|s| {
+                                                s.keys().any(|v| {
+                                                    !v.is_null()
+                                                        && matches!(self.ops[*v].op, Op::Range { kind: RangeKind::Group(_), .. })
+                                                })
+                                            })
+                                        {
+                                            memo.insert(n, keep);
+                                            continue;
                                         }
                                     }
                                 }

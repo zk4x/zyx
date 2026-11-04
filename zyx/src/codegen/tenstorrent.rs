@@ -28,7 +28,8 @@ use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TTSfpInsn, UOp,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmTileRead, TTDmWrite, TTOp,
+    TTSfpInsn, UOp,
 };
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
@@ -147,6 +148,18 @@ impl Kernel {
         // fixed here and the launch only substitutes addresses (NOTES §2).
         rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
         for mv in &program.reader {
+            // A `TILE_SLOT` publish is the mover's shaped read of one whole
+            // tile image (`READ_BROADCAST_COL`): one entry, never paged.
+            if mv.bytes == tt_isa::dm::TILE_SLOT as u32 {
+                rendered.push_back(Op::TT(TTOp::DmReadBroadcastCol(Box::new(TTDmTileRead {
+                    param: mv.param,
+                    dst: mv.l1,
+                    base: mv.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                }))));
+                continue;
+            }
             for page in tt_pages(mv) {
                 rendered.push_back(Op::TT(TTOp::DmRead(Box::new(TTDmRead {
                     param: mv.param,
@@ -281,8 +294,12 @@ struct TtPage {
 }
 
 /// Split a boundary move into the pages codegen emits one op each for: the
-/// 4 KB page is the unit that is contiguous on both sides.
+/// DRAM page is the unit that is contiguous on both sides. A shaped tile read
+/// (`READ_BROADCAST_COL`, one whole `TILE_SLOT`) is one entry by definition.
 fn tt_pages(mv: &TTDmMove) -> Vec<TtPage> {
+    if mv.bytes == tt_isa::dm::TILE_SLOT as u32 {
+        return vec![TtPage { l1: mv.l1, len: mv.bytes, base: mv.base }];
+    }
     let mut pages = Vec::with_capacity(mv.bytes.div_ceil(TT_DRAM_PAGE_BYTES) as usize);
     let mut at = 0u32;
     while at < mv.bytes {
@@ -1327,9 +1344,14 @@ fn tt_place_cbs(k: &Kernel, cb_order: &[OpId]) -> Result<Vec<u32>, BackendError>
         // one. Sizing by `len` alone overlaps the tiles of consecutive CBs.
         let el = u64::from(dtype.bit_size() as u32 / 8);
         let len = (*len as u64).checked_mul(el).ok_or_else(|| tt_err(format!("tenstorrent: CB {st} size overflows")))?;
-        let base = (at + 63) & !63;
+        // Every CB starts 16 bytes *into* its alignment block: the datums then
+        // sit at ≡16 mod 64, which is where a tile image's datum block lives
+        // (`tt_isa::dm::TILE_DATA`). A plain read copies that datum block, and
+        // a shaped read (`READ_BROADCAST_COL`) writes header+datums at
+        // `base - 16`, so the 16 bytes of headroom must be inside the arena.
+        let base = ((at + 63) & !63) + tt_isa::dm::TILE_DATA;
         let end = base + len;
-        if end > tt_isa::l1::DATA.end {
+        if end > tt_isa::l1::DATA.end || base < tt_isa::l1::DATA.base {
             return Err(tt_err(format!(
                 "tenstorrent: L1 data arena exhausted: CB {st} needs {len} bytes at {base:#x}, arena ends at {:#x}",
                 tt_isa::l1::DATA.end
@@ -1405,14 +1427,22 @@ fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), B
             *slot = *stride;
         }
     } else {
+        // Only the grid axes **this index names** move the slice: a `[32]`
+        // row vector is addressed by the row group alone, so the column grid
+        // axis must not add a stride (that overshot the param by a whole
+        // row of tiles). Unnamed axes keep a zero stride.
         let mut axes: Vec<(u32, i64)> = Vec::new();
-        for (_, op) in k.iter_unordered() {
-            if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
-                let extent = k.resolve_const(*len).and_then(Constant::as_dim).ok_or_else(|| {
-                    tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string())
-                })?;
-                axes.push((*axis, extent));
+        for var in strides.keys() {
+            if *var == OpId::NULL {
+                continue;
             }
+            let Op::Range { axis, kind: RangeKind::Group(len), .. } = k.at(*var) else {
+                return Err(tt_err(format!("tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}")));
+            };
+            let extent = k.resolve_const(*len).and_then(Constant::as_dim).ok_or_else(|| {
+                tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string())
+            })?;
+            axes.push((*axis, extent));
         }
         axes.sort();
         let mut suffix = 1024i64;
@@ -1424,9 +1454,19 @@ fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), B
             suffix = suffix.checked_mul(*extent).ok_or_else(|| tt_err("tenstorrent: grid slice stride overflows".to_string()))?;
         }
     }
+    // Element offsets are whole tiles here (`strip_unrolls` zeroes the lane
+    // axes), so they scale by the *tile image* pitch, not the datum width:
+    // one tile advances `tt_isa::dm::TILE_SLOT`, and the datum block starts
+    // `tt_isa::dm::TILE_DATA` bytes into it. The caller adds the datum offset;
+    // this returns the slot base (what a shaped read starts at).
     let to_bytes = |v: i64| -> Result<u32, BackendError> {
+        if v % 1024 != 0 {
+            return Err(tt_err(format!("tenstorrent: boundary offset {v} is not a whole tile")));
+        }
+        let slot_bytes = tt_isa::dm::TILE_SLOT as i64;
         let b =
-            v.checked_mul(i64::from(elem_bytes)).ok_or_else(|| tt_err(format!("tenstorrent: boundary offset {v} overflows")))?;
+            (v / 1024).checked_mul(slot_bytes).ok_or_else(|| tt_err(format!("tenstorrent: boundary offset {v} overflows")))?;
+        let _ = elem_bytes;
         u32::try_from(b).map_err(|_| tt_err(format!("tenstorrent: boundary offset {b} bytes does not fit u32")))
     };
     Ok((to_bytes(base)?, to_bytes(per_axis[0])?, to_bytes(per_axis[1])?))
@@ -1471,12 +1511,42 @@ fn tt_boundary_moves(
                 // moves with the grid: the program is tile-uniform, so this
                 // is the only per-core difference.
                 let elem_bytes = k.dtype(param).bit_size() as u32 / 8;
+                let tile_bytes = elem_bytes * 1024;
                 let (base, gstride0, gstride1) = tt_slice(k, idx, elem_bytes)?;
-                let move_ = TTDmMove { param: ord, l1: l1[cb_num as usize], bytes: *bytes, narrow, base, gstride0, gstride1 };
-                match section {
-                    0 => reader.push(move_),
-                    2 => writer.push(move_),
-                    _ => unreachable!("section is 0 or 2 in this arm"),
+                let slot = tt_isa::dm::TILE_SLOT as u32;
+                let data = tt_isa::dm::TILE_DATA as u32;
+                // One DMA entry carries one *tile image*: tiles are not
+                // contiguous on the DRAM side (16-byte header, 4160 pitch), so
+                // a block publish/drain is one entry per tile. A `TILE_SLOT`
+                // publish is the mover's shaped read of one whole image
+                // (`READ_BROADCAST_COL`) and stays one entry.
+                let shaped = *bytes == slot;
+                let n = if shaped {
+                    1
+                } else {
+                    bytes.checked_div(tile_bytes).ok_or_else(|| tt_err("tenstorrent: zero-length boundary move".to_string()))?
+                };
+                if !shaped && n * tile_bytes != *bytes {
+                    return Err(tt_err(format!(
+                        "tenstorrent: boundary move {op_id:?} is {bytes} bytes, not a whole number of {tile_bytes}-byte tiles"
+                    )));
+                }
+                for t in 0..n {
+                    // A shaped read writes the header too, so its L1 base is
+                    // the slot start, 16 bytes below the CB's datums.
+                    let l1 = if shaped {
+                        l1[cb_num as usize] - data
+                    } else {
+                        l1[cb_num as usize] + t * tile_bytes
+                    };
+                    let base = if shaped { base } else { base + t * slot + data };
+                    let bytes = if shaped { slot } else { tile_bytes };
+                    let move_ = TTDmMove { param: ord, l1, bytes, narrow, base, gstride0, gstride1 };
+                    match section {
+                        0 => reader.push(move_),
+                        2 => writer.push(move_),
+                        _ => unreachable!("section is 0 or 2 in this arm"),
+                    }
                 }
             }
             _ => {}

@@ -355,11 +355,6 @@ fn mover_list(
         return Ok(());
     }
     let m = mover(which);
-    let op = match which {
-        B => dm::op::READ,
-        NC => dm::op::WRITE,
-        other => unreachable!("mover index {other} is neither B nor NC"),
-    };
     // One list per direction per launch: `tt_verify` rejects a longer stream
     // at compile time, so a second chunk here means that check was bypassed.
     // Never split silently: the entry count is the stream's shape.
@@ -375,8 +370,18 @@ fn mover_list(
             dm::LIST_MAX
         );
     }
+    // The entry's opcode is the ISA instruction that does the move, per entry:
+    // one whole tile image (`TILE_SLOT`) is the mover's shaped read, whose
+    // firmware copies the 16-byte header and then writes datum `(r, c)` from
+    // `(r, 0)` of the tile.
     let mut entries = Vec::with_capacity(list.len() * dm::ENTRY_BYTES as usize);
     for (range, l1) in list {
+        let op = match which {
+            B if range.len() == dm::TILE_SLOT => dm::op::READ_BROADCAST_COL,
+            B => dm::op::READ,
+            NC => dm::op::WRITE,
+            other => unreachable!("mover index {other} is neither B nor NC"),
+        };
         // Port 0: the mover maps it onto a port its NoC owns, and reads
         // stay on NoC #0 whichever entry names.
         let entry: [u32; 8] = [
@@ -393,8 +398,7 @@ fn mover_list(
             entries.extend_from_slice(&word.to_le_bytes());
         }
     }
-    dev.l1_write(window, tile, m.list, &entries)
-        .map_err(|e| format!("cannot write the {:?} mover's list: {e}", m.core))?;
+    dev.l1_write(window, tile, m.list, &entries).map_err(|e| format!("cannot write the {:?} mover's list: {e}", m.core))?;
     write32(dev, window, tile, m.at(dm::OP), dm::op::LIST)?;
     write32(dev, window, tile, m.at(dm::LEN), list.len() as u32)?;
     let seq = movers.seq[which].wrapping_add(1).max(1);
@@ -477,12 +481,7 @@ fn execute(
                 eprintln!("[tt] role T{thread}: {} bytes, {} entries, len {words}", words as u64 * 4, p.ranges.len());
             }
         }
-        eprintln!(
-            "[tt] moves: {} in (B), {} out (NC), {} read back",
-            run.reads.len(),
-            run.writes.len(),
-            run.read_back.len()
-        );
+        eprintln!("[tt] moves: {} in (B), {} out (NC), {} read back", run.reads.len(), run.writes.len(), run.read_back.len());
     }
     let tile =
         NocCoord::<Noc0>::new(run.tile.0, run.tile.1).ok_or_else(|| format!("{:?} is not a Tensix coordinate", run.tile))?;

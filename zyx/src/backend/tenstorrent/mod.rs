@@ -258,9 +258,11 @@ pub struct TTSemaphoreInit {
 
 /// DRAM interleaving granularity: bytes striped round-robin across the chip's
 /// channels before the next channel gets the next page. Tenstorrent interleaves
-/// a buffer in units of its page rounded to `DRAM_ALIGNMENT` (`64` on
-/// Blackhole) — 4 KB for an FP32 tile; 4 KB is the default here.
-const STRIPE: u64 = 4096;
+/// a buffer in units of its *page* — the tile image — so the page is
+/// [`tt_isa::dm::TILE_SLOT`] (16-byte header + 1024 datums + pad), not the bare
+/// 4 KB datum block: a tile image must land inside one channel range, because
+/// `READ_TRANSPOSED`/`READ_BROADCAST_COL` are a single descriptor of one slot.
+const STRIPE: u64 = tt_isa::dm::TILE_SLOT;
 
 /// One allocation in the flat DRAM space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -821,6 +823,17 @@ impl TTDevice {
                     gstride0: page.gstride0,
                     gstride1: page.gstride1,
                 }),
+                // One whole tile image, shaped by the mover: `READ_BROADCAST_COL`
+                // copies the header and writes row `r`'s value into every column.
+                Op::TT(TTOp::DmReadBroadcastCol(tile)) => reader.push(TTDmMove {
+                    param: tile.param,
+                    l1: tile.dst,
+                    bytes: tt_isa::dm::TILE_SLOT as u32,
+                    narrow: TT_NARROW_NONE,
+                    base: tile.base,
+                    gstride0: tile.gstride0,
+                    gstride1: tile.gstride1,
+                }),
                 Op::TT(TTOp::DmWrite(page)) => writer.push(TTDmMove {
                     param: page.param,
                     l1: page.l1,
@@ -846,7 +859,10 @@ impl TTDevice {
             op_id = rendered.next_op(op_id);
         }
         let Some(gws) = gws else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "rendered kernel has no TensixGrid".into() });
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "rendered kernel has no TensixGrid".into(),
+            });
         };
         if debug_asm {
             eprintln!("[tenstorrent] reader:\n{}", sources[0]);
@@ -968,7 +984,9 @@ impl TTDevice {
         let Ok(tpool) = pool(dev_id) else { return };
         let mut tpool = super::lock(self.memory_pool, tpool);
         for id in sequence.iter() {
-            let Some(image) = self.images.get(*id).copied() else { continue };
+            let Some(image) = self.images.get(*id).copied() else {
+                continue;
+            };
             self.images.remove(*id);
             let chunk = tpool.chunks.iter().find(|(_, c)| c.addr == image.address).map(|(chunk, _)| chunk);
             if let Some(chunk) = chunk {
@@ -1405,12 +1423,22 @@ impl Dev {
         let (pr, pc) = self.info().expect("tilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
         let rank = shape.len();
         let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
+        // Device tiles are tile *images*: a 16-byte header the unpacker steps
+        // over (`UNPACR_Regular`'s `(Base + 1 + DigestSize) * 16`), the 1024
+        // face-order datums, and padding to 64 bytes (`tt_isa::dm::TILE_SLOT`).
+        // The header is never read; the movers copy it along so what lands in
+        // L1 is a valid tile image (the shaped reads need it, see `STRIPE`).
+        let el_d = el as Dim;
+        let slot = tt_isa::dm::TILE_SLOT as Dim;
+        let hdr = tt_isa::dm::TILE_DATA as Dim;
+        let tile_elems = slot / el_d;
+        let hdr_elems = hdr / el_d;
+        let tiles = (pr * pc) / 1024;
         let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
         if rank >= 2 {
             phys_dims.extend_from_slice(&shape[..rank - 2]);
         }
-        phys_dims.push(pr);
-        phys_dims.push(pc);
+        phys_dims.push(tiles * tile_elems);
         let [shard] = &src.shards[..] else {
             todo!("tilize_transfer: multi-shard source");
         };
@@ -1457,15 +1485,15 @@ impl Dev {
         Pool::Host.pool_to_host(staged_shard.chunk, &mut logical)?;
         // Swizzle to face order on the host (zero-filled halo).
         let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
-        let mut physical = vec![0u8; (outer * pr * pc * el as Dim) as usize];
+        let mut physical = vec![0u8; usize::try_from(outer * tiles * slot).expect("TT tile image bytes fit usize")];
         for b in 0..outer {
             for r in 0..rows {
                 for c in 0..cols {
                     let (tr, tc) = (r / 32, c / 32);
                     let face = (r % 32) / 16 * 2 + (c % 32) / 16;
                     let within = (r % 16) * 16 + (c % 16);
-                    let srci = ((b * rows + r) * cols + c) * el as Dim;
-                    let dsti = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
+                    let srci = ((b * rows + r) * cols + c) * el_d;
+                    let dsti = (((b * ntr + tr) * ntc + tc) * tile_elems + hdr_elems + face * 256 + within) * el_d;
                     physical[dsti as usize..dsti as usize + el].copy_from_slice(&logical[srci as usize..srci as usize + el]);
                 }
             }
@@ -1518,12 +1546,19 @@ impl Dev {
         let (pr, pc) = self.info().expect("untilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
         let rank = shape.len();
         let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
+        // The same tile images [`Dev::tilize_transfer`] writes (see there and
+        // `STRIPE`): header + face-order datums, `tt_isa::dm::TILE_SLOT` each.
+        let el_d = el as Dim;
+        let slot = tt_isa::dm::TILE_SLOT as Dim;
+        let hdr = tt_isa::dm::TILE_DATA as Dim;
+        let tile_elems = slot / el_d;
+        let hdr_elems = hdr / el_d;
+        let tiles = (pr * pc) / 1024;
         let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
         if rank >= 2 {
             phys_dims.extend_from_slice(&shape[..rank - 2]);
         }
-        phys_dims.push(pr);
-        phys_dims.push(pc);
+        phys_dims.push(tiles * tile_elems);
         let [shard] = &src.shards[..] else {
             todo!("untilize_transfer: multi-shard source");
         };
@@ -1566,7 +1601,7 @@ impl Dev {
         let [staged_shard] = &staged.shards[..] else {
             unreachable!("untilize_transfer: staged placement changed shape");
         };
-        let physical_len = (outer * pr * pc * el as Dim) as usize;
+        let physical_len = usize::try_from(outer * tiles * slot).expect("TT tile image bytes fit usize");
         let mut physical = vec![0u8; physical_len];
         Pool::Host.pool_to_host(staged_shard.chunk, &mut physical)?;
         // Unswizzle on the host, then move logical bytes.
@@ -1578,7 +1613,7 @@ impl Dev {
                     let (tr, tc) = (r / 32, c / 32);
                     let face = (r % 32) / 16 * 2 + (c % 32) / 16;
                     let within = (r % 16) * 16 + (c % 16);
-                    let srci = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
+                    let srci = (((b * ntr + tr) * ntc + tc) * tile_elems + hdr_elems + face * 256 + within) * el_d;
                     let dsti = ((b * rows + r) * cols + c) * el as Dim;
                     logical[dsti as usize..dsti as usize + el].copy_from_slice(&physical[srci as usize..srci as usize + el]);
                 }
