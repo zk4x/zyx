@@ -1110,12 +1110,21 @@ impl Graph {
         }
         match &self.ops[class].op {
             Op::Const(_) => Vec::new(),
-            Op::Select { if_true, if_false, .. } => {
-                // Scalars broadcast implicitly (same rule as `Binary` and
-                // the eager `result_shape`): the result takes the shape of
-                // the non-scalar arm. Both scalars → rank 0.
+            Op::Select { cond, if_true, if_false } => {
+                // Scalars broadcast implicitly (same rule as `Binary`):
+                // the result takes the shape of the non-scalar operand.
+                // The cond participates last — a lane-varying mask over
+                // scalar arms yields the cond's shape, exactly as the
+                // kernel IR's `shape_ids` already computes it. Omitting it
+                // reported rank 0 for a vector result, so replay allocated
+                // one element and the kernel wrote the whole vector past
+                // it. Only when all three are scalars is the result rank 0.
                 let st = self.shape(*if_true);
-                if !st.is_empty() { st } else { self.shape(*if_false) }
+                if !st.is_empty() {
+                    return st;
+                }
+                let sf = self.shape(*if_false);
+                if !sf.is_empty() { sf } else { self.shape(*cond) }
             }
             Op::Stack { ops } => {
                 // Shape-descriptor stacks (scalar dims) have no tensor shape.
