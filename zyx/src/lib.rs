@@ -310,5 +310,16 @@ unsafe extern "C" {
 /// feature records into a map nobody reads.
 #[cfg(feature = "time")]
 extern "C" fn runtime_atexit_deinitialize() {
+    {
+        let timers = ET.lock();
+        if !timers.is_empty() {
+            let mut rows: Vec<_> = timers.iter().collect();
+            rows.sort_by_key(|&(_, &(micros, _))| std::cmp::Reverse(micros));
+            eprintln!("--- zyx timers: total (calls) ---");
+            for (name, &(micros, calls)) in rows {
+                eprintln!("  {name}: {:.3} ms ({calls})", micros as f64 / 1000.0);
+            }
+        }
+    }
     RT.lock().deinitialize();
 }

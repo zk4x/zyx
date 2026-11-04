@@ -10,9 +10,9 @@
 //! - `Loop` + `Loop`: the inner loop must lie inside the outer's region;
 //!   a `Store`/`Copy` anywhere in the region refuses (per-iteration
 //!   register reset semantics would change).
-//! - `Range` + `Range`: both `Group` or both `Local` (`Warp`/`Unroll`
-//!   bail); axes strictly ascending and `axis_a` before `axis_b` in list
-//!   order; symbolic lengths bail.
+//! - `Range` + `Range`: both `Group` or both `Local`; axes strictly
+//!   ascending and `axis_a` before `axis_b` in list order; symbolic
+//!   lengths bail.
 //!
 //! Chains fold through pairwise calls: nested loop chains outermost-first,
 //! index lists in list order. Every step preserves semantics, so a refused
@@ -21,7 +21,7 @@
 use super::autotune::Optimization;
 use crate::{
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, RangeKind},
+    kernel::{BOp, Kernel, MemScope, Op, OpId, RangeKind},
     shape::Dim,
 };
 
@@ -229,7 +229,6 @@ impl Kernel {
                 len
             }
             RangeKind::Local(len) => len as Dim,
-            RangeKind::Warp(_) => return OpId::NULL,
         };
         let len_b: Dim = match kind_b {
             RangeKind::Group(len_id) => {
@@ -239,7 +238,6 @@ impl Kernel {
                 len
             }
             RangeKind::Local(len) => len as Dim,
-            RangeKind::Warp(_) => return OpId::NULL,
         };
         let mut acc = 1;
         acc *= len_a;
@@ -247,7 +245,6 @@ impl Kernel {
         let kind = match kind_a {
             RangeKind::Group(_) => RangeKind::Group(self.insert_before(first, Op::Const(Constant::idx(acc)))),
             RangeKind::Local(_) => RangeKind::Local(acc as u32),
-            RangeKind::Warp(_) => return OpId::NULL,
         };
         let merged = self.insert_before(first, Op::Range { axis: axis_a, kind });
 
@@ -295,6 +292,12 @@ impl Kernel {
     /// Make the `Merge` optimization: each config merges one nested loop
     /// chain or one range pair into a single flat axis.
     pub fn opt_merge(&self) -> Box<dyn Optimization> {
+        // A staged tile pins the thread decomposition: fusing ranges or local
+        // pairs would move threads the tile was filled for. Refuse (see
+        // `local_staging`).
+        if self.iter_unordered().any(|(_, op)| matches!(op, Op::Storage { scope: MemScope::Local, .. } | Op::Barrier)) {
+            return Box::new(Merge { groups: Vec::new() });
+        }
         let mut groups = self.find_nested_loop_groups();
         // Group-range pairs fuse grid axes into one flat axis with
         // div/mod index recovery (user spec): propose them only when

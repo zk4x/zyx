@@ -27,6 +27,7 @@ use crate::backend::{Dev, DeviceProgramId, LaunchArg};
 use crate::dtype::{Constant, DType};
 use crate::error::BackendError;
 use crate::hashers::AHasher;
+use crate::kernel::cost::Features;
 use crate::kernel::{IDX_T, Kernel, Op, OpId, ParamKind};
 use crate::rng::Rng;
 use crate::shape::Dim;
@@ -56,13 +57,18 @@ pub type MakeOpt = fn(&Kernel) -> Box<dyn Optimization>;
 impl Kernel {
     /// The default optimization set: the search space [`BeamSearch`] explores
     /// unless the caller provides its own list of make functions.
-    pub const fn default_optimizations() -> [MakeOpt; 5] {
+    pub const fn default_optimizations() -> [MakeOpt; 10] {
         [
             Kernel::opt_split,
             Kernel::opt_reassociate_commutative,
             Kernel::opt_local_reduce,
             Kernel::opt_merge,
             Kernel::opt_pad,
+            Kernel::opt_tensorize,
+            Kernel::opt_local_staging,
+            Kernel::opt_recipe,
+            Kernel::opt_register_tiling,
+            Kernel::opt_tile_and_stage,
         ]
     }
 
@@ -186,6 +192,8 @@ impl Kernel {
     /// This hash is used to track visited kernel states and avoid
     /// exploring duplicate optimization sequences.
     pub(crate) fn get_hash(&self) -> u64 {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("kernel hash");
         let mut hasher = AHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
@@ -200,6 +208,8 @@ impl Kernel {
         device: Dev,
         debug: DebugMask,
     ) -> Result<(DeviceProgramId, u64), BackendError> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("device compile");
         let program_id = device.compile(self, debug.asm())?;
         // Warmup: the first device execution pays cold-start overhead
         // (kernel load, fabric init) that would otherwise dominate
@@ -441,6 +451,10 @@ impl BeamSearch {
 
         for seed in seeds {
             let base = seed;
+            // Identity of the kernel being tuned: candidates of different
+            // kernels of the same plan (e.g. a two-stage reduce) must never be
+            // ranked or reported against each other.
+            let seed_id = base.get_hash();
 
             let mut visited = Set::default();
             visited.insert(base.get_hash());
@@ -529,6 +543,7 @@ impl BeamSearch {
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(&args, dev, debug) {
                         Ok((program_id, time)) => {
+                            record_measurement(&kernel, opt_seq, seed_id, Some(time), "measured");
                             programs.push(program_id);
                             if time < best_time {
                                 best_time = time;
@@ -536,6 +551,7 @@ impl BeamSearch {
                             }
                         }
                         Err(e) => {
+                            record_measurement(&kernel, opt_seq, seed_id, None, "failed");
                             last_error = Some(e);
                         }
                     }
@@ -554,6 +570,61 @@ impl BeamSearch {
                 .map(ZyxError::from)
                 .unwrap_or_else(|| ZyxError::kernel_error("autotune: no successful kernel launches".into()))),
         }
+    }
+}
+
+/// Append one measured candidate to the benchmark record stream
+/// (`ZYX_BENCH_OUT`), unless that variable is unset — nothing here runs unless
+/// a benchmark asks for it.
+///
+/// One JSON object per line: the label, the optimization sequence that produced
+/// the kernel, its identity, and the raw cost features from
+/// [`Kernel::features`]. The benchmark side ingests these into its database;
+/// `zyx` itself never touches it.
+fn record_measurement(kernel: &Kernel, seq: &OptSeq, seed_id: u64, nanos: Option<u64>, status: &str) {
+    let Ok(path) = std::env::var("ZYX_BENCH_OUT") else {
+        return;
+    };
+    let tag = std::env::var("ZYX_BENCH_TAG").unwrap_or_else(|_| "untagged".to_string());
+    // The rendering path is part of the measurement: PTX-direct skips NVRTC and
+    // can produce different SASS, so it must not mix with NVRTC rows.
+    let codegen = if std::env::var("ZYX_PTX").is_ok() { "+ptx" } else { "" };
+    let info = kernel.dev_info();
+    let features = kernel.features();
+    let values = features.values();
+
+    let mut line = String::with_capacity(1024);
+    line.push_str("{\"schema\":1");
+    line.push_str(&format!(",\"tag\":{tag:?}"));
+    line.push_str(&format!(",\"dev\":\"{:?}{codegen}\"", kernel.dev));
+    line.push_str(&format!(",\"cc\":[{},{}]", info.cc[0], info.cc[1]));
+    line.push_str(",\"seq\":[");
+    for (i, (opt, config)) in seq.opts.iter().enumerate() {
+        if i > 0 {
+            line.push(',');
+        }
+        line.push_str(&format!("[{opt},{config}]"));
+    }
+    line.push(']');
+    line.push_str(&format!(",\"seed\":\"{seed_id:016x}\"", ));
+    line.push_str(&format!(",\"kernel\":\"{:016x}\"", kernel.get_hash()));
+    match nanos {
+        Some(nanos) => line.push_str(&format!(",\"nanos\":{nanos}")),
+        None => line.push_str(",\"nanos\":null"),
+    }
+    line.push_str(&format!(",\"status\":\"{status}\""));
+    line.push_str(",\"features\":{");
+    for (i, name) in Features::NAMES.iter().enumerate() {
+        if i > 0 {
+            line.push(',');
+        }
+        line.push_str(&format!("\"{name}\":{}", values[i]));
+    }
+    line.push_str("}}\n");
+
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        use std::io::Write;
+        let _ = file.write_all(line.as_bytes());
     }
 }
 

@@ -385,7 +385,9 @@ struct VkExtensionProperties {
 #[derive(DeJson, Debug, Default)]
 #[nserde(default)]
 pub struct VulkanConfig {
-    device_ids: Option<Vec<i32>>,
+    /// If set to None, then it will automatically use all Vulkan devices,
+    /// otherwise it uses only selected devices
+    pub device_ids: Option<Vec<i32>>,
 }
 
 // ── Worker-thread command enum ───────────────────────────────────────────────
@@ -1709,7 +1711,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],
-            wmma_layouts: vec![],
+            mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp: false,
         };

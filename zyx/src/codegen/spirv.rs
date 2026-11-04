@@ -1022,8 +1022,6 @@ impl Kernel {
                                 lws[axis as usize] = lws[axis as usize].max(u64::from(len));
                             }
                         }
-                        // A warp is a view over a local range — adds no threads.
-                        RangeKind::Warp(_) => {}
                     }
                 }
                 op_id = self.next_op(op_id);
@@ -1793,21 +1791,9 @@ impl Kernel {
                         match scope {
                             RangeKind::Group(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[wg_id_var]),
                             RangeKind::Local(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
-                            // Lane id: local invocation id mod warp size.
-                            RangeKind::Warp(_) => asm.emit_typed(OpLoad, vec3_id, loaded, &[local_inv_var]),
                         }
                         let elem = asm.id();
                         asm.emit_typed(OpCompositeExtract, u32_id, elem, &[loaded, axis]);
-                        let elem = match scope {
-                            RangeKind::Warp(_) => {
-                                let ws_id = asm.id();
-                                asm.emit_typed(OpConstant, u32_id, ws_id, &[u32::from(self.dev_info().warp_size)]);
-                                let rem = asm.id();
-                                asm.emit_typed(OpSRem, u32_id, rem, &[elem, ws_id]);
-                                rem
-                            }
-                            _ => elem,
-                        };
                         if IDX_T == DType::U32 {
                             spv_values.insert(op_id, elem);
                         } else {

@@ -201,7 +201,9 @@ impl Kernel {
         };
 
         let mut gids = Set::default();
-        let mut lids = Set::default();
+        // Local axis -> length. Several local ranges may share an axis (they
+        // are the same hardware thread id); their declared lengths must agree.
+        let mut lids: Map<u32, u32> = Map::default();
 
         let mut params: Map<OpId, ParamKind> = Map::default();
         let mut storages: Map<OpId, (MemScope, Dim)> = Map::default();
@@ -611,25 +613,19 @@ impl Kernel {
                             }
                             check(op_id, len, &stack);
                         }
-                        RangeKind::Local(_) => {
-                            if !lids.insert(axis) {
-                                println!("index={op_id} is using {scope} axis={axis} for the second time");
-                                self.debug();
-                                panic!();
-                            }
-                        }
-                        RangeKind::Warp(local_id) => {
-                            // A warp is a view over a local range on the same axis: the
-                            // local range owns the axis, so only the reference is validated.
-                            match self.ops[local_id].op {
-                                Op::Range { axis: ref_axis, kind: RangeKind::Local(_) } if ref_axis == axis => {}
-                                _ => {
+                        RangeKind::Local(len) => {
+                            // Ranges on one axis are the same hardware thread
+                            // id; they may repeat, but must agree on length.
+                            if let Some(&prev) = lids.get(&axis) {
+                                if prev != len {
                                     println!(
-                                        "index={op_id} warp references op {local_id}, which is not a local range on axis {axis}"
+                                        "index={op_id} reuses local axis={axis} with length {len}, first was {prev}"
                                     );
                                     self.debug();
                                     panic!();
                                 }
+                            } else {
+                                lids.insert(axis, len);
                             }
                         }
                     }
@@ -785,8 +781,6 @@ impl Kernel {
                     let len = match scope {
                         RangeKind::Group(len) => self.resolve_const(len).and_then(crate::dtype::Constant::as_dim),
                         RangeKind::Local(len) => Some(i64::from(len)),
-                        // A warp's value is the lane id: bounded by the warp size.
-                        RangeKind::Warp(_) => Some(i64::from(self.dev_info().warp_size)),
                     };
                     // An unresolved (dynamic) group length is UNKNOWN: no bounds
                     // must be fabricated for it. A huge sentinel here would wrap

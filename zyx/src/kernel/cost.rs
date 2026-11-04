@@ -36,7 +36,9 @@ impl Kernel {
     /// real dims only exist at launch and differ across launches, so the
     /// placeholder is a fixed convention the trained model is calibrated
     /// against (TVM-style: only concrete shapes are ever costed).
-    pub fn base_cost(&self) -> u64 {
+    pub fn features(&self) -> Features {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("cost features");
         // The memory scope of a load source / store destination, which is
         // either an `Op::Storage` (kernel-internal buffer) or an `Op::Param`
         // (kernel parameter: a global or a variable).
@@ -243,6 +245,9 @@ impl Kernel {
         let mut gws = [1i64; 3];
         let mut lws = [1u32; 3];
         let mut loop_mult = 1i64;
+        // Unroll lanes in an op's cone: one vector op is one scalar op per lane
+        // after devectorization, so cost scales with this.
+        let mut lane_lens: Map<OpId, i64> = Map::default();
         let mut latest_loop_lengths: Vec<Dim> = Vec::new();
         let mut max_loop_depth = 0i64;
 
@@ -351,6 +356,30 @@ impl Kernel {
                 indexing_ops.insert(op_id);
             }
 
+            // Lane multiplicity: a vector op expands into one scalar op per
+            // lane when the device epilogue unfolds the unroll lanes, so its
+            // cost is the vector cost times the product of the lane lengths in
+            // its operand cone. Applied by scaling `loop_mult` around the
+            // accounting below and dividing it back out, which keeps the
+            // loop-nesting updates in that block untouched.
+            let lane_mult: i64 = op
+                .parameters()
+                .filter(|p| !p.is_null())
+                .map(|p| lane_lens.get(&p).copied().unwrap_or(1))
+                .fold(1, |a, b| a.saturating_mul(b));
+            let own_lanes = match *op {
+                Op::Unroll { len, .. } => i64::from(len),
+                _ => lane_mult,
+            };
+            lane_lens.insert(op_id, own_lanes.max(1));
+            // The lane factors compound along an op chain (each op's cone is
+            // its operands' cones combined), so a long elementwise chain
+            // overflows `i64` in debug builds. The product is a cost
+            // multiplier, not an allocation, so saturate instead of wrapping:
+            // any kernel this large ranks last, which is the point.
+            let lane_mult = lane_mult.clamp(1, 1 << 32);
+            loop_mult = loop_mult.saturating_mul(lane_mult).min(1 << 40);
+
             // Instruction counting
             match self.ops[op_id].op {
                 Op::Cast { .. } | Op::Bitcast { .. } | Op::Unary { .. } | Op::Binary { .. } | Op::Select { .. } => {
@@ -406,7 +435,9 @@ impl Kernel {
                         wi_compute_ops += loop_mult;
                     }
                     let scope = mem_scope(&self.ops[src].op);
-                    let total_elements = loop_mult * concrete_len(&access_shape);
+                    // Vector width already lives in the access shape, so the
+                    // lane factor must not be applied to traffic as well.
+                    let total_elements = loop_mult / lane_mult * concrete_len(&access_shape);
                     match scope {
                         MemScope::Global => {
                             let n_bits = total_elements * dtypes[&op_id].0.bit_size() as i64;
@@ -494,9 +525,11 @@ impl Kernel {
                         wi_compute_ops += loop_mult * 3;
                     }
                     let scope = mem_scope(&self.ops[dst].op);
+                    // Vector width already lives in the access shape.
+                    let traffic_mult = loop_mult / lane_mult;
                     match scope {
                         MemScope::Global => {
-                            let n_bits = loop_mult * n_elements * dtypes[&op_id].0.bit_size() as i64;
+                            let n_bits = traffic_mult * n_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[0] += n_bits;
                             // Track stride: prefer lidx > gidx > loop
                             let strides = self.get_strides(index).unwrap_or_default();
@@ -533,7 +566,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Local | MemScope::Circular => {
-                            let n_bits = loop_mult * n_elements * dtypes[&op_id].0.bit_size() as i64;
+                            let n_bits = traffic_mult * n_elements * dtypes[&op_id].0.bit_size() as i64;
                             n_scoped_store_bits[1] += n_bits;
                             let strides = self.get_strides(index).unwrap_or_default();
                             let stride = strides
@@ -569,7 +602,7 @@ impl Kernel {
                             }
                         }
                         MemScope::Register => {
-                            n_scoped_store_bits[2] += loop_mult * n_elements * dtypes[&op_id].0.bit_size() as i64
+                            n_scoped_store_bits[2] += traffic_mult * n_elements * dtypes[&op_id].0.bit_size() as i64
                         }
                     }
                 }
@@ -585,7 +618,7 @@ impl Kernel {
                     }
                     let n_elements = concrete_len(&self.shape(op_id));
                     for (side, is_read) in [(src, true), (dst, false)] {
-                        let bits = loop_mult * n_elements * dtypes[&side].0.bit_size() as i64;
+                        let bits = loop_mult / lane_mult * n_elements * dtypes[&side].0.bit_size() as i64;
                         let slot = match mem_scope(&self.ops[side].op) {
                             MemScope::Global => 0,
                             MemScope::Local | MemScope::Circular => 1,
@@ -604,8 +637,6 @@ impl Kernel {
                         gws[axis as usize] = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(42)
                     }
                     RangeKind::Local(len) => lws[axis as usize] = len,
-                    // A warp is a view over a local range — adds no threads.
-                    RangeKind::Warp(_) => {}
                 },
                 Op::Loop { len: len_id } => {
                     // Boolean length = the old `If`: branch cost, neutral
@@ -665,6 +696,10 @@ impl Kernel {
                 }
             }
 
+            // Undo the lane scaling: the loop nesting factor must persist, the
+            // lane factor must not.
+            loop_mult /= lane_mult;
+
             // Track peak register bytes
             let bytes: u64 = reg_slots
                 .iter()
@@ -710,38 +745,222 @@ impl Kernel {
             0.0
         };
 
-        // Learned cost model: rank 0..1 within variant * 1_000_000 (2000 DT leaves + Ridge)
-        let cost = predict_time_us(
-            num_groups as u32,
-            wi_per_group as u32,
-            wi_ops as u32,
-            wi_compute_ops as u32,
-            wi_barriers as u32,
-            wi_global_load_bits as u32,
-            wi_global_store_bits as u32,
-            wi_local_load_bits as u32,
-            wi_local_store_bits as u32,
-            wi_peak_reg_bytes as u32,
-            wi_branches as u32,
-            glb_load_lidx_stride as u32,
-            glb_store_lidx_stride as u32,
-            loc_load_lidx_stride as u32,
-            loc_store_lidx_stride as u32,
-            dev_info.warp_size as u32,
-            dev_info.max_local_threads as u32,
-            dev_info.max_register_bytes as u32,
-            wi_register_load_bits as u32,
-            wi_register_store_bits as u32,
-            gws[0] as u32,
-            gws[1] as u32,
-            gws[2] as u32,
-            lws[0] as u32,
-            lws[1] as u32,
-            lws[2] as u32,
-            max_loop_depth as u32,
-            dev_info.preferred_vector_size as u32,
-            dev_info.local_mem_size as u32,
-        );
-        cost.max(1.0) as u64
+        // The raw feature vector: one definition shared by the search, the
+        // benchmark collector and the trainer.
+        Features {
+            num_groups: num_groups as u32,
+            wi_per_group: wi_per_group as u32,
+            wi_ops: wi_ops as u32,
+            wi_compute_ops: wi_compute_ops as u32,
+            wi_barriers: wi_barriers as u32,
+            wi_global_load_bits: wi_global_load_bits as u32,
+            wi_global_store_bits: wi_global_store_bits as u32,
+            wi_local_load_bits: wi_local_load_bits as u32,
+            wi_local_store_bits: wi_local_store_bits as u32,
+            wi_peak_reg_bytes: wi_peak_reg_bytes as u32,
+            wi_branches: wi_branches as u32,
+            wi_global_load_lidx_stride: glb_load_lidx_stride as u32,
+            wi_global_store_lidx_stride: glb_store_lidx_stride as u32,
+            wi_local_load_lidx_stride: loc_load_lidx_stride as u32,
+            wi_local_store_lidx_stride: loc_store_lidx_stride as u32,
+            warp_size: dev_info.warp_size as u32,
+            max_local_threads: dev_info.max_local_threads as u32,
+            max_register_bytes: dev_info.max_register_bytes as u32,
+            wi_register_load_bits: wi_register_load_bits as u32,
+            wi_register_store_bits: wi_register_store_bits as u32,
+            gws0: gws[0] as u32,
+            gws1: gws[1] as u32,
+            gws2: gws[2] as u32,
+            lws0: lws[0] as u32,
+            lws1: lws[1] as u32,
+            lws2: lws[2] as u32,
+            max_loop_depth: max_loop_depth as u32,
+            preferred_vector_size: dev_info.preferred_vector_size as u32,
+            local_mem_size: dev_info.local_mem_size as u32,
+        }
+    }
+
+    /// Learned cost of this kernel in nanoseconds, floored at 1 ns so that only
+    /// a genuinely free kernel can tie. The floor used to be one *microsecond*,
+    /// which collapsed every fast candidate onto the same integer and left the
+    /// launch order to insertion order.
+    pub fn base_cost(&self) -> u64 {
+        (self.features().predict_us() * 1000.0).max(1.0) as u64
+    }
+}
+
+/// The raw feature vector the learned cost model consumes.
+///
+/// One definition for every consumer: [`Kernel::features`] fills it, the
+/// search ranks with [`Features::predict_us`], and the benchmark collector
+/// writes it out under [`Features::NAMES`] so the trainer's columns and the
+/// collector's keys can never drift from the model's inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Features {
+    pub num_groups: u32,
+    pub wi_per_group: u32,
+    pub wi_ops: u32,
+    pub wi_compute_ops: u32,
+    pub wi_barriers: u32,
+    pub wi_global_load_bits: u32,
+    pub wi_global_store_bits: u32,
+    pub wi_local_load_bits: u32,
+    pub wi_local_store_bits: u32,
+    pub wi_peak_reg_bytes: u32,
+    pub wi_branches: u32,
+    pub wi_global_load_lidx_stride: u32,
+    pub wi_global_store_lidx_stride: u32,
+    pub wi_local_load_lidx_stride: u32,
+    pub wi_local_store_lidx_stride: u32,
+    pub warp_size: u32,
+    pub max_local_threads: u32,
+    pub max_register_bytes: u32,
+    pub wi_register_load_bits: u32,
+    pub wi_register_store_bits: u32,
+    pub gws0: u32,
+    pub gws1: u32,
+    pub gws2: u32,
+    pub lws0: u32,
+    pub lws1: u32,
+    pub lws2: u32,
+    pub max_loop_depth: u32,
+    pub preferred_vector_size: u32,
+    pub local_mem_size: u32,
+}
+
+impl Features {
+    /// Field names, in [`Features::values`] order. The collector's record keys
+    /// and the trainer's columns are both derived from this list.
+    pub const NAMES: [&'static str; 29] = [
+        "num_groups",
+        "wi_per_group",
+        "wi_ops",
+        "wi_compute_ops",
+        "wi_barriers",
+        "wi_global_load_bits",
+        "wi_global_store_bits",
+        "wi_local_load_bits",
+        "wi_local_store_bits",
+        "wi_peak_reg_bytes",
+        "wi_branches",
+        "wi_global_load_lidx_stride",
+        "wi_global_store_lidx_stride",
+        "wi_local_load_lidx_stride",
+        "wi_local_store_lidx_stride",
+        "warp_size",
+        "max_local_threads",
+        "max_register_bytes",
+        "wi_register_load_bits",
+        "wi_register_store_bits",
+        "gws0",
+        "gws1",
+        "gws2",
+        "lws0",
+        "lws1",
+        "lws2",
+        "max_loop_depth",
+        "preferred_vector_size",
+        "local_mem_size",
+    ];
+
+    /// The raw values, in model order.
+    pub fn values(&self) -> [u32; 29] {
+        [
+            self.num_groups,
+            self.wi_per_group,
+            self.wi_ops,
+            self.wi_compute_ops,
+            self.wi_barriers,
+            self.wi_global_load_bits,
+            self.wi_global_store_bits,
+            self.wi_local_load_bits,
+            self.wi_local_store_bits,
+            self.wi_peak_reg_bytes,
+            self.wi_branches,
+            self.wi_global_load_lidx_stride,
+            self.wi_global_store_lidx_stride,
+            self.wi_local_load_lidx_stride,
+            self.wi_local_store_lidx_stride,
+            self.warp_size,
+            self.max_local_threads,
+            self.max_register_bytes,
+            self.wi_register_load_bits,
+            self.wi_register_store_bits,
+            self.gws0,
+            self.gws1,
+            self.gws2,
+            self.lws0,
+            self.lws1,
+            self.lws2,
+            self.max_loop_depth,
+            self.preferred_vector_size,
+            self.local_mem_size,
+        ]
+    }
+
+    /// Predicted execution time in microseconds.
+    pub fn predict_us(&self) -> f64 {
+        let [
+            num_groups,
+            wi_per_group,
+            wi_ops,
+            wi_compute_ops,
+            wi_barriers,
+            wi_global_load_bits,
+            wi_global_store_bits,
+            wi_local_load_bits,
+            wi_local_store_bits,
+            wi_peak_reg_bytes,
+            wi_branches,
+            wi_global_load_lidx_stride,
+            wi_global_store_lidx_stride,
+            wi_local_load_lidx_stride,
+            wi_local_store_lidx_stride,
+            warp_size,
+            max_local_threads,
+            max_register_bytes,
+            wi_register_load_bits,
+            wi_register_store_bits,
+            gws0,
+            gws1,
+            gws2,
+            lws0,
+            lws1,
+            lws2,
+            max_loop_depth,
+            preferred_vector_size,
+            local_mem_size,
+        ] = self.values();
+        predict_time_us(
+            num_groups,
+            wi_per_group,
+            wi_ops,
+            wi_compute_ops,
+            wi_barriers,
+            wi_global_load_bits,
+            wi_global_store_bits,
+            wi_local_load_bits,
+            wi_local_store_bits,
+            wi_peak_reg_bytes,
+            wi_branches,
+            wi_global_load_lidx_stride,
+            wi_global_store_lidx_stride,
+            wi_local_load_lidx_stride,
+            wi_local_store_lidx_stride,
+            warp_size,
+            max_local_threads,
+            max_register_bytes,
+            wi_register_load_bits,
+            wi_register_store_bits,
+            gws0,
+            gws1,
+            gws2,
+            lws0,
+            lws1,
+            lws2,
+            max_loop_depth,
+            preferred_vector_size,
+            local_mem_size,
+        )
     }
 }

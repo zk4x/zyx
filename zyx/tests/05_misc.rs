@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{Dev, DType, Scalar, Tensor, ZyxError, f16};
 
 #[allow(unused)]
 fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -844,6 +844,82 @@ fn bench_mm1() -> Result<(), ZyxError> {
         }
     }
 
+    Ok(())
+}
+
+#[test]
+fn matmul_f16() -> Result<(), ZyxError> {
+    // 16 x 8 x 8 is exactly one m16n8k8 fragment per warp: the tensorization
+    // pass must be able to fire on this shape.
+    const M: usize = 64;
+    const K: usize = 64;
+    const N: usize = 64;
+    // Integer-valued f16 storage: every product and partial sum is exact in
+    // f32, so the reference can compare value-for-value.
+    let x_data: Vec<Vec<f16>> = (0..M)
+        .map(|i| (0..K).map(|j| f16::from_f32(((i + j) % 3) as f32)).collect())
+        .collect();
+    let y_data: Vec<Vec<f16>> = (0..K)
+        .map(|i| (0..N).map(|j| f16::from_f32(((j + i) % 3) as f32 - 1.0)).collect())
+        .collect();
+
+    // WMMA needs a tensor-core device; the C backend rejects `Op::Wmma`, so
+    // the tensorized candidate can only be measured (and compared) on CUDA.
+    if !Dev::all().contains(&Dev::Cuda(0)) {
+        return Ok(());
+    }
+    let dev = Dev::Cuda(0);
+    let x = Tensor::from(x_data.clone()).to(dev)?;
+    let y = Tensor::from(y_data.clone()).to(dev)?;
+    let z = x.dot_dtype(&y, DType::F32)?.to(Dev::C)?.cast(DType::F32);
+    let z_data: Vec<f32> = z.try_into()?;
+    let mut expected = vec![0f32; M * N];
+    for i in 0..M {
+        for kk in 0..K {
+            for j in 0..N {
+                expected[i * N + j] += x_data[i][kk].to_f32() * y_data[kk][j].to_f32();
+            }
+        }
+    }
+    assert_eq!(z_data, expected);
+    Ok(())
+}
+
+#[test]
+fn matmul_f16_large() -> Result<(), ZyxError> {
+    // 512 x 1024 x 4096: 32 x 128 tiles of m16n8k8 with 512 K rounds each, so
+    // the fragment grid is addressed across many blocks and the accumulator
+    // round-trips many times.
+    const M: usize = 512;
+    const K: usize = 4096;
+    const N: usize = 1024;
+    // Integer-valued f16 storage: every product and partial sum is exact in
+    // f32 (|sum| <= 2 * 1 * 4096), so the reference compares exactly.
+    let x_data: Vec<Vec<f16>> = (0..M)
+        .map(|i| (0..K).map(|j| f16::from_f32(((i + 3 * j) % 5) as f32 - 2.0)).collect())
+        .collect();
+    let y_data: Vec<Vec<f16>> = (0..K)
+        .map(|i| (0..N).map(|j| f16::from_f32(((2 * i + j) % 3) as f32 - 1.0)).collect())
+        .collect();
+
+    if !Dev::all().contains(&Dev::Cuda(0)) {
+        return Ok(());
+    }
+    let dev = Dev::Cuda(0);
+    let x = Tensor::from(x_data.clone()).to(dev)?;
+    let y = Tensor::from(y_data.clone()).to(dev)?;
+    let z = x.dot_dtype(&y, DType::F32)?.to(Dev::C)?.cast(DType::F32);
+    let z_data: Vec<f32> = z.try_into()?;
+
+    let x_flat: Vec<f32> = x_data.iter().flatten().map(|v| v.to_f32()).collect();
+    let y_flat: Vec<f32> = y_data.iter().flatten().map(|v| v.to_f32()).collect();
+    let expected = matmul(&x_flat, &y_flat, M, K, N);
+
+    let mut max_err = 0f32;
+    for (a, b) in z_data.iter().zip(&expected) {
+        max_err = max_err.max((a - b).abs());
+    }
+    assert_eq!(max_err, 0.0, "512x1024x4096 mismatch");
     Ok(())
 }
 

@@ -117,7 +117,7 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     graph::Graph,
-    kernel::{GPUOp, Kernel, MMADType, MMADims, Op, OpId, PTXOp, ParamKind, RangeKind},
+    kernel::{GPUOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, RangeKind},
     shape::Dim,
     slab::{Slab, SlabId},
 };
@@ -135,9 +135,39 @@ macro_rules! send_or_continue {
 }
 
 use super::{
-    ChunkId, Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, PlanDim, Pool, ProgramId,
-    Shard, gws_from_kernel,
+    ChunkId, Cmd, DTypeCapability, Dev, DeviceInfo, DeviceProgramId, FragAxis, FragField, FragMap, GwsDim, LaunchArg, MMAVariant,
+    Placement, PlanDim, Pool, ProgramId, Shard, gws_from_kernel,
 };
+
+/// The tensor-core instruction table of an NVIDIA device with `mma.sync`.
+///
+/// Fragment maps for `m16n8k8` (PTX ISA, "Warp-level matrix fragment"):
+/// the lane id is `groupID * 4 + threadID_in_group`, where `groupID` selects
+/// the row (0..7) and `threadID_in_group` a pair of neighbouring columns.
+/// A's slots are `(row, col)`, `(row, col+1)`, `(row+8, col)`, `(row+8, col+1)`;
+/// B (addressed as `N x K`) reads one `n` and the same `k` pair; the
+/// accumulator has A's shape in `M x N`.
+fn cuda_mma_variants() -> Vec<MMAVariant> {
+    let lanes = FragField { axis: FragAxis::Row, shift: 2, width: 3, stride: 1 };
+    let cols = FragField { axis: FragAxis::Col, shift: 0, width: 2, stride: 2 };
+    let mn = FragMap { fields: vec![lanes, cols], slots: vec![(0, 0), (0, 1), (8, 0), (8, 1)] };
+    let nk = FragMap { fields: vec![lanes, cols], slots: vec![(0, 0), (0, 1)] };
+    let variant = |dtype: MMADType, c_dtype: DType| MMAVariant {
+        dims: MMADims::m16n8k8,
+        layout: MMALayout::row_col,
+        dtype,
+        a_dtype: DType::F16,
+        b_dtype: DType::F16,
+        c_dtype,
+        a: mn.clone(),
+        b: nk.clone(),
+        c: mn.clone(),
+    };
+    vec![
+        variant(MMADType::f16_f16_f16_f32, DType::F32),
+        variant(MMADType::f16_f16_f16_f16, DType::F16),
+    ]
+}
 
 /// CUDA configuration
 #[allow(clippy::question_mark)]
@@ -146,7 +176,7 @@ use super::{
 pub struct CUDAConfig {
     /// If set to None, then it will automatically use all CUDA devices,
     /// otherwise it uses only selected devices
-    device_ids: Option<Vec<i32>>,
+    pub device_ids: Option<Vec<i32>>,
     /// Whether to use cuDNN for AOT matmul kernels. Defaults to true.
     cudnn: bool,
     /// Number of hardware queues (CUDA streams) per device used by the
@@ -1798,7 +1828,7 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 tenstorrent: false,
                 tile: [1, 1],
                 tile_sizes: vec![],
-                wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
+                mma_variants: if major >= 7 { cuda_mma_variants() } else { vec![] },
                 num_circular_buffers: 0,
                 has_openmp: false,
             }),
@@ -1853,7 +1883,7 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],
-            wmma_layouts: if major >= 7 { vec![MMADims::m16n8k8] } else { vec![] },
+            mma_variants: if major >= 7 { cuda_mma_variants() } else { vec![] },
             num_circular_buffers: 0,
             has_openmp: false,
         });

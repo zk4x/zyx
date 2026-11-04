@@ -498,8 +498,6 @@ impl Kernel {
                             self.ops[op_id].op = Op::Const(Constant::idx(0));
                         }
                     }
-                    // A warp is a view over a local range — never a removable len-1 index.
-                    RangeKind::Warp(_) => {}
                 },
                 _ => {}
             }
@@ -809,7 +807,6 @@ impl Kernel {
                 // stay in topological order behind its definition.
                 let hoistable = match *kind {
                     RangeKind::Group(len) => self.resolve_const(len).is_some() || matches!(self.at(len), Op::Param { .. }),
-                    RangeKind::Warp(_) => true,
                     RangeKind::Local(_) => true,
                 };
                 if hoistable {

@@ -69,8 +69,8 @@ impl Kernel {
     ///
     /// # Panics
     /// - If `axis` is not a range (non-TT) or neither a range nor a loop (TT).
-    /// - If `axis` is a warp view or unroll range (pad the underlying
-    ///   local/group range instead).
+    /// - If `axis` is an unroll range (pad the underlying local/group range
+    ///   instead).
     pub(crate) fn pad_to(&mut self, axis: OpId, multiple: Dim) {
         debug_assert!(multiple > 0, "pad_to: multiple {multiple} <= 0");
         match self.ops[axis].op {
@@ -117,9 +117,6 @@ impl Kernel {
                         let new_len = len + u32::try_from(pad_len).expect("pad_len too large for local index");
                         let limit = self.insert_before(axis, Op::Const(Constant::idx(current_len)));
                         (limit, RangeKind::Local(new_len))
-                    }
-                    RangeKind::Warp(_) => {
-                        panic!("pad_to: cannot pad a warp view; pad its underlying local range instead")
                     }
                 };
                 self.ops[axis].op = Op::Range { axis: range_axis, kind: new_kind };
@@ -306,6 +303,12 @@ impl Kernel {
     /// full-tile trip counts); elsewhere loop bounds are never extended.
     pub fn opt_pad(&self) -> Box<dyn Optimization> {
         let tt = self.dev.is_tt_layout();
+        // A staged tile pins the thread decomposition: padding a range or a
+        // local axis would move threads the tile was filled for. Refuse (see
+        // `local_staging`), same as any barrier-adjacent rewrite.
+        if self.iter_unordered().any(|(_, op)| matches!(op, Op::Storage { scope: MemScope::Local, .. } | Op::Barrier)) {
+            return Box::new(PadIndex { factors: Vec::new() });
+        }
         let mut factors = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -331,8 +334,6 @@ impl Kernel {
                             }
                         }
                     }
-                    // Warp views can't be padded — skip them entirely.
-                    RangeKind::Warp(_) => {}
                 },
                 Op::Loop { len, .. } => {
                     if tt && self.dtype(len) != crate::DType::Bool {

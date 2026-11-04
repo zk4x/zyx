@@ -174,7 +174,7 @@ fn detect_dram_bytes() -> u64 {
 pub struct TTConfig {
     /// If set to None, then it will automatically use all Tenstorrent devices,
     /// otherwise it uses only selected devices
-    device_ids: Option<Vec<i32>>,
+    pub device_ids: Option<Vec<i32>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -614,7 +614,7 @@ fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTM
                 tenstorrent: true,
                 tile: [32, 32],
                 tile_sizes: vec![[32, 32]],
-                wmma_layouts: vec![],
+                mma_variants: vec![],
                 num_circular_buffers: 32, // architectural CB0-CB31
                 has_openmp: false,
             },

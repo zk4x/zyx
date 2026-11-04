@@ -262,7 +262,6 @@ impl Kernel {
                 }
                 Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => add_param!(len),
-                    RangeKind::Warp(local_id) => add_param!(local_id),
                     RangeKind::Local(_) => {}
                 },
                 Op::Store { dst, dst_idx, src: x } => {

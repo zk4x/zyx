@@ -430,8 +430,6 @@ impl Kernel {
                 match scope {
                     RangeKind::Group(_) => {}
                     RangeKind::Local(len) => lws[axis as usize] = Dim::from(len),
-                    // A warp is a view over a local range — adds no threads.
-                    RangeKind::Warp(_) => {}
                 }
             }
             op_id = self.next_op(op_id);
@@ -522,18 +520,10 @@ impl Kernel {
                     let src = match scope {
                         RangeKind::Group(_) => "%ctaid",
                         RangeKind::Local(_) => "%tid",
-                        RangeKind::Warp(_) => "",
                     };
                     match scope {
                         RangeKind::Group(_) | RangeKind::Local(_) => {
                             _ = writeln!(comp.body, "{}mov.u32 %r{t}, {src}.{};", comp.indent, axis_letter);
-                        }
-                        // Lane id within the warp: local thread id mod warp size.
-                        RangeKind::Warp(local_id) => {
-                            let local_reg = comp.get_var(local_id);
-                            let warp_size = self.dev_info().warp_size;
-                            _ = writeln!(comp.body, "{}cvt.u32.s64 %r{t}, %r{local_reg};", comp.indent);
-                            _ = writeln!(comp.body, "{}rem.u32 %r{t}, %r{t}, {warp_size};", comp.indent);
                         }
                     }
                     match IDX_T {

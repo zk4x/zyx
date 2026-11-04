@@ -78,6 +78,13 @@ impl Kernel {
         let factor_dim = Dim::from(factor);
         match split_mode {
             SplitMode::Local => {
+                // A lane split of a kernel that already holds a staged tile
+                // makes the tile's readers lane-dependent on indices the tile
+                // was neither sized nor filled for. Refuse: staging owns the
+                // lanes it shares across, and it runs last in a recipe.
+                if self.iter_unordered().any(|(_, op)| matches!(op, Op::Storage { scope: MemScope::Local, .. })) {
+                    return OpId::NULL;
+                }
                 let Op::Range { axis, kind: RangeKind::Group(len_id) } = self.ops[axis_id].op else {
                     return OpId::NULL;
                 };
@@ -242,7 +249,6 @@ impl Kernel {
                                         st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap()
                                     }
                                     RangeKind::Local(len) => st *= i64::from(*len),
-                                    RangeKind::Warp(_) => unreachable!("warp dims are never split"),
                                 },
                                 Op::Unroll { len, .. } => st *= Dim::from(*len),
                                 _ => unreachable!("split can be only index or loop"),
@@ -688,16 +694,18 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_split");
         let dev_info = self.dev_info();
 
-        // Kernel-wide facts, one pass: boolean loops gate local splits;
-        // tile-shaped accesses (rank > 1) and barriers refuse to share the
-        // kernel with lane splits.
+        // Kernel-wide facts, one pass: boolean loops and staged tiles gate
+        // local splits; tile-shaped accesses (rank > 1) and barriers refuse to
+        // share the kernel with lane splits.
         let mut bool_loop = false;
+        let mut shared = false;
         let mut tile_access = false;
         let mut barrier = false;
         let mut local_axis_sizes: crate::Map<u32, u32> = crate::Map::default();
         for (_, op) in self.iter_unordered() {
             match *op {
                 Op::Loop { len } if self.dtype(len) == crate::DType::Bool => bool_loop = true,
+                Op::Storage { scope: MemScope::Local, .. } => shared = true,
                 Op::Range { axis, kind: RangeKind::Local(len) } => {
                     if local_axis_sizes.get(&axis).is_none() {
                         local_axis_sizes.insert(axis, len);
@@ -713,6 +721,14 @@ impl Kernel {
             }
         }
         let op_len: u64 = self.ops.len().0 as u64;
+
+        // Once a staged tile exists, the thread and loop decomposition is
+        // pinned: a lane or loop split would move work the tile was sized and
+        // filled for. The recipes apply their splits *before* staging, so this
+        // only refuses the unsound order.
+        if shared {
+            return Box::new(OptSplit { configs: Vec::new() });
+        }
 
         let used_threads: u32 = local_axis_sizes.values().product();
         let remaining_threads = if local_axis_sizes.is_empty() {
@@ -739,7 +755,7 @@ impl Kernel {
                     };
                     // Global -> local: hardware-aligned factors, bounded by the
                     // free local thread budget and the per-axis local limit.
-                    if !bool_loop && !local_axis_sizes.contains_key(&axis) {
+                    if !bool_loop && !shared && !local_axis_sizes.contains_key(&axis) {
                         let max_per_axis = dev_info.max_local_work_dims[axis as usize];
                         let mut l_factors: Vec<u32> = if tt { vec![32] } else { vec![64, 32, 16, 8, 4, 2] };
                         l_factors.retain(|&f| {
@@ -833,7 +849,7 @@ mod tests {
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],
-            wmma_layouts: vec![],
+            mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp: false,
         }

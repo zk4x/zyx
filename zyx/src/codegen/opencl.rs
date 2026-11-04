@@ -474,17 +474,6 @@ impl Kernel {
                             (format!("get_group_id({axis})"), max)
                         }
                         RangeKind::Local(len) => (format!("get_local_id({axis})"), i64::from(len).saturating_sub(1)),
-                        // Lane id: the referenced thread id mod warp size. The
-                        // referenced local range is emitted before (head order),
-                        // so its index variable already exists.
-                        RangeKind::Warp(local_id) => {
-                            let lidx = indices
-                                .get(&local_id)
-                                .copied()
-                                .expect("warp range must reference an already-emitted local range");
-                            let warp_size = self.dev_info().warp_size;
-                            (format!("idx{lidx} % {warp_size}"), i64::from(warp_size) - 1)
-                        }
                     };
                     _ = writeln!(
                         source,

@@ -1739,7 +1739,7 @@ fn query_device_info(
         tenstorrent: false,
         tile: [1, 1],
         tile_sizes: vec![],
-        wmma_layouts: vec![],
+        mma_variants: vec![],
         num_circular_buffers: 0,
         has_openmp: false,
         warp_size: {

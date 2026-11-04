@@ -20,7 +20,8 @@ use wgpu::{BindGroupLayout, BufferDescriptor, BufferUsages, ComputePipeline, Pow
 #[derive(DeJson, Debug)]
 #[nserde(default)]
 pub struct WGPUConfig {
-    enabled: bool,
+    /// Enable this backend
+    pub enabled: bool,
 }
 
 impl Default for WGPUConfig {
@@ -240,7 +241,7 @@ pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],
-            wmma_layouts: vec![],
+            mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp: false,
         },

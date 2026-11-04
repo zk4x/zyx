@@ -129,11 +129,14 @@ mod instr_sched;
 mod licm;
 mod linearize;
 mod local_reduce;
+mod local_staging;
 mod merge;
+mod mma;
 mod ops;
 mod pad;
 mod pat;
 mod predict_cost;
+mod recipe;
 mod split;
 mod tenstorrent;
 mod verify;
@@ -622,12 +625,9 @@ impl Kernel {
                 Op::Range { kind, .. } => {
                     // Group length is a consumed operand (e.g. a Binary
                     // expression) and needs a refcount for codegen register
-                    // allocation. Same for the local id a Warp view reads.
+                    // allocation.
                     if let RangeKind::Group(len) = kind {
                         *rcs.entry(len).or_insert(0) += 1;
-                    }
-                    if let RangeKind::Warp(local_id) = kind {
-                        *rcs.entry(local_id).or_insert(0) += 1;
                     }
                     dtypes.insert(op_id, (IDX_T, Vec::new()));
                 }
@@ -1144,7 +1144,6 @@ impl Kernel {
                     RangeKind::Local(n) => {
                         local_prod = local_prod.saturating_mul(*n as u64);
                     }
-                    RangeKind::Warp(_) => {}
                 },
                 Op::Unary { .. } => {
                     if self.dtype(op_id).is_float() {
@@ -2046,7 +2045,6 @@ impl Kernel {
                 Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim),
                     RangeKind::Local(len) => Some(i64::from(*len)),
-                    RangeKind::Warp(_) => Some(i64::from(self.dev_info().warp_size)),
                 },
                 Op::Loop { len, .. } => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim),
                 _ => unreachable!(),
@@ -2278,7 +2276,7 @@ impl Kernel {
                 Op::Loop { len } => stack.push((*len, false)),
                 &Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => stack.push((len, false)),
-                    RangeKind::Local(_) | RangeKind::Warp(_) => {}
+                    RangeKind::Local(_) => {}
                 },
                 _ => {}
             }
@@ -2315,8 +2313,6 @@ impl Kernel {
                 &Op::Range { kind, .. } => match kind {
                     RangeKind::Group(len) => values.get(&len).copied().flatten(),
                     RangeKind::Local(len) => Some(Constant::idx(len)),
-                    // The warp op's value is the lane id — runtime data.
-                    RangeKind::Warp(_) => None,
                 },
                 // Param is dynamic
                 Op::Param { .. } => None,

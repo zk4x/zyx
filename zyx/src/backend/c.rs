@@ -254,7 +254,7 @@ fn device_with(config: &CConfig, debug_dev: bool) -> Result<&'static Mutex<CDevi
             tenstorrent: false,
             tile: [1, 1],
             tile_sizes: vec![],
-            wmma_layouts: vec![],
+            mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp,
         }),

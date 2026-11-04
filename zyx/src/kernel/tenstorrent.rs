@@ -7130,7 +7130,7 @@ mod acceptance {
             tenstorrent: true,
             tile: [Dim::from(32), Dim::from(32)],
             tile_sizes: vec![[Dim::from(32), Dim::from(32)]],
-            wmma_layouts: vec![],
+            mma_variants: vec![],
             num_circular_buffers: 8,
             has_openmp: false,
         }));

@@ -1286,12 +1286,11 @@ pub enum TileDim {
 pub enum RangeKind {
     /// Group scope. Represents blocks in cuda, cores in CPU and tenstorrent.
     Group(OpId),
-    /// Local scope. Represents cuda threads.
+    /// Local scope. Represents cuda threads. Local axis 0 is the hardware
+    /// warp (consecutive thread ids within a warp): its length is
+    /// `DeviceInfo::warp_size` whenever lane semantics are used. There is no
+    /// separate warp kind — the lane id is the axis-0 local value.
     Local(u32),
-    /// Warp scope. Represents warps and wavefronts. References a `Local`
-    /// range whose threads form hardware warps; the op's value is the lane
-    /// id within the warp (`0..warp_size`, warp size from `DeviceInfo`).
-    Warp(OpId),
 }
 
 impl std::fmt::Display for RangeKind {
@@ -1299,7 +1298,6 @@ impl std::fmt::Display for RangeKind {
         match self {
             RangeKind::Group(x) => f.write_fmt(format_args!("group_r{x}")),
             RangeKind::Local(x) => f.write_fmt(format_args!("local_{x}")),
-            RangeKind::Warp(x) => f.write_fmt(format_args!("warp_{x}")),
         }
     }
 }
@@ -1541,7 +1539,6 @@ impl Op {
             &Op::Range { kind, .. } => match kind {
                 RangeKind::Group(len) => vec![len],
                 RangeKind::Local(_) => vec![],
-                RangeKind::Warp(local_id) => vec![local_id],
             },
             &Op::Loop { len, .. } => vec![len],
             &Op::Reshape { x, shape, .. } | &Op::Expand { x, shape } => {
@@ -1656,7 +1653,6 @@ impl Op {
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(len) => vec![len],
                 RangeKind::Local(_) => vec![],
-                RangeKind::Warp(local_id) => vec![local_id],
             },
             Op::Loop { len, .. } => vec![len],
             Op::Reshape { x, shape, .. } | Op::Expand { x, shape } => {

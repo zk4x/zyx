@@ -31,7 +31,7 @@ use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus, ZyxError},
     graph::Graph,
-    kernel::{BOp, Kernel, MMADims, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
     slab::SlabId,
 };
@@ -598,6 +598,46 @@ pub enum Dev {
     WGPU(u16),
 }
 
+impl std::str::FromStr for Dev {
+    type Err = String;
+
+    /// Parse a device selector: case-insensitive `name` or `name:index`
+    /// (tinygrad's device syntax), index defaulting to 0. Names: `auto`,
+    /// `c`/`cpu`, `cblas`/`blas`, `host`, `cuda`, `tt`/`tenstorrent`,
+    /// `vulkan`/`vk`, `opencl`/`cl`, `wgpu`. An index on an indexless device
+    /// (`c`, `cblas`, `host`, `auto`) is an error, not silently dropped.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (name, index) = match s.split_once(':') {
+            Some((name, index)) => {
+                let index: u16 = index.parse().map_err(|_| format!("device `{s}`: `{index}` is not a u16 index"))?;
+                (name, index)
+            }
+            None => (s, 0),
+        };
+        let dev = match name.to_ascii_uppercase().as_str() {
+            "AUTO" => Dev::Auto,
+            "C" | "CPU" => Dev::C,
+            "CBLAS" | "BLAS" => Dev::Cblas,
+            "HOST" => Dev::Host,
+            "CUDA" => Dev::Cuda(index),
+            "TT" | "TENSTORRENT" => Dev::TT(index),
+            "VULKAN" | "VK" => Dev::Vulkan(index),
+            "OPENCL" | "CL" => Dev::OpenCL(index),
+            #[cfg(feature = "wgpu")]
+            "WGPU" => Dev::WGPU(index),
+            _ => {
+                return Err(format!("unknown device `{name}` (expected auto, c, cblas, host, cuda, tt, vulkan, opencl or wgpu)"));
+            }
+        };
+        // Devices without an ordinal reject an explicit one: `c:1` must not
+        // silently mean `c`.
+        if s.contains(':') && matches!(dev, Dev::Auto | Dev::C | Dev::Cblas | Dev::Host) {
+            return Err(format!("device `{name}` has no index, got `{s}`"));
+        }
+        Ok(dev)
+    }
+}
+
 pub(super) fn lock<'a, T>(pool: Pool, mutex: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
     mutex.lock().unwrap_or_else(|_| panic!("{pool:?} pool lock poisoned by a panicking holder"))
 }
@@ -1087,6 +1127,45 @@ pub(crate) fn config() -> &'static Config {
     CONFIG.get_or_init(load_config_file)
 }
 
+impl Config {
+    /// Leave exactly `dev` available: every other backend is configured out,
+    /// and a device with an ordinal keeps only that ordinal.
+    ///
+    /// This is the `ZYX_DEV` override, applied on top of the config file.
+    fn select_only(&mut self, dev: Dev) {
+        self.c.enabled = false;
+        self.cblas.enabled = false;
+        self.cuda.device_ids = Some(Vec::new());
+        self.opencl.platform_ids = Some(Vec::new());
+        self.vulkan.device_ids = Some(Vec::new());
+        self.tenstorrent.device_ids = Some(Vec::new());
+        #[cfg(feature = "wgpu")]
+        {
+            self.wgpu.enabled = false;
+        }
+        match dev {
+            // The caller does not narrow for `auto` (it means "first
+            // available"), so it cannot arrive here.
+            Dev::Auto => unreachable!("select_only: `auto` narrows nothing"),
+            Dev::C => self.c.enabled = true,
+            Dev::Cblas => self.cblas.enabled = true,
+            // Always available, never enumerated: nothing to enable.
+            Dev::Host => {}
+            Dev::Cuda(i) => self.cuda.device_ids = Some(vec![i32::from(i)]),
+            Dev::TT(i) => self.tenstorrent.device_ids = Some(vec![i32::from(i)]),
+            Dev::Vulkan(i) => self.vulkan.device_ids = Some(vec![i32::from(i)]),
+            Dev::OpenCL(i) => self.opencl.platform_ids = Some(vec![usize::from(i)]),
+            // WGPU selects by being enabled only; it has no ordinal filter, so
+            // a non-zero index would silently mean device 0 — reject it.
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(i) => {
+                assert_eq!(i, 0, "ZYX_DEV: wgpu has no ordinal filter, got wgpu:{i}");
+                self.wgpu.enabled = true;
+            }
+        }
+    }
+}
+
 /// Read the backend config file (same search `Runtime::initialize_backends`
 /// used to do). Missing or unparsable file means defaults.
 fn load_config_file() -> Config {
@@ -1100,7 +1179,7 @@ fn load_config_file() -> Config {
         .or_else(|| std::env::home_dir().map(|home| home.join(".config")))
         .map(|path| path.join("zyx/config.json"))
         .and_then(|path| std::fs::read_to_string(&path).ok());
-    let config = config_file
+    let mut config = config_file
         .and_then(|file| {
             DeJson::deserialize_json(&file)
                 .map_err(|e| {
@@ -1121,6 +1200,18 @@ fn load_config_file() -> Config {
             }
             Config::default()
         });
+    // `ZYX_DEV` is applied on top of the file, so a run can target one device
+    // without editing the config (`ZYX_DEV=cuda:0`). A bad value is loud:
+    // silently falling back would run on the wrong hardware.
+    if let Ok(dev) = std::env::var("ZYX_DEV") {
+        let dev: Dev = dev.parse().unwrap_or_else(|e| panic!("ZYX_DEV: {e}"));
+        if debug {
+            println!("ZYX_DEV override: {dev:?}");
+        }
+        if dev != Dev::Auto {
+            config.select_only(dev);
+        }
+    }
     config
 }
 
@@ -1451,6 +1542,70 @@ impl DTypeCapability {
     }
 }
 
+/// Axis a lane bit-field contributes to, in a fragment's own coordinate
+/// space (row = first axis of the view, column = second).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum FragAxis {
+    /// Row of the operand view.
+    Row,
+    /// Column of the operand view.
+    Col,
+}
+
+/// One bit-field of the lane id, contributing a stride to one axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct FragField {
+    /// Axis this field feeds.
+    pub axis: FragAxis,
+    /// Low bit of the lane id the field reads.
+    pub shift: u8,
+    /// Width of the field in bits.
+    pub width: u8,
+    /// Element stride per step of the field.
+    pub stride: i16,
+}
+
+/// How one operand's fragment is distributed over a warp: data, never code.
+///
+/// The lane id builds a `(row, col)` pair from the fields
+/// (`axis += ((lane >> shift) & mask) * stride`), and register slot `i` then
+/// lands at `(row + slots[i].0, col + slots[i].1)`. Both CUDA's `mma.sync`
+/// and AMD's MFMA/WMMA layouts are bit-field decompositions of the lane id,
+/// so one variant table covers every instruction without per-variant logic.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct FragMap {
+    /// Lane bit-fields, summed per axis.
+    pub fields: Vec<FragField>,
+    /// Per-register-slot `(row, col)` offsets, in the order codegen expects.
+    pub slots: Vec<(i16, i16)>,
+}
+
+/// One tensor-core instruction a device can execute: geometry, dtypes, layout
+/// and the operand fragment maps. The per-instruction emission (the actual
+/// intrinsic) stays in each codegen, keyed by the same `(dims, layout, dtype)`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub struct MMAVariant {
+    /// Fragment geometry.
+    pub dims: MMADims,
+    /// Operand layout.
+    pub layout: MMALayout,
+    /// Instruction dtype combo (operands and accumulator).
+    pub dtype: MMADType,
+    /// Left operand element dtype (must match `dtype`).
+    pub a_dtype: DType,
+    /// Right operand element dtype (must match `dtype`).
+    pub b_dtype: DType,
+    /// Accumulator element dtype (must match `dtype`).
+    pub c_dtype: DType,
+    /// Left operand, `M x K`.
+    pub a: FragMap,
+    /// Right operand, addressed as `N x K`: each lane reads one `n` and a
+    /// pair of neighbouring `k` (row = n, column = k).
+    pub b: FragMap,
+    /// Accumulator, `M x N`.
+    pub c: FragMap,
+}
+
 /// Hardware information needed for applying optimizations
 #[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct DeviceInfo {
@@ -1494,8 +1649,10 @@ pub struct DeviceInfo {
     pub tile: [Dim; 2],
     /// Supported tile sizes [x, y] for tile-based accelerators (empty = no tile support)
     pub tile_sizes: Vec<[Dim; 2]>,
-    /// Supported WMMA layouts (empty = no tensor core support)
-    pub wmma_layouts: Vec<MMADims>,
+    /// Tensor-core instruction variants this device executes (empty = no
+    /// tensor core support). Defined by each backend: it is hardware
+    /// description, so the fragment maps live here, not in a pass.
+    pub mma_variants: Vec<MMAVariant>,
     /// Number of hardware circular buffers (Tenstorrent: CB0-CB31 = 32).
     /// This is an architectural count and does not depend on the CB page
     /// size (2KB vs 4KB tiles); page size constrains L1 budget, not count.
@@ -1523,5 +1680,28 @@ impl DeviceInfo {
         let pr = (rows + (tr - 1)) / tr * tr;
         let pc = (cols + (tc - 1)) / tc * tc;
         (pr, pc)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Dev;
+
+    /// The `ZYX_DEV` grammar: case-insensitive `name[:index]`, index
+    /// defaulting to 0, and an index rejected on indexless devices.
+    #[test]
+    fn dev_from_str() {
+        assert_eq!("cuda".parse::<Dev>().unwrap(), Dev::Cuda(0));
+        assert_eq!("CUDA:2".parse::<Dev>().unwrap(), Dev::Cuda(2));
+        assert_eq!("cpu".parse::<Dev>().unwrap(), Dev::C);
+        assert_eq!("cblas".parse::<Dev>().unwrap(), Dev::Cblas);
+        assert_eq!("tt:1".parse::<Dev>().unwrap(), Dev::TT(1));
+        assert_eq!("vk".parse::<Dev>().unwrap(), Dev::Vulkan(0));
+        assert_eq!("auto".parse::<Dev>().unwrap(), Dev::Auto);
+
+        assert!("c:0".parse::<Dev>().is_err());
+        assert!("auto:1".parse::<Dev>().is_err());
+        assert!("cuda:x".parse::<Dev>().is_err());
+        assert!("nope".parse::<Dev>().is_err());
     }
 }

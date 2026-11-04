@@ -396,15 +396,23 @@ impl Kernel {
         self.push_back(Op::Range { axis, kind: RangeKind::Local(len) })
     }
 
-    /// Warp lane index derived from a local thread range: the threads of
-    /// `local_id` form hardware warps and the op's value is the lane id
-    /// within the warp (`0..warp_size`, warp size from the device info).
+    /// Warp lane index derived from a local thread range.
+    ///
+    /// Local axis 0 is the hardware warp: its value is the lane id within the
+    /// warp (`0..warp_size`, warp size from the device info), so the range
+    /// itself is the lane id. The range must be on axis 0 and have length
+    /// `warp_size`; this method only validates that and returns it.
     pub fn warp(&mut self, local_id: OpId) -> OpId {
-        let axis = match &self.ops[local_id].op {
-            Op::Range { axis, kind: RangeKind::Local(_), .. } => *axis,
+        let (axis, len) = match &self.ops[local_id].op {
+            Op::Range { axis, kind: RangeKind::Local(len), .. } => (*axis, *len),
             _ => panic!("warp: local_id must reference a local range op"),
         };
-        self.push_back(Op::Range { axis, kind: RangeKind::Warp(local_id) })
+        let warp_size = u32::from(self.device_info().warp_size);
+        assert!(
+            axis == 0 && len == warp_size,
+            "warp: the lane is local axis 0 with length {warp_size}, got axis {axis} length {len}"
+        );
+        local_id
     }
 
     /// Load from `src` at `index` (scalar shape: one element).
@@ -1698,19 +1706,27 @@ impl Kernel {
         }
     }
 
-    /// Find the innermost open warp op by walking back from the tail.
+    /// Find the innermost open warp lane by walking back from the tail.
     ///
-    /// The IR is the state: `k.warp(k.local_range(..))` is emitted once, up
-    /// front; every partition method finds it here. No plumbing.
+    /// Local axis 0 is the hardware warp; its range is the lane id. The IR is
+    /// the state: `k.local_range(0, warp_size)` is emitted once, up front;
+    /// every partition method finds it here. No plumbing.
     fn open_warp(&self) -> OpId {
         let mut op_id = self.tail;
         while !op_id.is_null() {
-            if matches!(self.ops[op_id].op, Op::Range { kind: RangeKind::Warp(_), .. }) {
-                return op_id;
+            if let Op::Range { axis, kind: RangeKind::Local(len), .. } = self.ops[op_id].op {
+                if axis == 0 {
+                    let warp_size = u32::from(self.device_info().warp_size);
+                    assert_eq!(
+                        len, warp_size,
+                        "partition: local axis 0 is the warp lane and must have length {warp_size}, got {len}"
+                    );
+                    return op_id;
+                }
             }
             op_id = self.prev_op(op_id);
         }
-        panic!("partition: no warp op behind this point — call k.warp(k.local_range(..)) before using partition methods");
+        panic!("partition: no local axis 0 (the warp lane) behind this point — emit k.local_range(0, warp_size) first");
     }
 
     /// `idx * stride`, collapsing to `idx` when the stride resolves to 1
@@ -2438,7 +2454,7 @@ impl Kernel {
             && tile_n % 32 == 0
             && info.tile_sizes.iter().any(|[tx, ty]| *tx == 32 && *ty == 32);
         let wmma_ok =
-            rot_dim == tile_n && x.dtype == DType::F16 && !info.wmma_layouts.is_empty() && tile_m % 16 == 0 && tile_n % 8 == 0;
+            rot_dim == tile_n && x.dtype == DType::F16 && !info.mma_variants.is_empty() && tile_m % 16 == 0 && tile_n % 8 == 0;
         let vec_ok = !info.supported_vec_lens.is_empty();
         if tile_ok {
             // Tile path (TT 32×32): one CB tile, matmul_tile for rotate_half
