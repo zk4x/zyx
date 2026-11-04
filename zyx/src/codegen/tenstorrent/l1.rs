@@ -32,7 +32,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tt_isa::l1::Region;
 use tt_isa::sync::Semaphore;
 
-use super::runtime::SemaphoreInit;
+/// A semaphore's initial value and ceiling, as the run's setup program writes
+/// it: `(semaphore, value, max)`.
+pub type SemaphoreInit = (Semaphore, u8, u8);
 
 /// Who reads or writes a circular buffer.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]

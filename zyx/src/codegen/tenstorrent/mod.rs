@@ -3,11 +3,17 @@
 
 //! Tenstorrent codegen — emission only.
 //!
-//! Lowering lives in [`crate::kernel::tenstorrent`]: the kernel TT
-//! passes (`tt_storage`, `tt_lock_dst`, ...) rewrite the kernel IR in
-//! place, and this file is a pure consumer. It walks `Op` + the kernel
-//! [`TTOp`](crate::kernel::TTOp) and emits three RISC-V section sources
-//! plus the launch tables the backend needs.
+//! Lowering lives in [`crate::kernel::tenstorrent`]: the kernel TT passes
+//! (`tt_storage`, `tt_lock_dst`, ...) rewrite the kernel IR in place, and this
+//! module is a pure consumer. It walks `Op` + the kernel
+//! [`TTOp`](crate::kernel::TTOp) and emits three RISC-V section sources plus
+//! the launch tables the backend needs.
+//!
+//! The instruction builders are here, not in the backend: SFPU programs
+//! ([`sfpu`]), the unpacker/packer word builders ([`datapath`]), the L1/CB
+//! plan ([`l1`]), the stored-program format ([`code`]) and its expander
+//! ([`loops`]), and the matmul constants ([`matmul`]). The backend keeps only
+//! device access and execution.
 //!
 //! Physical ids are derived at emission, never stored:
 //! - CBs come from `Op::Storage { scope: Circular }` (first touch
@@ -19,11 +25,30 @@
 //! - NOC traffic comes from `Op::Copy` between a `Param` and a
 //!   Circular storage (async read one way, async write the other).
 
+// The instruction builders are ported whole from `metalium-rs` and only the
+// parts zyx emits are exercised, so their unused surface is dead until a later
+// pass prunes it (the same allowance the backend's ports carry).
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod code;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod datapath;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod elem;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod kind;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod l1;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod loops;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod matmul;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod sfpu;
+
+use self::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
 use crate::DType;
 use crate::Map;
 use crate::Set;
-use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
-use crate::backend::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit};
 use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
@@ -33,6 +58,7 @@ use crate::kernel::{
 };
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
+use nanoserde::SerBin;
 use tt_isa::isa::Instruction;
 
 /// DRAM page size in bytes.
@@ -93,6 +119,56 @@ pub struct TTProgram {
     pub writer: Vec<TTDmMove>,
     /// Semaphore initial states, rendered as [`TTOp::Semset`].
     pub sems: Vec<TTSemaphoreInit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One data-mover move of the native program: `bytes` between the DRAM
+/// buffer of param `param` and L1 address `l1`.
+pub struct TTDmMove {
+    /// Global head-order param ordinal (the shim/launch arg index).
+    pub param: u32,
+    /// L1 byte address of the CB side of the move.
+    pub l1: u32,
+    /// Transfer size in bytes of the L1 side.
+    pub bytes: u32,
+    /// Writer-side narrowing: the L1 tile is FP32 and the param is 16-bit,
+    /// so the host write-back converts (`TT_NARROW_*`). The packer cannot do
+    /// it: F32 `Dst` -> BF16 L1 is `pack_fmt_conv_mode=0x105`, which the
+    /// pinned ttsim refuses (`ttsim-divergence.md`, "BF16 late narrowing").
+    pub narrow: u8,
+    /// Byte offset of this move's slice inside the param's buffer at grid
+    /// point `(0, 0)`.
+    pub base: u32,
+    /// Byte stride of the slice per grid index on axis 0 (gidx0, the row).
+    pub gstride0: u32,
+    /// Byte stride of the slice per grid index on axis 1 (gidx1, the column).
+    pub gstride1: u32,
+}
+
+/// Byte offset of a move's slice for one grid point: the program is
+/// tile-uniform, so this is the only thing a grid point changes.
+pub fn tt_move_offset(mv: &TTDmMove, gidx0: u32, gidx1: u32) -> usize {
+    mv.base as usize + gidx0 as usize * mv.gstride0 as usize + gidx1 as usize * mv.gstride1 as usize
+}
+
+/// `TTDmMove::narrow`: the L1 bytes are copied as they are.
+pub const TT_NARROW_NONE: u8 = 0;
+/// `TTDmMove::narrow`: FP32 L1 tile -> FP16 param, round to nearest even.
+pub const TT_NARROW_F16: u8 = 1;
+/// `TTDmMove::narrow`: FP32 L1 tile -> BF16 param, round to nearest even.
+pub const TT_NARROW_BF16: u8 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One semaphore's initial state, mirroring
+/// `tt_kernels::runtime::SemaphoreInit` (`(Semaphore, value, max)`), stored
+/// as plain bytes so the program table stays plain data.
+pub struct TTSemaphoreInit {
+    /// Semaphore index, `0..8`.
+    pub index: u8,
+    /// Initial value.
+    pub value: u8,
+    /// Maximum value.
+    pub max: u8,
 }
 
 impl Kernel {
@@ -446,8 +522,8 @@ pub(crate) fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendErro
 /// `kind` the lowering stored; the arity must match the operands the zyx op
 /// carries, otherwise the program would read a row that was never written.
 fn tt_sfpu_program(kind: u32, a_row: u32, b_row: Option<u32>, slot_row: u32) -> Result<Vec<Instruction>, BackendError> {
-    use crate::backend::tenstorrent::kern::sfpu::kernel::Operands;
-    use crate::backend::tenstorrent::kern::sfpu::ops::{Broadcast, program_for};
+    use crate::codegen::tenstorrent::sfpu::kernel::Operands;
+    use crate::codegen::tenstorrent::sfpu::ops::{Broadcast, program_for};
     let Some((operands, code)) = program_for(kind, [0.0, 0.0], Broadcast::None) else {
         return Err(tt_err(format!("tenstorrent: SFPU kind {kind:#x} has no metalium program")));
     };
@@ -700,7 +776,7 @@ impl<'a> TtSection<'a> {
                 tt_isa::mailbox::loops::LEN_BITS
             )));
         }
-        use crate::backend::tenstorrent::kern::datapath::{addr_mod_entry, thread_entry};
+        use crate::codegen::tenstorrent::datapath::{addr_mod_entry, thread_entry};
         let row = addr_mod_entry(0);
         let step = addr_mod_entry(7);
         self.native.push(thread_entry(row.dst_incr, 0).word());
@@ -897,7 +973,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             use tt_isa::cfg::generated::{global, thcon};
                             let l1 = sec.cb_l1(dcb)?;
                             let mut words = tt_isa::backend::ConfigWords::new();
-                            crate::backend::tenstorrent::kern::datapath::pack_config(&mut words, l1);
+                            crate::codegen::tenstorrent::datapath::pack_config(&mut words, l1);
                             words
                                 .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
                                 .map_err(|e| sec.err(format!("pack {id:?}: dst offset: {e:?}")))?;
@@ -906,13 +982,13 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                                 .map_err(|e| sec.err(format!("pack {id:?}: out format: {e:?}")))?;
                             let mut code =
                                 vec![wait_for_packer(Before::CONFIG).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?];
-                            code.extend(crate::backend::tenstorrent::kern::datapath::config_program(&words));
+                            code.extend(crate::codegen::tenstorrent::datapath::config_program(&words));
                             code.push(
                                 stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY)
                                     .map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?,
                             );
-                            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(
-                                crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS,
+                            code.extend(crate::codegen::tenstorrent::datapath::pack_rows(
+                                crate::codegen::tenstorrent::datapath::TILE_DST_ROWS,
                             ));
                             sec.native_t2.extend(code.iter().map(|i| i.word()));
                             sec.last_role = 2;
@@ -971,7 +1047,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         // Src path does (`tt_src_base`). Without it the tile is
                         // shifted by one 16-byte unit (four F32 datums).
                         let l1 = tt_src_base(sec.cb_l1(scb)?);
-                        let words = crate::backend::tenstorrent::kern::datapath::unpack_tile_to_dst(l1, dst);
+                        let words = crate::codegen::tenstorrent::datapath::unpack_tile_to_dst(l1, dst);
                         sec.native_t0.extend(words.iter().map(|i| i.word()));
                         sec.last_role = 0;
                         sec.compute_ops += 1;
@@ -1023,7 +1099,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.out.push_str(&format!("{}{text}\n", sec.indent));
             }
             Op::TT(TTOp::Unpacr { src, unit, count, flip }) => {
-                use crate::backend::tenstorrent::kern::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
+                use crate::codegen::tenstorrent::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
                 use tt_isa::cfg::generated::{alu, thcon};
                 if *count != 1024 {
                     return Err(sec.err(format!("unpacr {id:?} of {count} datums: only whole tiles are wired up")));
@@ -1041,17 +1117,17 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     // BF16 in L1 moves as is (`SrcRoute`).
                     let src_dtype = sec.k.dtype(*src);
                     let route = match src_dtype {
-                        DType::F32 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Tf32FromFp32,
-                        DType::BF16 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Bf16FromBf16,
+                        DType::F32 => crate::codegen::tenstorrent::matmul::SrcRoute::Tf32FromFp32,
+                        DType::BF16 => crate::codegen::tenstorrent::matmul::SrcRoute::Bf16FromBf16,
                         dt => {
                             return Err(sec.err(format!("unpacr {id:?}: no Src route from {dt:?} (F32 and BF16 are wired up)")));
                         }
                     };
                     let (in_fmt, out_fmt) = route.formats();
-                    crate::backend::tenstorrent::kern::datapath::unpack_src_config(
+                    crate::codegen::tenstorrent::datapath::unpack_src_config(
                         &mut words,
                         unpacker,
-                        crate::backend::tenstorrent::kern::matmul::tile_descriptor(in_fmt),
+                        crate::codegen::tenstorrent::matmul::tile_descriptor(in_fmt),
                         l1,
                         out_fmt,
                     );
@@ -1078,10 +1154,10 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 let mut code = config_program(&words);
                 if fresh {
                     // `matmul_items`: the X range is the whole face, set once.
-                    code.push(set_adc_x(unpacker, 0, crate::backend::tenstorrent::kern::matmul::FACE_DATUMS - 1));
+                    code.push(set_adc_x(unpacker, 0, crate::codegen::tenstorrent::matmul::FACE_DATUMS - 1));
                     sec.src_unpacker_ready[*unit as usize] = true;
                 }
-                code.push(crate::backend::tenstorrent::kern::datapath::unpack_src_instruction(unpacker, *flip));
+                code.push(crate::codegen::tenstorrent::datapath::unpack_src_instruction(unpacker, *flip));
                 sec.native_t0.extend(code.iter().map(|i| i.word()));
                 sec.last_role = 0;
                 sec.has_src_unpack = true;
@@ -1090,8 +1166,8 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 use tt_isa::isa::generated::encode;
                 let z = encode::Setadczw::ZERO.z0(1).z0_val(*face);
                 let insn = match tt_unpacker(*unit).map_err(|e| sec.err(format!("setadczw {id:?}: {e}")))? {
-                    crate::backend::tenstorrent::kern::datapath::Unpacker::SrcA => z.u0(1),
-                    crate::backend::tenstorrent::kern::datapath::Unpacker::SrcB => z.u1(1),
+                    crate::codegen::tenstorrent::datapath::Unpacker::SrcA => z.u0(1),
+                    crate::codegen::tenstorrent::datapath::Unpacker::SrcB => z.u1(1),
                 }
                 .encode()
                 .map_err(|e| sec.err(format!("setadczw {id:?}: {e:?}")))?;
@@ -1102,7 +1178,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 if *count == 0 {
                     return Err(sec.err(format!("setadcx {id:?}: empty datum range")));
                 }
-                let insn = crate::backend::tenstorrent::kern::datapath::set_adc_x(
+                let insn = crate::codegen::tenstorrent::datapath::set_adc_x(
                     tt_unpacker(*unit).map_err(|e| sec.err(format!("setadcx {id:?}: {e}")))?,
                     *first,
                     first + count - 1,
@@ -1119,9 +1195,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.acc_row = row;
                 let insn = encode::Setrwc::ZERO
                     .src_a(1)
-                    .src_a_val(crate::backend::tenstorrent::kern::matmul::SRC_A_ROW as u32)
+                    .src_a_val(crate::codegen::tenstorrent::matmul::SRC_A_ROW as u32)
                     .src_b(1)
-                    .src_b_val(crate::backend::tenstorrent::kern::matmul::SRC_B_ROW as u32)
+                    .src_b_val(crate::codegen::tenstorrent::matmul::SRC_B_ROW as u32)
                     .dst(1)
                     // `SETRWC`'s `DstVal` is four bits, so one unit is a 32-row
                     // half-tile, not a row: a `Dst` row cannot be encoded at
@@ -1192,7 +1268,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         *value,
                     )
                     .map_err(|e| sec.err(format!("setcfg {id:?}: {e:?}")))?;
-                let program = crate::backend::tenstorrent::kern::datapath::config_program(&words);
+                let program = crate::codegen::tenstorrent::datapath::config_program(&words);
                 sec.native.extend(program.iter().map(|i| i.word()));
                 sec.last_role = 1;
             }
@@ -1578,10 +1654,10 @@ fn tt_src_base(cb: u64) -> u64 {
 }
 
 /// Unpacker index -> the metalium `Unpacker` (0 = SrcA, 1 = SrcB).
-fn tt_unpacker(unit: u8) -> Result<crate::backend::tenstorrent::kern::datapath::Unpacker, String> {
+fn tt_unpacker(unit: u8) -> Result<crate::codegen::tenstorrent::datapath::Unpacker, String> {
     match unit {
-        0 => Ok(crate::backend::tenstorrent::kern::datapath::Unpacker::SrcA),
-        1 => Ok(crate::backend::tenstorrent::kern::datapath::Unpacker::SrcB),
+        0 => Ok(crate::codegen::tenstorrent::datapath::Unpacker::SrcA),
+        1 => Ok(crate::codegen::tenstorrent::datapath::Unpacker::SrcB),
         other => Err(format!("unpacker {other} is neither SrcA (0) nor SrcB (1)")),
     }
 }
@@ -1637,9 +1713,9 @@ fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
         return Vec::new();
     }
     let config = if src_mode {
-        crate::backend::tenstorrent::kern::datapath::src_thread_config()
+        crate::codegen::tenstorrent::datapath::src_thread_config()
     } else {
-        crate::backend::tenstorrent::kern::datapath::thread_config()
+        crate::codegen::tenstorrent::datapath::thread_config()
     };
     let mut role: Vec<u32> = config.iter().map(|i| i.word()).collect();
     role.extend(body);
@@ -1660,7 +1736,7 @@ fn tt_math_role(body: Vec<u32>) -> (Vec<u32>, u32) {
     if body.is_empty() {
         return (Vec::new(), 0);
     }
-    let mut role: Vec<u32> = vec![crate::backend::tenstorrent::kern::datapath::state_id().word()];
+    let mut role: Vec<u32> = vec![crate::codegen::tenstorrent::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_sfpu(Before::EVERYTHING).expect("wait_for_sfpu(EVERYTHING) is encodable").word());
     (role, 1)
@@ -1674,7 +1750,7 @@ fn tt_pack_role(body: Vec<u32>) -> Vec<u32> {
     if body.is_empty() {
         return Vec::new();
     }
-    let mut role: Vec<u32> = vec![crate::backend::tenstorrent::kern::datapath::state_id().word()];
+    let mut role: Vec<u32> = vec![crate::codegen::tenstorrent::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_packer(Before::EVERYTHING).expect("wait_for_packer(EVERYTHING) is encodable").word());
     role
@@ -2373,7 +2449,7 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
             use tt_isa::cfg::generated::{global, thcon};
             let l1 = sec.cb_l1(dst)?;
             let mut words = tt_isa::backend::ConfigWords::new();
-            crate::backend::tenstorrent::kern::datapath::pack_config(&mut words, l1);
+            crate::codegen::tenstorrent::datapath::pack_config(&mut words, l1);
             words
                 .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
                 .map_err(|e| sec.err(format!("pack {id:?}: dst offset: {e:?}")))?;
@@ -2381,14 +2457,12 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
                 .set(thcon::THCON_SEC0_REG1_Out_data_format, out_fmt)
                 .map_err(|e| sec.err(format!("pack {id:?}: out format: {e:?}")))?;
             let mut code = vec![wait_for_packer(Before::CONFIG).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?];
-            code.extend(crate::backend::tenstorrent::kern::datapath::config_program(&words));
+            code.extend(crate::codegen::tenstorrent::datapath::config_program(&words));
             code.push(
                 stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY)
                     .map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?,
             );
-            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(
-                crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS,
-            ));
+            code.extend(crate::codegen::tenstorrent::datapath::pack_rows(crate::codegen::tenstorrent::datapath::TILE_DST_ROWS));
             sec.native_t2.extend(code.iter().map(|i| i.word()));
             sec.last_role = 2;
             sec.out.push_str(&format!("{}pack_tile({slot}, {dcb});\n", sec.indent));

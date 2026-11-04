@@ -24,12 +24,14 @@
 //!   another name, which hid a missing hand-off on silicon that ttsim showed at
 //!   once (divergence row 53).
 
-use super::super::dev::core_control::WaitError;
-use super::super::dev::tlb::WindowKind;
-use super::super::dev::trace::TraceEvent;
+use super::dev::core_control::WaitError;
+use super::dev::tlb::WindowKind;
+use super::dev::trace::TraceEvent;
 use std::time::{Duration, Instant};
 
-use super::super::dev::{Device, Traffic, Transport, TransportError};
+use super::dev::{Device, Traffic, Transport, TransportError};
+use crate::codegen::tenstorrent::code::{self, LoopError};
+use crate::codegen::tenstorrent::l1::SemaphoreInit;
 use tt_isa::backend::{self, Before};
 use tt_isa::isa::Instruction;
 use tt_isa::mailbox::role::Mailbox;
@@ -38,9 +40,6 @@ use tt_isa::noc::{NocCoord, NocId};
 use tt_isa::sfpu;
 use tt_isa::sync::Semaphore;
 use tt_isa::tensix::Core;
-
-/// A semaphore's starting `Value` and `Max`, set before a concurrent run.
-pub type SemaphoreInit = (Semaphore, u8, u8);
 
 /// The three role firmware images, as `(core, image, load address)` for
 /// threads 0, 1 and 2: unpack on T0, math on T1, pack on T2, each linked at its
@@ -234,10 +233,10 @@ pub enum RunError {
         thread: usize,
         reason: tt_isa::frontend::mop::MopError,
     },
-    /// Role `thread`'s block repeats were refused (`super::code::check`).
+    /// Role `thread`'s block repeats were refused (`code::check`).
     Loops {
         thread: usize,
-        reason: super::code::LoopError,
+        reason: LoopError,
     },
     /// Role `thread`'s program could not be loaded into its slot.
     Program {
@@ -414,31 +413,30 @@ pub fn run<T: Transport, N: NocId>(
     } else {
         0
     };
-    let stage_role =
-        |dev: &mut Device<T>, thread: usize, program_len: u32, dump: u32, traced: bool| -> Result<(), RunError> {
-            let mb = Mailbox::of(thread as u32);
-            dev.write32(&w, tile, mb.status(), 0)?;
-            let d = mailbox::Descriptor {
-                thread_index: thread as u32,
-                dst_access_fmt: kernel.dst_fmt,
-                program_len,
-                dump_row_count: dump,
-                trace: u32::from(traced),
-                push_window,
-                unwedge: u32::from(kernel.unwedge),
-                mop_cfg: kernel.mop_words(thread)?,
-                ..Default::default()
-            };
-            for (at, v) in d.writes(mb) {
-                dev.write32(&w, tile, at, v)?;
-            }
-            for row in 0..dump {
-                for col in 0..mailbox::DUMP_ROW_WORDS {
-                    dev.write32(&w, tile, mb.dump_offset(row, col), DUMP_SENTINEL)?;
-                }
-            }
-            Ok(())
+    let stage_role = |dev: &mut Device<T>, thread: usize, program_len: u32, dump: u32, traced: bool| -> Result<(), RunError> {
+        let mb = Mailbox::of(thread as u32);
+        dev.write32(&w, tile, mb.status(), 0)?;
+        let d = mailbox::Descriptor {
+            thread_index: thread as u32,
+            dst_access_fmt: kernel.dst_fmt,
+            program_len,
+            dump_row_count: dump,
+            trace: u32::from(traced),
+            push_window,
+            unwedge: u32::from(kernel.unwedge),
+            mop_cfg: kernel.mop_words(thread)?,
+            ..Default::default()
         };
+        for (at, v) in d.writes(mb) {
+            dev.write32(&w, tile, at, v)?;
+        }
+        for row in 0..dump {
+            for col in 0..mailbox::DUMP_ROW_WORDS {
+                dev.write32(&w, tile, mb.dump_offset(row, col), DUMP_SENTINEL)?;
+            }
+        }
+        Ok(())
+    };
     let wait = |dev: &mut Device<T>, thread: usize| -> Result<Result<(), WaitError>, RunError> {
         let mb = Mailbox::of(thread as u32);
         Ok(dev.wait_for_mailbox(&w, tile, mb.status(), mb.panic_code(), budget, |s| s == status::DONE)?.map(|_| ()))
@@ -553,7 +551,7 @@ pub fn run<T: Transport, N: NocId>(
 /// starts again.
 pub struct Resident<N: NocId> {
     tile: NocCoord<N>,
-    window: super::super::dev::Window,
+    window: super::dev::Window,
     generation: u32,
     poisoned: bool,
     /// What each role's program slot holds, as last written: a slot already
@@ -661,7 +659,7 @@ impl<N: NocId> Resident<N> {
     /// The window this tile is reached through. A [`crate::dm::DataMover`] on
     /// the same tile shares it, so a session over every tile of a chip needs
     /// one window per tile, not two.
-    pub fn window(&self) -> &super::super::dev::Window {
+    pub fn window(&self) -> &super::dev::Window {
         &self.window
     }
 
@@ -974,7 +972,7 @@ impl<N: NocId> Resident<N> {
         if let (Some(setup), false) = (&setup, skip_setup) {
             self.generation += 1;
             self.last_setup = Some((self.generation, setup.clone()));
-            let stored = super::code::stored(setup, &[]).map_err(|e| RunError::Loops { thread: 0, reason: e })?;
+            let stored = code::stored(setup, &[]).map_err(|e| RunError::Loops { thread: 0, reason: e })?;
             self.stage(dev, 0, 0, false, kernel.dst_fmt, true, false, None, stored)?;
             let stuck = self.wait(dev, &[0], images, budget)?;
             if let Some((_, _, e)) = stuck.into_iter().next() {

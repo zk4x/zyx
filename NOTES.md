@@ -1,3 +1,53 @@
+## HANDOFF (2026-11-04, session 5) — emission is out of the backend
+
+**Tree state:** uncommitted: the module move (renames + path/type edits; see
+`git status`). **116 lib tests green**, all 23 non-softmax ttsim gates green
+(`softmax` is the pre-existing hang below, unchanged). No warnings.
+
+### What moved, and why
+
+The backend keeps **execution only**; every instruction builder lives in
+`codegen`. `backend/tenstorrent/kern/` is gone.
+
+`zyx/src/codegen/tenstorrent/` (was `codegen/tenstorrent.rs`, now a directory
+module):
+
+| file | what |
+|---|---|
+| `mod.rs` | the renderer (`render_tt`, `generate_tenstorrent`, `tt_slice`, `tt_pages`, `tt_boundary_moves`, `tt_place_cbs`), plus `TTDmMove`/`tt_move_offset`/`TT_NARROW_*`/`TTSemaphoreInit` (moved out of `backend/tenstorrent/mod.rs`: codegen produces them, the backend consumes them) |
+| `sfpu/` | SFPU program builders + host interpreter + `kind_sfpu` |
+| `datapath.rs` | unpacker/packer thread configs and word builders |
+| `l1.rs` | L1/CB placement plan; `SemaphoreInit` (the `(Semaphore, value, max)` alias) now lives here |
+| `loops.rs`, `code.rs` | Replay Expander and the stored-program format/loop header |
+| `matmul.rs`, `elem.rs`, `kind.rs` | matmul constants, element kind, op-kind ids |
+
+`zyx/src/backend/tenstorrent/`: `dev/`, `sim/`, `ttsim.rs`, `mod.rs` (pool,
+`compile`/`launch` plumbing, tilize/untilize, DRAM ranges) and
+`runtime.rs` (the role runner — execution, staged programs / start / wait).
+
+Path rules after the move:
+- `kernel/tenstorrent.rs` and `kernel/ops.rs` import the emitters from
+  `crate::codegen::tenstorrent::*`;
+- the backend imports `crate::codegen::tenstorrent::{code, l1, TTDmMove, ...}`;
+- `backend/tenstorrent/runtime.rs` uses `super::dev`, and gets `SemaphoreInit`
+  from `codegen::tenstorrent::l1` and `LoopError`/`stored` from
+  `codegen::tenstorrent::code`.
+
+The ported modules keep their `#[allow(dead_code, unused_imports,
+unused_variables)]` (one per `pub mod` in `codegen/tenstorrent/mod.rs`), so the
+unused surface of the ports does not warn.
+
+### Next
+
+Fix the pre-existing `softmax` hang **in the emitter**, not in the backend.
+Current diagnosis (session 4): the third kernel's T1 program is one 230-word
+block repeat; the math core stays `RUNNING` because the role runner's
+`SIM_PUSH_WINDOW = 16` drain waits for instructions whose producer is later in
+the pushed body (a loop-carried/fused exp+div body dependence). Only
+`[256,256]` (8×8 grid) trips it; `add`/`mul` on the same grid, and softmax on
+4×4/8×4/4×8, pass. Relevant code is now `codegen/tenstorrent/{loops.rs,
+code.rs}` and `backend/tenstorrent/runtime.rs`.
+
 ## HANDOFF (2026-11-04, session 4) — the CB plan is SSA (`tt_cb_lower`)
 
 **Tree state:** uncommitted: `kernel/tenstorrent.rs`, `kernel/autotune.rs`, this

@@ -31,7 +31,7 @@
 // that thread. There is no C++ and no dlopen: compilation uploads a kernel's
 // images into device DRAM once (`images`), a launch resolves them to their
 // slots and the owner thread loads only what its residency ledger says is
-// missing, then `kern::runtime::run` waits for every role's `DONE`. The
+// missing, then `runtime::run` waits for every role's `DONE`. The
 // simulator itself is a Tenstorrent binary blob, found through `TT_TTSIM_LIB`
 // or `vendor/libttsim_bh.so`; only its wrapper lives here.
 //
@@ -59,7 +59,7 @@ use crate::{
     shape::Dim,
     slab::{Slab, SlabId},
 };
-use nanoserde::{DeJson, SerBin};
+use nanoserde::DeJson;
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tt_isa::dram::{Dram, DramRange};
@@ -70,12 +70,14 @@ use tt_isa::dram::{Dram, DramRange};
 #[allow(dead_code, unused_imports, unused_variables)]
 pub(crate) mod dev;
 #[allow(dead_code, unused_imports, unused_variables)]
-pub(crate) mod kern;
+pub(crate) mod runtime;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub(crate) mod sim;
 pub(crate) mod ttsim;
 
-use kern::runtime::SemaphoreInit;
+use crate::codegen::tenstorrent::code::Loop;
+use crate::codegen::tenstorrent::l1::SemaphoreInit;
+use crate::codegen::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit, tt_move_offset};
 use tt_isa::mailbox::role::Mailbox;
 use tt_isa::tensix::Core;
 
@@ -183,9 +185,10 @@ pub struct TTConfig {
 // This is the whole kernel as the hardware executes it: data-mover moves
 // across the DRAM/L1 boundary, the three Tensix role streams, the
 // semaphores they synchronize on, and the build-time L1/DST placement the
-// instructions bake in as immediates. It lives here (not in the kernel IR)
-// beside the device types it feeds; `TTProgramDesc` carries it in the IR so
-// `compile` can reach it after lowering.
+// instructions bake in as immediates. The move/semaphore descriptors are
+// produced by codegen (`crate::codegen::tenstorrent::{TTDmMove, ...}`) and
+// carried in the IR (`TTProgramDesc`) so `compile` can reach them after
+// lowering.
 //
 // Addresses: L1 is a zyx-owned bump allocation over the metalium data arena
 // (`tt_isa::l1::DATA`), first touch, 64-byte aligned. DRAM offsets are not
@@ -193,56 +196,6 @@ pub struct TTConfig {
 // DM move carries the param ordinal and the launch fills in
 // channel/port/offset.
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// One data-mover move of the native program: `bytes` between the DRAM
-/// buffer of param `param` and L1 address `l1`.
-pub struct TTDmMove {
-    /// Global head-order param ordinal (the shim/launch arg index).
-    pub param: u32,
-    /// L1 byte address of the CB side of the move.
-    pub l1: u32,
-    /// Transfer size in bytes of the L1 side.
-    pub bytes: u32,
-    /// Writer-side narrowing: the L1 tile is FP32 and the param is 16-bit,
-    /// so the host write-back converts (`TT_NARROW_*`). The packer cannot do
-    /// it: F32 `Dst` -> BF16 L1 is `pack_fmt_conv_mode=0x105`, which the
-    /// pinned ttsim refuses (`ttsim-divergence.md`, "BF16 late narrowing").
-    pub narrow: u8,
-    /// Byte offset of this move's slice inside the param's buffer at grid
-    /// point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (gidx0, the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (gidx1, the column).
-    pub gstride1: u32,
-}
-
-/// Byte offset of a move's slice for one grid point: the program is
-/// tile-uniform, so this is the only thing a grid point changes.
-pub fn tt_move_offset(mv: &TTDmMove, gidx0: u32, gidx1: u32) -> usize {
-    mv.base as usize + gidx0 as usize * mv.gstride0 as usize + gidx1 as usize * mv.gstride1 as usize
-}
-
-/// `TTDmMove::narrow`: the L1 bytes are copied as they are.
-pub const TT_NARROW_NONE: u8 = 0;
-/// `TTDmMove::narrow`: FP32 L1 tile -> FP16 param, round to nearest even.
-pub const TT_NARROW_F16: u8 = 1;
-/// `TTDmMove::narrow`: FP32 L1 tile -> BF16 param, round to nearest even.
-pub const TT_NARROW_BF16: u8 = 2;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// One semaphore's initial state, mirroring
-/// `tt_kernels::runtime::SemaphoreInit` (`(Semaphore, value, max)`), stored
-/// as plain bytes so the program table stays plain data.
-pub struct TTSemaphoreInit {
-    /// Semaphore index, `0..8`.
-    pub index: u8,
-    /// Initial value.
-    pub value: u8,
-    /// Maximum value.
-    pub max: u8,
-}
 
 // ---------------------------------------------------------------------------
 // Device DRAM
@@ -899,12 +852,12 @@ impl TTDevice {
                 continue;
             }
             // Block repeats belong to T1's stream (row loops are SFPU work).
-            let loops: Vec<kern::code::Loop> = if thread == 1 {
-                math_loops.iter().map(|l| kern::code::Loop { start: l[0], len: l[1], count: l[2] }).collect()
+            let loops: Vec<Loop> = if thread == 1 {
+                math_loops.iter().map(|l| Loop { start: l[0], len: l[1], count: l[2] }).collect()
             } else {
                 Vec::new()
             };
-            let (stored, len) = kern::code::stored(words, &loops).map_err(|e| BackendError {
+            let (stored, len) = crate::codegen::tenstorrent::code::stored(words, &loops).map_err(|e| BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("tenstorrent: role T{thread} program: {e}").into(),
             })?;

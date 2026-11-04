@@ -29,8 +29,8 @@ use tt_isa::sync::{self, Semaphore, Unit};
 use super::super::datapath::{
     config_program, pack_tile_from_dst, state_id, thread_config, tile_unpack_config, unpack_datums_to_dst, unpack_tile_to_dst,
 };
+use super::super::l1::SemaphoreInit;
 use super::super::l1::{PlanError, Requirements};
-use super::super::runtime::SemaphoreInit;
 
 /// Where an op's operands are in `Dst`, and its result.
 pub const A_ROW: u32 = 0;

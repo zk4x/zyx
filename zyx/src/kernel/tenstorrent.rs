@@ -737,7 +737,7 @@ enum TtCopy {
 /// zyx unary op -> metalium SFPU kind. `None` means no native kind yet;
 /// the value stays high-level instead of being mis-lowered.
 fn uop_kind(uop: UOp) -> Option<u32> {
-    use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+    use crate::codegen::tenstorrent::sfpu::ops::kind_sfpu as sf;
     Some(match uop {
         UOp::Neg => sf::NEG,
         UOp::Not => sf::BOOL_NOT,
@@ -757,8 +757,8 @@ fn uop_kind(uop: UOp) -> Option<u32> {
 /// zyx binary op -> metalium SFPU kind. The same table covers float,
 /// integer, and comparison kinds; `None` is "no native kind yet".
 fn bop_kind(bop: BOp) -> Option<u32> {
-    use crate::backend::tenstorrent::kern::kind;
-    use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+    use crate::codegen::tenstorrent::kind;
+    use crate::codegen::tenstorrent::sfpu::ops::kind_sfpu as sf;
     Some(match bop {
         BOp::Add => kind::ADD,
         BOp::Sub => kind::SUB,
@@ -2861,8 +2861,8 @@ impl Kernel {
     /// rather than inside it. Returns `false` for a kind that is not ported
     /// yet; the caller then keeps `Sfpu { kind }`.
     fn tt_sfp_sequence(&mut self, id: OpId, kind: u32, a: OpId, b: OpId, slot: OpId) -> bool {
-        use crate::backend::tenstorrent::kern::kind;
-        use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+        use crate::codegen::tenstorrent::kind;
+        use crate::codegen::tenstorrent::sfpu::ops::kind_sfpu as sf;
         let mut ops: Vec<Op> = if kind == sf::BOOL_NOT && b.is_null() {
             self.tt_sfp_bool_not(a, slot)
         } else if kind == kind::ADD && !b.is_null() {
@@ -3005,7 +3005,7 @@ impl Kernel {
 
     /// `ops::sqrt_program`, `RSQRT` when `kind` says so.
     fn tt_sfp_sqrt(&mut self, kind: u32, a: OpId, slot: OpId) -> Vec<Op> {
-        use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+        use crate::codegen::tenstorrent::sfpu::ops::kind_sfpu as sf;
         let mut ops: Vec<Op> = Vec::new();
         // `ops::sqrt_program`: the seed `0x5f3759df - (bits(x) >> 1)`,
         // three Newton steps (`h = x y`, `t = 1 - h y`, `y += (y/2) t`),
@@ -3179,7 +3179,7 @@ impl Kernel {
 
     /// `round::body`, `FLOOR` when `kind` says so, else `TRUNC`.
     fn tt_sfp_round(&mut self, kind: u32, a: OpId, slot: OpId) -> Vec<Op> {
-        use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+        use crate::codegen::tenstorrent::sfpu::ops::kind_sfpu as sf;
         let mut ops: Vec<Op> = Vec::new();
         // `round::body`: raw bits; `|x| >= 2^23` is integral, `|x| < 1`
         // truncates to a signed zero (`floor` then takes `-1` for a
@@ -3504,7 +3504,7 @@ impl Kernel {
     }
 
     fn tt_sfp_compare(&mut self, kind: u32, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
-        use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+        use crate::codegen::tenstorrent::sfpu::ops::kind_sfpu as sf;
         let mut ops: Vec<Op> = Vec::new();
         // `binary_body`'s comparison: `compare_constants`' magnitude mask,
         // `+inf` and `1` live in `L4..L6`; `x = L0`, `y = L1`, the answer
@@ -3659,7 +3659,7 @@ impl Kernel {
 
     /// `integer::body` ops 3..7 (`AND`/`OR`/`XOR`/`SHL`/`SHR`).
     fn tt_sfp_integer(&mut self, kind: u32, a: OpId, b: OpId, slot: OpId) -> Vec<Op> {
-        use crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu as sf;
+        use crate::codegen::tenstorrent::sfpu::ops::kind_sfpu as sf;
         let mut ops: Vec<Op> = Vec::new();
         // `integer::body` ops 3..7: `AND`/`OR`/`XOR` on the words, and
         // `SHL`/`SHR` with the shift amount taken modulo 32 (`SHR`
@@ -4013,7 +4013,7 @@ impl Kernel {
                 // output tile is 64 DST rows: `fi` 0 accumulates rows 0..31,
                 // `MATH_AM_FI` moves the base on 32 rows for `fi` 1, so the
                 // accumulator is the tile's slot directly.
-                use crate::backend::tenstorrent::kern::matmul::{MATH_AM_FI, MATH_AM_GROUP, MATH_AM_HALF, MATH_AM_PHASE};
+                use crate::codegen::tenstorrent::matmul::{MATH_AM_FI, MATH_AM_GROUP, MATH_AM_HALF, MATH_AM_PHASE};
                 use tt_isa::backend::ThreadConfigEntry;
                 use tt_isa::cfg::generated::thread;
                 // `math_prelude`: one `SETC16` per single-field entry, and a
@@ -6224,9 +6224,9 @@ impl Kernel {
 #[cfg(test)]
 mod sfp_row_ops {
     use super::*;
-    use crate::backend::tenstorrent::kern::sfpu::interp::Vector;
-    use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
-    use crate::backend::tenstorrent::kern::sfpu::ops::{self, kind_sfpu as sf};
+    use crate::codegen::tenstorrent::sfpu::interp::Vector;
+    use crate::codegen::tenstorrent::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
+    use crate::codegen::tenstorrent::sfpu::ops::{self, kind_sfpu as sf};
     use crate::kernel::Dev;
     use std::collections::HashMap;
     use tt_isa::isa::Instruction;
@@ -6289,9 +6289,9 @@ mod sfp_row_ops {
             sf::TRUNC,
         ];
         all.extend([
-            crate::backend::tenstorrent::kern::kind::ADD,
-            crate::backend::tenstorrent::kern::kind::SUB,
-            crate::backend::tenstorrent::kern::kind::MUL,
+            crate::codegen::tenstorrent::kind::ADD,
+            crate::codegen::tenstorrent::kind::SUB,
+            crate::codegen::tenstorrent::kind::MUL,
             sf::DIV,
             sf::EQ,
             sf::NE,
@@ -6415,9 +6415,9 @@ mod sfp_row_ops {
     #[test]
     fn binary_arms_match_the_builder() {
         for kind in [
-            crate::backend::tenstorrent::kern::kind::ADD,
-            crate::backend::tenstorrent::kern::kind::SUB,
-            crate::backend::tenstorrent::kern::kind::MUL,
+            crate::codegen::tenstorrent::kind::ADD,
+            crate::codegen::tenstorrent::kind::SUB,
+            crate::codegen::tenstorrent::kind::MUL,
             sf::DIV,
             sf::EQ,
             sf::NE,
@@ -6495,8 +6495,8 @@ fn encode_row_ops(ops: &[Op], rows: &std::collections::HashMap<u32, u32>) -> Vec
 #[cfg(test)]
 mod tt_lower_ops {
     use super::*;
-    use crate::backend::tenstorrent::kern::sfpu::interp::Vector;
-    use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
+    use crate::codegen::tenstorrent::sfpu::interp::Vector;
+    use crate::codegen::tenstorrent::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
     use crate::kernel::Dev;
     use std::collections::HashMap;
     use tt_isa::isa::Instruction;

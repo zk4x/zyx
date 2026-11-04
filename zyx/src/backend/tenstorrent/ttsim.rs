@@ -28,8 +28,9 @@ use std::thread;
 
 use super::dev::Device;
 use super::dev::tlb::WindowKind;
-use super::kern::runtime::{self, Schedule, SemaphoreInit};
+use super::runtime::{self, Schedule};
 use super::sim::{self, Simulator};
+use crate::codegen::tenstorrent::l1::SemaphoreInit;
 use tt_isa::dm;
 use tt_isa::dram::{Dram, DramRange};
 use tt_isa::mailbox::{self, status};
