@@ -4434,21 +4434,26 @@ impl Runtime {
             // Pick the device where most loaded bytes reside, provided it has
             // enough memory for the outputs; otherwise the fastest device
             // with enough memory. The device's codegen must be able to
-            // consume every dtype in the kernel: a capability NONE means the
-            // dtype is unusable there (see DeviceInfo::dtype_capability).
+            // consume every dtype and every op in the kernel: the required
+            // per-dtype capability bits must all be present.
             let kdtypes: &Set<DType> = &dtypes.values().copied().collect();
+            let required_caps = kernel.required_capabilities();
             let capable: &Vec<Dev> = &Dev::all()
                 .into_iter()
                 .filter(|&dev_id| {
                     !dev_id.aot_only()
-                        && dev_id
-                            .info()
-                            .is_ok_and(|info| kdtypes.iter().all(|&d| info.supports_dtype(d) != DTypeCapability::none()))
+                        && dev_id.info().is_ok_and(|info| {
+                            required_caps.iter().all(|(dt, caps)| info.supports_dtype(*dt).contains(*caps))
+                        })
                 })
                 .collect();
             if capable.is_empty() {
+                let req: Vec<String> = required_caps.iter().map(|(dt, caps)| format!("{dt:?}:{caps:?}")).collect();
                 return Err(ZyxError::AllocationError(
-                    format!("kernel dtypes {kdtypes:?} are unusable on every device (capability NONE)").into(),
+                    format!(
+                        "kernel requires unsupported dtype/ops {req:?} (dtypes {kdtypes:?}) on every device"
+                    )
+                    .into(),
                 ));
             }
             let mut loaded_bytes: Map<Pool, Dim> = Map::default();

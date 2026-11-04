@@ -89,7 +89,7 @@ const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR: u32 = 1000
 const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0080;
 const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0002;
 const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x0001;
-const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x0001;
+const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x0002;
 const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 0x0004;
 const VK_SHARING_MODE_EXCLUSIVE: u32 = 0;
 const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 0x0001;
@@ -318,7 +318,7 @@ struct VkPhysicalDeviceProperties {
     device_type: u32,
     device_name: [u8; 256],
     pipeline_cache_uuid: [u8; 16],
-    _pad_to_limits: [u8; 8],
+    _pad_to_limits: [u8; 4],
     _limits_prefix: [u8; 216],
     max_compute_shared_memory_size: u32,
     max_compute_work_group_count: [u32; 3],
@@ -1692,11 +1692,14 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                         | DTypeCapability::COS
                         | DTypeCapability::POW,
                 );
-                // Turing/NVIDIA driver crashes on BF16 compute even when
-                // VK_KHR_shader_bfloat16 is enabled. SPIR-V codegen would
-                // need explicit OpFConvert around GLSL.std.450 intrinsics.
-                // Disable until that's implemented.
-                all[DType::BF16 as usize] = DTypeCapability::none();
+                // BF16 arithmetic is not part of SPV_KHR_bfloat16. Vulkan can
+                // store/load/convert/select BF16, but not compute directly on
+                // it; kernels doing BF16 arithmetic must cast to F32 first.
+                all[DType::BF16 as usize] = if has_shader_bf16 {
+                    DTypeCapability::CAST | DTypeCapability::STORAGE
+                } else {
+                    DTypeCapability::none()
+                };
                 if !has_shader_float16 {
                     all[DType::F16 as usize] = DTypeCapability::none();
                 }
@@ -2213,7 +2216,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 flags: 0,
                                 setLayoutCount: 1,
                                 pSetLayouts: &desc_layout,
-                                pushConstantRangeCount: u32::from(push_constants_size > 4),
+                                pushConstantRangeCount: u32::from(push_constants_size > 0),
                                 pPushConstantRanges: &push_constant_range,
                             };
                             let mut pipeline_layout = std::ptr::null_mut();

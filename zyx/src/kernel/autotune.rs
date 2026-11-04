@@ -531,10 +531,16 @@ impl BeamSearch {
             }
 
             // Measurement: rebuild each candidate deterministically and launch.
+            // Keep trying past a candidate that fails to compile/launch (an
+            // invalid optimization variant) until `n_launches` successes have
+            // been measured.
             items.sort_by_key(|seq| seq.cost);
-            items.truncate(self.n_launches);
             let mut launched = Set::default();
-            for opt_seq in &items {
+            let mut measured = 0usize;
+            let mut next = 0usize;
+            while measured < self.n_launches && next < items.len() {
+                let opt_seq = &items[next];
+                next += 1;
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
                 // Hardware lowering runs once here, right before timed
@@ -545,6 +551,7 @@ impl BeamSearch {
                         Ok((program_id, time)) => {
                             record_measurement(&kernel, opt_seq, seed_id, Some(time), "measured");
                             programs.push(program_id);
+                            measured += 1;
                             if time < best_time {
                                 best_time = time;
                                 best_kernel = Some(kernel);
@@ -606,7 +613,7 @@ fn record_measurement(kernel: &Kernel, seq: &OptSeq, seed_id: u64, nanos: Option
         line.push_str(&format!("[{opt},{config}]"));
     }
     line.push(']');
-    line.push_str(&format!(",\"seed\":\"{seed_id:016x}\"", ));
+    line.push_str(&format!(",\"seed\":\"{seed_id:016x}\"",));
     line.push_str(&format!(",\"kernel\":\"{:016x}\"", kernel.get_hash()));
     match nanos {
         Some(nanos) => line.push_str(&format!(",\"nanos\":{nanos}")),

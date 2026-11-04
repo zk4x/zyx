@@ -86,6 +86,7 @@ mod viz;
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 
+pub use backend::DTypeCapability;
 pub use dtype::{DType, QDType};
 pub use error::ZyxError;
 pub use module::{GGUFMetadataValue, Module};

@@ -1456,15 +1456,16 @@ pub struct Config {
 
 /// Per-dtype capability bitmask — one bit per unary/binary operation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct DTypeCapability(u32);
+pub struct DTypeCapability(u64);
 
 impl DTypeCapability {
+    /// No operations supported.
     pub const ZERO: Self = Self(0);
 }
 
 macro_rules! op_cap {
     ($name:ident, $bit:expr, $method:ident) => {
-        pub const $name: Self = Self(1 << $bit);
+        pub const $name: Self = Self(1u64 << $bit);
         pub fn $method(&self) -> bool {
             self.0 & Self::$name.0 != 0
         }
@@ -1478,6 +1479,7 @@ impl std::ops::BitOr for DTypeCapability {
     }
 }
 
+#[allow(missing_docs)]
 impl DTypeCapability {
     op_cap!(NEG, 0, neg);
     op_cap!(BITNOT, 1, bitnot);
@@ -1510,10 +1512,15 @@ impl DTypeCapability {
     op_cap!(BITSHIFTRIGHT, 28, bitshiftright);
     op_cap!(NOTEQ, 29, noteq);
     op_cap!(EQ, 30, eq);
+    // Value conversion (`Op::Cast`, `Op::Bitcast`) in either direction.
+    op_cap!(CAST, 31, cast);
+    // Load/store/constant/parameter/composite movement: the dtype can be
+    // materialized in memory, but not necessarily computed on.
+    op_cap!(STORAGE, 32, storage);
 
     #[must_use]
     pub const fn all() -> Self {
-        Self(u32::MAX)
+        Self(u64::MAX)
     }
 
     #[must_use]
@@ -1539,6 +1546,12 @@ impl DTypeCapability {
     #[must_use]
     pub fn include(&self, capability: DTypeCapability) -> Self {
         Self(self.0 | capability.0)
+    }
+
+    /// Whether every bit in `required` is present.
+    #[must_use]
+    pub const fn contains(&self, required: Self) -> bool {
+        self.0 & required.0 == required.0
     }
 }
 

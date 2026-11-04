@@ -282,6 +282,140 @@ impl Kernel {
         self.dev_info.as_ref().expect("kernel has no device bound (Dev::Auto placeholder)")
     }
 
+    /// Required per-dtype capabilities for the ops in this kernel. Placement
+    /// and codegen both use this: a device must supply every required bit for
+    /// every dtype the kernel touches.
+    pub(crate) fn required_capabilities(&self) -> Map<DType, crate::backend::DTypeCapability> {
+        use crate::backend::DTypeCapability as Cap;
+        let (dtypes, _) = self.compute_dtypes_and_rcs();
+        let mut req: Map<DType, Cap> = Map::default();
+        let mut add = |dt: DType, cap: Cap| {
+            req.entry(dt).and_modify(|c| *c = c.include(cap)).or_insert(cap);
+        };
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let op = &self.ops[op_id].op;
+            let result_dtype = dtypes.get(&op_id).map(|(dt, _)| *dt);
+            let storage = Cap::STORAGE;
+            let cap = match op {
+                Op::Unary { uop, .. } => match uop {
+                    UOp::Neg => Cap::NEG,
+                    UOp::Not | UOp::BitNot => Cap::BITNOT,
+                    UOp::Exp2 => Cap::EXP2,
+                    UOp::Log2 => Cap::LOG2,
+                    UOp::Reciprocal => Cap::RECIPROCAL,
+                    UOp::Sqrt | UOp::Rsqrt => Cap::SQRT,
+                    UOp::Sin => Cap::SIN,
+                    UOp::Cos => Cap::COS,
+                    UOp::Floor => Cap::FLOOR,
+                    UOp::Trunc => Cap::TRUNC,
+                    UOp::Abs => Cap::ABS,
+                },
+                Op::Binary { bop, .. } => match bop {
+                    BOp::Add => Cap::ADD,
+                    BOp::Sub => Cap::SUB,
+                    BOp::Mul => Cap::MUL,
+                    BOp::Div => Cap::DIV,
+                    BOp::Pow => Cap::POW,
+                    BOp::Mod => Cap::MOD,
+                    BOp::Cmplt => Cap::CMPLT,
+                    BOp::Cmpgt | BOp::Cmpge => Cap::CMPGT,
+                    BOp::Max => Cap::MAX,
+                    BOp::Or => Cap::OR,
+                    BOp::And => Cap::AND,
+                    BOp::BitXor => Cap::BITXOR,
+                    BOp::BitOr => Cap::BITOR,
+                    BOp::BitAnd => Cap::BITAND,
+                    BOp::BitShiftLeft => Cap::BITSHIFTLEFT,
+                    BOp::BitShiftRight => Cap::BITSHIFTRIGHT,
+                    BOp::NotEq => Cap::NOTEQ,
+                    BOp::Eq => Cap::EQ,
+                },
+                Op::Reduce { rop, .. } => match rop {
+                    BOp::Add => Cap::ADD,
+                    BOp::Sub => Cap::SUB,
+                    BOp::Mul => Cap::MUL,
+                    BOp::Div => Cap::DIV,
+                    BOp::Pow => Cap::POW,
+                    BOp::Mod => Cap::MOD,
+                    BOp::Cmplt => Cap::CMPLT,
+                    BOp::Cmpgt | BOp::Cmpge => Cap::CMPGT,
+                    BOp::Max => Cap::MAX,
+                    BOp::Or => Cap::OR,
+                    BOp::And => Cap::AND,
+                    BOp::BitXor => Cap::BITXOR,
+                    BOp::BitOr => Cap::BITOR,
+                    BOp::BitAnd => Cap::BITAND,
+                    BOp::BitShiftLeft => Cap::BITSHIFTLEFT,
+                    BOp::BitShiftRight => Cap::BITSHIFTRIGHT,
+                    BOp::NotEq => Cap::NOTEQ,
+                    BOp::Eq => Cap::EQ,
+                },
+                Op::Wmma { .. } => Cap::ADD | Cap::MUL | Cap::CAST | Cap::STORAGE,
+                Op::Cast { .. } | Op::Bitcast { .. } => Cap::CAST,
+                Op::Const(_) => storage,
+                Op::Param { .. }
+                | Op::Storage { .. }
+                | Op::Store { .. }
+                | Op::Load { .. }
+                | Op::Copy { .. }
+                | Op::Select { .. }
+                | Op::Stack { .. }
+                | Op::Index { .. }
+                | Op::Reshape { .. }
+                | Op::Expand { .. }
+                | Op::Permute { .. }
+                | Op::Flip { .. }
+                | Op::Pad { .. }
+                | Op::Narrow { .. }
+                | Op::Unroll { .. } => storage,
+                Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Detach { .. }
+                | Op::Range { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::Asm { .. }
+                | Op::Source(_)
+                | Op::Program { .. }
+                | Op::Kernel(_)
+                | Op::TT(_)
+                | Op::GPU(_)
+                | Op::Spirv(_)
+                | Op::PTX(_) => Cap::ZERO,
+            };
+            if cap != Cap::ZERO {
+                // Effect-only ops may not have a result dtype; use their
+                // source value's dtype instead.
+                let dt = match op {
+                    Op::Const(c) => Some(c.dtype()),
+                    Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
+                    // Arithmetic capability belongs to the operand dtype, not
+                    // the result: comparisons produce Bool but compute on
+                    // their (possibly BF16/F64) operands.
+                    Op::Unary { x, .. } | Op::Binary { x, .. } | Op::Reduce { x, .. } => {
+                        dtypes.get(x).map(|(dt, _)| *dt).or(result_dtype)
+                    }
+                    Op::Store { src, .. } => dtypes.get(src).map(|(dt, _)| *dt).or(result_dtype),
+                    Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
+                        if let Some((src_dt, _)) = dtypes.get(x) {
+                            add(*src_dt, cap);
+                        }
+                        result_dtype
+                    }
+                    _ => result_dtype,
+                };
+                if let Some(dt) = dt {
+                    add(dt, cap);
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        req
+    }
+
     /// Compute dtypes and reference counts for all operations. The shape
     /// half of each entry is the value's [`Self::shape`]: `[]` for
     /// scalars, `[n]` for vectors, `[x, y]` for tiles.

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope};
-use zyx::{DType, Reduction, Scalar, Tensor, ZyxError};
+use zyx::{DType, DTypeCapability, Reduction, Scalar, Tensor, ZyxError};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
 ///
@@ -486,7 +486,9 @@ fn add() -> Result<(), ZyxError> {
 
 #[test]
 fn opt_local() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).any() {
+    if !Tensor::dtype_capability(DType::BF16).contains(
+        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD,
+    ) {
         return Ok(());
     }
     let x = Tensor::rand([128255, 2, 1], DType::BF16)?;
