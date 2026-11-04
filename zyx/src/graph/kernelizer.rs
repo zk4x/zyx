@@ -262,7 +262,7 @@ impl Graph {
                     Op::Stack { ref ops } => {
                         // Copy the element list out of the node so the shared
                         // borrow of self.nodes ends before we mutate kernels.
-                        let ops: Vec<OpId> = ops.iter().copied().collect();
+                        let ops: Vec<OpId> = ops.to_vec();
                         // Symbolic elements never enter visited: record their
                         // status before any consumption mutates visited.
                         let sym: Vec<bool> = ops.iter().map(|&e| !visited.contains_key(&e)).collect();
@@ -309,7 +309,7 @@ impl Graph {
                                     continue;
                                 }
                                 let (kid, op_id) = visited[&elem];
-                                let (kid, op_id) = self.duplicate_or_store_class(elem, kid, op_id, &mut visited, &mut rcs, false);
+                                let (kid, op_id) = self.duplicate_or_store_class(elem, kid, op_id, &mut visited, &rcs, false);
                                 // Route the merge repointing through the duplicate
                                 // home; merge_kernels repoints every visited entry
                                 // of the merged kernel onto the destination. The
@@ -514,7 +514,7 @@ impl Graph {
                             Some(&kv) => kv,
                             None => todo!("reduce_last of symbolic scalar operand {x:?}"),
                         };
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, false);
                         let kernel = &mut self.jit_kernels[kid].kernel;
                         let dims = kernel.shape_ids(op_id);
                         debug_assert!(!dims.is_empty(), "reduce_last of scalar");
@@ -805,7 +805,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -838,7 +838,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -870,7 +870,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -902,7 +902,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -933,7 +933,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -974,7 +974,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -1175,7 +1175,7 @@ impl Graph {
 
             // Post-processing: store if final output
             if outputs.contains(&cid) {
-                if !visited.contains_key(&cid) {
+                if let std::collections::hash_map::Entry::Vacant(e) = visited.entry(cid) {
                     // Symbolic scalar output (e.g. a materialized const):
                     // give it a real buffer via the same fresh-kernel replay
                     // the movement arms use, then store normally.
@@ -1187,7 +1187,7 @@ impl Graph {
                     });
                     let op = self.replay_shape_into_kernel(kid, cid);
                     self.push_outputs(kid, cid, 1);
-                    visited.insert(cid, (kid, op));
+                    e.insert((kid, op));
                 }
                 let (mut kid, op_id) = visited[&cid];
                 // Assign classes are in-place aliases of dst's (leaf) buffer; the
@@ -1239,11 +1239,10 @@ impl Graph {
                     }
                 }
                 for c in &order[..=i] {
-                    if let Some(&rc) = rcs.get(c) {
-                        if rc == 0 && visited.contains_key(c) {
+                    if let Some(&rc) = rcs.get(c)
+                        && rc == 0 && visited.contains_key(c) {
                             panic!("class={c:?} with rcs=0 in visited");
                         }
-                    }
                 }
             }
         }
@@ -1580,20 +1579,17 @@ impl Graph {
     pub fn lower_custom_kernels(&mut self) {
         let node_ids: Vec<OpId> = self.ops.ids().collect();
         for nid in node_ids {
-            match self.ops[nid].op {
-                Op::Kernel(ref inner) => {
-                    let class_of = inner.outputs[0].0;
-                    let info = Box::new((inner.program_id, inner.time));
-                    let ops = inner.outputs.iter().map(|x| x.0).collect();
-                    let inputs = self.push_op(Op::Stack { ops: inner.inputs.clone() });
-                    let outputs = self.push_op(Op::Stack { ops });
-                    // The twin joins the FIRST output class (the Index accessor
-                    // heading it), mirroring backend kernel twins whose
-                    // `class_of` is the output class — downstream discovery of
-                    // the twin's inputs walks `class_nodes(output_class)`.
-                    self.mint_node(Op::Program { inputs, outputs, info }, class_of);
-                }
-                _ => {}
+            if let Op::Kernel(ref inner) = self.ops[nid].op {
+                let class_of = inner.outputs[0].0;
+                let info = Box::new((inner.program_id, inner.time));
+                let ops = inner.outputs.iter().map(|x| x.0).collect();
+                let inputs = self.push_op(Op::Stack { ops: inner.inputs.clone() });
+                let outputs = self.push_op(Op::Stack { ops });
+                // The twin joins the FIRST output class (the Index accessor
+                // heading it), mirroring backend kernel twins whose
+                // `class_of` is the output class — downstream discovery of
+                // the twin's inputs walks `class_nodes(output_class)`.
+                self.mint_node(Op::Program { inputs, outputs, info }, class_of);
             };
         }
     }

@@ -506,8 +506,8 @@ impl Kernel {
             for &(opener, closer) in &loop_bounds {
                 closer_of.insert(opener, closer);
             }
-            for i in 0..n {
-                match self.at(rest[i]) {
+            for (i, &op) in rest.iter().enumerate() {
+                match self.at(op) {
                     Op::Loop { .. } => open_stack.push(i),
                     Op::EndLoop => {
                         open_stack.pop();

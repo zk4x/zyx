@@ -11,6 +11,7 @@ use crate::{
     shape::Dim,
     slab::Slab,
 };
+use super::Register;
 use std::{fmt::Write, hash::BuildHasherDefault};
 
 const VEC_COMPONENTS: [&str; 16] = [
@@ -113,7 +114,7 @@ impl Kernel {
         let width = |n: &Dim| u16::try_from(*n).expect("OpenCL codegen: vector width is not a u16");
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, Vec<Dim>), u32, u8)> = Vec::new();
+        let mut registers: Vec<Register> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -200,18 +201,15 @@ impl Kernel {
                     // Scalar variables are kernel arguments; copy the argument
                     // into a register so every later use resolves through the
                     // normal register path. Params precede their uses.
-                    match rcs.get(&op_id) {
-                        Some(&rc) => {
-                            let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rc, loop_id);
-                            _ = writeln!(source, "{indent}r{reg} = p{op_id};");
-                        }
-                        // No refcount: nothing references this variable.
-                        // Every operand kind is refcounted in
-                        // compute_dtypes_and_rcs (including Range/Loop
-                        // lengths), and DCE never removes Params, so this
-                        // is a live-but-unused kernel argument that stays
-                        // declared in the signature. No register needed.
-                        None => {}
+                    // No refcount: nothing references this variable.
+                    // Every operand kind is refcounted in
+                    // compute_dtypes_and_rcs (including Range/Loop
+                    // lengths), and DCE never removes Params, so this
+                    // is a live-but-unused kernel argument that stays
+                    // declared in the signature. No register needed.
+                    if let Some(&rc) = rcs.get(&op_id) {
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rc, loop_id);
+                        _ = writeln!(source, "{indent}r{reg} = p{op_id};");
                     }
                 }
                 Op::Param { .. } => {}
@@ -568,7 +566,7 @@ impl Kernel {
 fn new_reg(
     op_id: OpId,
     reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, Vec<Dim>), u32, u8)>,
+    registers: &mut Vec<Register>,
     dtype: (DType, Vec<Dim>),
     rc: u32,
     current_loop_level: u8,
@@ -592,7 +590,7 @@ fn get_var(
     constants: &Map<OpId, Constant>,
     indices: &Map<OpId, u8>,
     reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, Vec<Dim>), u32, u8)],
+    registers: &mut [Register],
     loop_level: u8,
 ) -> Result<String, BackendError> {
     if let Some(c) = constants.get(&op_id) {

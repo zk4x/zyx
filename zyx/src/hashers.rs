@@ -61,7 +61,7 @@ impl Hasher for AHasher {
             k = k.wrapping_mul(0x9e3779b97f4a7c15);
             k ^= k >> 33;
 
-            h ^= k as u64;
+            h ^= k;
             h = h.wrapping_mul(0xc2b2ae3d27d4eb4f);
             h ^= h >> 29;
 

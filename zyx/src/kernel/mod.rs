@@ -270,6 +270,11 @@ impl Hash for Kernel {
     }
 }
 
+/// Per-op dtype and reference shape, keyed by op id.
+pub(crate) type DTypeMap = Map<OpId, (DType, Vec<Dim>)>;
+/// Per-op live reference count, keyed by op id.
+pub(crate) type RcMap = Map<OpId, u32>;
+
 // Custom kernel machinery
 impl Kernel {
     /// The device info snapshot bound to this kernel.
@@ -419,9 +424,9 @@ impl Kernel {
     /// Compute dtypes and reference counts for all operations. The shape
     /// half of each entry is the value's [`Self::shape`]: `[]` for
     /// scalars, `[n]` for vectors, `[x, y]` for tiles.
-    pub(crate) fn compute_dtypes_and_rcs(&self) -> (Map<OpId, (DType, Vec<Dim>)>, Map<OpId, u32>) {
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, Vec<Dim>)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+    pub(crate) fn compute_dtypes_and_rcs(&self) -> (DTypeMap, RcMap) {
+        let mut rcs: RcMap = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
+        let mut dtypes: DTypeMap = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         let mut op_id = self.head;
         for _ in 0..250_000 {
@@ -792,7 +797,7 @@ impl Kernel {
         if !op_id.is_null() {
             panic!("compute_dtypes_and_rcs did not finish in 250000 steps");
         }
-        for (_, v) in dtypes.iter_mut() {
+        for v in dtypes.values_mut() {
             v.1.retain(|&d| d != 0);
         }
         (dtypes, rcs)
@@ -1125,11 +1130,10 @@ impl Kernel {
                 if id.is_null() {
                     break;
                 }
-                if let Op::Param { kind, .. } = &self.ops[id].op {
-                    if *kind != ParamKind::GlobalMut {
+                if let Op::Param { kind, .. } = &self.ops[id].op
+                    && *kind != ParamKind::GlobalMut {
                         ops.push(id);
                     }
-                }
                 id = self.next_op(id);
             }
             if !id.is_null() {
@@ -1886,7 +1890,7 @@ impl Kernel {
                 },
                 Op::Flip { x, .. } => match visited.get(&x) {
                     Some(dims) => {
-                        visited.insert(id, dims.clone());
+                        visited.insert(id, *dims);
                     }
                     None => {
                         stack.push(id);
@@ -2075,9 +2079,7 @@ impl Kernel {
                 Op::Index { vec: x, .. } => match visited.get(&x).cloned() {
                     Some(dims) => {
                         let mut out = [0; 8];
-                        for i in 1..dims.len() {
-                            out[i - 1] = dims[i];
-                        }
+                        out[..dims.len() - 1].copy_from_slice(&dims[1..]);
                         visited.insert(id, out);
                     }
                     None => {
@@ -2210,24 +2212,20 @@ impl Kernel {
             // Const leaf folds into the NULL offset.
             if self.match_pat(param, Pat::Const).is_some() {
                 let Op::Const(c) = self.at(param) else { unreachable!() };
-                let Some(k) = c.as_integer() else { return None };
+                let k = c.as_integer()?;
                 indices.entry(OpId::NULL).and_modify(|(_, v)| *v += k * scale).or_insert((0, k * scale));
                 continue;
             }
             // Bare index var: stride 1 (times the inherited scale).
             if let Some(m) = self.match_pat(param, &bare_idx) {
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
+                let d = index_len_of(self.at(m.op('r')))?;
                 add_stride(&mut indices, m.op('r'), d, scale);
                 continue;
             }
             // Add with an index operand: stride 1 (times the inherited
             // scale), descend the rest.
             if let Some(m) = self.match_pat(param, &add_idx) {
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
+                let d = index_len_of(self.at(m.op('r')))?;
                 add_stride(&mut indices, m.op('r'), d, scale);
                 params.push((m.op('s'), scale));
                 continue;
@@ -2252,26 +2250,22 @@ impl Kernel {
             // Index times const: stride folds the factor in.
             if let Some(m) = self.match_pat(param, &mul_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
-                let Some(k) = c.as_integer() else { return None };
+                let d = index_len_of(self.at(m.op('r')))?;
+                let k = c.as_integer()?;
                 add_stride(&mut indices, m.op('r'), d, k * scale);
                 continue;
             }
             // Shifted index records 2^k; any other shifted expr descends.
             if let Some(m) = self.match_pat(param, &shl_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
-                let Some(k) = c.as_dim() else { return None };
+                let d = index_len_of(self.at(m.op('r')))?;
+                let k = c.as_dim()?;
                 add_stride(&mut indices, m.op('r'), d, (1i64 << k) * scale);
                 continue;
             }
             if let Some(m) = self.match_pat(param, &shl) {
                 if let Op::Const(c) = self.at(m.op('k')) {
-                    let Some(k) = c.as_dim() else { return None };
+                    let k = c.as_dim()?;
                     params.push((m.op('e'), scale * (1i64 << k)));
                 }
                 continue;
@@ -2288,7 +2282,7 @@ impl Kernel {
             if let Op::Binary { x, y, bop: BOp::Mul } = self.at(param) {
                 match (self.at(*x), self.at(*y)) {
                     (Op::Unroll { len, .. }, Op::Const(c)) | (Op::Const(c), Op::Unroll { len, .. }) => {
-                        let Some(k) = c.as_integer() else { return None };
+                        let k = c.as_integer()?;
                         let lane = if matches!(self.at(*x), Op::Unroll { .. }) { *x } else { *y };
                         add_stride(&mut indices, lane, i64::from(*len), k * scale);
                         continue;
@@ -2308,23 +2302,21 @@ impl Kernel {
                         let (Some(a), Some(b)) = (a.as_integer(), b.as_integer()) else {
                             return None;
                         };
-                        let Some(p) = a.checked_mul(b).and_then(|p| p.checked_mul(scale)) else {
-                            return None;
-                        };
+                        let p = a.checked_mul(b).and_then(|p| p.checked_mul(scale))?;
                         indices.entry(OpId::NULL).and_modify(|(_, v)| *v += p).or_insert((0, p));
                         continue;
                     }
                     (Op::Const(a), _) => {
-                        let Some(k) = a.as_integer() else { return None };
+                        let k = a.as_integer()?;
                         (k, *y)
                     }
                     (_, Op::Const(b)) => {
-                        let Some(k) = b.as_integer() else { return None };
+                        let k = b.as_integer()?;
                         (k, *x)
                     }
                     _ => return None,
                 };
-                let Some(s) = k.checked_mul(scale) else { return None };
+                let s = k.checked_mul(scale)?;
                 params.push((e, s));
                 continue;
             }

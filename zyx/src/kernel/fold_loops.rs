@@ -739,7 +739,7 @@ impl Kernel {
             }
             Op::Const(v) => {
                 let d = v.as_dim()?;
-                Some((k.saturating_add(d as i64), coeff, gidx))
+                Some((k.saturating_add(d), coeff, gidx))
             }
             _ => {
                 if gidx == OpId::NULL {
@@ -1292,7 +1292,7 @@ mod tests {
         };
         let got: Vec<f32> = result.pop().unwrap().cast(DType::F32).try_into().unwrap();
 
-        let mut expected = vec![0f32; 1 * 2 * 8 * 1];
+        let mut expected = vec![0f32; 2 * 8];
         for p in 0..2 {
             expected[p * 8 + tokens_host[p] as usize] = 1.0;
         }

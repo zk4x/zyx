@@ -1713,8 +1713,8 @@ impl Kernel {
     fn open_warp(&self) -> OpId {
         let mut op_id = self.tail;
         while !op_id.is_null() {
-            if let Op::Range { axis, kind: RangeKind::Local(len), .. } = self.ops[op_id].op {
-                if axis == 0 {
+            if let Op::Range { axis, kind: RangeKind::Local(len), .. } = self.ops[op_id].op
+                && axis == 0 {
                     let warp_size = u32::from(self.device_info().warp_size);
                     assert_eq!(
                         len, warp_size,
@@ -1722,7 +1722,6 @@ impl Kernel {
                     );
                     return op_id;
                 }
-            }
             op_id = self.prev_op(op_id);
         }
         panic!("partition: no local axis 0 (the warp lane) behind this point — emit k.local_range(0, warp_size) first");
@@ -2383,9 +2382,7 @@ impl Kernel {
             match self.ops[op_id].op {
                 Op::EndLoop => depth += 1,
                 Op::Loop { .. } => {
-                    if depth > 0 {
-                        depth -= 1;
-                    }
+                    depth = depth.saturating_sub(1);
                 }
                 Op::Range { kind: RangeKind::Local(_), .. } if depth == 0 => lids.push(op_id),
                 _ => {}
@@ -2732,7 +2729,7 @@ impl Kernel {
     /// regions lie outside the source; consumers mask them.
     pub fn pad_view(&mut self, view: &View, padding: &[impl IntoOp]) -> View {
         let rank = view.shape.len();
-        assert!(padding.len() % 2 == 0, "pad_view: padding len {} must be even (left/right pairs)", padding.len());
+        assert!(padding.len().is_multiple_of(2), "pad_view: padding len {} must be even (left/right pairs)", padding.len());
         let pairs = padding.len() / 2;
         assert!(pairs <= rank, "pad_view: {} pairs for rank {rank}", pairs);
         let pads: Vec<OpId> = padding.iter().copied().map(|p| p.into_op(self)).collect();

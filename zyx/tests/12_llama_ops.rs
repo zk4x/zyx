@@ -194,7 +194,7 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
     }
     let seq = 4i64;
     let d = 4i64;
-    let scale = (1.0f32 / (d as f32).sqrt()) as f32;
+    let scale = 1.0f32 / (d as f32).sqrt();
     // Fixed, bf16-exact q/k/v so the reference is computable host-side.
     let q = Tensor::from(vec![
         1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -227,7 +227,7 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
     // e^scale / (e^scale + (i-1) * 1) at position i, 1/(...) at earlier ones.
     // v rows are all-identical, so out rows == v row regardless of weights.
     let got = to_f32(&out)?;
-    let expected: Vec<f32> = vec![1.0, 2.0, 4.0, 8.0].repeat(4);
+    let expected: Vec<f32> = [1.0, 2.0, 4.0, 8.0].repeat(4);
     assert_close(&got, &expected, 0.02, "attention out (uniform v)");
 
     let probs_f = to_f32(&probs)?;
@@ -376,7 +376,7 @@ fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
     let expected: Vec<f32> = (0..2)
         .flat_map(|_| vec![1.0f32, 2.0, 3.0, 4.0])
         .chain((0..2).flat_map(|_| vec![5.0f32, 6.0, 7.0, 8.0]))
-        .chain(std::iter::repeat(0.0).take(16))
+        .chain(std::iter::repeat_n(0.0, 16))
         .collect();
     assert_close(&got, &expected, 1e-6, "generation assign rows");
     Ok(())

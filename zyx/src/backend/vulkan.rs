@@ -33,10 +33,18 @@ use super::{
     AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, PlanDim, Pool, Shard,
 };
 
+/// One initialized Vulkan memory pool per ordinal (process-wide table).
+type PoolTable = Vec<Mutex<VulkanMemoryPool>>;
+/// One initialized Vulkan device per ordinal (process-wide table).
+type DeviceTable = Vec<Mutex<VulkanDevice>>;
+/// Worker reply for a `Replay` command: the `(op, chunk, offset)` bindings it
+/// resolved for the launch.
+type ReplayReply = Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>;
+
 // ── Global state ──────────────────────────────────────────────────────────────
 
-static VULKAN_POOLS: OnceLock<Vec<Mutex<VulkanMemoryPool>>> = OnceLock::new();
-static VULKAN_DEVICES: OnceLock<Vec<Mutex<VulkanDevice>>> = OnceLock::new();
+static VULKAN_POOLS: OnceLock<PoolTable> = OnceLock::new();
+static VULKAN_DEVICES: OnceLock<DeviceTable> = OnceLock::new();
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -457,7 +465,7 @@ enum VulkanCommand {
         bound: Vec<(OpId, ChunkId, usize, usize)>,
         vars: Vec<(OpId, Constant)>,
         deaths: Vec<Vec<OpId>>,
-        reply: Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>,
+        reply: ReplayReply,
     },
     ReleaseProgram(DeviceProgramId),
 }
@@ -492,7 +500,7 @@ struct InFlight {
 
 /// Single backend initializer: builds pools + devices together in one pass,
 /// publishes both tables. Reads config directly; no init locks.
-fn backend() -> Result<(&'static Vec<Mutex<VulkanMemoryPool>>, &'static Vec<Mutex<VulkanDevice>>), BackendError> {
+fn backend() -> Result<(&'static PoolTable, &'static DeviceTable), BackendError> {
     if let Some(pools) = VULKAN_POOLS.get()
         && let Some(devs) = VULKAN_DEVICES.get()
     {
@@ -1169,7 +1177,6 @@ fn drain_all(
 /// Waits for and destroys every in-flight batch that touched `buffer_id`.
 /// Single in-order queue: waiting the batch fence completes all earlier
 /// batches too, so every use of the buffer up to the release is covered.
-#[allow(clippy::too_many_arguments)]
 /// Reaps batches whose fence has signaled (a cheap `vkGetFenceStatus` poll).
 #[allow(clippy::too_many_arguments)]
 fn sweep_inflight(
@@ -1673,7 +1680,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
             compute: 1_000_000_000_000,
             max_global_work_dims: max_wg_count.iter().map(|&c| Dim::from(c)).collect(),
             max_local_threads: max_wg_invocations,
-            max_local_work_dims: vec![u32::from(max_wg_size[0]); max_wg_size.len()],
+            max_local_work_dims: vec![max_wg_size[0]; max_wg_size.len()],
             preferred_vector_size: 4,
             local_mem_size: Dim::from(props.max_compute_shared_memory_size),
             max_register_bytes: 1024,
@@ -2670,7 +2677,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                     vkDestroyFence,
                 );
                 for id in buffers.ids().collect::<Vec<_>>() {
-                    let VulkanBuffer { buf, mem, ptr, bytes: _, .. } = unsafe { buffers.remove_and_return(id) };
+                    let VulkanBuffer { buf, mem, ptr, .. } = unsafe { buffers.remove_and_return(id) };
                     if !ptr.is_null() {
                         unsafe { vkUnmapMemory(device, mem) };
                     }

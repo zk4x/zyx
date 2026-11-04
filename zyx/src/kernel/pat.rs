@@ -10,6 +10,10 @@ use crate::{
 };
 use std::borrow::Borrow;
 
+/// One cover group under construction: its shared key [`Bindings`], the
+/// root ops that joined it, their lane values, and each root's bindings.
+type CoverGroupParts = (Bindings, Vec<OpId>, Vec<i64>, Vec<Bindings>);
+
 /// Dtype class constraining a [`Pat::Bind`] binder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DtypeClass {
@@ -508,14 +512,11 @@ impl Bindings {
                     _ => false,
                 };
             }
-            match binding {
-                Binding::None => {
-                    *n = name;
-                    *op = id;
-                    *binding = value;
-                    return true;
-                }
-                _ => {}
+            if let Binding::None = binding {
+                *n = name;
+                *op = id;
+                *binding = value;
+                return true;
             }
         }
         panic!("too many bindings, keep bindings under 8 values");
@@ -1013,7 +1014,7 @@ impl Kernel {
         // Group by try_insert agreement over the named key binders (a
         // group IS a Bindings all members agree with); unnamed int
         // binder = lane, everything else unnamed stays per-root.
-        let mut groups: Vec<(Bindings, Vec<OpId>, Vec<i64>, Vec<Bindings>)> = Vec::new();
+        let mut groups: Vec<CoverGroupParts> = Vec::new();
         for (id, b) in &hits {
             let mut lane: Option<i64> = None;
             let mut bad = false;
@@ -1044,11 +1045,10 @@ impl Kernel {
                     match binding {
                         Binding::None => {}
                         _ => {
-                            if key.contains(n) {
-                                if !probe.try_insert(*n, *op, binding.clone()) {
+                            if key.contains(n)
+                                && !probe.try_insert(*n, *op, binding.clone()) {
                                     return false;
                                 }
-                            }
                         }
                     }
                 }
@@ -1244,11 +1244,10 @@ impl Kernel {
                     PMatch::Exact(e) => *u == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Uop(*u)) {
+                        if self.match_node(x, *xid, bindings)
+                            && bindings.try_insert(*name, id, Binding::Uop(*u)) {
                                 return true;
                             }
-                        }
                         *bindings = snap;
                         false
                     }
@@ -1335,11 +1334,10 @@ impl Kernel {
                     PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                        if self.match_node(x, *xid, bindings)
+                            && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
                                 return true;
                             }
-                        }
                         *bindings = snap;
                         false
                     }
@@ -1351,11 +1349,10 @@ impl Kernel {
                     PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                        if self.match_node(x, *xid, bindings)
+                            && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
                                 return true;
                             }
-                        }
                         *bindings = snap;
                         false
                     }
@@ -1426,7 +1423,7 @@ impl Kernel {
                     match (xl, yl) {
                         // Bottom link: two lanes of the same vector.
                         (Some((vx, kx)), Some((vy, ky))) => {
-                            if vx == vy && first_vec.map_or(true, |w| w == vx) {
+                            if vx == vy && first_vec.is_none_or(|w| w == vx) {
                                 first_vec = Some(vx);
                                 lanes.push(kx);
                                 lanes.push(ky);
@@ -1436,7 +1433,7 @@ impl Kernel {
                         }
                         // Spine link: one lane, the other side continues.
                         (Some((v, k)), None) | (None, Some((v, k))) => {
-                            if first_vec.map_or(false, |w| w != v) {
+                            if first_vec.is_some_and(|w| w != v) {
                                 break false;
                             }
                             first_vec = Some(v);
@@ -1474,11 +1471,10 @@ impl Kernel {
                     PMatch::Exact(e) => *r == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Bop(*r)) {
+                        if self.match_node(x, *xid, bindings)
+                            && bindings.try_insert(*name, id, Binding::Bop(*r)) {
                                 return true;
                             }
-                        }
                         *bindings = snap;
                         false
                     }
@@ -1606,7 +1602,7 @@ fn const_eq_float(c: Constant, n: f64) -> bool {
 /// Exact integral-float comparison: `fract == 0` plus a strict range check
 /// so the `as i64` conversion below is exact (no saturation edge at `MAX`).
 fn float_eq_int(v: f64, n: i64) -> bool {
-    v.fract() == 0.0 && v >= -9223372036854775808.0 && v < 9223372036854775808.0 && v as i64 == n
+    v.fract() == 0.0 && (-9223372036854775808.0..9223372036854775808.0).contains(&v) && v as i64 == n
 }
 
 #[cfg(test)]

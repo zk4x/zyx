@@ -917,7 +917,7 @@ fn spawn_worker(
                         let _ = reply.send(Err(err));
                         continue;
                     }
-                    assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
+                    assert!(ptr.is_multiple_of(8), "Memory is not 8-byte aligned!");
                     debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
                     free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                     let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
@@ -1118,7 +1118,7 @@ fn spawn_worker(
                                                 let mut ptr: CUdeviceptr = 0;
                                                 unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }
                                                     .check(ErrorStatus::MemoryAllocation)?;
-                                                assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
+                                                assert!(ptr.is_multiple_of(8), "Memory is not 8-byte aligned!");
                                                 free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                                                 buffers.push(CUDABuffer { ptr, bytes })
                                             }
@@ -1500,8 +1500,8 @@ fn spawn_worker(
                             // EndCapture (UNJOINED otherwise). The origin
                             // waits on each entered side stream's last
                             // recorded event.
-                            for q in 1..streams.len() {
-                                if !entered[q] {
+                            for (q, &entered_q) in entered.iter().enumerate().skip(1) {
+                                if !entered_q {
                                     continue;
                                 }
                                 let mut last = None;
@@ -1845,9 +1845,9 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
         dev.dev_info = Arc::new(DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
             max_global_work_dims: vec![
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, cuDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
+                Dim::from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, cuDeviceGetAttribute)?),
+                Dim::from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?),
+                Dim::from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?),
             ],
             max_local_threads: u32::try_from(max_threads_per_block).unwrap(),
             max_local_work_dims: vec![
@@ -1855,10 +1855,9 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 u32::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
                 u32::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
-            local_mem_size: Dim::try_from(
+            local_mem_size: Dim::from(
                 dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, cuDeviceGetAttribute)?,
-            )
-            .unwrap(),
+            ),
             max_register_bytes: (max_regs_per_block as i64 / max_threads_per_block as i64).min(256) * 4,
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
@@ -2374,7 +2373,7 @@ impl CUDADevice {
             p if p == self.memory_pool => {
                 let (reply, reply_rx) = channel();
                 self.tx.send(CUDACommand::CopyDtoD { src: src_shard.chunk, dst: dst_shard.chunk, bytes, reply }).map_err(dead)?;
-                return reply_rx.recv().map_err(dead_rx)?;
+                reply_rx.recv().map_err(dead_rx)?
             }
             Pool::Host => {
                 // The host lock is held across the blocking roundtrip: the
@@ -2384,7 +2383,7 @@ impl CUDADevice {
                 let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
                 let (reply, reply_rx) = channel();
                 self.tx.send(CUDACommand::CopyHtoD { src: src_ptr, dst: dst_shard.chunk, bytes, reply }).map_err(dead)?;
-                return reply_rx.recv().map_err(dead_rx)?;
+                reply_rx.recv().map_err(dead_rx)?
             }
             #[cfg(unix)]
             Pool::Disk => {
@@ -2399,8 +2398,8 @@ impl CUDADevice {
                 let n = bytes.min(extent);
                 let (reply, reply_rx) = channel();
                 self.tx.send(CUDACommand::CopyDiskToD { ptr, extent, bytes: n, dst: dst_shard.chunk, reply }).map_err(dead)?;
-                let res = reply_rx.recv().map_err(dead_rx)?;
-                return res;
+                
+                reply_rx.recv().map_err(dead_rx)?
             }
             #[cfg(windows)]
             Pool::Disk => todo!("CUDA copy from disk on windows"),
@@ -2661,7 +2660,7 @@ unsafe fn build_cudnn_plan(
                 });
             }
             let dtype = cudnn_data_type(tensor.dtype).unwrap_or(CUDNN_DATA_FLOAT);
-            let dims: Vec<i64> = tensor.shape.iter().map(|d| i64::try_from(*d).unwrap()).collect();
+            let dims: Vec<i64> = tensor.shape.to_vec();
             let strides: Vec<i64> = (0..dims.len()).map(|i| dims[i + 1..].iter().product()).collect();
             let is_virtual = tensor.is_virtual as i32;
             if (cudnn.backend_set_attribute)(

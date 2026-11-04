@@ -14,6 +14,11 @@ use crate::{
 };
 use std::fmt::Write;
 
+/// One PTX register slot: the value's `(dtype, lane shape)`, its live
+/// reference count, the loop level it was assigned at, and its physical
+/// base register.
+type PhysRegister = ((DType, Vec<Dim>), u32, u8, u16);
+
 impl DType {
     fn ptx(&self) -> &'static str {
         match self {
@@ -116,7 +121,7 @@ struct Compiler {
     indent: String,
     // One slot per op; a Vector(len) slot owns `len` consecutive physical
     // PTX registers, `var_map` holds the physical base register index.
-    registers: Vec<((DType, Vec<Dim>), u32, u8, u16)>,
+    registers: Vec<PhysRegister>,
     phys_regs: u16,
     loop_level: u8,
 }

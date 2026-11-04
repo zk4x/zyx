@@ -1570,7 +1570,7 @@ impl Tensor {
     fn cum_reduce(&self, axis: Axis, rop: BOp) -> Result<Tensor, ZyxError> {
         let shape = self.resolve_shape();
         let uaxis = into_axis(axis, shape.len() as UAxis)?;
-        let pl_sz = i64::try_from(shape[uaxis as usize] - 1).unwrap();
+        let pl_sz = shape[uaxis as usize] - 1;
         let mut x = self.transpose(axis, -1)?;
         // Pad with the reduction identity, not zeros: a Max scan over
         // zero-padded negatives (or a Mul scan over any zero pad) reads

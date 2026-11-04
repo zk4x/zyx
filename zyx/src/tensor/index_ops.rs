@@ -60,7 +60,6 @@ impl Tensor {
             .zip(shape)
             .enumerate()
             .map(|(axis, (dim_index, dim_size))| {
-                let dim_size = dim_size as i64;
                 match dim_index {
                     DimIndex::Range { start, end } => {
                         let s = if start < 0 { (start + dim_size).max(0) } else { start };
@@ -153,7 +152,6 @@ impl Tensor {
             .zip(shape.into_iter().rev())
             .enumerate()
             .map(|(axis, (dim_index, dim_size))| {
-                let dim_size = dim_size as i64;
                 match dim_index {
                     DimIndex::Range { start, end } => {
                         let s = if start < 0 { (start + dim_size).max(0) } else { start };
@@ -233,7 +231,7 @@ impl Tensor {
         let n = *self.resolve_shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
-            .rpad_zeros([(0i64, i64::try_from(n).unwrap())])
+            .rpad_zeros([(0i64, n)])
             .unwrap()
             .reshape([n, n + 1])
             .unwrap()
@@ -356,7 +354,7 @@ impl Tensor {
             if d == dim {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, -(shape[d] as i64 - index_shape[d] as i64)));
+                padding.push((0i64, -(shape[d] - index_shape[d])));
             }
         }
 
@@ -433,7 +431,7 @@ impl Tensor {
             if d == dim || d == rank {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+                padding.push((0i64, (shape[d] - index_shape[d])));
             }
         }
         let mask = mask.rpad_zeros(padding.clone())?;
@@ -519,7 +517,7 @@ impl Tensor {
             if d == dim || d == rank {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+                padding.push((0i64, (shape[d] - index_shape[d])));
             }
         }
         let contrib = contrib.rpad_zeros(padding)?;
@@ -593,7 +591,7 @@ impl Tensor {
             if d == dim || d == rank {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+                padding.push((0i64, (shape[d] - index_shape[d])));
             }
         }
         // Pad with the multiplicative identity: zero padding would zero the

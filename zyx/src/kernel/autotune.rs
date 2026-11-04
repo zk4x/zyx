@@ -343,7 +343,7 @@ impl BeamSearch {
         &self,
         seeds: impl IntoIterator<Item = Kernel>,
         tensors: &[&Tensor],
-        optimizations: &[fn(&Kernel) -> Box<dyn Optimization>],
+        optimizations: &[MakeOpt],
         epilogue: impl Fn(&mut Kernel),
         cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {
@@ -547,7 +547,7 @@ impl BeamSearch {
                 // launches — never inside the search loop above.
                 kernel.device_epilogue();
                 if launched.insert(kernel.get_hash()) {
-                    match kernel.launch_with_timings(&args, dev, debug) {
+                    match kernel.launch_with_timings(args, dev, debug) {
                         Ok((program_id, time)) => {
                             record_measurement(&kernel, opt_seq, seed_id, Some(time), "measured");
                             programs.push(program_id);

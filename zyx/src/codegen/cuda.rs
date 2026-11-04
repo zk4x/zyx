@@ -13,6 +13,7 @@ use crate::{
     shape::Dim,
     slab::Slab,
 };
+use super::Register;
 use std::hash::BuildHasherDefault;
 
 const VEC_COMPONENTS: [&str; 16] = [
@@ -236,7 +237,7 @@ impl Kernel {
         let width = |n: &Dim| u16::try_from(*n).expect("CUDA codegen: vector width is not a u16");
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, Vec<Dim>), u32, u8)> = Vec::new();
+        let mut registers: Vec<Register> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -705,7 +706,7 @@ impl Kernel {
 fn new_reg(
     op_id: OpId,
     reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, Vec<Dim>), u32, u8)>,
+    registers: &mut Vec<Register>,
     dtype: (DType, Vec<Dim>),
     rc: u32,
     current_loop_level: u8,
@@ -729,7 +730,7 @@ fn get_var(
     constants: &Map<OpId, Constant>,
     indices: &Map<OpId, u8>,
     reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, Vec<Dim>), u32, u8)],
+    registers: &mut [Register],
     loop_level: u8,
     var_params: &Map<OpId, DType>,
 ) -> Result<String, BackendError> {

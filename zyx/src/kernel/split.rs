@@ -139,10 +139,7 @@ impl Kernel {
                 // the make scan and apply, so the state matches make's view.
                 let mut next_lane_axis = 0u64;
                 for (_, op) in self.iter_unordered() {
-                    match op {
-                        Op::Unroll { axis, .. } => next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1),
-                        _ => {}
-                    }
+                    if let Op::Unroll { axis, .. } = op { next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1) }
                 }
                 let axis = u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
                 let lanes = factor;
@@ -179,14 +176,12 @@ impl Kernel {
                                     let val_varies = varies.contains(&src);
                                     let base = self.at(dst);
                                     let global = matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
-                                    if !matches!(base, Op::Storage { .. } | Op::Param { .. }) {
-                                        valid = false;
-                                    } else if global && !addr_varies {
-                                        valid = false;
-                                    } else if !global
-                                        && !matches!(base, Op::Storage { scope: MemScope::Register, .. })
-                                        && !addr_varies
-                                        && val_varies
+                                    if !matches!(base, Op::Storage { .. } | Op::Param { .. })
+                                        || (global && !addr_varies)
+                                        || (!global
+                                            && !matches!(base, Op::Storage { scope: MemScope::Register, .. })
+                                            && !addr_varies
+                                            && val_varies)
                                     {
                                         valid = false;
                                     }
@@ -195,9 +190,7 @@ impl Kernel {
                                     let addr_varies = !dst_idx.is_null() && varies.contains(&dst_idx);
                                     let base = self.at(dst);
                                     let global = matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
-                                    if !matches!(base, Op::Storage { .. } | Op::Param { .. }) {
-                                        valid = false;
-                                    } else if global && !addr_varies {
+                                    if !matches!(base, Op::Storage { .. } | Op::Param { .. }) || (global && !addr_varies) {
                                         valid = false;
                                     }
                                 }
@@ -385,7 +378,7 @@ impl Kernel {
                                 _ => {}
                             }
                         }
-                        return unroll_id;
+                        unroll_id
                     }
                     Op::Loop { len: len_id } => {
                         // Loop unroll: strip-mine into Loop(len/factor) plus
@@ -505,15 +498,14 @@ impl Kernel {
                                     break;
                                 }
                                 match self.ops[use_id].op {
-                                    Op::Copy { .. } | Op::Store { .. } => {
+                                    Op::Copy { .. } | Op::Store { .. }
                                         if !self
                                             .at(use_id)
                                             .parameters()
                                             .any(|p| p == axis_id || self.depends_on(p, axis_id, &mut Set::default()))
-                                        {
+                                        => {
                                             unfed = true;
                                         }
-                                    }
                                     _ => {}
                                 }
                                 use_id = self.next_op(use_id);
@@ -613,10 +605,7 @@ impl Kernel {
                         // Next free lane axis for the Unroll node.
                         let mut next_lane_axis = 0u64;
                         for (_, op) in self.iter_unordered() {
-                            match op {
-                                Op::Unroll { axis, .. } => next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1),
-                                _ => {}
-                            }
+                            if let Op::Unroll { axis, .. } = op { next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1) }
                         }
                         let lane_axis = u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
 
@@ -647,7 +636,7 @@ impl Kernel {
 
                         unroll_id
                     }
-                    _ => return OpId::NULL,
+                    _ => OpId::NULL,
                 }
             }
             SplitMode::Loop => {
@@ -726,9 +715,7 @@ impl Kernel {
                 Op::Loop { len } if self.dtype(len) == crate::DType::Bool => bool_loop = true,
                 Op::Storage { scope: MemScope::Local, .. } => shared = true,
                 Op::Range { axis, kind: RangeKind::Local(len) } => {
-                    if local_axis_sizes.get(&axis).is_none() {
-                        local_axis_sizes.insert(axis, len);
-                    }
+                    local_axis_sizes.entry(axis).or_insert(len);
                 }
                 Op::Load { src_idx, .. } | Op::Store { dst_idx: src_idx, .. } | Op::Copy { src_idx, .. }
                     if !src_idx.is_null() && self.shape(src_idx).len() > 1 =>
@@ -778,7 +765,7 @@ impl Kernel {
                         let max_per_axis = dev_info.max_local_work_dims[axis as usize];
                         let mut l_factors: Vec<u32> = if tt { vec![32] } else { vec![64, 32, 16, 8, 4, 2] };
                         l_factors.retain(|&f| {
-                            len % Dim::try_from(f).expect("lane factor overflows i64") == 0
+                            len % Dim::from(f) == 0
                                 && f <= remaining_threads
                                 && f <= max_per_axis
                                 && u64::from(f) * op_len <= 10_000
@@ -962,10 +949,7 @@ mod tests {
         assert!(matches!(k.at(acc), Op::Storage { len, scope: MemScope::Register, .. } if *len == 8));
         let mut unrolls = 0;
         for (_, op) in k.iter_unordered() {
-            match op {
-                Op::Unroll { len: 8, .. } => unrolls += 1,
-                _ => {}
-            }
+            if let Op::Unroll { len: 8, .. } = op { unrolls += 1 }
         }
         assert!(unrolls >= 1);
     }

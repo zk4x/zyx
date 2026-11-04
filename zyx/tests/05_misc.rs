@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::{Dev, DType, Scalar, Tensor, ZyxError, f16};
+use zyx::{DType, Dev, Scalar, Tensor, ZyxError, f16};
 
 #[allow(unused)]
 fn matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
@@ -856,12 +856,8 @@ fn matmul_f16() -> Result<(), ZyxError> {
     const N: usize = 64;
     // Integer-valued f16 storage: every product and partial sum is exact in
     // f32, so the reference can compare value-for-value.
-    let x_data: Vec<Vec<f16>> = (0..M)
-        .map(|i| (0..K).map(|j| f16::from_f32(((i + j) % 3) as f32)).collect())
-        .collect();
-    let y_data: Vec<Vec<f16>> = (0..K)
-        .map(|i| (0..N).map(|j| f16::from_f32(((j + i) % 3) as f32 - 1.0)).collect())
-        .collect();
+    let x_data: Vec<Vec<f16>> = (0..M).map(|i| (0..K).map(|j| f16::from_f32(((i + j) % 3) as f32)).collect()).collect();
+    let y_data: Vec<Vec<f16>> = (0..K).map(|i| (0..N).map(|j| f16::from_f32(((j + i) % 3) as f32 - 1.0)).collect()).collect();
 
     // WMMA needs a tensor-core device; the C backend rejects `Op::Wmma`, so
     // the tensorized candidate can only be measured (and compared) on CUDA.
@@ -895,12 +891,8 @@ fn matmul_f16_large() -> Result<(), ZyxError> {
     const N: usize = 1024;
     // Integer-valued f16 storage: every product and partial sum is exact in
     // f32 (|sum| <= 2 * 1 * 4096), so the reference compares exactly.
-    let x_data: Vec<Vec<f16>> = (0..M)
-        .map(|i| (0..K).map(|j| f16::from_f32(((i + 3 * j) % 5) as f32 - 2.0)).collect())
-        .collect();
-    let y_data: Vec<Vec<f16>> = (0..K)
-        .map(|i| (0..N).map(|j| f16::from_f32(((2 * i + j) % 3) as f32 - 1.0)).collect())
-        .collect();
+    let x_data: Vec<Vec<f16>> = (0..M).map(|i| (0..K).map(|j| f16::from_f32(((i + 3 * j) % 5) as f32 - 2.0)).collect()).collect();
+    let y_data: Vec<Vec<f16>> = (0..K).map(|i| (0..N).map(|j| f16::from_f32(((2 * i + j) % 3) as f32 - 1.0)).collect()).collect();
 
     if !Dev::all().contains(&Dev::Cuda(0)) {
         return Ok(());
@@ -1119,10 +1111,10 @@ fn var4() -> Result<(), ZyxError> {
 /// block (bool stored as u32, recovered via INotEqual).
 #[test]
 fn bool_var_compare() -> Result<(), ZyxError> {
-    let cmp = Tensor::from(3i32).cmpgt(&Tensor::from(2i32))?;
+    let cmp = Tensor::from(3i32).cmpgt(Tensor::from(2i32))?;
     let val: i32 = cmp.cast(zyx::DType::I32).try_into()?;
     assert_eq!(val, 1);
-    let cmp2 = Tensor::from(1i32).cmpgt(&Tensor::from(2i32))?;
+    let cmp2 = Tensor::from(1i32).cmpgt(Tensor::from(2i32))?;
     let val2: i32 = cmp2.cast(zyx::DType::I32).try_into()?;
     assert_eq!(val2, 0);
     Ok(())

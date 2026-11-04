@@ -1,7 +1,9 @@
 use crate::{
     backend::Dev,
+    dtype::DType,
     error::BackendError,
     kernel::{Kernel, Op},
+    shape::Dim,
 };
 
 // Copyright (C) 2025 zk4x
@@ -12,6 +14,10 @@ mod opencl;
 mod ptx;
 pub(crate) mod spirv;
 pub(crate) mod tenstorrent;
+
+/// One codegen register slot: the value's `(dtype, lane shape)`, its live
+/// reference count, and the loop level it was assigned at.
+pub(crate) type Register = ((DType, Vec<Dim>), u32, u8);
 
 impl Kernel {
     /// Render to a backend kernel: the original ops plus appended

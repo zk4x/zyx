@@ -749,11 +749,10 @@ impl Runtime {
                         {
                             let kd = &self.kernels[depends_on];
                             for &tid in kd.outputs.iter().chain(kd.loads.iter()) {
-                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
-                                    if kd.kernel.ops.contains_id(op_id) {
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
+                                    && kd.kernel.ops.contains_id(op_id) {
                                         keep_alive.push(op_id);
                                     }
-                                }
                             }
                         }
                         let mut loads = self.kernels[depends_on].loads.clone();
@@ -768,12 +767,11 @@ impl Runtime {
                                     if i.is_null() {
                                         break;
                                     }
-                                    if let Op::Store { dst, src, .. } = kd.kernel.ops[i].op {
-                                        if dst == param {
+                                    if let Op::Store { dst, src, .. } = kd.kernel.ops[i].op
+                                        && dst == param {
                                             found = Some((i, src));
                                             break;
                                         }
-                                    }
                                     i = kd.kernel.next_op(i);
                                 }
                                 found
@@ -819,11 +817,9 @@ impl Runtime {
                         for &tid in &self.kernels[kernel_id].loads {
                             if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
                                 &mut self.tensors[tid]
-                            {
-                                if *k == kernel_id {
+                                && *k == kernel_id {
                                     *k = KernelId::NULL;
                                 }
-                            }
                         }
                         let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
                         self.kernels.remove(kernel_id);
@@ -850,11 +846,10 @@ impl Runtime {
                                 })
                                 .collect();
                             for &tid in &kd.loads {
-                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
-                                    if kd.kernel.ops.contains_id(op_id) {
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
+                                    && kd.kernel.ops.contains_id(op_id) {
                                         out_ops.push(op_id);
                                     }
-                                }
                             }
                             (out_ops, kd.loads.clone())
                         };
@@ -894,11 +889,9 @@ impl Runtime {
                         for &tid in &self.kernels[kernel_id].loads {
                             if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
                                 &mut self.tensors[tid]
-                            {
-                                if *k == kernel_id {
+                                && *k == kernel_id {
                                     *k = KernelId::NULL;
                                 }
-                            }
                         }
                         let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
                         self.kernels.remove(kernel_id);
@@ -925,11 +918,10 @@ impl Runtime {
                                 })
                                 .collect();
                             for &tid in &kd.loads {
-                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
-                                    if kd.kernel.ops.contains_id(op_id) {
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
+                                    && kd.kernel.ops.contains_id(op_id) {
                                         out_ops.push(op_id);
                                     }
-                                }
                             }
                             (out_ops, kd.loads.clone())
                         };
@@ -2570,7 +2562,7 @@ impl Runtime {
                 let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
-                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                debug_assert!(!self.kernels[kernel_id].outputs.contains(&tid));
                 self.kernels[kernel_id].outputs.insert(tid);
 
                 #[cfg(feature = "debug_tensor_op")]
@@ -2672,7 +2664,7 @@ impl Runtime {
 
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
-                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                debug_assert!(!self.kernels[kernel_id].outputs.contains(&tid));
                 self.kernels[kernel_id].outputs.insert(tid);
 
                 #[cfg(feature = "debug_tensor_op")]
@@ -2692,7 +2684,7 @@ impl Runtime {
 
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
-                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                debug_assert!(!self.kernels[kernel_id].outputs.contains(&tid));
                 self.kernels[kernel_id].outputs.insert(tid);
 
                 #[cfg(feature = "debug_tensor_op")]
@@ -3006,7 +2998,7 @@ impl Runtime {
             | TensorData::Promoted { shape_id, .. } => shape_id,
             ref t => todo!("flip of pure-slab tensor {t:?}"),
         };
-        if shape_id != ExprId::SCALAR {}
+        
 
         match self.tensors[x] {
             TensorData::Graph { class_id: x, graph_id, dtype, .. }
@@ -3045,8 +3037,8 @@ impl Runtime {
         // Symbolic (slab) tensors carry no buffer; resolve their value directly,
         // no kernel launch needed. They are constants/broadcast scalars, so the
         // single resolved value is written to every element of `data`.
-        if self.leaf_buffer(x).is_none() {
-            if let Some(c) = self.resolve_symbolic(x) {
+        if self.leaf_buffer(x).is_none()
+            && let Some(c) = self.resolve_symbolic(x) {
                 let v = match c.cast(T::dtype()) {
                     Constant::BF16(v) => T::from_bf16(bf16::from_le_bytes(v)),
                     Constant::F16(v) => T::from_f16(f16::from_le_bytes(v)),
@@ -3069,7 +3061,6 @@ impl Runtime {
                 }
                 return Ok(());
             }
-        }
 
         let dt = self.dtype(x);
         if dt != T::dtype() {
@@ -3097,19 +3088,19 @@ impl Runtime {
         // Fast path: already realized. A pending Leaf may hold a buffer with
         // an in-place store still owed (e.g. assign into a Leaf) — run the
         // pending producer kernel before reading.
-        if let TensorData::PendingLeaf { depends_on, .. } = self.tensors[x] {
-            let depends_on = depends_on;
-            if !depends_on.is_null() && self.kernels.contains_id(depends_on) {
-                let outputs: Set<TensorId> = self.kernels[depends_on].outputs.iter().copied().collect();
-                for tid in outputs {
-                    self.add_store(tid)?;
-                }
-                if self.kernels.contains_id(depends_on)
-                    && self.kernels[depends_on].outputs.is_empty()
-                    && !self.kernels[depends_on].stores.is_empty()
-                {
-                    self.materialize_kernel(depends_on)?;
-                }
+        if let TensorData::PendingLeaf { depends_on, .. } = self.tensors[x]
+            && !depends_on.is_null()
+            && self.kernels.contains_id(depends_on)
+        {
+            let outputs: Set<TensorId> = self.kernels[depends_on].outputs.iter().copied().collect();
+            for tid in outputs {
+                self.add_store(tid)?;
+            }
+            if self.kernels.contains_id(depends_on)
+                && self.kernels[depends_on].outputs.is_empty()
+                && !self.kernels[depends_on].stores.is_empty()
+            {
+                self.materialize_kernel(depends_on)?;
             }
         }
         let Some(mut buffer_id) = self.leaf_buffer(x) else {
@@ -3591,12 +3582,11 @@ impl Runtime {
                     | Op::Pad { x, .. }
                     | Op::Expand { x, .. }
                     | Op::Flip { x, .. }
-                    | Op::Narrow { x, .. } => {
-                        if op_map.get(x).is_none() {
+                    | Op::Narrow { x, .. }
+                        if !op_map.contains_key(x) => {
                             // this is the move on the load
                             *x = op_map[&dst_param];
                         }
-                    }
                     _ => {}
                 }
                 // Single remap pass: `parameters_mut` covers the view op's `x`
@@ -3665,11 +3655,10 @@ impl Runtime {
             let mut n_non_mut = 0usize;
             let mut p = kd.kernel.head;
             while !p.is_null() {
-                if let Op::Param { kind, .. } = &kd.kernel.ops[p].op {
-                    if *kind != ParamKind::GlobalMut {
+                if let Op::Param { kind, .. } = &kd.kernel.ops[p].op
+                    && *kind != ParamKind::GlobalMut {
                         n_non_mut += 1;
                     }
-                }
                 p = kd.kernel.next_op(p);
             }
             assert_eq!(n_non_mut, kd.loads.len(), "assign: loads/params alignment broken for kernel {:?}", src_kid);
@@ -3877,13 +3866,12 @@ impl Runtime {
             // Const dedup: an identical Const (value + dtype) already in
             // keep or earlier in this merge is reused — its consumers and
             // any tensor holding it as op_id repoint to the survivor below.
-            if let Op::Const(c) = op {
-                if let Some(&survivor) = const_map.get(&c) {
+            if let Op::Const(c) = op
+                && let Some(&survivor) = const_map.get(&c) {
                     op_map.insert(i, survivor);
                     i = merge_ops[i].next;
                     continue;
                 }
-            }
             let new_op_id = self.kernels[keep_kid].kernel.push_back(op);
             if let Op::Const(c) = merge_ops[i].op {
                 const_map.insert(c, new_op_id);
@@ -3923,11 +3911,10 @@ impl Runtime {
         keep_data.loads.extend(merge_loads.iter().copied());
         keep_data.stores.extend(merge_stores);
         for &tid in &store_tids {
-            if let TensorData::PendingLeaf { depends_on, .. } = &mut self.tensors[tid] {
-                if *depends_on == merge_kid {
+            if let TensorData::PendingLeaf { depends_on, .. } = &mut self.tensors[tid]
+                && *depends_on == merge_kid {
                     *depends_on = keep_kid;
                 }
-            }
         }
 
         // Inventory invariant: after the merge every repointed tensor is in
@@ -4256,11 +4243,10 @@ impl Runtime {
         // would alias a *different* kernel afterwards. Their edges are released
         // after the launch; the NULL kernel_id ends that recursion cleanly.
         for &tid in &self.kernels[kid].loads {
-            if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } = &mut self.tensors[tid] {
-                if *k == kid {
+            if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } = &mut self.tensors[tid]
+                && *k == kid {
                     *k = KernelId::NULL;
                 }
-            }
         }
         let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
 

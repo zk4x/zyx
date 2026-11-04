@@ -12,7 +12,7 @@ fn eager_f32_to_i32() -> Result<(), ZyxError> {
     for (v, b) in data.iter().zip(zdata.iter()) {
         assert_eq!(*v, f32::from_bits(*b as u32));
     }
-    assert_eq!(zdata[0], 0x3F800000 as i32);
+    assert_eq!(zdata[0], 0x3F800000_i32);
     Ok(())
 }
 

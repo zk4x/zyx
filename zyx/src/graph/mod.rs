@@ -495,11 +495,10 @@ impl Graph {
                         }
                     }
                 }
-                Op::ToDevice { x, .. } => {
-                    if !kdeps.contains(&x) {
+                Op::ToDevice { x, .. }
+                    if !kdeps.contains(&x) => {
                         kdeps.push(x);
                     }
-                }
                 _ => {}
             }
         }
@@ -590,8 +589,8 @@ impl Graph {
                     Op::Unary { uop, .. } => format!("Unary {:?}", uop),
                     Op::Cast { dtype, .. } => format!("Cast {:?}", dtype),
                     Op::Bitcast { dtype, .. } => format!("Bitcast {:?}", dtype),
-                    Op::Program { .. } => format!("Kernel"),
-                    Op::Kernel { .. } => format!("Custom"),
+                    Op::Program { .. } => "Kernel".to_string(),
+                    Op::Kernel { .. } => "Custom".to_string(),
                     Op::Reshape { .. } => "Reshape".into(),
                     Op::Expand { .. } => "Expand".into(),
                     Op::Permute { .. } => "Permute".into(),
@@ -646,7 +645,7 @@ impl Graph {
             let (device_id, inputs, class_of) = match &self.ops[nid].op {
                 Op::Program { info, inputs, .. } => {
                     debug_assert_ne!(info.0.dev, Dev::Auto);
-                    (info.0.dev, inputs.clone(), self.ops[nid].class_of)
+                    (info.0.dev, *inputs, self.ops[nid].class_of)
                 }
                 Op::ToDevice { device, .. } => {
                     // Pool is always derived from the device, never the reverse.
@@ -1133,13 +1132,12 @@ impl Graph {
                 // leading dim class is interned by the constructor (egraph
                 // consts are never removed), so it is resolved by value here;
                 // absent (foreign stacks) keeps today's [].
-                if let Some(&e) = ops.iter().find(|&&e| !self.shape(e).is_empty()) {
-                    if let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64))) {
+                if let Some(&e) = ops.iter().find(|&&e| !self.shape(e).is_empty())
+                    && let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64))) {
                         let mut s = self.shape(e);
                         s.insert(0, self.ops[nid].class_of);
                         return s;
                     }
-                }
                 Vec::new()
             }
             Op::Index { vec, idx } => match &self.ops[*vec].op {
@@ -1359,7 +1357,7 @@ impl Graph {
         }
         match &self.ops[shape].op {
             Op::Stack { ops } => {
-                let ops: Vec<OpId> = ops.iter().copied().collect();
+                let ops: Vec<OpId> = ops.to_vec();
                 self.replay_symbolic_into_kernel(kid, &ops)
             }
             _ => self.replay_symbolic_into_kernel(kid, &[shape]),
@@ -1517,7 +1515,7 @@ impl Graph {
                 Op::Bitcast { x, dtype } => values[x].bitcast(*dtype),
                 Op::Unary { x, uop } => values[x].unary(*uop),
                 Op::Index { vec, idx } => match &self.ops[*vec].op {
-                    Op::Stack { ops } => values[&ops[*idx]].clone(),
+                    Op::Stack { ops } => values[&ops[*idx]],
                     n => unreachable!("Index vec must be a Stack class, got {n:?}"),
                 },
                 Op::Binary { x, y, bop } => Constant::binary(values[x], values[y], *bop),
@@ -2085,13 +2083,13 @@ impl Runtime {
                         }
                     }
                     Op::Const(x) => {
-                        let class_id = self.push_const(graph_id, x);
-                        class_id
+                        
+                        self.push_const(graph_id, x)
                     }
                     Op::Unary { x, uop } => {
                         let x_class = op_to_class[&x];
-                        let class_id = self.push_op(graph_id, Op::Unary { x: x_class, uop });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Unary { x: x_class, uop })
                     }
                     Op::Binary { x, y, bop } => {
                         let x_class = op_to_class[&x];
@@ -2100,18 +2098,18 @@ impl Runtime {
                     }
                     Op::Cast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        let class_id = self.push_op(graph_id, Op::Cast { x: x_class, dtype });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Cast { x: x_class, dtype })
                     }
                     Op::Bitcast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        let class_id = self.push_op(graph_id, Op::Bitcast { x: x_class, dtype });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Bitcast { x: x_class, dtype })
                     }
                     Op::Stack { ref ops } => {
                         let ops: Box<[OpId]> = ops.iter().map(|o| op_to_class[o]).collect();
-                        let class_id = self.push_op(graph_id, Op::Stack { ops });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Stack { ops })
                     }
                     Op::Select { cond, if_true, if_false } => {
                         // Arms are already broadcast upstream
@@ -2119,9 +2117,9 @@ impl Runtime {
                         let cond_class = op_to_class[&cond];
                         let if_true_class = op_to_class[&if_true];
                         let if_false_class = op_to_class[&if_false];
-                        let class_id = self
-                            .push_op(graph_id, Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class });
-                        class_id
+                        
+                        self
+                            .push_op(graph_id, Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class })
                     }
                     Op::Reduce { x, rop, reduce_axis } => {
                         let x_class = op_to_class[&x];
@@ -2130,20 +2128,20 @@ impl Runtime {
                         } else {
                             op_to_class[&reduce_axis]
                         };
-                        let class_id = self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis })
                     }
                     Op::Reshape { x, shape } => {
                         let x_class = op_to_class[&x];
                         let shape = op_to_class[&shape];
-                        let class_id = self.push_op(graph_id, Op::Reshape { x: x_class, shape });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Reshape { x: x_class, shape })
                     }
                     Op::Expand { x, shape } => {
                         let x_class = op_to_class[&x];
                         let shape = op_to_class[&shape];
-                        let class_id = self.push_op(graph_id, Op::Expand { x: x_class, shape });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Expand { x: x_class, shape })
                     }
                     Op::Permute { x, ref axes } => {
                         let x_class = op_to_class[&x];
@@ -2165,22 +2163,22 @@ impl Runtime {
                             in_shape
                         );*/
                         let axes = axes.clone();
-                        let class_id = self.push_op(graph_id, Op::Permute { x: x_class, axes });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Permute { x: x_class, axes })
                     }
                     Op::Pad { x, axis, lp, len } => {
                         let x_class = op_to_class[&x];
                         let lp = op_to_class[&lp];
                         let len = op_to_class[&len];
-                        let class_id = self.push_op(graph_id, Op::Pad { x: x_class, axis, lp, len });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Pad { x: x_class, axis, lp, len })
                     }
                     Op::Narrow { x, axis, start, len } => {
                         let x_class = op_to_class[&x];
                         let start = op_to_class[&start];
                         let len = op_to_class[&len];
-                        let class_id = self.push_op(graph_id, Op::Narrow { x: x_class, axis, start, len });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Narrow { x: x_class, axis, start, len })
                     }
                     Op::Flip { x, ref axes } => {
                         let x_class = op_to_class[&x];
@@ -2192,8 +2190,8 @@ impl Runtime {
                             in_shape
                         );
                         let axes = axes.clone();
-                        let class_id = self.push_op(graph_id, Op::Flip { x: x_class, axes });
-                        class_id
+                        
+                        self.push_op(graph_id, Op::Flip { x: x_class, axes })
                     }
                     _ => unreachable!(),
                 };
@@ -2291,7 +2289,7 @@ impl Runtime {
             };
             values.insert(id, v);
         }
-        values[&cid].clone()
+        values[&cid]
     }
 
     pub fn autotune_jit_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {

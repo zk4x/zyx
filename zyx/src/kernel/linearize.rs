@@ -337,11 +337,10 @@ impl Kernel {
         // a fresh copy. No dead ops are created.
         let mut multi: Map<OpId, (Constant, u32)> = Map::default();
         for (&id, &count) in use_count.iter() {
-            if count > 1 {
-                if let Op::Const(value) = self.ops[id].op {
+            if count > 1
+                && let Op::Const(value) = self.ops[id].op {
                     multi.insert(id, (value, count - 1));
                 }
-            }
         }
         if multi.is_empty() {
             return;
@@ -426,11 +425,10 @@ impl Kernel {
         let mut pending = roots;
         for _ in 0..50_000 {
             let Some(op_id) = pending.pop() else { break };
-            if self.ops.contains_id(op_id) {
-                if reachable.insert(op_id) {
+            if self.ops.contains_id(op_id)
+                && reachable.insert(op_id) {
                     pending.extend(self.at(op_id).parameters());
                 }
-            }
         }
         if !pending.is_empty() {
             panic!("add_indexing did not finish in 10000 steps");
@@ -702,8 +700,8 @@ impl Kernel {
                     for d in out_view.dims {
                         view.push(SDim::new(d.idx, d.len));
                     }
-                    for a in non_reduce..n {
-                        view.push(SDim::new(loop_id, x_shape[a]));
+                    for &dim in &x_shape[non_reduce..n] {
+                        view.push(SDim::new(loop_id, dim));
                     }
                     views.insert(x, SView { dims: view, mask: out_view.mask });
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
@@ -948,7 +946,7 @@ impl Kernel {
                         // not the output view. The output mask is inherited
                         // so padded regions still read zero.
                         if self.shape(x).is_empty() {
-                            views.insert(x, SView { dims: Vec::new(), mask: view.mask.clone() });
+                            views.insert(x, SView { dims: Vec::new(), mask: view.mask });
                         } else {
                             views.insert(x, view.clone());
                         }
@@ -968,7 +966,7 @@ impl Kernel {
                         // mask over the same elements.
                         for &o in &[cond, if_true, if_false] {
                             if self.shape(o).is_empty() {
-                                views.insert(o, SView { dims: Vec::new(), mask: view.mask.clone() });
+                                views.insert(o, SView { dims: Vec::new(), mask: view.mask });
                             } else {
                                 views.insert(o, view.clone());
                             }
@@ -1052,11 +1050,10 @@ impl Kernel {
         let mut pending = roots;
         for _ in 0..50_000 {
             let Some(op_id) = pending.pop() else { break };
-            if self.ops.contains_id(op_id) {
-                if reachable.insert(op_id) {
+            if self.ops.contains_id(op_id)
+                && reachable.insert(op_id) {
                     pending.extend(self.at(op_id).parameters());
                 }
-            }
         }
         if !pending.is_empty() {
             panic!("toposort did not finish in 50000 steps");

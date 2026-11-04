@@ -59,7 +59,7 @@ pub fn permute<T: Clone>(shape: &[T], axes: &[UAxis]) -> Vec<T> {
 pub fn pad(shape: &mut [Dim], padding: &[(i64, i64)]) {
     let mut i = 0;
     for d in shape.iter_mut() {
-        *d = Dim::try_from(i64::try_from(*d).unwrap() + padding[i].0 + padding[i].1).unwrap();
+        *d = *d + padding[i].0 + padding[i].1;
         i += 1;
         if i >= padding.len() {
             break;

@@ -382,7 +382,7 @@ impl CDevice {
         let so_path = tmp_dir.join(format!("{name}.so"));
 
         let full_source = source.as_str();
-        std::fs::write(&c_path, &full_source).map_err(|e| BackendError {
+        std::fs::write(&c_path, full_source).map_err(|e| BackendError {
             status: ErrorStatus::KernelCompilation,
             context: format!("Failed to write C source: {e}").into(),
         })?;

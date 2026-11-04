@@ -1619,7 +1619,7 @@ impl Op {
                     vec![a, b, slot]
                 }
             }
-            Op::Stack { ops } => ops.iter().copied().collect(),
+            Op::Stack { ops } => ops.to_vec(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::TT(TTOp::EndReader)
