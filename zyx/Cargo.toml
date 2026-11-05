@@ -37,7 +37,7 @@ include = [
 ]
 
 [badges]
-maintenance = { status = "experimental" }
+maintenance = { status = "actively-developed" }
 
 [dependencies]
 # Good, well written minimal dependencies

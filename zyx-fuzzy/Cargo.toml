@@ -13,7 +13,7 @@ keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 
 [badges]
-maintenance = { status = "experimental" }
+maintenance = { status = "actively-developed" }
 
 [dependencies]
 zyx = { workspace = true}

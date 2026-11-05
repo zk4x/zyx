@@ -301,9 +301,8 @@ This package is bindings over the `zyx` crate. The Rust API is the complete one:
 
 ## Status
 
-Experimental. The API is stabilizing and performance is under active
-optimization. Reported numbers should be taken as in-progress; see
-`BENCHMARKS.md` in the repository.
+Actively maintained. Performance is under active optimization; reported
+numbers should be taken as in-progress; see `BENCHMARKS.md` in the repository.
 
 ## License
 
