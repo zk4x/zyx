@@ -53,9 +53,8 @@ use crate::{
     graph::{Graph, GraphId},
     kernel::OpId,
     runtime::{Runtime, TensorData},
-    shape::Dim,
     slab::SlabId,
-    symbolic::Expr,
+    symbolic::{Expr, ExprId},
     tensor::TensorId,
 };
 
@@ -431,37 +430,131 @@ impl Drop for Tape {
 }
 
 impl Tape {
-    /// Create frozen tape (fixed control flow, minimum overhead)
-    pub fn freeze<'a>(self, outputs: impl IntoIterator<Item = &'a Tensor>) -> Result<FrozenTape, ZyxError> {
+    /// Create frozen tape (fixed control flow, minimum overhead).
+    ///
+    /// `inputs` are the tensors supplied to every [`FrozenTape::replay`], in
+    /// order. Every other leaf of the tape (e.g. weights consumed as eager
+    /// tensors during tracing) is captured into the frozen tape at freeze
+    /// time, so it is never rebound on replay.
+    pub fn freeze<'a>(
+        self,
+        inputs: impl IntoIterator<Item = &'a Tensor>,
+        outputs: impl IntoIterator<Item = &'a Tensor>,
+    ) -> Result<FrozenTape, ZyxError> {
         let mut rt = RT.lock();
         let graph_id = self.graph_id;
 
-        let outputs: Vec<(OpId, Vec<Dim>, DType)> = outputs
+        debug_assert!(rt.graphs.contains_id(graph_id));
+        rt.debug_assert_pre_realize(graph_id);
+
+        let leaf_classes = rt.graphs[graph_id].leaf_classes.clone();
+        // Resolve each declared input to the leaf class the plan reads it
+        // through. The current `class_id` on the tensor is not authoritative:
+        // a tensor promoted again inside the scope (e.g. when it is also a
+        // store target) is re-homed to a computed/load class, while the plan
+        // still binds its original leaf. `leaf_map` maps class -> tid, so pick
+        // the entry that is a tape leaf. A symbolic variable is bound through
+        // the leaf of the tensor the graph created for the same expression.
+        let input_info: Vec<(Vec<OpId>, Option<ExprId>)> = inputs
+            .into_iter()
+            .map(|t| {
+                // One variable can be registered under several leaf classes
+                // (different synthetic tids sharing one expression), so bind
+                // every class that names this input, not just the first.
+                let classes: Vec<OpId> = leaf_classes
+                    .iter()
+                    .copied()
+                    .filter(|&c| {
+                        let tid = rt.graphs[graph_id].leaf_map[&c];
+                        if tid == t.id {
+                            return true;
+                        }
+                        matches!(
+                            (&rt.tensors[t.id], &rt.tensors[tid]),
+                            (
+                                TensorData::Symbolic { expr: a, .. },
+                                TensorData::Symbolic { expr: b, .. },
+                            ) if a == b
+                        )
+                    })
+                    .collect();
+                assert!(
+                    !classes.is_empty(),
+                    "freeze input tid {} is not a tape leaf",
+                    t.id
+                );
+                // A symbolic input leaf is a variable binding: remember its
+                // expression so replay can fold any output shape that
+                // references it against the new value.
+                let var_expr = classes.iter().find_map(|&c| {
+                    let tid = rt.graphs[graph_id].leaf_map[&c];
+                    match rt.tensors[tid] {
+                        TensorData::Symbolic { expr, .. }
+                            if matches!(rt.exprs[expr], Expr::Variable { .. }) =>
+                        {
+                            Some(expr)
+                        }
+                        _ => None,
+                    }
+                });
+                (classes, var_expr)
+            })
+            .collect();
+        let input_classes: Vec<Vec<OpId>> = input_info.iter().map(|(c, _)| c.clone()).collect();
+        let input_var_exprs: Vec<Option<ExprId>> = input_info.into_iter().map(|(_, e)| e).collect();
+
+        let outputs: Vec<(OpId, Vec<ExprId>, DType)> = outputs
             .into_iter()
             .map(|t| {
                 let class_id = match rt.tensors[t.id] {
                     TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
                     ref td => panic!("non-graph tensor in freeze: tid {t} data {td:?}"),
                 };
-                (class_id, rt.resolve_shape(t.id), rt.dtype(t.id))
+                // Keep the dims symbolic: a variable-backed dim must be
+                // re-evaluated after replay binds the variable.
+                let shape = rt.tensor_shape_exprs(t.id);
+                let dtype = rt.dtype(t.id);
+                (class_id, shape, dtype)
             })
             .collect();
 
-        debug_assert!(rt.graphs.contains_id(graph_id));
-        rt.debug_assert_pre_realize(graph_id);
+        // Every leaf that is not a declared input is captured here: buffer
+        // leaves keep their placement, variable leaves keep their scalar.
+        // Replay never sees them.
+        let input_set: Set<OpId> = input_classes.iter().flatten().copied().collect();
+        let mut captured_buf: Map<OpId, Arc<Placement>> = Map::default();
+        let mut captured_vars: Map<OpId, Constant> = Map::default();
+        for &cid in leaf_classes.iter() {
+            if input_set.contains(&cid) {
+                continue;
+            }
+            let &tid = rt.graphs[graph_id].leaf_map.get(&cid).unwrap();
+            if let Some(buf) = rt.leaf_buffer(tid) {
+                captured_buf.insert(cid, buf);
+            } else {
+                let value = rt
+                    .resolve_symbolic(tid)
+                    .expect("frozen leaf resolves neither to a buffer nor to a variable");
+                captured_vars.insert(cid, value);
+            }
+        }
 
-        let leaf_classes = rt.graphs[graph_id].leaf_classes.clone();
         let output_set: BTreeSet<OpId> = outputs.iter().map(|x| x.0).collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
-        if rt.plan_cache.contains_key(&cache_key) {
-            return Ok(FrozenTape { cache_key, leaf_classes, outputs });
+        if !rt.plan_cache.contains_key(&cache_key) {
+            let plan = rt.compile_graph(graph_id, &output_set)?;
+            rt.plan_cache.insert(cache_key, plan);
         }
 
-        let plan = rt.compile_graph(graph_id, &output_set)?;
-        rt.plan_cache.insert(cache_key, plan);
-
-        Ok(FrozenTape { cache_key, leaf_classes, outputs })
+        Ok(FrozenTape {
+            cache_key,
+            input_classes,
+            input_var_exprs,
+            captured_buf,
+            captured_vars,
+            outputs,
+        })
     }
 }
 
@@ -469,11 +562,22 @@ impl Tape {
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct FrozenTape {
     cache_key: u64,
-    // Leaf classes in discovery order: replay zips inputs against these.
-    // Plain ids, no graph reference — the graph is gone by replay time
-    // (freeze consumes the tape and Tape::drop tears the graph down).
-    leaf_classes: Vec<OpId>,
-    outputs: Vec<(OpId, Vec<Dim>, DType)>,
+    // Declared input classes in freeze order: replay zips the caller's
+    // tensors against these. Plain ids, no graph reference — the graph is
+    // gone by replay time (freeze consumes the tape and Tape::drop tears the
+    // graph down).
+    // One group per declared input: every leaf class that the input binds.
+    input_classes: Vec<Vec<OpId>>,
+    // For each declared input, the variable expression it binds (if any), so
+    // replay can publish the new value before resolving output shapes.
+    input_var_exprs: Vec<Option<ExprId>>,
+    // Non-input leaves (weights, variables) captured at freeze time.
+    captured_buf: Map<OpId, Arc<Placement>>,
+    captured_vars: Map<OpId, Constant>,
+    // Output dims are symbolic expressions: variable-backed dims resolve
+    // after replay binds the variables, so a frozen tape can replay new
+    // shapes. ExprIds live in the append-only expression slab.
+    outputs: Vec<(OpId, Vec<ExprId>, DType)>,
 }
 
 impl FrozenTape {
@@ -481,16 +585,26 @@ impl FrozenTape {
     pub fn replay<'a>(&self, inputs: impl IntoIterator<Item = &'a Tensor>) -> Result<Vec<Tensor>, ZyxError> {
         let mut rt = RT.lock();
 
-        let mut class_buf: Map<OpId, Arc<Placement>> = Map::default();
-        let mut class_vars: Map<OpId, Constant> = Map::default();
-        for (tensor, &cid) in inputs.into_iter().zip(self.leaf_classes.iter()) {
+        let mut class_buf: Map<OpId, Arc<Placement>> = self.captured_buf.clone();
+        let mut class_vars: Map<OpId, Constant> = self.captured_vars.clone();
+        let mut dim_memo: Map<ExprId, (Constant, bool)> = Map::default();
+        for (i, (tensor, classes)) in inputs.into_iter().zip(self.input_classes.iter()).enumerate() {
             if let Some(buf) = rt.leaf_buffer(tensor.id) {
-                class_buf.insert(cid, buf);
+                for &cid in classes {
+                    class_buf.insert(cid, buf.clone());
+                }
             } else {
                 // Variable leaf: no buffer anywhere; its scalar value
                 // resolves from variable_map (directly or symbolically).
                 let value = rt.resolve_symbolic(tensor.id).expect("replay input resolves neither to a buffer nor a variable");
-                class_vars.insert(cid, value);
+                for &cid in classes {
+                    class_vars.insert(cid, value);
+                }
+                // Symbolic output dims referencing this variable are folded
+                // against the bound value below.
+                if let Some(expr) = self.input_var_exprs[i] {
+                    dim_memo.insert(expr, (value, true));
+                }
             }
         }
 
@@ -498,7 +612,17 @@ impl FrozenTape {
 
         let mut outputs = Vec::new();
         for (cid, shape, dtype) in self.outputs.iter() {
-            let ids: Vec<TensorId> = shape.iter().map(|&d| rt.new_constant_tensor(Constant::idx(d))).collect();
+            let ids: Vec<TensorId> = shape
+                .iter()
+                .map(|&expr| {
+                    let value = rt
+                        .fold_dim(expr, &mut dim_memo)
+                        .0
+                        .as_dim()
+                        .expect("frozen output dim does not evaluate to an integer");
+                    rt.new_constant_tensor(Constant::idx(value))
+                })
+                .collect();
             let stid = if ids.is_empty() {
                 TensorId::NULL
             } else {

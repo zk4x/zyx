@@ -5,18 +5,29 @@ use crate::onnx::attribute_proto::AttributeType;
 use crate::onnx::tensor_proto::DataType;
 use crate::onnx::{self, GraphProto};
 use std::collections::{HashMap, HashSet};
-use zyx::{DType, FrozenTape, Tape, Tensor, ZyxError};
+use zyx::{DType, FrozenTape, Tape, Tensor, ZyxError, bf16, f8e4m3, f8e5m2, f16};
 
 pub type Value = Tensor;
 
 pub fn dtype(dt: DataType) -> Option<DType> {
     match dt {
-        DataType::Uint8 => Some(DType::U8),
-        DataType::Uint32 => Some(DType::U32),
-        DataType::Int64 => Some(DType::I64),
         DataType::Float => Some(DType::F32),
         DataType::Double => Some(DType::F64),
-        DataType::Bool => Some(DType::U8),
+        DataType::Float16 => Some(DType::F16),
+        DataType::Bfloat16 => Some(DType::BF16),
+        DataType::Float8e4m3fn => Some(DType::F8E4M3),
+        DataType::Float8e5m2 => Some(DType::F8E5M2),
+        DataType::Uint8 => Some(DType::U8),
+        DataType::Uint16 => Some(DType::U16),
+        DataType::Uint32 => Some(DType::U32),
+        DataType::Uint64 => Some(DType::U64),
+        DataType::Int8 => Some(DType::I8),
+        DataType::Int16 => Some(DType::I16),
+        DataType::Int32 => Some(DType::I32),
+        DataType::Int64 => Some(DType::I64),
+        DataType::Bool => Some(DType::Bool),
+        // STRING, UNDEFINED, COMPLEX*, and the fnuz float8 variants have no
+        // zyx representation.
         _ => None,
     }
 }
@@ -190,92 +201,122 @@ fn get_attr_opt_owned<T: AttrOwned>(node: &onnx::NodeProto, name: &str) -> Resul
 
 pub fn get_tensor(t: &onnx::TensorProto, name: &str) -> Result<Tensor, ZyxError> {
     let dims: Vec<Tensor> = t.dims.iter().map(|&x| Tensor::from(x)).collect();
-    match data_type_from_i32(t.data_type) {
-        Some(DataType::Int32) => {
-            if t.int32_data.is_empty() {
-                let data: Vec<i64> = t
-                    .raw_data
-                    .chunks_exact(4)
-                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64)
-                    .collect();
-                let base = Tensor::from(data);
-                if dims.is_empty() {
-                    Ok(base)
-                } else {
-                    base.reshape(dims)
+    let dt = data_type_from_i32(t.data_type)
+        .unwrap_or_else(|| panic!("unsupported 'value' data-type {} for {name}", t.data_type));
+    let dtype = dtype(dt).unwrap_or_else(|| panic!("unsupported 'value' data-type {dt:?} for {name}"));
+
+    // Typed fields take precedence; the narrow types use int32_data (holding
+    // their bit patterns for the float types), while F32/F64/I64 have
+    // dedicated fields.
+    let base = match dtype {
+        DType::F32 if !t.float_data.is_empty() => Tensor::from(t.float_data.clone()),
+        DType::F64 if !t.double_data.is_empty() => Tensor::from(t.double_data.clone()),
+        DType::I64 if !t.int64_data.is_empty() => Tensor::from(t.int64_data.clone()),
+        DType::I32 if !t.int32_data.is_empty() => Tensor::from(t.int32_data.clone()),
+        DType::Bool if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| v != 0).collect::<Vec<_>>())
+        }
+        DType::U8 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| v as u8).collect::<Vec<_>>())
+        }
+        DType::I8 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| v as i8).collect::<Vec<_>>())
+        }
+        DType::U16 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| v as u16).collect::<Vec<_>>())
+        }
+        DType::I16 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| v as i16).collect::<Vec<_>>())
+        }
+        DType::F16 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| f16(v as u16)).collect::<Vec<_>>())
+        }
+        DType::BF16 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| bf16(v as u16)).collect::<Vec<_>>())
+        }
+        DType::F8E4M3 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| f8e4m3(v as u8)).collect::<Vec<_>>())
+        }
+        DType::F8E5M2 if !t.int32_data.is_empty() => {
+            Tensor::from(t.int32_data.iter().map(|&v| f8e5m2(v as u8)).collect::<Vec<_>>())
+        }
+        _ => {
+            // raw_data is little-endian bytes for `dtype`; interpret directly
+            // rather than bitcasting.
+            match dtype {
+                DType::F32 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::F64 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(8)
+                        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::I64 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(8)
+                        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::I32 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(4)
+                        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::U64 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(8)
+                        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::U32 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(4)
+                        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::U16 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(2)
+                        .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::I16 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(2)
+                        .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::U8 => Tensor::from(t.raw_data.clone()),
+                DType::I8 => Tensor::from(t.raw_data.iter().map(|&b| b as i8).collect::<Vec<_>>()),
+                DType::Bool => Tensor::from(t.raw_data.iter().map(|&b| b != 0).collect::<Vec<_>>()),
+                DType::F16 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(2)
+                        .map(|c| f16(u16::from_le_bytes(c.try_into().unwrap())))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::BF16 => Tensor::from(
+                    t.raw_data
+                        .chunks_exact(2)
+                        .map(|c| bf16(u16::from_le_bytes(c.try_into().unwrap())))
+                        .collect::<Vec<_>>(),
+                ),
+                DType::F8E4M3 => {
+                    Tensor::from(t.raw_data.iter().map(|&b| f8e4m3(b)).collect::<Vec<_>>())
                 }
-            } else {
-                let data = t.int32_data.iter().map(|v| *v as i64).collect::<Vec<_>>();
-                let base = Tensor::from(data);
-                if dims.is_empty() {
-                    Ok(base)
-                } else {
-                    base.reshape(dims)
+                DType::F8E5M2 => {
+                    Tensor::from(t.raw_data.iter().map(|&b| f8e5m2(b)).collect::<Vec<_>>())
                 }
             }
         }
-        Some(dt) => match dtype(dt) {
-            Some(dtype) => {
-                if dtype == DType::F32 && !t.float_data.is_empty() {
-                    let base = Tensor::from(t.float_data.clone());
-                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
-                } else if dtype == DType::F64 && !t.double_data.is_empty() {
-                    let base = Tensor::from(t.double_data.clone());
-                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
-                } else if dtype == DType::I64 && !t.int64_data.is_empty() {
-                    let base = Tensor::from(t.int64_data.clone());
-                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
-                } else {
-                    // raw_data is little-endian bytes for `dtype`; interpret
-                    // without `bitcast` (which requires equal bit widths for
-                    // the current zyx custom kernel).
-                    let base = match dtype {
-                        DType::F32 => {
-                            let v: Vec<f32> = t
-                                .raw_data
-                                .chunks_exact(4)
-                                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                                .collect();
-                            Tensor::from(v)
-                        }
-                        DType::F64 => {
-                            let v: Vec<f64> = t
-                                .raw_data
-                                .chunks_exact(8)
-                                .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
-                                .collect();
-                            Tensor::from(v)
-                        }
-                        DType::I64 => {
-                            let v: Vec<i64> = t
-                                .raw_data
-                                .chunks_exact(8)
-                                .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
-                                .collect();
-                            Tensor::from(v)
-                        }
-                        DType::I32 => {
-                            let v: Vec<i64> = t
-                                .raw_data
-                                .chunks_exact(4)
-                                .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64)
-                                .collect();
-                            Tensor::from(v)
-                        }
-                        DType::U8 => Tensor::from(t.raw_data.clone()),
-                        _ => panic!("unsupported raw_data dtype {dtype:?}"),
-                    };
-                    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
-                }
-            }
-            None => {
-                panic!("unsupported 'value' data-type {dt:?} for {name}")
-            }
-        },
-        None => {
-            panic!("unsupported 'value' data-type {} for {name}", t.data_type,)
-        }
-    }
+    };
+    if dims.is_empty() { Ok(base) } else { base.reshape(dims) }
 }
 
 // This function provides a direct evaluation of the proto.
@@ -465,12 +506,8 @@ pub(crate) fn eval_nodes(
             }
             "LogSoftmax" => {
                 let input = get(&node.input[0]);
-                let output = match get_attr_opt::<i64>(node, "axis")? {
-                    None => input.softmax([-1])?,
-                    Some(&axis) => {
-                        input.ln_softmax([axis as i32])?
-                    }
-                };
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(-1);
+                let output = input.ln_softmax([axis as i32])?;
                 values.insert(node.output[0].clone(), output);
             }
             "Softmax" => {
@@ -493,8 +530,14 @@ pub(crate) fn eval_nodes(
                 values.insert(node.output[0].clone(), output);
             }
             "Dropout" => {
-                let input = get(&node.input[0]);
+                let input = get(&node.input[0]).clone();
                 values.insert(node.output[0].clone(), input.clone());
+                if node.output.len() > 1 {
+                    values.insert(
+                        node.output[1].clone(),
+                        Tensor::ones(input.resolve_shape(), DType::Bool),
+                    );
+                }
             }
             "Sqrt" => {
                 let xs = get(&node.input[0]);
@@ -540,7 +583,7 @@ pub(crate) fn eval_nodes(
                 let cond = get(&node.input[0]);
                 let a = get(&node.input[1]);
                 let b = get(&node.input[2]);
-                let output = cond.where_(a, b)?;
+                let output = cond.select(a, b)?;
                 values.insert(node.output[0].clone(), output);
             }
             "Concat" => {
@@ -597,18 +640,26 @@ pub(crate) fn eval_nodes(
                 values.insert(node.output[0].clone(), output);
             }
             "Constant" => {
-                let value = match node.attribute.iter().find(|attr| attr.name == "value") {
-                    None => {
-                        panic!("cannot find 'value' attr in 'Constant' for {}", node.name)
-                    }
-                    Some(value) => value,
-                };
-                let output = match value.r#type {
-                    x if x == AttributeType::Tensor as i32 => {
-                        let t = value.t.as_ref().unwrap();
-                        get_tensor(t, &node.name)?
-                    }
-                    rtype => panic!("unsupported 'value' type {rtype:?} for {}", node.name),
+                let attr = |name: &str| node.attribute.iter().find(|attr| attr.name == name);
+                let output = if let Some(value) = attr("value") {
+                    let t = value
+                        .t
+                        .as_ref()
+                        .unwrap_or_else(|| panic!("'Constant.value' has no tensor for {}", node.name));
+                    get_tensor(t, &node.name)?
+                } else if let Some(value) = attr("value_float") {
+                    Tensor::from(value.f)
+                } else if let Some(value) = attr("value_floats") {
+                    Tensor::from(value.floats.clone())
+                } else if let Some(value) = attr("value_int") {
+                    Tensor::from(value.i)
+                } else if let Some(value) = attr("value_ints") {
+                    Tensor::from(value.ints.clone())
+                } else {
+                    panic!(
+                        "unsupported Constant variant for {} (string/sparse constants are not supported)",
+                        node.name
+                    )
                 };
                 values.insert(node.output[0].clone(), output);
             }
@@ -616,7 +667,6 @@ pub(crate) fn eval_nodes(
                 let input = get(&node.input[0]);
                 let dt: i64 = *get_attr(node, "to")?;
                 let dtype = match data_type_from_i32(dt as i32) {
-                    Some(DataType::Int32) => DType::I64,
                     Some(dt) => match dtype(dt) {
                         Some(dt) => dt,
                         None => {
@@ -662,17 +712,23 @@ pub(crate) fn eval_nodes(
             }
             "ReduceMean" => {
                 let input = get(&node.input[0]);
-                let axes = get_attr_opt::<[i64]>(node, "axes")?;
                 let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
+                let noop = get_attr_opt::<i64>(node, "noop_with_empty_axes")?.copied().unwrap_or(0);
 
-                let n_dims = input.rank() as i64;
-
-                let axes: Vec<i32> = if let Some(axes) = axes {
-                    axes.iter().map(|a| *a as i32).collect()
-                } else {
-                    (0..n_dims).map(|a| a as i32).collect()
+                let axes: Vec<i32> = match get_opt(1) {
+                    Some(axes) => {
+                        let axes: Vec<i64> = axes.clone().try_into()?;
+                        axes.into_iter().map(|a| a as i32).collect()
+                    }
+                    None => match get_attr_opt::<[i64]>(node, "axes")? {
+                        Some(axes) => axes.iter().map(|a| *a as i32).collect(),
+                        None if noop == 1 => vec![],
+                        None => (0..input.rank()).map(|a| a as i32).collect(),
+                    },
                 };
-                let output = if keepdims == 1 {
+                let output = if axes.is_empty() && noop == 1 {
+                    input.clone()
+                } else if keepdims == 1 {
                     input.mean_keepdim(axes)?
                 } else {
                     input.mean(axes)?
@@ -713,14 +769,22 @@ pub(crate) fn eval_nodes(
             }
             "ReduceMax" => {
                 let input = get(&node.input[0]);
-                let axes = get_attr_opt::<[i64]>(node, "axes")?;
                 let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
-                let axes: Vec<i32> = if let Some(axes) = axes {
-                    axes.iter().map(|a| *a as i32).collect()
-                } else {
-                    (0..input.rank()).map(|a| a as i32).collect()
+                let noop = get_attr_opt::<i64>(node, "noop_with_empty_axes")?.copied().unwrap_or(0);
+                let axes: Vec<i32> = match get_opt(1) {
+                    Some(axes) => {
+                        let axes: Vec<i64> = axes.clone().try_into()?;
+                        axes.into_iter().map(|a| a as i32).collect()
+                    }
+                    None => match get_attr_opt::<[i64]>(node, "axes")? {
+                        Some(axes) => axes.iter().map(|a| *a as i32).collect(),
+                        None if noop == 1 => vec![],
+                        None => (0..input.rank()).map(|a| a as i32).collect(),
+                    },
                 };
-                let output = if keepdims == 1 {
+                let output = if axes.is_empty() && noop == 1 {
+                    input.clone()
+                } else if keepdims == 1 {
                     input.max_keepdim(axes)?
                 } else {
                     input.max(axes)?
@@ -729,14 +793,22 @@ pub(crate) fn eval_nodes(
             }
             "ReduceMin" => {
                 let input = get(&node.input[0]);
-                let axes = get_attr_opt::<[i64]>(node, "axes")?;
                 let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
-                let axes: Vec<i32> = if let Some(axes) = axes {
-                    axes.iter().map(|a| *a as i32).collect()
-                } else {
-                    (0..input.rank()).map(|a| a as i32).collect()
+                let noop = get_attr_opt::<i64>(node, "noop_with_empty_axes")?.copied().unwrap_or(0);
+                let axes: Vec<i32> = match get_opt(1) {
+                    Some(axes) => {
+                        let axes: Vec<i64> = axes.clone().try_into()?;
+                        axes.into_iter().map(|a| a as i32).collect()
+                    }
+                    None => match get_attr_opt::<[i64]>(node, "axes")? {
+                        Some(axes) => axes.iter().map(|a| *a as i32).collect(),
+                        None if noop == 1 => vec![],
+                        None => (0..input.rank()).map(|a| a as i32).collect(),
+                    },
                 };
-                let output = if keepdims == 1 {
+                let output = if axes.is_empty() && noop == 1 {
+                    input.clone()
+                } else if keepdims == 1 {
                     input.min_keepdim(axes)?
                 } else {
                     input.min(axes)?
@@ -752,7 +824,6 @@ pub(crate) fn eval_nodes(
             "Gemm" => {
                 let a = get(&node.input[0]);
                 let b = get(&node.input[1]);
-                let c = get(&node.input[2]);
 
                 let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(1.0);
                 let beta = get_attr_opt::<f32>(node, "beta")?.copied().unwrap_or(1.0);
@@ -766,7 +837,12 @@ pub(crate) fn eval_nodes(
                 let a = if trans_a == 0 { a.clone() } else { a.t() };
                 let b = if trans_b == 0 { b.clone() } else { b.t() };
 
-                let output = (a * alpha_t).matmul(&b)? + c.clone() * beta_t;
+                let ab = (a * alpha_t).matmul(&b)?;
+                // C is optional in ONNX; without it Gemm is just alpha*A*B.
+                let output = match get_opt(2) {
+                    Some(c) => ab + c.clone() * beta_t,
+                    None => ab,
+                };
                 values.insert(node.output[0].clone(), output);
             }
             "Clip" => {
@@ -829,12 +905,18 @@ pub(crate) fn eval_nodes(
             }
             "Shape" => {
                 let input = get(&node.input[0]);
+                let rank = input.rank() as i64;
+                let start = get_attr_opt::<i64>(node, "start")?.copied().unwrap_or(0);
+                let end = get_attr_opt::<i64>(node, "end")?.copied().unwrap_or(rank);
+                let start = if start < 0 { start + rank } else { start }.clamp(0, rank);
+                let end = if end < 0 { end + rank } else { end }.clamp(start, rank);
                 let shape = input.shape();
+                let shape = &shape[start as usize..end as usize];
                 // shape() returns Vec<Tensor> each is scalar dim
                 let out = if shape.is_empty() {
                     Tensor::from(Vec::<i64>::new())
                 } else {
-                    Tensor::stack(&shape)?
+                    Tensor::stack(shape)?
                 };
                 values.insert(node.output[0].clone(), out);
             }
@@ -846,43 +928,113 @@ pub(crate) fn eval_nodes(
             }
             "Slice" => {
                 let data = get(&node.input[0]);
-                let starts: Vec<i64> = get(&node.input[1]).clone().try_into()?;
-                let ends: Vec<i64> = get(&node.input[2]).clone().try_into()?;
-                let axes: Option<Vec<i64>> = if node.input.len() > 3 {
-                    let v: Vec<i64> = get(&node.input[3]).clone().try_into()?;
-                    Some(v)
+                // opset >= 10: starts/ends/axes/steps are inputs; older opsets
+                // carry the same fields as attributes.
+                let starts: Vec<i64> = if node.input.get(1).is_some_and(|s| !s.is_empty()) {
+                    get(&node.input[1]).clone().try_into()?
                 } else {
-                    get_attr_opt::<[i64]>(node, "axes")?.map(|a| a.to_vec())
+                    get_attr::<[i64]>(node, "starts")?.to_vec()
                 };
-                let steps: Option<Vec<i64>> = if node.input.len() > 4 {
-                    let v: Vec<i64> = get(&node.input[4]).clone().try_into()?;
-                    Some(v)
+                let ends: Vec<i64> = if node.input.get(2).is_some_and(|s| !s.is_empty()) {
+                    get(&node.input[2]).clone().try_into()?
                 } else {
-                    None
+                    get_attr::<[i64]>(node, "ends")?.to_vec()
                 };
-                let axes = axes.unwrap_or_else(|| (0..starts.len() as i64).collect());
-                let steps = steps.unwrap_or_else(|| vec![1; starts.len()]);
+                let axes: Vec<i64> = if node.input.get(3).is_some_and(|s| !s.is_empty()) {
+                    get(&node.input[3]).clone().try_into()?
+                } else if let Some(axes) = get_attr_opt::<[i64]>(node, "axes")? {
+                    axes.to_vec()
+                } else {
+                    (0..starts.len() as i64).collect()
+                };
+                let steps: Vec<i64> = if node.input.get(4).is_some_and(|s| !s.is_empty()) {
+                    get(&node.input[4]).clone().try_into()?
+                } else if let Some(steps) = get_attr_opt::<[i64]>(node, "steps")? {
+                    steps.to_vec()
+                } else {
+                    vec![1; starts.len()]
+                };
+                assert!(
+                    starts.len() == ends.len() && axes.len() == starts.len() && steps.len() == starts.len(),
+                    "Slice starts/ends/axes/steps length mismatch {}/{}/{}/{} for {}",
+                    starts.len(),
+                    ends.len(),
+                    axes.len(),
+                    steps.len(),
+                    node.name
+                );
+                let rank = data.rank();
                 let mut out = data.clone();
-                for (i, &axis) in axes.iter().enumerate() {
-                    let start = starts[i];
-                    let end = ends[i];
+                for i in 0..starts.len() {
+                    let axis = axes[i];
                     let step = steps[i];
-                    if step != 1 {
-                        panic!("Slice with step != 1 not supported");
+                    if step == 0 {
+                        panic!("Slice step cannot be 0 for {}", node.name);
                     }
-                    // use narrow for step 1: start..end
-                    let axis_i32 = axis as i32;
-                    let rank = out.rank();
-                    let axis_usize = if axis_i32 < 0 { (rank + axis_i32 as i64) as usize } else { axis_i32 as usize };
-                    let dim = out.resolve_shape()[axis_usize];
-                    let s = if start < 0 { dim + start } else { start };
-                    let e = if end < 0 { dim + end } else { end };
-                    let len = (e - s).max(0) as i64;
-                    out = out.narrow(axis_i32, Tensor::from(s), Tensor::from(len))?;
+                    let axis = if axis < 0 { axis + rank } else { axis };
+                    if axis < 0 || axis >= rank {
+                        panic!("Slice axis {axis} out of range for rank {rank} for {}", node.name);
+                    }
+                    let dim = out.resolve_shape()[axis as usize];
+                    if dim == 0 {
+                        continue;
+                    }
+                    // Negative starts/ends count from the end. Saturating add
+                    // keeps i64::MIN (the ONNX "to the beginning" sentinel)
+                    // negative through the clamp below.
+                    let mut start = starts[i];
+                    let mut end = ends[i];
+                    if start < 0 {
+                        start = start.saturating_add(dim);
+                    }
+                    if end < 0 {
+                        end = end.saturating_add(dim);
+                    }
+                    if step > 0 {
+                        let start = start.clamp(0, dim);
+                        let end = end.clamp(0, dim);
+                        let len = (end - start).max(0);
+                        out = out.narrow(axis as i32, Tensor::from(start), Tensor::from(len))?;
+                    } else {
+                        let start = start.clamp(0, dim - 1);
+                        let end = end.clamp(-1, dim - 1);
+                        let mut indices = Vec::new();
+                        let mut v = start;
+                        while v > end {
+                            indices.push(v);
+                            v += step;
+                        }
+                        out = out.index_select(axis as i32, Tensor::from(indices))?;
+                    }
                 }
                 values.insert(node.output[0].clone(), out);
             }
             "Gather" => {
+                let data = get(&node.input[0]);
+                let indices = get(&node.input[1]);
+                let rank = data.rank();
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0);
+                let axis = if axis < 0 { axis + rank } else { axis };
+                assert!(
+                    axis >= 0 && axis < rank,
+                    "Gather axis {axis} out of range for rank {rank} for {}",
+                    node.name
+                );
+                let axis = axis as usize;
+                // ONNX allows any index rank: gather into the flattened index
+                // list, then reshape to `data.shape[..axis] + indices.shape +
+                // data.shape[axis+1..]`. `index_select` also wraps negative
+                // indices.
+                let data_shape = data.shape();
+                let index_shape = indices.shape();
+                let mut target = data_shape[..axis].to_vec();
+                target.extend(index_shape);
+                target.extend(data_shape[axis + 1..].iter().cloned());
+                let flat = indices.reshape([indices.numel()])?;
+                let out = data.index_select(axis as i32, flat)?.reshape(target)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "GatherElements" => {
                 let data = get(&node.input[0]);
                 let indices = get(&node.input[1]);
                 let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0) as i32;
@@ -898,81 +1050,102 @@ pub(crate) fn eval_nodes(
             }
             "Split" => {
                 let input = get(&node.input[0]);
-                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0) as i32;
-                let split: Option<Vec<i64>> = if node.input.len() > 1 {
-                    let v: Vec<i64> = get(&node.input[1]).clone().try_into()?;
-                    Some(v)
+                let rank = input.rank();
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0);
+                let axis = if axis < 0 { axis + rank } else { axis };
+                assert!(
+                    axis >= 0 && axis < rank,
+                    "Split axis {axis} out of range for rank {rank} for {}",
+                    node.name
+                );
+                let axis = axis as i32;
+                let num_outputs = match get_attr_opt::<i64>(node, "num_outputs")?.copied().unwrap_or(0) {
+                    0 => node.output.len(),
+                    n => n as usize,
+                };
+                let split: Option<Vec<i64>> = if node.input.get(1).is_some_and(|s| !s.is_empty()) {
+                    Some(get(&node.input[1]).clone().try_into()?)
                 } else {
                     get_attr_opt::<[i64]>(node, "split")?.map(|a| a.to_vec())
                 };
-                let num_outputs = node.output.len();
-                let out_tensors = if let Some(sizes) = split {
-                    // split with explicit sizes
-                    let sizes_usize: Vec<usize> = sizes.into_iter().map(|x| x as usize).collect();
-                    // use Tensor::split which takes &[usize] ?
-                    // For now implement via narrow iteratively
-                    let mut outs = Vec::new();
-                    let mut offset = 0i64;
-                    for &sz in &sizes_usize {
-                        let t = input.narrow(axis, Tensor::from(offset), Tensor::from(sz as i64))?;
-                        outs.push(t);
-                        offset += sz as i64;
+                let dim = input.resolve_shape()[axis as usize];
+                let sizes: Vec<i64> = match split {
+                    Some(sizes) => sizes,
+                    None => {
+                        // ONNX distributes the remainder over the leading
+                        // outputs: each = dim / n, and the first dim % n get 1
+                        // extra element.
+                        let each = dim / num_outputs as i64;
+                        let rem = dim % num_outputs as i64;
+                        (0..num_outputs as i64)
+                            .map(|i| each + i64::from(i < rem))
+                            .collect()
                     }
-                    outs
-                } else {
-                    // equal split
-                    let dim = input.resolve_shape()[axis as usize];
-                    let each = (dim / num_outputs as i64) as i64;
-                    let mut outs = Vec::new();
-                    for i in 0..num_outputs {
-                        let sz = if i == num_outputs - 1 { dim - each * (num_outputs as i64 - 1) } else { each };
-                        let t = input.narrow(axis, Tensor::from(i as i64 * each), Tensor::from(sz))?;
-                        outs.push(t);
-                    }
-                    outs
                 };
-                for (name, t) in node.output.iter().zip(out_tensors.into_iter()) {
+                assert_eq!(
+                    sizes.iter().sum::<i64>(),
+                    dim,
+                    "Split sizes {:?} do not add up to axis {axis} length {dim} for {}",
+                    sizes,
+                    node.name
+                );
+                let mut offset = 0i64;
+                let mut outs = Vec::new();
+                for &sz in &sizes {
+                    outs.push(input.narrow(axis, Tensor::from(offset), Tensor::from(sz))?);
+                    offset += sz;
+                }
+                for (name, t) in node.output.iter().zip(outs.into_iter()) {
                     values.insert(name.clone(), t);
                 }
                 continue;
             }
             "Pad" => {
                 let data = get(&node.input[0]);
-                let pads: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                // opset >= 11: pads/constant_value/axes are inputs; older
+                // opsets use the `pads` and `value` attributes.
+                let pads: Vec<i64> = if node.input.get(1).is_some_and(|s| !s.is_empty()) {
+                    get(&node.input[1]).clone().try_into()?
+                } else {
+                    get_attr::<[i64]>(node, "pads")?.to_vec()
+                };
                 let mode = get_attr_opt::<str>(node, "mode")?.unwrap_or("constant");
                 if mode != "constant" {
                     panic!("Pad only supports constant mode, got {mode}");
                 }
                 let rank = data.rank() as usize;
-                if pads.len() != rank * 2 {
-                    panic!("Pad pads len {} != rank*2 {}", pads.len(), rank*2);
+                // opset 18: `axes` selects which dimensions `pads` applies to.
+                let axes: Vec<i64> = if node.input.get(3).is_some_and(|s| !s.is_empty()) {
+                    get(&node.input[3]).clone().try_into()?
+                } else {
+                    (0..rank as i64).collect()
+                };
+                if pads.len() != axes.len() * 2 {
+                    panic!(
+                        "Pad pads len {} != axes len {} * 2 for {}",
+                        pads.len(),
+                        axes.len(),
+                        node.name
+                    );
                 }
-                let mut out = data.clone();
-                // pads are [pad_begin_0, ..., pad_begin_rank-1, pad_end_0, ..., pad_end_rank-1]
-                for axis in 0..rank {
-                    let left = pads[axis];
-                    let right = pads[axis + rank];
-                    if left == 0 && right == 0 {
-                        continue;
+                let mut padding = vec![(0i64, 0i64); rank];
+                for (i, &axis) in axes.iter().enumerate() {
+                    let axis = if axis < 0 { axis + rank as i64 } else { axis };
+                    if axis < 0 || axis >= rank as i64 {
+                        panic!("Pad axis {axis} out of range for rank {rank} for {}", node.name);
                     }
-                    // use pad_zeros: need to handle negative? assume non-negative
-                    let dim = out.resolve_shape()[axis];
-                    let new_len = dim + left + right;
-                    let lp = Tensor::from(left);
-                    let len = Tensor::from(new_len);
-                    out = out.pad_zeros_axis(axis, lp, len)?;
+                    padding[axis as usize] = (pads[i], pads[i + axes.len()]);
                 }
-                // handle constant value if provided
-                if node.input.len() > 2 {
-                    let _value = get(&node.input[2]);
-                    // constant value pad not yet supported via pad_zeros (which pads zeros)
-                    // For now, if value is zero, fine, else panic
-                    // check if value is zero scalar
-                    // We could implement pad with value via where, but keep simple
-                    // For non-zero, fallback to error
-                    // Try to get value as scalar f32
-                    // For now just assume zero
-                }
+                // `constant_value` defaults to zero; `Tensor::pad` handles
+                // negative padding (cropping) and dtype-checks the value.
+                let value = match get_opt(2) {
+                    Some(value) => value.clone(),
+                    None => match get_attr_opt::<f32>(node, "value")? {
+                        Some(&value) => Tensor::from(value).cast(data.dtype()),
+                        None => Tensor::zeros(Vec::<Tensor>::new(), data.dtype()),
+                    },
+                };
+                let out = data.pad(padding, value)?;
                 values.insert(node.output[0].clone(), out);
             }
             "Erf" => {
@@ -995,6 +1168,462 @@ pub(crate) fn eval_nodes(
                 let limit: i64 = get(&node.input[1]).clone().try_into()?;
                 let delta: i64 = get(&node.input[2]).clone().try_into()?;
                 let out = Tensor::arange(start, limit, delta)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "ConstantOfShape" => {
+                let shape: Vec<i64> = get(&node.input[0]).clone().try_into()?;
+                let shape_tensors: Vec<Tensor> = shape.into_iter().map(Tensor::from).collect();
+                let out = match get_attr_opt_owned::<Tensor>(node, "value")? {
+                    Some(value) => value.expand(shape_tensors)?,
+                    None => Tensor::zeros(shape_tensors, DType::F32),
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "Tile" => {
+                let input = get(&node.input[0]);
+                let repeats: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                values.insert(node.output[0].clone(), input.repeat(repeats)?);
+            }
+            "Trilu" => {
+                let input = get(&node.input[0]);
+                let k: i64 = match get_opt(1) {
+                    Some(k) => k.clone().try_into()?,
+                    None => get_attr_opt::<i64>(node, "k")?.copied().unwrap_or(0),
+                };
+                let upper = get_attr_opt::<i64>(node, "upper")?.copied().unwrap_or(1);
+                let out = if upper != 0 { input.triu(k)? } else { input.tril(k)? };
+                values.insert(node.output[0].clone(), out);
+            }
+            "ArgMax" | "ArgMin" => {
+                let input = get(&node.input[0]);
+                let rank = input.rank();
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0);
+                let axis = if axis < 0 { axis + rank } else { axis };
+                assert!(
+                    axis >= 0 && axis < rank,
+                    "{} axis {axis} out of range for rank {rank} for {}",
+                    node.op_type,
+                    node.name
+                );
+                let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
+                let select_last = get_attr_opt::<i64>(node, "select_last_index")?.copied().unwrap_or(0);
+                let base = if node.op_type == "ArgMin" { -input.clone() } else { input.clone() };
+                let mut idx = if select_last != 0 {
+                    let dim = base.resolve_shape()[axis as usize];
+                    let flipped = base.flip([axis as i32])?;
+                    dim - 1 - flipped.argmax_axis(axis as i32)?
+                } else {
+                    base.argmax_axis(axis as i32)?
+                };
+                if keepdims != 0 {
+                    idx = idx.unsqueeze(axis as i32)?;
+                }
+                values.insert(node.output[0].clone(), idx.cast(DType::I64));
+            }
+            "ReduceProd" | "ReduceL1" | "ReduceL2" | "ReduceLogSum" | "ReduceLogSumExp" => {
+                let input = get(&node.input[0]);
+                let keepdims = get_attr_opt::<i64>(node, "keepdims")?.copied().unwrap_or(1);
+                let noop = get_attr_opt::<i64>(node, "noop_with_empty_axes")?.copied().unwrap_or(0);
+                let axes: Vec<i32> = match get_opt(1) {
+                    Some(axes) => {
+                        let axes: Vec<i64> = axes.clone().try_into()?;
+                        axes.into_iter().map(|a| a as i32).collect()
+                    }
+                    None => match get_attr_opt::<[i64]>(node, "axes")? {
+                        Some(axes) => axes.iter().map(|a| *a as i32).collect(),
+                        None if noop == 1 => vec![],
+                        None => (0..input.rank()).map(|a| a as i32).collect(),
+                    },
+                };
+                let out = if axes.is_empty() && noop == 1 {
+                    input.clone()
+                } else {
+                    let data = match node.op_type.as_str() {
+                        "ReduceL1" => input.abs(),
+                        "ReduceL2" => input.square(),
+                        "ReduceLogSumExp" => input.exp(),
+                        _ => input.clone(),
+                    };
+                    let summed = if keepdims == 1 {
+                        data.sum_keepdim(axes)?
+                    } else {
+                        data.sum(axes)?
+                    };
+                    match node.op_type.as_str() {
+                        "ReduceL2" => summed.sqrt(),
+                        "ReduceLogSum" | "ReduceLogSumExp" => summed.ln(),
+                        _ => summed,
+                    }
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "Elu" => {
+                let input = get(&node.input[0]);
+                let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(1.0);
+                values.insert(node.output[0].clone(), input.elu(alpha));
+            }
+            "Selu" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.selu());
+            }
+            "HardSigmoid" => {
+                let input = get(&node.input[0]);
+                let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(0.2);
+                let beta = get_attr_opt::<f32>(node, "beta")?.copied().unwrap_or(0.5);
+                let out = input.hard_sigmoid();
+                let out = if (alpha - 0.2).abs() < f32::EPSILON && (beta - 0.5).abs() < f32::EPSILON {
+                    out
+                } else {
+                    let t = get(&node.input[0]).clone() * alpha + beta;
+                    t.maximum(0.0f32)?.minimum(1.0f32)?
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "HardSwish" => {
+                let input = get(&node.input[0]);
+                let gate = (input.clone() * (1.0f32 / 6.0f32) + 0.5f32)
+                    .maximum(0.0f32)?
+                    .minimum(1.0f32)?;
+                values.insert(node.output[0].clone(), input.clone() * gate);
+            }
+            "Softplus" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.softplus(1.0f32, 20.0f32));
+            }
+            "Softsign" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.clone() / (input.abs() + 1.0f32));
+            }
+            "Mish" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.mish());
+            }
+            "Sign" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.sign());
+            }
+            "Round" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.round());
+            }
+            "Reciprocal" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.reciprocal());
+            }
+            "PRelu" => {
+                let input = get(&node.input[0]);
+                let slope = get(&node.input[1]);
+                let out = input.cmpgt(0.0f32)?.select(input.clone(), input.clone() * slope.clone())?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "ThresholdedRelu" => {
+                let input = get(&node.input[0]);
+                let alpha = get_attr_opt::<f32>(node, "alpha")?.copied().unwrap_or(1.0);
+                let out = input.cmpgt(alpha)?.select(input.clone(), 0.0f32)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "IsInf" => {
+                let input = get(&node.input[0]);
+                let pos = get_attr_opt::<i64>(node, "detect_positive")?.copied().unwrap_or(1);
+                let neg = get_attr_opt::<i64>(node, "detect_negative")?.copied().unwrap_or(1);
+                let out = match (pos != 0, neg != 0) {
+                    (true, true) => input.isinf(),
+                    (true, false) => input.equal(f32::INFINITY)?,
+                    (false, true) => input.equal(f32::NEG_INFINITY)?,
+                    (false, false) => input.isnan().select(true, false)?,
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "IsNaN" => {
+                let input = get(&node.input[0]);
+                values.insert(node.output[0].clone(), input.isnan());
+            }
+            "GreaterOrEqual" => {
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
+                values.insert(node.output[0].clone(), a.cmpge(b)?);
+            }
+            "LessOrEqual" => {
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
+                values.insert(node.output[0].clone(), !a.cmpgt(b)?);
+            }
+            "And" => {
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
+                values.insert(node.output[0].clone(), a.logical_and(b)?);
+            }
+            "Or" => {
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
+                values.insert(node.output[0].clone(), a.logical_or(b)?);
+            }
+            "Scatter" | "ScatterElements" => {
+                let data = get(&node.input[0]);
+                let indices = get(&node.input[1]);
+                let updates = get(&node.input[2]);
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(0) as i32;
+                let reduction = get_attr_opt::<str>(node, "reduction")?.unwrap_or("none");
+                let out = match reduction {
+                    "none" => data.scatter(axis, indices.clone(), updates.clone())?,
+                    "add" => data.scatter_add(axis, indices.clone(), updates.clone())?,
+                    "mul" => data.scatter_mul(axis, indices.clone(), updates.clone())?,
+                    other => panic!("unsupported ScatterElements reduction {other} for {}", node.name),
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "Conv" => {
+                let x = get(&node.input[0]);
+                let w = get(&node.input[1]);
+                let bias = get_opt(2);
+                let rank = x.rank() as usize;
+                let spatial = rank - 2;
+                let kernel = w.resolve_shape()[2..].to_vec();
+                let strides: Vec<i64> = get_attr_opt::<[i64]>(node, "strides")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![1; spatial]);
+                let dilations: Vec<i64> = get_attr_opt::<[i64]>(node, "dilations")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![1; spatial]);
+                let pads: Vec<i64> = get_attr_opt::<[i64]>(node, "pads")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![0; spatial * 2]);
+                let groups = get_attr_opt::<i64>(node, "group")?.copied().unwrap_or(1) as u64;
+                let auto_pad = get_attr_opt::<str>(node, "auto_pad")?.unwrap_or("NOTSET");
+                assert_eq!(strides.len(), spatial, "Conv strides length for {}", node.name);
+                assert_eq!(dilations.len(), spatial, "Conv dilations length for {}", node.name);
+                let in_shape = x.resolve_shape();
+                // ONNX pads are [begin spatial..., end spatial...]; zyx conv
+                // takes interleaved (left, right) pairs.
+                let mut pad_pairs = Vec::with_capacity(spatial * 2);
+                for i in 0..spatial {
+                    let (left, right) = match auto_pad {
+                        "VALID" => (0, 0),
+                        "SAME_UPPER" | "SAME_LOWER" => {
+                            let k = kernel[i] as i64;
+                            let s = strides[i];
+                            let d = dilations[i];
+                            let input = in_shape[2 + i] as i64;
+                            let out = (input + s - 1) / s;
+                            let total = ((out - 1) * s + (k - 1) * d + 1 - input).max(0);
+                            if auto_pad == "SAME_UPPER" {
+                                (total / 2, total - total / 2)
+                            } else {
+                                (total - total / 2, total / 2)
+                            }
+                        }
+                        _ => (pads[i], pads[i + spatial]),
+                    };
+                    pad_pairs.push(left);
+                    pad_pairs.push(right);
+                }
+                let out = x.conv(w, bias, groups, strides, dilations, pad_pairs)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "MaxPool" => {
+                let x = get(&node.input[0]);
+                if node.output.len() > 1 {
+                    panic!("MaxPool indices output is not supported for {}", node.name);
+                }
+                let kernel: Vec<i64> = get_attr::<[i64]>(node, "kernel_shape")?.to_vec();
+                let spatial = kernel.len();
+                let strides: Vec<i64> = get_attr_opt::<[i64]>(node, "strides")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![1; spatial]);
+                let dilations: Vec<i64> = get_attr_opt::<[i64]>(node, "dilations")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![1; spatial]);
+                let pads: Vec<i64> = get_attr_opt::<[i64]>(node, "pads")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![0; spatial * 2]);
+                let ceil_mode = get_attr_opt::<i64>(node, "ceil_mode")?.copied().unwrap_or(0);
+                if ceil_mode != 0 {
+                    panic!("MaxPool ceil_mode is not supported for {}", node.name);
+                }
+                let padding: Vec<(i64, i64)> =
+                    (0..spatial).map(|i| (pads[i], pads[i + spatial])).collect();
+                let out = x.max_pool(kernel, strides, dilations, padding, false, false)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "AveragePool" => {
+                let x = get(&node.input[0]);
+                let kernel: Vec<i64> = get_attr::<[i64]>(node, "kernel_shape")?.to_vec();
+                let spatial = kernel.len();
+                let strides: Vec<i64> = get_attr_opt::<[i64]>(node, "strides")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![1; spatial]);
+                let dilations: Vec<i64> = get_attr_opt::<[i64]>(node, "dilations")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![1; spatial]);
+                let pads: Vec<i64> = get_attr_opt::<[i64]>(node, "pads")?
+                    .map(|a| a.to_vec())
+                    .unwrap_or_else(|| vec![0; spatial * 2]);
+                let ceil_mode = get_attr_opt::<i64>(node, "ceil_mode")?.copied().unwrap_or(0);
+                let count_include_pad = get_attr_opt::<i64>(node, "count_include_pad")?.copied().unwrap_or(0);
+                if ceil_mode != 0 {
+                    panic!("AveragePool ceil_mode is not supported for {}", node.name);
+                }
+                if count_include_pad == 0 && pads.iter().any(|&p| p != 0) {
+                    panic!(
+                        "AveragePool with padding and count_include_pad=0 is not supported for {}",
+                        node.name
+                    );
+                }
+                let padding: Vec<(i64, i64)> =
+                    (0..spatial).map(|i| (pads[i], pads[i + spatial])).collect();
+                let padded = x.pad(padding, 0.0f32)?;
+                let pooled = padded.pool(kernel.clone(), strides, dilations)?;
+                let axes: Vec<i32> = (-(spatial as i32)..0).collect();
+                let volume: f32 = kernel.iter().product::<i64>() as f32;
+                let out = pooled.sum(axes)? / volume;
+                values.insert(node.output[0].clone(), out);
+            }
+            "GlobalAveragePool" | "GlobalMaxPool" => {
+                let x = get(&node.input[0]);
+                let rank = x.rank() as i32;
+                let axes: Vec<i32> = (2..rank).collect();
+                let out = if node.op_type == "GlobalAveragePool" {
+                    x.mean_keepdim(axes)?
+                } else {
+                    x.max_keepdim(axes)?
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "BatchNormalization" => {
+                let x = get(&node.input[0]);
+                let scale = get(&node.input[1]);
+                let bias = get(&node.input[2]);
+                let mean = get(&node.input[3]);
+                let var = get(&node.input[4]);
+                let eps = get_attr_opt::<f32>(node, "epsilon")?.copied().unwrap_or(1e-5);
+                let training = get_attr_opt::<i64>(node, "training_mode")?.copied().unwrap_or(0);
+                if training != 0 {
+                    panic!("BatchNormalization training mode is not supported for {}", node.name);
+                }
+                let rank = x.rank() as usize;
+                let mut shape: Vec<Tensor> = (0..rank).map(|_| Tensor::from(1i64)).collect();
+                shape[1] = scale.shape()[0].clone();
+                let out = (x.clone() - mean.reshape(shape.clone())?)
+                    / (var.reshape(shape.clone())? + eps).sqrt()
+                    * scale.reshape(shape.clone())?
+                    + bias.reshape(shape)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "InstanceNormalization" => {
+                let x = get(&node.input[0]);
+                let scale = get(&node.input[1]);
+                let bias = get(&node.input[2]);
+                let eps = get_attr_opt::<f32>(node, "epsilon")?.copied().unwrap_or(1e-5);
+                let rank = x.rank() as usize;
+                let axes: Vec<i32> = (2..rank as i32).collect();
+                let mean = x.mean_keepdim(axes.clone())?;
+                let var = (x.clone() - mean.clone()).square().mean_keepdim(axes)?;
+                let mut shape: Vec<Tensor> = (0..rank).map(|_| Tensor::from(1i64)).collect();
+                shape[1] = scale.shape()[0].clone();
+                let out = (x.clone() - mean) / (var + eps).sqrt()
+                    * scale.reshape(shape.clone())?
+                    + bias.reshape(shape)?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "LayerNormalization" => {
+                let x = get(&node.input[0]);
+                let scale = get(&node.input[1]);
+                let bias = get_opt(2);
+                let rank = x.rank() as i64;
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(-1);
+                let axis = if axis < 0 { axis + rank } else { axis };
+                assert!(
+                    axis >= 0 && axis < rank,
+                    "LayerNormalization axis {axis} out of range for rank {rank} for {}",
+                    node.name
+                );
+                let eps = get_attr_opt::<f32>(node, "epsilon")?.copied().unwrap_or(1e-5);
+                let axes: Vec<i32> = (axis as i32..rank as i32).collect();
+                let mean = x.mean_keepdim(axes.clone())?;
+                let var = (x.clone() - mean.clone()).square().mean_keepdim(axes)?;
+                let invstd = (var.clone() + eps).sqrt().reciprocal();
+                let mut out = (x.clone() - mean.clone()) * invstd.clone() * scale.clone();
+                if let Some(bias) = bias {
+                    out = out + bias.clone();
+                }
+                values.insert(node.output[0].clone(), out);
+                if node.output.len() > 1 {
+                    values.insert(node.output[1].clone(), mean);
+                }
+                if node.output.len() > 2 {
+                    values.insert(node.output[2].clone(), invstd);
+                }
+            }
+            "Sum" | "Mean" => {
+                let mut output = get(&node.input[0]).clone();
+                for name in node.input.iter().skip(1) {
+                    output = output + get(name).clone();
+                }
+                if node.op_type == "Mean" {
+                    output = output / (node.input.len() as f32);
+                }
+                values.insert(node.output[0].clone(), output);
+            }
+            "DepthToSpace" => {
+                let input = get(&node.input[0]);
+                let block = get_attr_opt::<i64>(node, "blocksize")?.copied().unwrap_or(1);
+                let mode = get_attr_opt::<str>(node, "mode")?.unwrap_or("DCR");
+                let shape = input.resolve_shape();
+                let [n, c, h, w] = shape[..4] else {
+                    panic!("DepthToSpace requires rank 4 for {}", node.name);
+                };
+                let out_c = c / (block * block);
+                let out = if mode == "CRD" {
+                    input
+                        .reshape([n, out_c, block, block, h, w])?
+                        .permute([0, 1, 4, 2, 5, 3])?
+                        .reshape([n, out_c, h * block, w * block])?
+                } else {
+                    input
+                        .reshape([n, block, block, out_c, h, w])?
+                        .permute([0, 3, 4, 1, 5, 2])?
+                        .reshape([n, out_c, h * block, w * block])?
+                };
+                values.insert(node.output[0].clone(), out);
+            }
+            "SpaceToDepth" => {
+                let input = get(&node.input[0]);
+                let block = get_attr_opt::<i64>(node, "blocksize")?.copied().unwrap_or(1);
+                let shape = input.resolve_shape();
+                let [n, c, h, w] = shape[..4] else {
+                    panic!("SpaceToDepth requires rank 4 for {}", node.name);
+                };
+                let out = input
+                    .reshape([n, c, h / block, block, w / block, block])?
+                    .permute([0, 3, 5, 1, 2, 4])?
+                    .reshape([n, c * block * block, h / block, w / block])?;
+                values.insert(node.output[0].clone(), out);
+            }
+            "MeanVarianceNormalization" => {
+                let input = get(&node.input[0]);
+                let axes: Vec<i32> = get_attr_opt::<[i64]>(node, "axes")?
+                    .map(|a| a.iter().map(|&x| x as i32).collect())
+                    .unwrap_or_else(|| vec![0, 2, 3]);
+                let mean = input.mean_keepdim(axes.clone())?;
+                let var = input.var_correction(axes, 0)?;
+                let out = (input.clone() - mean) / (var + 1e-9).sqrt();
+                values.insert(node.output[0].clone(), out);
+            }
+            "LpNormalization" => {
+                let input = get(&node.input[0]);
+                let axis = get_attr_opt::<i64>(node, "axis")?.copied().unwrap_or(-1) as i32;
+                let p = get_attr_opt::<i64>(node, "p")?.copied().unwrap_or(2);
+                let norm = if p == 1 {
+                    input.abs().sum_keepdim([axis])?
+                } else {
+                    input.square().sum_keepdim([axis])?.sqrt()
+                };
+                values.insert(node.output[0].clone(), input / norm);
+            }
+            "Xor" => {
+                let a = get(&node.input[0]);
+                let b = get(&node.input[1]);
+                let out = a.equal(b)?.select(false, true)?;
                 values.insert(node.output[0].clone(), out);
             }
             op_type => panic!("unsupported op_type {op_type} for op {node:?}"),
@@ -1048,6 +1677,8 @@ fn broadcast_shape_from_many(shapes: &[&[usize]]) -> Result<Vec<usize>, ZyxError
 pub struct OnnxModel {
     frozen: FrozenTape,
     input_names: Vec<String>,
+    // (input index, dim index) for each symbolic DimParam, in freeze order.
+    dim_vars: Vec<(usize, usize)>,
     output_names: Vec<String>,
 }
 
@@ -1076,6 +1707,11 @@ impl OnnxModel {
 
         let mut input_names = Vec::new();
         let mut input_infos = Vec::new(); // (name, dtype, shape_tensors)
+        // One variable per distinct DimParam name, shared by every input dim
+        // that uses it; the concrete value is bound at replay.
+        let mut dim_params: HashMap<String, Tensor> = HashMap::new();
+        let mut dim_tensors: Vec<Tensor> = Vec::new();
+        let mut dim_vars: Vec<(usize, usize)> = Vec::new();
         for inp in &graph.input {
             if initializer_names.contains(&inp.name) {
                 continue;
@@ -1096,9 +1732,23 @@ impl OnnxModel {
                 Some(s) => s
                     .dim
                     .iter()
-                    .map(|d| match &d.value {
+                    .enumerate()
+                    .map(|(dim_idx, d)| match &d.value {
                         Some(onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => Tensor::from(*v),
-                        Some(onnx::tensor_shape_proto::dimension::Value::DimParam(_)) | None => Tensor::from(1i64),
+                        Some(onnx::tensor_shape_proto::dimension::Value::DimParam(p)) => {
+                            let var = match dim_params.get(p) {
+                                Some(var) => var.clone(),
+                                None => {
+                                    let var = Tensor::variable(1i64);
+                                    dim_params.insert(p.clone(), var.clone());
+                                    dim_tensors.push(var.clone());
+                                    var
+                                }
+                            };
+                            dim_vars.push((input_infos.len(), dim_idx));
+                            var
+                        }
+                        None => Tensor::from(1i64),
                     })
                     .collect(),
             };
@@ -1116,6 +1766,7 @@ impl OnnxModel {
         // graph (see `test_tape_add_with_zeros_placeholder`).
         let tape = Tape::empty();
         let mut values: HashMap<String, Tensor> = HashMap::new();
+        let mut input_tensors: Vec<Tensor> = Vec::new();
         for (name, dtype, shape) in &input_infos {
             let placeholder = if shape.is_empty() {
                 match dtype {
@@ -1131,19 +1782,24 @@ impl OnnxModel {
                     shape.iter().map(|t| t.item::<i64>()).collect();
                 let n: usize = shape_concrete.iter().map(|&x| x as usize).product();
                 let ph = match dtype {
-                    DType::F32 => Tensor::from(vec![0.0f32; n]).reshape(shape_concrete.clone())?,
-                    DType::F64 => Tensor::from(vec![0.0f64; n]).reshape(shape_concrete.clone())?,
-                    DType::I64 => Tensor::from(vec![0i64; n]).reshape(shape_concrete.clone())?,
+                    DType::F32 => Tensor::from(vec![0.0f32; n]).reshape(shape.clone())?,
+                    DType::F64 => Tensor::from(vec![0.0f64; n]).reshape(shape.clone())?,
+                    DType::I64 => Tensor::from(vec![0i64; n]).reshape(shape.clone())?,
                     DType::I32 => Tensor::from(vec![0i32; n])
-                        .reshape(shape_concrete.clone())?
+                        .reshape(shape.clone())?
                         .cast(DType::I64),
-                    DType::U8 => Tensor::from(vec![0u8; n]).reshape(shape_concrete.clone())?,
+                    DType::U8 => Tensor::from(vec![0u8; n]).reshape(shape.clone())?,
                     _ => Tensor::zeros(shape.clone(), *dtype),
                 };
                 ph
             };
             tape.add(&placeholder)?;
+            input_tensors.push(placeholder.clone());
             values.insert(name.clone(), placeholder);
+        }
+        // Symbolic dims are bound at replay together with the data inputs.
+        for var in &dim_tensors {
+            input_tensors.push(var.clone());
         }
 
         // Evaluate the graph symbolically (under the tape). This inserts
@@ -1162,11 +1818,12 @@ impl OnnxModel {
             outputs.push(t);
         }
 
-        let frozen = tape.freeze(outputs.iter())?;
+        let frozen = tape.freeze(input_tensors.iter(), outputs.iter())?;
 
         Ok(Self {
             frozen,
             input_names,
+            dim_vars,
             output_names,
         })
     }
@@ -1177,12 +1834,17 @@ impl OnnxModel {
     /// input must be present; extra entries are ignored.
     pub fn run(&self, inputs: HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>, ZyxError> {
         let mut ordered = Vec::new();
+        let mut shapes = Vec::new();
         for name in &self.input_names {
             let t = inputs
                 .get(name)
                 .unwrap_or_else(|| panic!("missing input {}", name))
                 .clone();
+            shapes.push(t.resolve_shape());
             ordered.push(t);
+        }
+        for &(input_idx, dim_idx) in &self.dim_vars {
+            ordered.push(Tensor::variable(shapes[input_idx][dim_idx]));
         }
         let outs = self.frozen.replay(ordered.iter())?;
         let mut map = HashMap::new();

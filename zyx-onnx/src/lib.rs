@@ -12,8 +12,182 @@ pub mod eval;
 pub use eval::{dtype, simple_eval, OnnxModel};
 
 pub fn read_file<P: AsRef<std::path::Path>>(p: P) -> Result<onnx::ModelProto, ZyxError> {
-    let buf = std::fs::read(p)?;
-    onnx::ModelProto::decode(buf.as_slice()).map_err(|e| ZyxError::ParseError(format!("Failed to decode onnx model {e}").into()))
+    let path = p.as_ref();
+    let buf = std::fs::read(path)?;
+    let mut model = onnx::ModelProto::decode(buf.as_slice())
+        .map_err(|e| ZyxError::ParseError(format!("Failed to decode onnx model {e}").into()))?;
+
+    // ONNX may keep initializer bytes outside the protobuf
+    // (`data_location = EXTERNAL`). Resolve them here, relative to the model
+    // file, so that `get_tensor` only ever sees inline `raw_data`. The shape
+    // and dtype live in the protobuf; the external file only supplies the
+    // element bytes described by `location`/`offset`/`length`.
+    let base = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+    let mut external_files: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    let mut external_checksums: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let resolve_external = |t: &mut onnx::TensorProto,
+                            files: &mut std::collections::HashMap<String, Vec<u8>>,
+                            checksums: &mut std::collections::HashMap<String, String>|
+     -> Result<(), ZyxError> {
+        if t.data_location != onnx::tensor_proto::DataLocation::External as i32 {
+            return Ok(());
+        }
+        let mut location: Option<String> = None;
+        let mut offset: usize = 0;
+        let mut length: Option<usize> = None;
+        let mut checksum: Option<String> = None;
+        for entry in t.external_data.iter() {
+            let value = entry.value.as_str();
+            match entry.key.as_str() {
+                "location" => location = Some(entry.value.clone()),
+                "offset" => {
+                    offset = value.parse().map_err(|_| {
+                        ZyxError::parse_error(
+                            format!("invalid external offset {value:?} for tensor {}", t.name).into(),
+                        )
+                    })?
+                }
+                "length" => {
+                    length = Some(value.parse().map_err(|_| {
+                        ZyxError::parse_error(
+                            format!("invalid external length {value:?} for tensor {}", t.name).into(),
+                        )
+                    })?)
+                }
+                "checksum" => checksum = Some(entry.value.clone()),
+                key => {
+                    return Err(ZyxError::parse_error(
+                        format!("unsupported external_data key {key:?} for tensor {}", t.name).into(),
+                    ))
+                }
+            }
+        }
+        let location = location.ok_or_else(|| {
+            ZyxError::parse_error(format!("external tensor {} has no location", t.name).into())
+        })?;
+        let file = match files.entry(location.clone()) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(std::fs::read(base.join(&location))?)
+            }
+        };
+        // The checksum (when present) is the SHA1 of the whole external file.
+        if let Some(expected) = checksum.as_deref() {
+            if let Some(known) = checksums.get(&location) {
+                if !known.eq_ignore_ascii_case(expected) {
+                    return Err(ZyxError::parse_error(
+                        format!(
+                            "conflicting checksums for {location}: {known} vs {expected} for tensor {}",
+                            t.name
+                        )
+                        .into(),
+                    ));
+                }
+            } else {
+                use sha1::Digest;
+                let digest = sha1::Sha1::digest(&file[..]);
+                let got: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+                if !got.eq_ignore_ascii_case(expected) {
+                    return Err(ZyxError::parse_error(
+                        format!(
+                            "checksum mismatch for {location}: expected {expected}, got {got} for tensor {}",
+                            t.name
+                        )
+                        .into(),
+                    ));
+                }
+                checksums.insert(location.clone(), expected.to_string());
+            }
+        }
+        let length = length.unwrap_or_else(|| file.len().saturating_sub(offset));
+        let end = offset.checked_add(length).ok_or_else(|| {
+            ZyxError::parse_error(
+                format!("external slice overflows for tensor {}", t.name).into(),
+            )
+        })?;
+        if end > file.len() {
+            return Err(ZyxError::parse_error(
+                format!(
+                    "external slice {offset}..{end} for tensor {} is beyond {} ({} bytes)",
+                    t.name,
+                    location,
+                    file.len()
+                )
+                .into(),
+            ));
+        }
+        let elem_size = match t.data_type {
+            1 | 6 | 12 => 4,                     // FLOAT, INT32, UINT32
+            2 | 3 | 9 | 17 | 18 | 19 | 20 => 1,  // UINT8, INT8, BOOL, FLOAT8*
+            4 | 5 | 10 | 16 => 2,                // UINT16, INT16, FLOAT16, BFLOAT16
+            7 | 11 | 13 | 14 => 8,               // INT64, DOUBLE, UINT64, COMPLEX64
+            15 => 16,                            // COMPLEX128
+            dt => {
+                return Err(ZyxError::parse_error(
+                    format!("unsupported external data-type {dt} for tensor {}", t.name).into(),
+                ))
+            }
+        };
+        let numel = t.dims.iter().try_fold(1usize, |acc, &d| {
+            let d = usize::try_from(d).map_err(|_| {
+                ZyxError::parse_error(format!("invalid dim {d} for tensor {}", t.name).into())
+            })?;
+            acc.checked_mul(d).ok_or_else(|| {
+                ZyxError::parse_error(format!("dim product overflow for tensor {}", t.name).into())
+            })
+        })?;
+        let expected = numel.checked_mul(elem_size).ok_or_else(|| {
+            ZyxError::parse_error(format!("expected size overflow for tensor {}", t.name).into())
+        })?;
+        if length != expected {
+            return Err(ZyxError::parse_error(
+                format!(
+                    "external tensor {} has {length} bytes, dims {:?} x {elem_size} need {expected}",
+                    t.name, t.dims
+                )
+                .into(),
+            ));
+        }
+        t.raw_data = file[offset..end].to_vec();
+        t.data_location = onnx::tensor_proto::DataLocation::Default as i32;
+        Ok(())
+    };
+
+    if let Some(graph) = model.graph.as_mut() {
+        for t in graph.initializer.iter_mut() {
+            resolve_external(t, &mut external_files, &mut external_checksums)?;
+        }
+        for sparse in graph.sparse_initializer.iter_mut() {
+            if let Some(t) = sparse.values.as_mut() {
+                resolve_external(t, &mut external_files, &mut external_checksums)?;
+            }
+            if let Some(t) = sparse.indices.as_mut() {
+                resolve_external(t, &mut external_files, &mut external_checksums)?;
+            }
+        }
+        for node in graph.node.iter_mut() {
+            for attr in node.attribute.iter_mut() {
+                if let Some(t) = attr.t.as_mut() {
+                    resolve_external(t, &mut external_files, &mut external_checksums)?;
+                }
+                for t in attr.tensors.iter_mut() {
+                    resolve_external(t, &mut external_files, &mut external_checksums)?;
+                }
+                if let Some(sparse) = attr.sparse_tensor.as_mut() {
+                    if let Some(t) = sparse.values.as_mut() {
+                        resolve_external(t, &mut external_files, &mut external_checksums)?;
+                    }
+                    if let Some(t) = sparse.indices.as_mut() {
+                        resolve_external(t, &mut external_files, &mut external_checksums)?;
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(model)
 }
 
 pub fn load_model<P: AsRef<std::path::Path>>(p: P) -> Result<OnnxModel, ZyxError> {
@@ -140,7 +314,7 @@ mod tests {
         tape.add(&a)?;
         tape.add(&b)?;
         let c = &a + &b;
-        let frozen = tape.freeze([&c])?;
+        let frozen = tape.freeze([&a, &b], [&c])?;
         let outs = frozen.replay([&a, &b])?;
         let ov: Vec<f32> = outs[0].clone().try_into()?;
         eprintln!("direct tape add out: {:?}", ov);
@@ -159,7 +333,7 @@ mod tests {
         tape.add(&a_ph)?;
         tape.add(&b_ph)?;
         let c_ph = &a_ph + &b_ph;
-        let frozen = tape.freeze([&c_ph])?;
+        let frozen = tape.freeze([&a_ph, &b_ph], [&c_ph])?;
         let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]);
         let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]);
         let expected = &a + &b;
@@ -379,6 +553,55 @@ mod tests {
             let outs = run_onnx(&model, inputs)?;
             assert_close(&outs["y"], &expected, 1e-4)?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_gather_rank1_indices() -> Result<(), ZyxError> {
+        let x = Tensor::from([[1.0f32, 2.0, 3.0], [4.0, 5.0, 6.0]]);
+        let idx = Tensor::from([2i64, 0]);
+        let model = make_model(
+            vec![onnx::NodeProto {
+                input: vec!["x".to_string(), "idx".to_string()],
+                output: vec!["y".to_string()],
+                name: "gather".to_string(),
+                op_type: "Gather".to_string(),
+                domain: "".to_string(),
+                attribute: vec![onnx::AttributeProto {
+                    name: "axis".to_string(),
+                    ref_attr_name: "".to_string(),
+                    doc_string: "".to_string(),
+                    r#type: 2,
+                    f: 0.0,
+                    i: 1,
+                    s: vec![],
+                    t: None,
+                    g: None,
+                    sparse_tensor: None,
+                    tp: None,
+                    floats: vec![],
+                    ints: vec![],
+                    strings: vec![],
+                    tensors: vec![],
+                    graphs: vec![],
+                    sparse_tensors: vec![],
+                    type_protos: vec![],
+                }],
+                doc_string: "".to_string(),
+            }],
+            vec![
+                make_value_info("x", DataType::Float, &[2, 3]),
+                make_value_info("idx", DataType::Int64, &[2]),
+            ],
+            vec![make_value_info("y", DataType::Float, &[2, 2])],
+            vec![],
+        );
+        let mut inputs = HashMap::new();
+        inputs.insert("x".to_string(), x.clone());
+        inputs.insert("idx".to_string(), idx);
+        let outs = run_onnx(&model, inputs)?;
+        let expected = Tensor::from([[3.0f32, 1.0], [6.0, 4.0]]);
+        assert_close(&outs["y"], &expected, 1e-6)?;
         Ok(())
     }
 

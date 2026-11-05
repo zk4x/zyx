@@ -270,9 +270,9 @@ fn frozen_replay_kv_growth() -> Result<(), ZyxError> {
     cache.narrow(0, &pos, Tensor::from(2i64))?.assign(&block)?;
     // Full-cache read with a fixed output shape: per-row sums [8].
     let read = cache.sum([1])?;
-    let frozen = tape.freeze([&read])?;
+    let frozen = tape.freeze([&cache, &pos, &block], [&read])?;
 
-    // Leaf order = discovery order: cache, then pos, then block.
+    // Replay input order = freeze order: cache, then pos, then block.
     let expected_after = |steps: &[i64]| -> Vec<f32> {
         let mut e = vec![0.0f32; rows as usize];
         for &p in steps {

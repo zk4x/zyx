@@ -207,10 +207,11 @@ impl Tape {
     }
 
     #[pyo3(name = "freeze")]
-    pub fn freeze_py(&mut self, outputs: &Bound<'_, PyAny>) -> PyResult<FrozenTape> {
-        let tensors = extract_tensor_list(outputs)?;
+    pub fn freeze_py(&mut self, inputs: &Bound<'_, PyAny>, outputs: &Bound<'_, PyAny>) -> PyResult<FrozenTape> {
+        let inputs = extract_tensor_list(inputs)?;
+        let outputs = extract_tensor_list(outputs)?;
         let old = std::mem::replace(self, Tape::empty());
-        old.freeze(&tensors).map_err(|e| e.into())
+        old.freeze(&inputs, &outputs).map_err(|e| e.into())
     }
 }
 
