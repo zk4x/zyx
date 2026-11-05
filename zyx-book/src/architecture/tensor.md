@@ -4,7 +4,7 @@ The `Tensor` is the primary user-facing type in zyx. It is designed to be a ligh
 
 ```rust,ignore
 pub struct Tensor {
-    pub(super) id: TensorId,  // u32 index into the graph slab
+    pub(super) id: TensorId,  // u32 index into the runtime's tensor slab
 }
 ```
 
@@ -12,7 +12,7 @@ pub struct Tensor {
 
 ### Why 4 Bytes?
 
-Most ML frameworks have heavyweight tensor objects. PyTorch's `Tensor` is a `TensorImpl*` with shape, stride, dtype, device, storage, and autograd metadata — easily 100+ bytes. In zyx, all metadata lives in the **graph**, not the tensor handle. The tensor is just an index.
+Most ML frameworks have heavyweight tensor objects. PyTorch's `Tensor` is a `TensorImpl*` with shape, stride, dtype, device, storage, and autograd metadata — easily 100+ bytes. In zyx, metadata lives in the runtime's slabs — tensor state, interned shape expressions, and kernel/program tables — not in the handle. The tensor is just an index.
 
 ### Reference Counting
 
@@ -64,11 +64,14 @@ let zeros = Tensor::zeros([3, 3], DType::F32);
 # }
 ```
 
-This also works from files on disk (lazy loading).
+This also works from files on disk: `Tensor::load_safetensors(path)?` returns a
+map of tensors backed by the disk pool, read only when a plan needs them.
 
-### The Immutability Rule
+### Values, not Buffers
 
-Tensors are **immutable** — there is no in-place mutation:
+Every op returns a new tensor; nothing mutates behind your back. The one
+explicit in-place write is `Tensor::assign`, which records a store in the
+graph:
 
 ```rust
 # extern crate zyx;
@@ -80,4 +83,5 @@ let x_plus_one = &x + 1.0;  // new tensor, no mutation
 # }
 ```
 
-This makes autograd simpler (no mutation to track) and eliminates backpropagation errors from in-place modifications.
+Autograd never has to track hidden mutation: an `assign` is an op in the graph
+like any other, so the backward pass sees it.

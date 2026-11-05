@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "searchindex-7c15c8c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-58fb2f25.js"></script>
@@ -182,14 +182,14 @@
 <p>Zyx operates in two modes:</p>
 <ul>
 <li>
-<p><strong>Eager (default)</strong>: Tensor operations fuse into kernels as you write them. When no more fusion is beneficial (based on a heuristic), the kernel executes immediately. No separate realize step. Ideal for one-off work like data preprocessing and initialization.</p>
+<p><strong>Eager (default)</strong>: Tensor operations fuse into kernels as you write them. When fusion is no longer possible, the pending kernel is compiled and executed when its value is needed. No separate realize step. Ideal for one-off work like data preprocessing and initialization.</p>
 </li>
 <li>
-<p><strong>Tape</strong>: Wrap loops in a <code>Tape</code> to enable lazy graph building, autograd, and complex optimization (egraph-based fusion comparison, device allocation search, plan caching across structurally identical iterations). Think of it as <code>torch.compile</code>, but less strict. Kernels are shared across both modes.</p>
+<p><strong>Tape</strong>: Wrap loops in a <code>Tape</code> to enable lazy graph building, autograd, and complex optimization (fusion variants compared by measured time, device placement, plan caching across structurally identical iterations). Think of it as <code>torch.compile</code>, but less strict. Kernels are shared across both modes.</p>
 </li>
 </ul>
 <h2 id="the-architecture-at-a-glance"><a class="header" href="#the-architecture-at-a-glance">The Architecture at a Glance</a></h2>
-<p>Every tensor operation creates a graph op. What happens next depends on the mode:</p>
+<p>Every tensor operation is appended somewhere; what happens next depends on the mode:</p>
 <p><strong>Eager — direct fusion, no graph:</strong></p>
 <pre><code class="language-text">Tensor op ──► append to kernel ──► compile + execute
 </code></pre>
@@ -203,14 +203,14 @@
                            Tape::realize()
                                   │
                                   ▼
-                    Kernelizer (batch, egraph explores
-                     fusion variants + device allocations)
+                    Kernelizer (batch fusion variants
+                     + device placement)
                                   │
                                   ▼
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 </code></pre>
-<p>Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.</p>
-<p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot do: autograd without allocation of unnecessary intermediaries (there is no “save for backward”), egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is basically the “numpy” mode. But you still get to run on all the devices and you get minimalistic fusion too, so for example matmul + relu will be just one kernel, as it should be.</p>
+<p>Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer builds fusion variants for the full graph, each candidate kernel is autotuned and measured, and extraction keeps the fastest path (including device placement). Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.</p>
+<p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot do: autograd without allocation of unnecessary intermediaries (there is no “save for backward”), fusion variants chosen by measured time, device placement, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is basically the “numpy” mode. But you still get to run on all the devices and you get minimalistic fusion too, so for example matmul + relu will be just one kernel, as it should be.</p>
 
                     </main>
 

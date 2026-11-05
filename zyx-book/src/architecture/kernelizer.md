@@ -34,7 +34,7 @@ In tape mode, the kernelizer processes graph ops **bottom-up** in topological or
 | `Expand`, `Permute`, `Reshape`, `Pad`, `Flip`, `Narrow` | Fused into the input's kernel (unfolded to index arithmetic) |
 | `Binary` | Merge both input kernels into one |
 | `Reduce` | Add reduce op to the input's kernel |
-| `Const` | Create a new kernel with a constant |
+| `Const` | Replayed into consumers (scalars are never materialized) |
 
 ### When Splitting Happens
 

@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7c15c8c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -175,88 +175,236 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="optimization-passes"><a class="header" href="#optimization-passes">Optimization Passes</a></h1>
-<p>Optimization passes operate on the linear kernel IR. They are divided into <strong>always-on passes</strong> (run before every compilation) and <strong>autotuned passes</strong> (searched at runtime for the best variant).</p>
-<p>The design goal of the small opset is that new passes are easy to write. There is no fixed number zyx aims to have — passes will be added over time as performance opportunities are identified.</p>
-<h2 id="always-on-optimizations"><a class="header" href="#always-on-optimizations">Always-On Optimizations</a></h2>
-<p>These run in a fixed pipeline (<code>default_epilogue</code>) on every kernel state during autotuning and before compilation:</p>
+<p>Optimization passes operate on the linear kernel IR. There are two kinds:</p>
+<ul>
+<li><strong>always-on passes</strong> — the epilogue, run on every candidate and before
+compilation;</li>
+<li><strong>autotuned passes</strong> — made into a config space by a <code>MakeOpt</code> and selected by
+<code>BeamSearch</code> using measured launches.</li>
+</ul>
+<p>The design goal of the small opset is that new passes are easy to write. There is
+no fixed number zyx aims to have; passes are added when a performance
+opportunity is identified.</p>
+<h2 id="the-epilogue"><a class="header" href="#the-epilogue">The Epilogue</a></h2>
+<p><code>default_epilogue</code> is the always-on pipeline. It runs after each optimization
+step during the search and three times before the search starts:</p>
 <pre><code class="language-rust ignore">pub fn default_epilogue(&amp;mut self) {
-    self.unroll_len1_loops();
+    self.delete_useless_loops();
     self.constant_folding();
     self.move_constants_to_beginning();
     self.loop_invariant_code_motion();
     self.fold_accs();
-    self.delete_zero_len_indices();
-    self.delete_zero_len_loops();
-    self.unfold_pows();
+    self.algebraic_simplifications();
+    self.simplify_accumulating_loop();
+    self.simplify_accumulating_loop();
+    // Second sweep: the first sweep's rewrites expose more work.
+    self.constant_folding();
+    self.move_constants_to_beginning();
+    self.loop_invariant_code_motion();
+    self.fold_accs();
     self.algebraic_simplifications();
     self.simplify_accumulating_loop();
     self.swap_commutative();
     self.common_subexpression_elimination();
     self.instruction_schedule();
-    self.dead_code_elimination();          // must stay last
-    // + exp ↔ exp2 conversion (per device capability)
-    // + tenstorrent tile lowering when targeting TT
+    self.dead_code_elimination();
 }</code></pre>
-<h3 id="constant-folding"><a class="header" href="#constant-folding">Constant Folding</a></h3>
-<p>Evaluates expressions where all inputs are constants. For example, <code>2 + 3</code> becomes <code>5</code> and <code>sin(0.0)</code> becomes <code>0.0</code>.</p>
-<h3 id="motion-of-constants-to-beginning"><a class="header" href="#motion-of-constants-to-beginning">Motion of Constants to Beginning</a></h3>
-<p>Moves all constant definitions to the start of the kernel. This creates better fusion opportunities and simplifies register allocation.</p>
-<h3 id="loop-invariant-code-motion-licm"><a class="header" href="#loop-invariant-code-motion-licm">Loop-Invariant Code Motion (LICM)</a></h3>
-<p>Hoists operations that produce the same value on every iteration to before the loop.</p>
-<h3 id="algebraic-simplifications--unfold-pows--swap-commutative"><a class="header" href="#algebraic-simplifications--unfold-pows--swap-commutative">Algebraic Simplifications / Unfold Pows / Swap Commutative</a></h3>
-<p>Rewrites like <code>x*1 → x</code>, <code>x+0 → x</code>, exponentiation unfolding, and normalizing commutative operand order so CSE’s hashing sees identical forms.</p>
-<h3 id="accumulator-folding--simplify-accumulating-loop"><a class="header" href="#accumulator-folding--simplify-accumulating-loop">Accumulator Folding / Simplify Accumulating Loop</a></h3>
-<p>Simplifies accumulator update patterns and loop-carried reductions for more efficient code generation.</p>
-<h3 id="instruction-scheduling"><a class="header" href="#instruction-scheduling">Instruction Scheduling</a></h3>
-<p>Orders ops within basic blocks to improve ILP before codegen.</p>
-<h3 id="dead-code-elimination"><a class="header" href="#dead-code-elimination">Dead Code Elimination</a></h3>
-<p>Removes ops whose results are never used. This is always the final pass — backends fail on unreferenced ops.</p>
+<p>The core runs twice because a first pass of constant folding/LICM/algebraic
+simplification often exposes a second round of the same rewrites.
+<code>simplify_accumulating_loop</code> appears twice in the first sweep for the same
+reason. The epilogue is device-independent: it never converts a transcendental
+and leaves <code>Pow</code> alone.</p>
+<h3 id="what-each-always-on-pass-does"><a class="header" href="#what-each-always-on-pass-does">What each always-on pass does</a></h3>
+<ul>
+<li><strong>Delete useless loops</strong> — collapses length-1 counted loops and ranges to the
+constant index <code>0</code> (the body still executes once), then removes loops whose
+body has no effect. Boolean-length loops are conditionals, not trip counts,
+and are never collapsed by the length-1 rule.</li>
+<li><strong>Constant folding</strong> — evaluates any op whose inputs are all constants
+(<code>2 + 3</code> → <code>5</code>, <code>sin(0.0)</code> → <code>0.0</code>).</li>
+<li><strong>Move constants to beginning</strong> — hoists constant definitions to the head,
+which exposes fusion opportunities and simplifies register allocation.</li>
+<li><strong>Loop-invariant code motion (LICM)</strong> — hoists ops that produce the same value
+on every iteration.</li>
+<li><strong>Fold accumulators</strong> — removes accumulator updates whose value is never
+stored back inside the loop (dead accumulation).</li>
+<li><strong>Algebraic simplifications</strong> — <code>x * 1 → x</code>, <code>x + 0 → x</code>, <code>x - x → 0</code>, and
+similar identities over the concrete dtype.</li>
+<li><strong>Simplify accumulating loop</strong> — replaces a closed-form accumulate loop (for
+example a sum of successive indices) with its arithmetic formula; it processes
+one such loop per call.</li>
+<li><strong>Swap commutative</strong> — canonicalizes commutative operands so CSE hashes see
+identical forms.</li>
+<li><strong>Common subexpression elimination (CSE)</strong> — merges structurally identical ops.
+Storage allocation ids and param ids are part of the key, so two physical
+registers or two buffer arguments are never merged after allocation.</li>
+<li><strong>Instruction scheduling</strong> — orders the head as read-only params, <code>GlobalMut</code>
+params, local read-only storages, then local read-write storages; the rest is
+topologically sorted with fewest dependencies first. Memory ops that share a
+base keep their relative order, stores never leave their loop/conditional, and
+nothing moves before a barrier.</li>
+<li><strong>Dead code elimination (DCE)</strong> — removes ops with no users. <code>Store</code>, <code>Copy</code>,
+<code>Barrier</code>, <code>Loop</code>, and program-order roots are always kept. DCE is last:
+backends expect no unreferenced values.</li>
+</ul>
+<h2 id="the-device-epilogue"><a class="header" href="#the-device-epilogue">The Device Epilogue</a></h2>
+<p><code>device_epilogue</code> runs exactly once per kernel, after the search and before the
+timed launches and codegen. These decisions are lowering, not search: a kernel
+optimized ten times during the search must not be re-expanded each time, and a
+user-supplied epilogue must not be able to skip them.</p>
+<pre><code class="language-rust ignore">pub fn device_epilogue(&amp;mut self) {
+    self.unfold_pows();               // Pow -&gt; exp2(y * log2 x), every backend
+    if device_is_tenstorrent {
+        self.tt_tile();               // vector IR -&gt; tiles
+        self.tt_unfold();             // Exp2/Log2 become native ops
+        self.tt_reindex();            // logical indices -&gt; tile traffic
+        self.default_epilogue();      // clean the tile IR
+        self.tt_dataflow_select();    // phase boundary: native instructions
+        self.tt_sfpu_fusion();        // value -&gt; lane register
+        self.tt_lreg_alloc();         // virtual -&gt; physical LREGs
+        self.tt_dst_reuse();          // coalesce DST tiles
+        self.tt_reg_sync();           // Semset/Wait/Post hand-offs
+        self.tt_verify();
+    } else {
+        self.devectorize();           // lane vectors -&gt; scalar statements
+    }
+}</code></pre>
+<p>The Tenstorrent path is the physical IR described in
+<a href="./codegen.html">Codegen and the Physical IR</a>; generic passes may not run after
+<code>tt_dataflow_select</code>, and <code>tt_verify</code> replaces the generic <code>verify</code>.</p>
 <h2 id="autotuned-passes"><a class="header" href="#autotuned-passes">Autotuned Passes</a></h2>
-<p>The autotune system (<code>BeamSearch</code>) clones the kernel, applies optimization variants, and evaluates each separately. No egraphs — just clone, transform, hash, evaluate. The cost function can evaluate <strong>thousands of variants per second</strong>.</p>
-<pre><code class="language-rust ignore">pub const fn default_optimizations() -&gt; [MakeOpt; 8] {
+<p><code>default_optimizations</code> returns the make functions the search explores:</p>
+<pre><code class="language-rust ignore">pub const fn default_optimizations() -&gt; [MakeOpt; 10] {
     [
-        Kernel::opt_split_global_to_local,
+        Kernel::opt_split,
         Kernel::opt_reassociate_commutative,
-        Kernel::opt_coarsen,
-        Kernel::opt_register_blocking,
         Kernel::opt_local_reduce,
-        Kernel::opt_split_loop,
-        Kernel::opt_merge_nested_loops,
-        Kernel::opt_fuse_mad,
+        Kernel::opt_merge,
+        Kernel::opt_pad,
+        Kernel::opt_tensorize,
+        Kernel::opt_local_staging,
+        Kernel::opt_recipe,
+        Kernel::opt_register_tiling,
+        Kernel::opt_tile_and_stage,
     ]
 }</code></pre>
-<h3 id="split-global-to-local"><a class="header" href="#split-global-to-local">Split Global to Local</a></h3>
-<p>Adjusts block and thread dimensions for better memory access patterns. For example, a kernel with <code>block_dim = 1024, thread_dim = 1</code> becomes <code>block_dim = 32, thread_dim = 32</code>. This enables coalesced memory access on GPU.</p>
-<h3 id="reassociation"><a class="header" href="#reassociation">Reassociation</a></h3>
-<p>Reorders commutative operations to create more fusion opportunities.</p>
-<h3 id="coarsen"><a class="header" href="#coarsen">Coarsen</a></h3>
-<p>Merges parallel work per thread so each thread handles multiple elements (the inverse of splitting).</p>
-<h3 id="register-blocking"><a class="header" href="#register-blocking">Register Blocking</a></h3>
-<p>Unrolls tree reductions and coarsens global threads so each thread processes multiple elements, increasing computational intensity and register reuse.</p>
-<h3 id="local-reduce"><a class="header" href="#local-reduce">Local Reduce</a></h3>
-<p>Reduces within a thread’s local data before hitting global or shared memory.</p>
-<h3 id="loop-splitting"><a class="header" href="#loop-splitting">Loop Splitting</a></h3>
-<p>Splits large loops into chunks for better register pressure and instruction-level parallelism.</p>
-<h3 id="merge-nested-loops"><a class="header" href="#merge-nested-loops">Merge Nested Loops</a></h3>
-<p>Collapses nested loop nests into a single loop where semantics allow.</p>
-<h3 id="fuse-multiply-add"><a class="header" href="#fuse-multiply-add">Fuse Multiply-Add</a></h3>
-<p>Fuses <code>mul</code> + <code>add</code> chains into <code>Op::Mad</code>.</p>
-<h2 id="performance-budget"><a class="header" href="#performance-budget">Performance Budget</a></h2>
-<p>Every pass must stay fast — tens of microseconds is the ceiling, single-digit microseconds the norm. Passes run once per autotune variant and per compiled kernel, so slow passes compound into seconds of autotuning.</p>
-<h2 id="how-autotuning-searches"><a class="header" href="#how-autotuning-searches">How Autotuning Searches</a></h2>
+<p>A make function scans the kernel at a stable state and returns a <code>Box&lt;dyn Optimization&gt;</code>: an object with <code>nconfigs()</code> and <code>apply(kernel, config)</code>. No pass
+runs between make and apply, so <code>OpId</code>s embedded by the make function stay valid.
+An optimization that cannot fire returns zero configs or bails inside <code>apply</code>;
+it never aliases a wrong transformation.</p>
+<h3 id="split"><a class="header" href="#split">Split</a></h3>
+<p><code>opt_split</code> splits one site per config: a group range into a smaller group plus
+local threads (<code>SplitMode::Local</code>), a group range into a group plus unroll lanes
+(<code>SplitMode::Unroll</code>), or a loop into two nested loops (<code>SplitMode::Loop</code>). The
+split index is composed as an affine expression inline, so the IR grows only in
+op count, not in vector width; lane growth happens later when devectorization
+desugars the chosen variant. Validity — divisibility, lane limits, the
+boolean-loop gate — is checked at make time.</p>
+<h3 id="reassociate-commutative"><a class="header" href="#reassociate-commutative">Reassociate commutative</a></h3>
+<p><code>opt_reassociate_commutative</code> re-associates commutative chains so that constants
+and repeated operands group together. It exposes folding and CSE opportunities
+that operand order alone hides.</p>
+<h3 id="local-reduce"><a class="header" href="#local-reduce">Local reduce</a></h3>
+<p><code>opt_local_reduce</code> targets a single large loop reducing into one register
+accumulator (a standalone <code>sum</code>/<code>max</code> over a long axis, not a matmul). It
+parallelizes the reduction across threads, stores partial results in local
+memory, and tree-reduces them. One config per (reduce site, local factor,
+global factor).</p>
+<h3 id="merge"><a class="header" href="#merge">Merge</a></h3>
+<p><code>opt_merge</code> fuses exactly two axes into one flat axis and rewrites the originals
+as div/mod decomposition of the flat axis. Each config merges one nested loop
+chain (inner loop inside the outer’s region, no store/copy in between) or one
+range pair (both group or both local; axes ascending; symbolic lengths bail).
+Chains fold through pairwise calls, so a refused later step leaves valid IR.</p>
+<h3 id="pad"><a class="header" href="#pad">Pad</a></h3>
+<p><code>opt_pad</code> rounds range lengths up to a hardware-friendly multiple (for example
+32) using the round-up idiom as IR, with masks so out-of-range loads read zero
+and out-of-range stores are skipped. Loops pad only on Tenstorrent, where tile
+loops must run full-tile trip counts. Lengths already provably a multiple are
+left untouched, and padding is idempotent.</p>
+<h3 id="tensorize"><a class="header" href="#tensorize">Tensorize</a></h3>
+<p><code>opt_tensorize</code> recognizes a scalar matmul accumulation loop
+(<code>acc = a[m,k] * b[k,n] + acc</code> over K) and rewrites it into <code>Op::Wmma</code>. It emits
+one config per device MMA variant the extent and dtypes fit
+(<code>DeviceInfo::mma_variants</code>). The pass does the tiling and fragment addressing
+itself; the result is scalar IR of slot-wise register accesses, so <code>devectorize</code>
+has nothing to undo, and it removes the original scalar region.</p>
+<h3 id="local-staging"><a class="header" href="#local-staging">Local staging</a></h3>
+<p><code>opt_local_staging</code> deduplicates loads that threads repeat. When a load’s index
+does not mention a local axis, every thread re-loads the same value; staging
+fills a <code>MemScope::Local</code> tile cooperatively once and lets the threads read it
+back. The pass strip-mines the innermost loop the load depends on and splits the
+body into a fill half and a compute half (ops between the load and its consumers
+that depend only on the load and constants move into the fill, so a dequantized
+value is staged rather than its packed form). One config per (repeated load,
+strip factor); it bails on devices without local memory, non-affine indices, or
+tiles that do not fit or divide over the block.</p>
+<h3 id="the-recipes"><a class="header" href="#the-recipes">The recipes</a></h3>
+<p>The last three passes are <strong>recipes</strong>: fixed sequences of known-good steps
+exposed as one search move, so the beam can reach a good kernel shape without
+walking every intermediate state. A recipe returns a config space, never a
+winner, and only fires from a plain kernel (no lanes, barriers, reduces, local
+memory, or fused matmul — another pass already ran).</p>
+<ul>
+<li><strong><code>opt_recipe</code></strong> — the lane recipe: split a group range into local lanes
+(factors tried largest first), then stage the operand the lanes share.</li>
+<li><strong><code>opt_register_tiling</code></strong> — the register-blocking recipe (the former coarsen
+era): unroll the reduce loop into accumulators, then each output range into a
+per-thread tile. Reduce sites are mandatory; output ranges may be skipped.</li>
+<li><strong><code>opt_tile_and_stage</code></strong> — lanes on one output range, a per-thread tile on
+both, then stage the shared operand.</li>
+</ul>
+<h2 id="how-the-search-works"><a class="header" href="#how-the-search-works">How the Search Works</a></h2>
+<p><code>BeamSearch</code> is the driver. Its defaults are:</p>
+<pre><code class="language-rust ignore">BeamSearch {
+    n_launches: 1,          // candidates actually launched and timed
+    n_seeds: 200,           // initial optimization samples
+    n_added_per_step: 200,  // new candidates per expansion
+    n_removed_per_step: 0,  // candidates dropped per step
+    n_total_opts: 1000,     // expansion iterations
+}</code></pre>
+<p>The flow:</p>
 <ol>
-<li>Start with the initial kernel and run the epilogue</li>
-<li>Apply ONE optimization variant and run the epilogue</li>
-<li>Hash the kernel — skip if already visited</li>
-<li>Launch and measure, or evaluate with the cost function</li>
-<li>Repeat by combining with existing optimization sequences</li>
-<li>Select the best variant; only the top variants are compiled and launched</li>
+<li>The caller supplies <strong>seeds</strong>: linearized kernels, already epilogue-cleaned,
+all on one device and sharing one parameter signature. The search does no
+seed preprocessing.</li>
+<li>Every make function is applied to the base kernel; configs are subsampled
+proportionally to <code>n_seeds</code>, the epilogue runs after each apply, and the
+resulting kernel hash deduplicates visited states.</li>
+<li>Candidates are ranked by <code>cost</code> (by default <code>Kernel::base_cost</code>, a weighted
+feature count — no launch). The best-scoring sequence is sampled and expanded
+with new configs; <code>n_total_opts</code> expansions are attempted, dropping the worst
+<code>n_removed_per_step</code> each round.</li>
+<li>The top <code>n_launches</code> candidates are rebuilt deterministically, <code>device_epilogue</code>
+runs once on each, and each is compiled and launched with <code>launch_with_timings</code>.
+Candidates that fail to compile/launch are skipped, and the search keeps going
+until it has measured <code>n_launches</code> successes or runs out.</li>
+<li>Every measured program is released; the fastest kernel is returned with its
+time. The cost function only orders the search — <strong>measured time decides</strong>.</li>
 </ol>
+<p>Kernels are identified by content hash (<code>Kernel::get_hash</code>), so the same state
+reached by different sequences is explored once. <code>ZYX_DEBUG=256</code> selects
+<code>NoSearch</code>, which skips the seed search and compiles a cleaned seed once —
+useful to bisect whether a wrong result comes from the search space or from seed
+preparation/codegen.</p>
+<h2 id="performance-budget"><a class="header" href="#performance-budget">Performance Budget</a></h2>
+<p>The repeated passes must stay fast: <strong>30 microseconds per invocation</strong> is the
+ceiling for <code>default_epilogue</code> and for the whole <code>default_optimizations</code> list
+per candidate. Those run once per candidate inside the search, so a slow pass
+compounds into seconds of autotuning. The device epilogue runs once after the
+search and is not bound by that budget.</p>
+<p>Passes are measured with the <code>time_pass!</code> macro or <code>std::time::Instant</code> on
+stderr; a regression in algorithmic cost is a performance bug, not a style
+issue.</p>
 <h2 id="correctness-guarantee"><a class="header" href="#correctness-guarantee">Correctness Guarantee</a></h2>
 <blockquote>
-<p>No optimization is needed for tests to pass. All tests must pass no matter which sequence of optimizations (including empty) is applied.</p>
+<p>No optimization is needed for tests to pass. All tests must pass no matter
+which sequence of optimizations (including empty) is applied.</p>
 </blockquote>
-<p>If an optimization breaks a test, the optimization is buggy — not the sequence ordering. The verify pass (<code>verify.rs</code>) checks internal IR consistency in debug mode.</p>
+<p>If an optimization breaks a test, the optimization is buggy — not the sequence
+ordering. Passes must preserve semantics or bail (<code>todo!()</code>/zero configs), never
+silently alias a wrong transformation. <code>Kernel::verify</code> checks IR consistency in
+<code>debug_assertions</code> builds; the Tenstorrent physical IR is checked by <code>tt_verify</code>.</p>
 
                     </main>
 

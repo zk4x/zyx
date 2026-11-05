@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7c15c8c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -175,64 +175,141 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
-<p>Zyx is configured through a JSON file, environment variables, and API calls.</p>
+<p>Zyx is configured through a JSON file and environment variables. The file is
+read <strong>once</strong> per process, on the first backend access; changing it requires a
+restart. Missing sections and missing keys fall back to defaults, and a missing
+or unparsable file simply means “all defaults”.</p>
 <h2 id="config-file"><a class="header" href="#config-file">Config File</a></h2>
-<p>The runtime reads <code>$XDG_CONFIG_HOME/zyx/config.json</code> (or <code>~/.config/zyx/config.json</code> by default):</p>
+<p>The runtime reads <code>$XDG_CONFIG_HOME/zyx/config.json</code> when <code>XDG_CONFIG_HOME</code> is
+an absolute path, otherwise <code>~/.config/zyx/config.json</code>. <code>ZYX_DEBUG=1</code> prints
+whether the file was found and parsed.</p>
+<p>A complete example (every section is optional):</p>
 <pre><code class="language-json">{
-    "c": { "enabled": true },
-    "cuda": { "device_ids": [0] },
-    "opencl": { "platform_ids": [0] },
     "autotune": {
-        "enabled": true,
-        "max_configs": 100,
-        "timeout_ms": 5000
-    }
+        "n_launches": 1,
+        "n_seeds": 200,
+        "n_added_per_step": 200,
+        "n_removed_per_step": 0,
+        "n_total_opts": 1000
+    },
+    "c": { "enabled": true },
+    "cblas": { "enabled": true },
+    "cuda": { "device_ids": [0], "cudnn": true, "queues": 8 },
+    "opencl": { "platform_ids": [0], "queues": 8 },
+    "vulkan": { "device_ids": [0] },
+    "tenstorrent": { "device_ids": [0] }
 }
 </code></pre>
-<h3 id="backend-control"><a class="header" href="#backend-control">Backend Control</a></h3>
+<p><code>wgpu</code> (<code>"wgpu": { "enabled": true }</code>) exists only when the crate is built with
+the <code>wgpu</code> feature.</p>
+<h3 id="backend-sections"><a class="header" href="#backend-sections">Backend Sections</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Config</th><th>Effect</th></tr>
+<tr><th>Section</th><th>Keys</th><th>Default</th><th>Disable with</th></tr>
 </thead>
 <tbody>
-<tr><td><code>"c": { "enabled": true }</code></td><td>Enable CPU backend</td></tr>
-<tr><td><code>"cuda": { "device_ids": [] }</code></td><td>Disable all CUDA devices</td></tr>
-<tr><td><code>"opencl": { "platform_ids": [] }</code></td><td>Disable all OpenCL</td></tr>
+<tr><td><code>c</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
+<tr><td><code>cblas</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
+<tr><td><code>cuda</code></td><td><code>device_ids</code>, <code>cudnn</code>, <code>queues</code></td><td>all GPUs, cuDNN off, 8 queues</td><td><code>"device_ids": []</code></td></tr>
+<tr><td><code>opencl</code></td><td><code>platform_ids</code>, <code>queues</code></td><td>all platforms, 8 queues</td><td><code>"platform_ids": []</code></td></tr>
+<tr><td><code>vulkan</code></td><td><code>device_ids</code></td><td>all devices</td><td><code>"device_ids": []</code></td></tr>
+<tr><td><code>tenstorrent</code></td><td><code>device_ids</code></td><td>all devices</td><td><code>"device_ids": []</code></td></tr>
+<tr><td><code>wgpu</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
 </tbody>
 </table>
 </div>
+<p><code>device_ids</code> / <code>platform_ids</code>: <code>null</code>/absent means “every device the backend
+finds”; a list selects exactly those ordinals; an <strong>empty list disables the
+backend</strong>. Ordinals are the backend’s own (CUDA driver order, Vulkan device
+index, OpenCL platform index).</p>
+<p><code>cuda.cudnn</code> enables the cuDNN AOT matmul path (the struct default is <code>false</code>).
+<code>cuda.queues</code> and <code>opencl.queues</code> set the number of hardware command
+queues/streams per device used by the submission workers (default 8).</p>
+<h3 id="autotune-section"><a class="header" href="#autotune-section">Autotune Section</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Key</th><th>Default</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>n_launches</code></td><td><code>1</code></td><td>candidates actually launched and timed</td></tr>
+<tr><td><code>n_seeds</code></td><td><code>200</code></td><td>initial optimization samples</td></tr>
+<tr><td><code>n_added_per_step</code></td><td><code>200</code></td><td>new candidates per expansion</td></tr>
+<tr><td><code>n_removed_per_step</code></td><td><code>0</code></td><td>candidates dropped per expansion</td></tr>
+<tr><td><code>n_total_opts</code></td><td><code>1000</code></td><td>expansion iterations</td></tr>
+</tbody>
+</table>
+</div>
+<p>See <a href="./optimizations.html#how-the-search-works">Optimization Passes</a> for how the
+search uses them.</p>
 <h2 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h2>
-<h3 id="debug-flags"><a class="header" href="#debug-flags">Debug Flags</a></h3>
-<p>Set <code>ZYX_DEBUG</code> as a bitmask:</p>
+<h3 id="zyx_dev--device-pinning"><a class="header" href="#zyx_dev--device-pinning"><code>ZYX_DEV</code> — device pinning</a></h3>
+<p><code>ZYX_DEV</code> overrides the config file and leaves exactly one device available;
+every other backend is configured out (and a device with an ordinal keeps only
+that ordinal). It accepts the same syntax as <code>Dev::from_str</code>:</p>
+<pre><code class="language-bash">ZYX_DEV=cpu          # C backend
+ZYX_DEV=cuda:0        # CUDA driver ordinal 0
+ZYX_DEV=tt            # Tenstorrent, device 0
+ZYX_DEV=vulkan        # Vulkan device 0
+ZYX_DEV=opencl:1      # OpenCL platform 1
+</code></pre>
+<p>Names are case-insensitive: <code>auto</code>, <code>c</code>/<code>cpu</code>, <code>cblas</code>/<code>blas</code>, <code>host</code>, <code>cuda</code>,
+<code>tt</code>/<code>tenstorrent</code>, <code>vulkan</code>/<code>vk</code>, <code>opencl</code>/<code>cl</code>, <code>wgpu</code>. An index on an
+indexless device (<code>c:1</code>) is an error. A bad value panics — silently falling back
+would run on the wrong hardware — and <code>ZYX_DEV=auto</code> is a no-op (no narrowing).</p>
+<h3 id="zyx_debug--trace-flags"><a class="header" href="#zyx_debug--trace-flags"><code>ZYX_DEBUG</code> — trace flags</a></h3>
+<p>A bitmask; add the values you want:</p>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Value</th><th>Output</th></tr>
 </thead>
 <tbody>
-<tr><td>1</td><td>Devices + configuration, kernel launches</td></tr>
-<tr><td>2</td><td>Egraph print (after realize)</td></tr>
-<tr><td>4</td><td>Scheduler kernels — IR before linearization</td></tr>
-<tr><td>8</td><td>Kernel IR after linearization + optimization</td></tr>
-<tr><td>16</td><td>Generated assembly/code</td></tr>
-<tr><td>32</td><td>Launch + memory movement</td></tr>
+<tr><td>1</td><td>Devices + configuration</td></tr>
+<tr><td>2</td><td>Graph/e-graph dump</td></tr>
+<tr><td>4</td><td>Kernel IR before linearization (scheduler view)</td></tr>
+<tr><td>8</td><td>Winning kernel IR after the search</td></tr>
+<tr><td>16</td><td>Generated assembly/source</td></tr>
+<tr><td>32</td><td>Kernel launches</td></tr>
 <tr><td>64</td><td>Alloc/dealloc</td></tr>
 <tr><td>128</td><td>Kernel compilation</td></tr>
-<tr><td>256</td><td>Autotune no search</td></tr>
+<tr><td>256</td><td>Disable the autotune search (<code>NoSearch</code>)</td></tr>
 </tbody>
 </table>
 </div>
-<pre><code class="language-bash">ZYX_DEBUG=8 cargo run     # print kernel IR
-ZYX_DEBUG=16 cargo run    # print generated code
+<pre><code class="language-bash">ZYX_DEBUG=8 cargo run     # print the winning kernel IR
+ZYX_DEBUG=24 cargo run    # IR (8) + generated code (16)
+ZYX_DEBUG=256 cargo run   # NoSearch: compile a cleaned seed once
 </code></pre>
-<h3 id="colorless-output"><a class="header" href="#colorless-output">Colorless Output</a></h3>
-<pre><code class="language-bash">AGENT=1 ZYX_DEBUG=8 cargo test
-</code></pre>
+<h3 id="other-variables"><a class="header" href="#other-variables">Other variables</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variable</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>AGENT=1</code></td><td>Colorless debug output (also auto-detected when stdout is not a terminal)</td></tr>
+<tr><td><code>ZYX_DRY_RUN=1</code></td><td>Skip device launches; timings are a fixed 1 s placeholder and output buffers are uninitialized — never read them</td></tr>
+<tr><td><code>ZYX_PTX</code></td><td>CUDA codegen emits PTX directly instead of CUDA C + NVRTC</td></tr>
+<tr><td><code>ZYX_BENCH_OUT</code></td><td>Append one JSON line per measured autotune candidate to this path</td></tr>
+<tr><td><code>ZYX_BENCH_TAG</code></td><td>Tag for the benchmark rows (<code>untagged</code> by default)</td></tr>
+<tr><td><code>ZYX_TT_IR</code></td><td>Dump the Tenstorrent IR before/after <code>tt_tile</code>, <code>tt_reindex</code>, <code>tt_dataflow_select</code></td></tr>
+<tr><td><code>ZYX_TT_DUMP</code></td><td>Dump each Tenstorrent role program (bytes, entries, length)</td></tr>
+<tr><td><code>TT_TTSIM_LIB</code></td><td>Path to the Tenstorrent simulator library (default <code>vendor/libttsim_bh.so</code>)</td></tr>
+<tr><td><code>TT_TTSIM_LIB_X2</code> / <code>TT_TTSIM_LIB_X4</code></td><td>Simulator library for dual-/quad-chip builds</td></tr>
+<tr><td><code>TT_MATH</code></td><td>Tenstorrent SFPU math mode: <code>precise</code> (default) or <code>approx</code></td></tr>
+<tr><td><code>ZYX_KERN_TRACE</code></td><td>Kernelizer split/store tracing on stderr</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="api-configuration"><a class="header" href="#api-configuration">API Configuration</a></h2>
-<pre><code class="language-rust ignore">Tensor::manual_seed(42);            // deterministic RNG
-Tensor::set_training(true);         // enable training mode
-Tensor::set_training(false);        // disable training mode</code></pre>
+<pre><code class="language-rust ignore">Tensor::manual_seed(42);        // reseed the runtime RNG
+Tensor::set_training(true);     // enable training mode (autograd graph is kept)
+Tensor::set_training(false);    // inference
+let t = Tensor::training();     // current mode</code></pre>
+<p>Device pinning can also be done per tensor with <code>Tensor::to(Dev)</code>; see
+<a href="./backends.html">Backend System</a>.</p>
 
                     </main>
 

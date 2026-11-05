@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7c15c8c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -183,7 +183,7 @@
 <blockquote>
 <p>An op belongs in the kernel IR iff the autotuner should ever enumerate over it — iff there exists a variant of the program where it is placed or structured differently, and the hardware decides between them.</p>
 </blockquote>
-<p>Movement lowering, loop structure, split/coarsen/register blocking, MAD fusion: search dimensions, kernel IR. Locks, syncs, reconfigs: their placement is invariant under restructuring, nothing to search — they cost the search nothing and belong to the physical IR, placed by derivation from loop structure and checked by verify.</p>
+<p>Movement lowering, loop structure, split/merge/pad, register tiling, local staging, tensorization, recipes: search dimensions, kernel IR. Locks, syncs, reconfigs: their placement is invariant under restructuring, nothing to search — they cost the search nothing and belong to the physical IR, placed by derivation from loop structure and checked by verify.</p>
 <p>Consequences:</p>
 <ul>
 <li><strong>The search space is closed.</strong> The autotuner never sees a physical IR, and no backend can smuggle a decision out of the search. If a backend-specific dimension is ever worth searching, it enters as a kernel IR config + <code>MakeOpt</code>, keeping the cost model measured-time-only and backend-agnostic.</li>
@@ -197,7 +197,7 @@
 <p>If a pass reasons about values, it belongs in the kernel IR (or above). SSA machinery — rewrites, solvers, def-use analysis — is never duplicated in a physical IR. When a physical-IR pass needs a dataflow fact (e.g. “is this operand’s last use?”), it queries the kernel IR through the origin op recorded at lowering time.</p>
 <p>The search test decides where an <em>op</em> lives; the subject test decides where a <em>pass</em> lives.</p>
 <h2 id="straight-codegen-is-the-default"><a class="header" href="#straight-codegen-is-the-default">Straight Codegen Is the Default</a></h2>
-<p>For most backends (C, CUDA, OpenCL, Vulkan, HIP, WGPU), codegen is trivial by design: deSSA, then one linear pass over the kernel IR emitting target code. No further optimizations, no backend-specific lowering. The hard work happened in the optimization passes; the IR was deliberately shaped so backends stay thin.</p>
+<p>For most backends (C, CUDA, OpenCL, Vulkan, WGPU), codegen is trivial by design: deSSA, then one linear pass over the kernel IR emitting target code. No further optimizations, no backend-specific lowering. The hard work happened in the optimization passes; the IR was deliberately shaped so backends stay thin.</p>
 
                     </main>
 

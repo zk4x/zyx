@@ -228,8 +228,9 @@ Backends can be disabled, enabled, or restricted through
 - `[]` = disable that backend
 - `[0]` = use device 0 only
 
-CUDA, HIP, OpenCL, Vulkan, and Tenstorrent are always compiled in and look for
-their driver libraries at runtime. WGPU is a cargo feature.
+CUDA, OpenCL, Vulkan, and Tenstorrent are always compiled in and look for
+their driver libraries (or, for Tenstorrent, the simulator) at runtime. WGPU is
+a cargo feature.
 
 ## Data types
 

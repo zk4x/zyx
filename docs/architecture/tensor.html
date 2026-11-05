@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7c15c8c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -177,11 +177,11 @@
                         <h1 id="the-tensor"><a class="header" href="#the-tensor">The Tensor</a></h1>
 <p>The <code>Tensor</code> is the primary user-facing type in zyx. It is designed to be a lightweight handle — only <strong>4 bytes</strong>.</p>
 <pre><code class="language-rust ignore">pub struct Tensor {
-    pub(super) id: TensorId,  // u32 index into the graph slab
+    pub(super) id: TensorId,  // u32 index into the runtime's tensor slab
 }</code></pre>
 <h2 id="design-choices"><a class="header" href="#design-choices">Design Choices</a></h2>
 <h3 id="why-4-bytes"><a class="header" href="#why-4-bytes">Why 4 Bytes?</a></h3>
-<p>Most ML frameworks have heavyweight tensor objects. PyTorch’s <code>Tensor</code> is a <code>TensorImpl*</code> with shape, stride, dtype, device, storage, and autograd metadata — easily 100+ bytes. In zyx, all metadata lives in the <strong>graph</strong>, not the tensor handle. The tensor is just an index.</p>
+<p>Most ML frameworks have heavyweight tensor objects. PyTorch’s <code>Tensor</code> is a <code>TensorImpl*</code> with shape, stride, dtype, device, storage, and autograd metadata — easily 100+ bytes. In zyx, metadata lives in the runtime’s slabs — tensor state, interned shape expressions, and kernel/program tables — not in the handle. The tensor is just an index.</p>
 <h3 id="reference-counting"><a class="header" href="#reference-counting">Reference Counting</a></h3>
 <p>Tensors are reference-counted via the global <code>RT</code> (a <code>Mutex&lt;Runtime&gt;</code>):</p>
 <pre><code class="language-rust ignore">impl Clone for Tensor {
@@ -215,9 +215,12 @@ let ones = Tensor::ones([3, 3], DType::F32);
 let zeros = Tensor::zeros([3, 3], DType::F32);
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>This also works from files on disk (lazy loading).</p>
-<h3 id="the-immutability-rule"><a class="header" href="#the-immutability-rule">The Immutability Rule</a></h3>
-<p>Tensors are <strong>immutable</strong> — there is no in-place mutation:</p>
+<p>This also works from files on disk: <code>Tensor::load_safetensors(path)?</code> returns a
+map of tensors backed by the disk pool, read only when a plan needs them.</p>
+<h3 id="values-not-buffers"><a class="header" href="#values-not-buffers">Values, not Buffers</a></h3>
+<p>Every op returns a new tensor; nothing mutates behind your back. The one
+explicit in-place write is <code>Tensor::assign</code>, which records a store in the
+graph:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
 </span><span class="boring">use zyx::{DType, Tensor, ZyxError};
 </span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
@@ -225,7 +228,8 @@ let zeros = Tensor::zeros([3, 3], DType::F32);
 let x_plus_one = &amp;x + 1.0;  // new tensor, no mutation
 <span class="boring">Ok(())
 </span><span class="boring">}</span></code></pre>
-<p>This makes autograd simpler (no mutation to track) and eliminates backpropagation errors from in-place modifications.</p>
+<p>Autograd never has to track hidden mutation: an <code>assign</code> is an op in the graph
+like any other, so the backward pass sees it.</p>
 
                     </main>
 

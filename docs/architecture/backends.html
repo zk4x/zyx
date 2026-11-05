@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7c15c8c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -175,7 +175,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="backend-system"><a class="header" href="#backend-system">Backend System</a></h1>
-<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates for WGPU and TT), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
+<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (only WGPU is feature-gated), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
 <h2 id="dev--device-handle-and-selector"><a class="header" href="#dev--device-handle-and-selector"><code>Dev</code> — Device Handle and Selector</a></h2>
 <p>There is no <code>dyn Backend</code> and no device ids separate from the devices: <code>Dev</code> is both the selector and the handle — a <code>Copy</code> enum naming the backend plus the hardware ordinal.</p>
 <pre><code class="language-rust ignore">pub enum Dev {
@@ -185,10 +185,12 @@
     C,
     /// CBLAS backend for AOT matmuls (runs on Pool::Host).
     Cblas,
+    /// Transfer-only pseudo-device (runs on Pool::Host); never enumerated.
+    Host,
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),
     /// Tenstorrent chip with the given id.
-    TT(u16),          // feature = "tenstorrent"
+    TT(u16),
     /// Vulkan physical device with the given index.
     Vulkan(u16),
     /// OpenCL device with the given index.
@@ -200,14 +202,14 @@
 <h2 id="pool--memory"><a class="header" href="#pool--memory"><code>Pool</code> — Memory</a></h2>
 <p>Memory belongs to pools, and pools are process-wide: they outlive any <code>Runtime</code> and are never deinitialized.</p>
 <pre><code class="language-rust ignore">pub enum Pool {
-    /// Host RAM. Shared by the C and CBLAS devices, which own no pool.
+    /// Host RAM. Shared by the C, CBLAS and Host devices, which own no pool.
     Host,
     /// Disk-backed tensors (paths, not bytes).
     Disk,
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),          // feature = "tenstorrent"
+    TT(u16),
     WGPU(u16),        // feature = "wgpu"
 }</code></pre>
 <p>Each variant owns its globals — one <code>Mutex&lt;pool&gt;</code> per ordinal (<code>Host</code> is a <code>OnceLock&lt;Mutex&lt;_&gt;&gt;</code>, <code>Disk</code> is a const <code>Mutex</code> with no <code>OnceLock</code> at all, the rest are <code>OnceLock&lt;Vec&lt;Mutex&lt;_&gt;&gt;&gt;</code> with one <code>Mutex&lt;()&gt;</code> per backend serializing first construction where it matters — cheap backends have no init lock). All globals live at the top of each <code>backend/*.rs</code> file, so the process-wide state is visible before any logic. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
@@ -238,15 +240,14 @@ pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -
 <tr><td>C</td><td><code>c.rs</code></td><td>C99 (compiled to .so)</td><td>Clang/GCC</td></tr>
 <tr><td>CBLAS</td><td><code>cblas.rs</code></td><td>AOT matmul calls</td><td>Host BLAS (shares <code>Pool::Host</code>)</td></tr>
 <tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C → SASS, cuDNN for AOT matmul</td><td>CUDA driver via <code>libloading</code></td></tr>
-<tr><td>HIP</td><td><code>hip.rs</code></td><td>HIP</td><td>ROCm via <code>libloading</code></td></tr>
 <tr><td>OpenCL</td><td><code>opencl.rs</code></td><td>OpenCL C</td><td>OpenCL runtime via <code>libloading</code></td></tr>
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
 <tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
-<tr><td>Tenstorrent</td><td><code>tenstorrent.rs</code></td><td>C++ RISC-V kernels</td><td>TT-Metalium (feature: <code>tenstorrent</code>)</td></tr>
+<tr><td>Tenstorrent</td><td><code>tenstorrent/</code></td><td>Tensix RISC-V programs</td><td>Bundled tt-sim simulator</td></tr>
 </tbody>
 </table>
 </div>
-<p>All backends except WGPU and Tenstorrent are compiled in by default; those two require <code>--features wgpu</code> / <code>--features tenstorrent</code>.</p>
+<p>Every backend except WGPU is compiled in unconditionally.</p>
 <h3 id="cblas"><a class="header" href="#cblas">CBLAS</a></h3>
 <p>The CBLAS device runs <strong>only AOT (precompiled) matmul kernels</strong> and cannot compile generic zyx kernels. <code>Dev::aot_only()</code> marks it, and generic kernel autotuning skips it — it competes only where a precompiled BLAS call is an option.</p>
 <h3 id="cuda-micro-batched-submission"><a class="header" href="#cuda-micro-batched-submission">CUDA: micro-batched submission</a></h3>

@@ -10,13 +10,13 @@ This book is for developers who want to understand how zyx works under the hood,
 
 Zyx operates in two modes:
 
-- **Eager (default)**: Tensor operations fuse into kernels as you write them. When no more fusion is beneficial (based on a heuristic), the kernel executes immediately. No separate realize step. Ideal for one-off work like data preprocessing and initialization.
+- **Eager (default)**: Tensor operations fuse into kernels as you write them. When fusion is no longer possible, the pending kernel is compiled and executed when its value is needed. No separate realize step. Ideal for one-off work like data preprocessing and initialization.
 
-- **Tape**: Wrap loops in a `Tape` to enable lazy graph building, autograd, and complex optimization (egraph-based fusion comparison, device allocation search, plan caching across structurally identical iterations). Think of it as `torch.compile`, but less strict. Kernels are shared across both modes.
+- **Tape**: Wrap loops in a `Tape` to enable lazy graph building, autograd, and complex optimization (fusion variants compared by measured time, device placement, plan caching across structurally identical iterations). Think of it as `torch.compile`, but less strict. Kernels are shared across both modes.
 
 ## The Architecture at a Glance
 
-Every tensor operation creates a graph op. What happens next depends on the mode:
+Every tensor operation is appended somewhere; what happens next depends on the mode:
 
 **Eager — direct fusion, no graph:**
 
@@ -39,13 +39,13 @@ Tensor op ──► graph op (accumulates) ──► Autograd (reverse-mode on s
                            Tape::realize()
                                   │
                                   ▼
-                    Kernelizer (batch, egraph explores
-                     fusion variants + device allocations)
+                    Kernelizer (batch fusion variants
+                     + device placement)
                                   │
                                   ▼
                     Kernel IR ──► Opt ──► Codegen ──► Execute
 ```
 
-Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer processes the full graph while egraph exploration tries different fusion schemes and device allocations, selecting the fastest. Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.
+Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer builds fusion variants for the full graph, each candidate kernel is autotuned and measured, and extraction keeps the fastest path (including device placement). Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.
 
-The trade-off in tape mode is that evaluation is lazy — you must call `realize()` to trigger computation. But this laziness enables optimizations that eager execution cannot do: autograd without allocation of unnecessary intermediaries (there is no "save for backward"), egraph exploration of fusion variants, device allocation search, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is basically the "numpy" mode. But you still get to run on all the devices and you get minimalistic fusion too, so for example matmul + relu will be just one kernel, as it should be.
+The trade-off in tape mode is that evaluation is lazy — you must call `realize()` to trigger computation. But this laziness enables optimizations that eager execution cannot do: autograd without allocation of unnecessary intermediaries (there is no "save for backward"), fusion variants chosen by measured time, device placement, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is basically the "numpy" mode. But you still get to run on all the devices and you get minimalistic fusion too, so for example matmul + relu will be just one kernel, as it should be.

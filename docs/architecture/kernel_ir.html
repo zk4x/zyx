@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7c15c8c2.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-58fb2f25.js"></script>
@@ -175,97 +175,227 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-kernel-ir"><a class="header" href="#the-kernel-ir">The Kernel IR</a></h1>
-<p>The kernel IR is the intermediate representation used for all computation kernels. It is a doubly-linked list of 32-byte <code>OpNode</code>s stored in an arena (the <code>Slab</code> allocator).</p>
+<p>The kernel IR is the representation that passes optimize and backends compile.
+It is a <strong>linear SSA</strong> construct: a doubly-linked list of ops stored in an arena.
+This chapter describes its structure and its ops; the passes that transform it
+are in <a href="./optimizations.html">Optimization Passes</a>.</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <pre><code class="language-rust ignore">pub struct Kernel {
-    pub ops: Slab&lt;OpId, OpLinked&gt;,
-    pub head: OpId,
-    pub tail: OpId,
-    // ...
+    pub(crate) ops: Slab&lt;OpId, OpLinked&gt;,   // arena
+    pub head: OpId,                         // first op
+    pub(crate) tail: OpId,                  // last op
+    pub(crate) dev: Dev,                    // target device
+    pub(crate) dev_info: Option&lt;Arc&lt;DeviceInfo&gt;&gt;, // fixed hardware facts
 }
 
 pub struct OpLinked {
-    pub prev: OpId,  // u32
-    pub next: OpId,  // u32
-    pub op: Op,      // 24 bytes (enum + payload)
+    pub prev: OpId,   // u32
+    pub next: OpId,   // u32
+    pub op: Op,       // 24 bytes (enum + payload)
 }</code></pre>
-<p>The <code>Slab&lt;OpId, OpNode&gt;</code> is a <code>Vec&lt;OpNode&gt;</code> with a free-list. <code>OpId</code> is a <code>u32</code> index — random access is O(1).</p>
+<p><code>OpId</code> is a <code>u32</code> index: random access is O(1), <code>OpId::NULL</code> is <code>u32::MAX</code>, and
+the list is walked through <code>head</code>/<code>next</code> (or backwards from <code>tail</code>). <code>Op</code> is 24
+bytes and <code>OpLinked</code> 32 — both are compile-time assertions in <code>kernel/ops.rs</code>.
+There is no <code>Box</code> per op and no vtable.</p>
+<p><code>dev_info</code> is a snapshot of the device’s <code>DeviceInfo</code> (warp size, limits,
+capabilities) taken when the device is bound. Passes never lock the runtime to
+ask hardware questions, and clones share the snapshot through <code>Arc</code>.</p>
+<p>The graph uses the same <code>Op</code> enum, but a different node: a graph class node
+carries <code>class_of</code> and <code>next_in_class</code> instead of <code>prev</code>/<code>next</code>. The kernel node
+type is <code>OpLinked</code>; the graph node type is <code>OpNode</code>.</p>
 <h2 id="linearization"><a class="header" href="#linearization">Linearization</a></h2>
-<p>Before linearization, view ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code>) are represented directly as <code>Op</code> variants. They are unfolded into index arithmetic during the linearization pass — after linearization, all ops are fixed-size inline entries in the arena — no <code>Box</code>, no vtables, no per-op indirection.</p>
-<p>The IR is in SSA form, except for <code>Loop</code>, <code>Param</code>, and <code>Storage</code> ops (which can carry mutable state).</p>
+<p>Before <code>linearize</code>, a kernel is a small DAG with <strong>no loads</strong> and no storage:</p>
+<ul>
+<li><code>Param { kind: Global }</code> — an input buffer;</li>
+<li><code>Param { kind: GlobalMut }</code> — an output buffer / store destination;</li>
+<li><code>Param { kind: Variable }</code> — a scalar launch argument (e.g. a dynamic dim);</li>
+<li>movement ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code>);</li>
+<li>element-wise ops (<code>Unary</code>, <code>Binary</code>, <code>Select</code>, <code>Cast</code>, <code>Bitcast</code>,
+<code>Reduce</code>, …);</li>
+<li><code>Store</code> at the end.</li>
+</ul>
+<p><code>linearize</code> turns that into the linear form:</p>
+<ul>
+<li>movement and <code>Reduce</code> ops are <strong>removed</strong> and expanded into index arithmetic;</li>
+<li><code>Load</code> ops are inserted for read-only params, with <code>Storage</code> as their base;</li>
+<li><code>Index</code>/arithmetic over group and loop indices computes addresses;</li>
+<li>loops (<code>Loop</code>/<code>EndLoop</code>) and ranges (<code>Range</code>) become explicit;</li>
+<li>every <code>Store</code> gets an index expression computed from the shape it writes;</li>
+<li>writable params stay in place as store destinations.</li>
+</ul>
+<p>A real example makes the difference visible. Before linearize (<code>ZYX_DEBUG=4</code>):</p>
+<pre><code class="language-text">r0: i64 = 3
+r1: f32[3] = param global shape=r0
+r2: f32 = 0
+r3: f32[3] = expand r2 -&gt; ...
+r4: bool[3] = r1 &gt; r3
+r5: f32[3] = f32(r4)
+r6: f32[3] = param global shape=r0
+r7: f32[3] = r5 * r6
+...
+r17: f32[1] = pad r14 axis=0 lp=r15 len=r16
+r18: f32[1] = param global mut shape=r16
+store vec1 r18 = r17
+</code></pre>
+<p>After linearize and the search (<code>ZYX_DEBUG=8</code>), the same computation is scalar
+ops over explicit indices:</p>
+<pre><code class="language-text">r85: f32 = param global shape=NULL
+r18: f32 = param global mut shape=NULL
+r52: f32 = 0
+r31: i64 = 0
+r51: f32 = load r85[r31]
+r9: f32 = -r51
+r11: bool = r9 &gt; r52
+r4: bool = r51 &gt; r52
+r13: f32 = r11 ? r9 : r52
+r7: f32 = r4 ? r51 : r52
+r14: f32 = r7 + r13
+store r18[r31] = r14
+</code></pre>
+<p>Two details matter:</p>
+<ul>
+<li><code>Param</code> shapes go to <code>NULL</code> during linearization. Buffer sizes must be
+resolved <strong>before</strong> it (the allocator and launch-argument code do exactly
+that); after it, a param’s shape is no longer how sizes are communicated.</li>
+<li>The load/store index carries the access shape. <code>load r85[r31]</code> with a scalar
+index reads one element; an index over a lane vector reads a vector; an index
+over two distinct axes reads a tile. The debug printer spells this out as
+<code>store vec4</code> or <code>store tile 32x32</code>.</li>
+</ul>
+<p><code>Kernel::is_linearized</code> detects the state from the stores: a pre-linearize store
+writes a whole view to a bare <code>Param</code>; linearization gives every store
+destination an index expression.</p>
 <h2 id="op-variants"><a class="header" href="#op-variants">Op Variants</a></h2>
-<h3 id="parameters"><a class="header" href="#parameters">Parameters</a></h3>
-<pre><code class="language-rust ignore">Op::Param { dtype, kind: ParamKind, shape: OpId }
-// ParamKind::Variable — scalar launch argument (e.g. dynamic dim)
-// ParamKind::Global / GlobalMut — read-only / read-write buffer argument</code></pre>
-<h3 id="arithmetic"><a class="header" href="#arithmetic">Arithmetic</a></h3>
+<h3 id="leaves"><a class="header" href="#leaves">Leaves</a></h3>
+<pre><code class="language-rust ignore">Op::Const(Constant)
+Op::Param { dtype: DType, kind: ParamKind, shape: OpId, id: u32 }
+// ParamKind::Variable  — scalar launch argument (e.g. a dynamic dim)
+// ParamKind::Global    — read-only buffer argument
+// ParamKind::GlobalMut — read-write buffer argument</code></pre>
+<p><code>Param::id</code> is graph identity for hashconsing: two params name the same buffer
+iff their <code>id</code>s agree. Kernel passes ignore it — kernel params are bound
+positionally at launch — and hashing canonicalizes ids to head-order ordinals so
+program caches keep sharing across buffers.</p>
+<h3 id="arithmetic-and-selection"><a class="header" href="#arithmetic-and-selection">Arithmetic and selection</a></h3>
 <pre><code class="language-rust ignore">Op::Cast { x: OpId, dtype: DType }
 Op::Bitcast { x: OpId, dtype: DType }
 Op::Unary { x: OpId, uop: UOp }
 Op::Binary { x: OpId, y: OpId, bop: BOp }
-Op::Mad { x: OpId, y: OpId, z: OpId }
-Op::Stack { ops: Box&lt;[OpId]&gt; }</code></pre>
+Op::Select { cond: OpId, if_true: OpId, if_false: OpId }
+Op::Stack { ops: Box&lt;[OpId]&gt; }       // pack values into a vector
+Op::Index { vec: OpId, idx: usize }  // select one element of a vector</code></pre>
+<p>There is no <code>Mad</code> op: <code>Kernel::mad(x, y, z)</code> builds a <code>Binary::Mul</code> followed by a
+<code>Binary::Add</code>, and the passes may reassociate/fold it. There is no separate
+“fused multiply-add” IR node.</p>
 <h3 id="memory"><a class="header" href="#memory">Memory</a></h3>
-<pre><code class="language-rust ignore">Op::Storage { dtype, scope: MemScope, len: Dim }  // kernel-internal memory
-Op::Load { src, index, layout }
-Op::Store { dst, src, index, layout }
-Op::Const(Constant)</code></pre>
-<p><code>Op::Param</code> and <code>Op::Storage</code> are the SSA escape hatches: the mutable
-stuff values are read from and written to across the linear order.</p>
-<h3 id="control-flow"><a class="header" href="#control-flow">Control Flow</a></h3>
-<pre><code class="language-rust ignore">Op::Loop { len: OpId }
+<pre><code class="language-rust ignore">Op::Storage { dtype: DType, scope: MemScope, len: Dim, id: u32 }
+Op::Load  { src: OpId, src_idx: OpId }
+Op::Store { dst: OpId, dst_idx: OpId, src: OpId }
+Op::Copy  { src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId }</code></pre>
+<p><code>Storage</code> is kernel-internal memory — registers, local/shared memory,
+Tenstorrent circular buffers. Its <code>id</code> is assigned by the register allocator:
+before allocation every storage of the same <code>(dtype, scope, len)</code> is one request
+and compares equal; after allocation <code>id</code> separates physical slots so CSE cannot
+merge two registers that must stay distinct.</p>
+<p><code>Load</code> is memory → SSA. <code>Store</code> is SSA → memory and never memory → memory; that
+is <code>Copy</code>. <code>Store</code> and <code>Copy</code> are effect-only: they produce no SSA value, are
+DCE roots, and are never CSE’d or hoisted.</p>
+<h3 id="iteration"><a class="header" href="#iteration">Iteration</a></h3>
+<pre><code class="language-rust ignore">Op::Range { axis: u32, kind: RangeKind }
+Op::Loop { len: OpId }
 Op::EndLoop
-Op::If { condition: OpId }
-Op::EndIf
-Op::Barrier</code></pre>
-<h3 id="indexing"><a class="header" href="#indexing">Indexing</a></h3>
-<pre><code class="language-rust ignore">Op::Range { axis, kind: RangeKind }  // Group / Local / Scalar
-Op::Index { vec: OpId, idx }         // select a value from a Stack</code></pre>
-<h3 id="hardware-accelerators--tiles"><a class="header" href="#hardware-accelerators--tiles">Hardware Accelerators / Tiles</a></h3>
-<pre><code class="language-rust ignore">Op::Wmma { dims, layout, dtype, a, b, c }</code></pre>
-<h3 id="backend-specific"><a class="header" href="#backend-specific">Backend-Specific</a></h3>
-<pre><code class="language-rust ignore">Op::Asm { .. }  // inline assembly for backends with JIT asm (e.g. Tenstorrent)
-Op::GPU { .. }
-Op::TT { .. }
-Op::PTX { .. }</code></pre>
-<h3 id="view-ops"><a class="header" href="#view-ops">View Ops</a></h3>
+Op::Barrier
+Op::Unroll { axis: u32, len: u16 }</code></pre>
+<p><code>RangeKind</code> has two variants:</p>
+<ul>
+<li><code>Group(OpId)</code> — a grid axis (CUDA blocks, CPU cores, Tenstorrent cores);</li>
+<li><code>Local(u32)</code> — a thread/lane axis. Local axis 0 is the hardware warp; there is
+no separate warp kind, and the lane id is the axis-0 local value.</li>
+</ul>
+<p>There is no <code>Scalar</code> range kind: a scalar is a rank-0 value, not a range.</p>
+<p><code>Loop</code> is a counted loop. A <strong>conditional is a <code>Loop</code> with a boolean length</strong>
+(0 or 1 trips), closed by <code>EndLoop</code> exactly like a counted loop; there is no
+<code>If</code>/<code>EndIf</code>. <code>Barrier</code> pins program order as an operand-free effect and DCE
+root. <code>Unroll</code> is a lane vector produced by splitting: it holds the lane
+constants <code>0..len</code> tagged with the axis they were split from, and is devectorized
+into a <code>Stack</code> of constants right before codegen.</p>
+<h3 id="compute"><a class="header" href="#compute">Compute</a></h3>
+<pre><code class="language-rust ignore">Op::Wmma { dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId }
+Op::Reduce { x: OpId, rop: BOp, reduce_axis: OpId }   // pre-linearize, or over lanes
+Op::Asm { asm: TinyString, ops: TinyVec&lt;OpId&gt; }</code></pre>
+<p><code>Wmma</code> is the fused fragment matmul <code>d = a @ b + c</code> (the result is the new
+accumulator). <code>Reduce</code> is a pre-linearize op: <code>linearize</code> rewrites it into a
+loop with an accumulator. It reappears after <code>split</code> turns a loop into lane
+vectors, where the reduction runs over the lanes rather than over a loop; that
+is why the variant stays in the enum. <code>Asm</code> emits a backend assembly template
+with <code>{i}</code> operand substitution.</p>
+<h3 id="view-and-movement-ops"><a class="header" href="#view-and-movement-ops">View and movement ops</a></h3>
 <pre><code class="language-rust ignore">Op::Reshape { x: OpId, shape: OpId }
-Op::Expand { x: OpId, shape: OpId }
+Op::Expand  { x: OpId, shape: OpId }
 Op::Permute { x: OpId, axes: TinyVec&lt;UAxis&gt; }
-Op::Flip { x: OpId, axes: TinyVec&lt;UAxis&gt; }
-Op::Pad { x: OpId, axis: UAxis, lp: OpId, len: OpId }
-Op::Narrow { x: OpId, axis: UAxis, start: OpId, len: OpId }
-Op::Reduce { x: OpId, rop: BOp, reduce_axis: OpId }</code></pre>
-<h2 id="memory-layouts-and-scopes"><a class="header" href="#memory-layouts-and-scopes">Memory Layouts and Scopes</a></h2>
-<pre><code class="language-rust ignore">pub enum MemLayout {
-    Scalar,
-    Vector(u8),
-    Tile { x, y, stride },
-}
-
-pub enum MemScope {
-    Global,
-    Local,
-    Register,
-    Variable,
-    Circular,
+Op::Flip    { x: OpId, axes: TinyVec&lt;UAxis&gt; }
+Op::Pad     { x: OpId, axis: UAxis, lp: OpId, len: OpId }
+Op::Narrow  { x: OpId, axis: UAxis, start: OpId, len: OpId }</code></pre>
+<p>These are pre-linearize ops. They are replayed into consumers and unfolded into
+index arithmetic by <code>linearize</code>.</p>
+<h3 id="graph-only-markers"><a class="header" href="#graph-only-markers">Graph-only markers</a></h3>
+<pre><code class="language-rust ignore">Op::After { x: OpId, dep: OpId }          // x may not run before dep
+Op::ToDevice { x: OpId, device: Dev, time: u64 }
+Op::Contiguous { x: OpId }                // fusion-break hint
+Op::Detach { x: OpId }                    // autograd break; erased by kernelizer</code></pre>
+<p><code>After</code> and <code>ToDevice</code> survive extraction; <code>Contiguous</code> forces an output
+boundary; <code>Detach</code> is value identity and the kernelizer remaps it away.</p>
+<h3 id="opaque-kernels-and-backend-payloads"><a class="header" href="#opaque-kernels-and-backend-payloads">Opaque kernels and backend payloads</a></h3>
+<pre><code class="language-rust ignore">Op::Source(SourceBlock)                        // program source block
+Op::Program { inputs: OpId, outputs: OpId, info: Box&lt;(ProgramId, u64)&gt; }
+Op::Kernel(Box&lt;CustomKernel&gt;)                  // user custom kernel boundary
+Op::TT(TTOp)                                   // Tenstorrent physical IR
+Op::GPU(Box&lt;GPUOp&gt;)                            // shared GPU launch config
+Op::Spirv(Box&lt;SpirvOp&gt;)                        // Vulkan/wgpu SPIR-V payload
+Op::PTX(Box&lt;PTXOp&gt;)                            // CUDA direct-PTX payload</code></pre>
+<p><code>Program</code>’s <code>inputs</code> and <code>outputs</code> are <code>Stack</code> classes, not per-kernel boxes;
+<code>info</code> carries the program id and its measured time. Timings are ignored by
+<code>Eq</code>/<code>Hash</code>.</p>
+<h2 id="memory-scopes"><a class="header" href="#memory-scopes">Memory Scopes</a></h2>
+<pre><code class="language-rust ignore">pub enum MemScope {
+    Global,    // DRAM / device global memory
+    Local,     // SRAM / shared memory
+    Register,  // registers
+    Circular,  // circular buffer, SRAM (Tenstorrent)
 }</code></pre>
-<h2 id="backend-codegen"><a class="header" href="#backend-codegen">Backend Codegen</a></h2>
-<p>Because the IR is designed for it, backend codegen is trivial:</p>
+<p>There is no <code>Variable</code> scope: scalar variables are <code>Param { kind: Variable }</code>,
+not storage.</p>
+<h2 id="shapes"><a class="header" href="#shapes">Shapes</a></h2>
+<p><code>Kernel::shape(op)</code> reports the value shape of an op as a rank list (at most
+eight dims): <code>Unroll</code> contributes one dim of <code>len</code> lanes on its axis, and a
+<code>Param</code> contributes its buffer shape’s dims; everything else is scalar. For
+loads, stores, and copies, the <strong>index’s</strong> shape is the access shape, which is
+what the debug printer shows (<code>store vec1</code>, <code>store tile 32x32</code>).</p>
+<p>Loops and ranges are scalar iterators and contribute no element dims: the trip
+count is loop structure, not value shape.</p>
+<h2 id="codegen"><a class="header" href="#codegen">Codegen</a></h2>
+<p>Codegen consumes a stabilized kernel:</p>
 <ol>
-<li><strong>deSSA</strong> — resolve SSA references to physical registers/memory</li>
-<li><strong>Linear pass</strong> — walk the op linked list once, emitting instructions</li>
+<li><strong>deSSA</strong> — resolve SSA values to physical registers/memory slots;</li>
+<li><strong>linear pass</strong> — walk the op list once, emitting instructions.</li>
 </ol>
-<p>No further optimizations, no complex lowering. Backends whose compute
-model needs explicit physical state (Tenstorrent) get an additional
-physical IR below the kernel IR — see
+<p>No further optimization happens here. Backends whose hardware needs explicit
+physical state get one more IR below this one — for Tenstorrent, the
+<code>tt_tile</code> → <code>tt_dataflow_select</code> → SFPU/LREG/DST passes → <code>tt_verify</code> sequence in
+<code>device_epilogue</code>, ending in <code>Op::TT</code> ops. See
 <a href="./codegen.html">Codegen and the Physical IR</a>.</p>
 <h2 id="debugging"><a class="header" href="#debugging">Debugging</a></h2>
-<p>Set <code>ZYX_DEBUG=8</code> to print the kernel IR:</p>
-<pre><code class="language-text">r18: i32 = def global, len=4
-r44: u32 = gidx0    // 0..=0
-r19: i32 = r18[r1]  // 0..=3 load
+<pre><code class="language-bash">ZYX_DEBUG=4 cargo run   # kernel IR before linearization
+ZYX_DEBUG=8 cargo run   # winning kernel IR after the search
+ZYX_DEBUG=16 cargo run  # generated source/assembly
 </code></pre>
+<p><code>ZYX_TT_IR=1</code> additionally dumps the Tenstorrent physical IR before and after
+<code>tt_tile</code>, <code>tt_reindex</code>, and <code>tt_dataflow_select</code>. Debug output is colorized only
+on an interactive terminal; <code>AGENT=1</code> disables color.</p>
+<p><code>Kernel::verify</code> checks ordering, dtypes, shapes, and use/def consistency. It is
+compiled in but returns immediately outside <code>debug_assertions</code>. After the
+Tenstorrent phase boundary the IR is native tiles/rows, and <code>tt_verify</code> is the
+checker instead.</p>
 
                     </main>
 
