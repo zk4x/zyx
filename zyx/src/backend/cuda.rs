@@ -2228,7 +2228,7 @@ pub(crate) struct CudaPartition {
     pub(crate) deaths: Vec<Vec<OpId>>,
     /// Execution lane per command (static stream assignment, slot
     /// affinity mirroring OpenCL queues). All zeros while every launch
-    /// submitted on streams[0]; real values once multi-stream lands.
+    /// submitted on `streams[0]`; real values once multi-stream lands.
     pub(crate) queues: Vec<usize>,
     /// Cross-stream producer-command edges per command (producer indices
     /// into this partition's cmds). Replay turns them into event

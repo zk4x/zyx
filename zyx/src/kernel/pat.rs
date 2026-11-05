@@ -1535,7 +1535,7 @@ impl Kernel {
     }
 }
 
-/// Dtypeless numeric equality for [`Pat::Num`]: true when `c` has the same
+/// Dtypeless numeric equality for [`Pat::Int`]: true when `c` has the same
 /// numeric value as `n`, whatever its dtype. Integers and bool compare
 /// exactly; floats must be integral (`1.0 == 1`, `1.5` never matches).
 fn const_eq_int(c: Constant, n: i64) -> bool {

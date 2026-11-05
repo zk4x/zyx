@@ -3,10 +3,10 @@
 
 //! Tenstorrent codegen — emission only.
 //!
-//! Lowering lives in [`crate::kernel::tenstorrent`]: the kernel TT
+//! Lowering lives in `kernel/tenstorrent.rs`: the kernel TT
 //! passes (`tt_storage`, `tt_lock_dst`, ...) rewrite the kernel IR in
 //! place, and this file is a pure consumer. It walks `Op` + the kernel
-//! [`TTOp`](crate::kernel::TTOp) and emits three RISC-V section sources
+//! [`crate::kernel::TTOp`] and emits three RISC-V section sources
 //! plus the launch tables the backend needs.
 //!
 //! Physical ids are derived at emission, never stored:

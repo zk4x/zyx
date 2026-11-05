@@ -15,7 +15,7 @@
 //!    from them inside the scope is static and cached by structural hash across
 //!    iterations.
 //!
-//! Think of [`Tape::new(&model)`] as setting `requires_grad` on the model's tensors
+//! Think of [`Tape::new`] as setting `requires_grad` on the model's tensors
 //! for the duration of the scope — but it's not only for gradients. The tape also
 //! enables egraph-based fusion optimization, device allocation search, and plan
 //! caching across structurally identical iterations.

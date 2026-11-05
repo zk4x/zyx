@@ -4,7 +4,7 @@
 //! Runtime: the eager tensor executor.
 //!
 //! The `Runtime` holds the per-process tensor slab, kernel pool, variable slots, and the
-//! graph state for the active tape. Most callers go through [`Tensor`], which acquires the
+//! graph state for the active tape. Most callers go through [`crate::Tensor`], which acquires the
 //! process-wide runtime via a `Mutex` (`RT.lock()`).
 //!
 //! # Concurrency and the runtime lock
@@ -1937,7 +1937,7 @@ impl Runtime {
     ///
     /// Realized tensors map through their buffer's pool to the owning device;
     /// unrealized eager and promoted tensors use their kernel's device; graph
-    /// and slab tensors have no device and return [`Dev::Auto`](Dev::Auto).
+    /// and slab tensors have no device and return [`Dev::Auto`].
     ///
     /// # Panics
     ///
@@ -3747,7 +3747,7 @@ impl Runtime {
     ///
     /// Steps:
     /// 1. If the producer kernel already has stores, or `x`'s op is preceded by a reduce,
-    ///    or `force_store` was set: call [`add_store`] so `x` lands in a fresh load kernel.
+    ///    or `force_store` was set: call `add_store` so `x` lands in a fresh load kernel.
     /// 2. **Duplicate** `x`'s dependency chain into a brand-new kernel with empty
     ///    `outputs` and no stores, retargeting the variables/loads correctly.
     ///

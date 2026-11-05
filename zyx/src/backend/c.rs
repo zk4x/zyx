@@ -72,7 +72,7 @@ impl CPartition {
     /// Replay allocates unbound defs on the fly and drops dead slots per
     /// the lists. Slots dying mid-replay are intermediaries: their chunks
     /// stay bare in a replay-local map and are released explicitly. Only
-    /// final outputs (live past replay) become Arc<Placement>.
+    /// final outputs (live past replay) become `Arc<Placement>`.
     ///
     /// The Host pool guard is never held across arg use, launches, or
     /// death drops — it is acquired per use below. Any Arc drop (a

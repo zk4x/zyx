@@ -358,7 +358,7 @@ impl Runtime {
     /// A dimension resolved for target-shape construction (see
     /// [`Runtime::resolve_shape_without_variables`]).
     /// Shape of tensor `x` with variable-backed dims left symbolic: a dim
-    /// whose expression tree contains any [`TensorData::Variable`] resolves
+    /// whose expression tree contains any [`Expr::Variable`] resolves
     /// to [`ResolvedDim::Symbolic`] (its root dim tensor), everything else
     /// evaluates to [`ResolvedDim::Static`]. Unlike `resolve_shape`, variable
     /// slots are never read — the caller keeps the dim tensor so the target
@@ -716,7 +716,7 @@ impl Runtime {
     ///
     /// Middle stage of the symbolic-shapes pipeline (see
     /// [`Runtime::replay_symbolic_into_kernel`] for the full contract):
-    /// - `Constant` → `Const` class (merged by value — see [`Node::Const`]).
+    /// - `Constant` → `Const` class (merged by value — see [`Op::Const`]).
     /// - `Variable` → a fresh `IDX_T` **dim-variable param**: a `Op::Param`
     ///   with `shape == NULL`. Leaves hashcons but never merge (fresh
     ///   `cons_id` every time), so the same logical variable appearing under

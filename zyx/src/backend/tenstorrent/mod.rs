@@ -762,7 +762,7 @@ pub struct TTDevice {
     /// The device's program cache: every image on the card (NOTES §2).
     images: Slab<ImageId, Image>,
     /// The two mover firmware images ([`tt_firmware_images::DM_B`],
-    /// [`DM_NC`]), created on first compile: boot is their first residency
+    /// [`tt_firmware_images::DM_NC`]), created on first compile: boot is their first residency
     /// miss, not a special step.
     firmware: Option<[ImageId; 2]>,
 }

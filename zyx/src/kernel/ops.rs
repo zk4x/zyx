@@ -913,7 +913,7 @@ pub enum TTOp {
     },
 }
 
-/// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
+/// Boxed payload of [`Op::Kernel`]: a custom kernel boundary's inputs,
 /// output `(class, shape, dtype)` triples, owning program, and measured
 /// timing. Boxed so `Op` keeps its 24-byte budget.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]

@@ -9,7 +9,7 @@
 //! this thread opens the simulator and the `Device` once, then answers
 //! [`Cmd::Run`] with one run of a tile — the program slots are checked against
 //! the residency ledger and loaded from the card's DRAM copy on a miss, the B
-//! mover reads the operands into L1, [`tt_kernels::runtime::run`] runs the
+//! mover reads the operands into L1, [`crate::backend::tenstorrent::kern::runtime::run`] runs the
 //! three roles, the NC mover writes the results out. A launch is synchronous —
 //! it returns only once every role has reported `DONE` and every moved byte has
 //! landed — so the caller sees the same blocking semantics the old shim had.

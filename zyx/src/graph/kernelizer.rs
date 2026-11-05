@@ -14,10 +14,10 @@ impl Graph {
     ///
     /// The zyx graph is very granular — a single matmul produces dozens of structural nodes (Expand,
     /// Reduce, Permute, Cast, etc.). Materializing each as a separate kernel is impossible (e.g.,
-    /// Expand to 2048×2048×2048 would OOM). [`kernelize`] uses eager fusion to batch structural
+    /// Expand to 2048×2048×2048 would OOM). [`Self::kernelize`] uses eager fusion to batch structural
     /// nodes into larger kernels, ensuring the [`extract`](Graph::extract) invariant holds:
     ///
-    /// > A path composed exclusively of [`Node::Kernel`] and [`Node::ToDevice`] nodes must exist
+    /// > A path composed exclusively of [`Op::Program`] and [`Op::ToDevice`] nodes must exist
     /// > from leaves (realized classes) to every output.
     ///
     /// Not every class needs a kernel — only those that lie on output computation paths. Dead graph
@@ -37,7 +37,7 @@ impl Graph {
     /// # Allowed set
     ///
     /// If `Some`, traversal is restricted to classes in `allowed` — classes outside
-    /// it are never fused, even if they feed an output. [`fill_gaps`] uses this to
+    /// it are never fused, even if they feed an output. [`Self::fill_gaps`] uses this to
     /// kernelize each connected structural region in isolation; `None` allows the
     /// whole graph (leaf classes are always excluded via `inputs`).
     ///
@@ -61,7 +61,7 @@ impl Graph {
     ///
     /// # Storage and Load Kernels
     ///
-    /// [`add_store`] stores a class's value into a kernel's `stores` list. On store:
+    /// [`Self::add_store`] stores a class's value into a kernel's `stores` list. On store:
     /// - All instances of the class are removed from the kernel's `outputs` (via `retain`).
     /// - If `rcs[cid] > 0` after the store (remaining consumers exist), a new **load kernel**
     ///   is created with `rcs[cid]` copies of `cid` in its `outputs`. This load kernel provides
@@ -75,7 +75,7 @@ impl Graph {
     ///    kernels' `outputs` lists equals `rcs[cid]`. A class appears in at most one kernel.
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
-    ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
+    ///    [`Self::add_store`] removes the entry and restores it via a load kernel if consumers remain.
     /// 3. **Symbolic expressions are replayed, never materialized.** Scalar
     ///    symbolic expressions (consts, dim variables, computed dim
     ///    expressions) never enter `visited`/`jit_kernels` from their own
@@ -1338,7 +1338,7 @@ impl Graph {
     /// symbolically from the egraph (see [`Graph::replay_symbolic_into_kernel`]). Its `outputs`
     /// list contains exactly `rc` copies of `cid` — one per remaining consumer; each
     /// `consume(cid, kid, ...)` will pop one. This is the canonical "class was stored, point
-    /// remaining consumers at a fresh loader" contract used by [`add_store`] and the assign
+    /// remaining consumers at a fresh loader" contract used by [`Self::add_store`] and the assign
     /// arm's post-in-place-store handling — the inverse of placement, so consumers never
     /// re-enter a kernel whose `outputs` no longer contains the class.
     fn new_load_kernel(&mut self, cid: OpId, rc: u32) -> (JitKernelId, OpId) {

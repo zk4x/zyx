@@ -265,7 +265,7 @@ impl Graph {
     /// Topologically sorts the classes reachable from `outputs` (consumers
     /// first, the returned vector is reversed into dependency order).
     ///
-    /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored when
+    /// With `WITHOUT_KERNELS`, [`Op::Program`] nodes are ignored when
     /// collecting dependencies and the walk stops at the classes in `inputs`
     /// (a boundary input contributes only its non-boundary kernel inputs).
     /// Used when iterating the structural graph — e.g. fusing remaining ops
@@ -424,7 +424,7 @@ impl Graph {
 
     /// Dependencies of class `cid` for [`Self::topo_sort_classes`].
     ///
-    /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored and a
+    /// With `WITHOUT_KERNELS`, [`Op::Program`] nodes are ignored and a
     /// boundary class (in `inputs`) contributes only its non-boundary kernel
     /// inputs; otherwise every op's [`Op::parameters`] is used.
     fn deps<const WITHOUT_KERNELS: bool>(&self, inputs: &Set<OpId>, cid: OpId) -> Vec<OpId> {
@@ -470,13 +470,13 @@ impl Graph {
     }
 
     /// Dependencies of class `cid` under the **extraction** view: once a
-    /// class is produced by a jit/AOT kernel (or [`Node::ToDevice`]), its
+    /// class is produced by a jit/AOT kernel (or [`Op::ToDevice`]), its
     /// scheduling dependencies are exactly those producers' inputs. The
     /// e-graph keeps competing derivations on the class, and following them
     /// alongside kernel inputs creates false cycles (a kernel may recompute
     /// a value whose structural path runs through another kernel's stores).
     ///
-    /// [`Node::After`] and [`Node::Assign`] edges are kept regardless: they
+    /// [`Op::After`] edges and in-place stores are kept regardless: they
     /// encode store *ordering* between in-place writes, not an alternative
     /// derivation.
     ///
@@ -612,7 +612,7 @@ impl Graph {
         println!("{}\n", line);
     }
 
-    /// After extraction, inserts [`Node::ToDevice`] transfers on the extracted
+    /// After extraction, inserts [`Op::ToDevice`] transfers on the extracted
     /// path wherever a chosen kernel consumes a class placed on a different
     /// device, and returns the repaired node list in topological order.
     ///
@@ -622,7 +622,7 @@ impl Graph {
     /// producer. A transfer is added only on a real mismatch between the
     /// consumer kernel's device and the placement of its input on the
     /// extracted path (chosen kernel output, chosen transfer output, or
-    /// realized leaf buffer). User-inserted [`Node::ToDevice`] nodes are kept
+    /// realized leaf buffer). User-inserted [`Op::ToDevice`] nodes are kept
     /// as-is and reused through hashconsing.
     pub fn add_memory_ops(&mut self, buffer_map: &Map<TensorId, Arc<Placement>>, chosen: &[OpId]) -> Vec<OpId> {
         // Pool each class lives in on the extracted path. Chosen kernel
@@ -734,19 +734,19 @@ impl Graph {
     ///
     /// # Cost model
     ///
-    /// Only [`Node::Kernel`] and [`Node::ToDevice`] carry real costs (execution time in nanoseconds).
+    /// Only [`Op::Program`] and [`Op::ToDevice`] carry real costs (execution time in nanoseconds).
     /// All other node types (Expand, Reshape, Cast, Binary, Unary, etc.) are structural/fusing
     /// artifacts — they represent intermediate graph transformations that must be fused into kernels
-    /// by [`kernelize`](self::kernelizer::Graph::kernelize) before extraction.
+    /// by [`Self::kernelize`] before extraction.
     ///
     /// # Invariant
     ///
-    /// A path composed exclusively of [`Node::Kernel`] and [`Node::ToDevice`] nodes must exist
+    /// A path composed exclusively of [`Op::Program`] and [`Op::ToDevice`] nodes must exist
     /// from leaves (the only realized classes) to every output class. Without this path the output
     /// cannot be computed, because non-Kernel/ToDevice nodes have no associated runtime cost.
     ///
     /// Dead graph regions (classes with no kernel path) are harmless as long as they don't appear
-    /// on output computation paths. [`kernelize`](self::kernelizer::Graph::kernelize) is responsible for ensuring every output
+    /// on output computation paths. [`Self::kernelize`] is responsible for ensuring every output
     /// class satisfies this invariant by fusing enough nodes into kernels.
     ///
     /// # Panics
@@ -2835,7 +2835,7 @@ impl Runtime {
     /// Pushes a constant node into the graph and returns its class.
     ///
     /// Consts hashcons by value: pushing an equal constant twice returns the
-    /// same class (see [`Node::Const`] for why that is sound).
+    /// same class (see [`Op::Const`] for why that is sound).
     pub fn push_const(&mut self, graph_id: GraphId, value: Constant) -> OpId {
         self.push_op(graph_id, Op::Const(value))
     }
