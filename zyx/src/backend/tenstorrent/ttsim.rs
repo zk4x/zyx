@@ -122,7 +122,7 @@ static OWNER: OnceLock<Mutex<Sender<Cmd>>> = OnceLock::new();
 pub(crate) fn run(run: NativeRun) -> Result<NativeOutcome, String> {
     let (reply, reply_rx) = channel();
     let sent = {
-        let owner = owner().lock().unwrap_or_else(|p| p.into_inner());
+        let owner = owner()?.lock().unwrap_or_else(|p| p.into_inner());
         owner.send(Cmd::Run(Box::new(run), reply))
     };
     if sent.is_err() {
@@ -139,7 +139,7 @@ pub(crate) fn run(run: NativeRun) -> Result<NativeOutcome, String> {
 pub(crate) fn dram_write(segments: Vec<(DramRange, Vec<u8>)>) -> Result<(), String> {
     let (reply, reply_rx) = channel();
     let sent = {
-        let owner = owner().lock().unwrap_or_else(|p| p.into_inner());
+        let owner = owner()?.lock().unwrap_or_else(|p| p.into_inner());
         owner.send(Cmd::DramWrite(segments, reply))
     };
     if sent.is_err() {
@@ -152,7 +152,7 @@ pub(crate) fn dram_write(segments: Vec<(DramRange, Vec<u8>)>) -> Result<(), Stri
 pub(crate) fn dram_read(segments: Vec<DramRange>) -> Result<Vec<Vec<u8>>, String> {
     let (reply, reply_rx) = channel();
     let sent = {
-        let owner = owner().lock().unwrap_or_else(|p| p.into_inner());
+        let owner = owner()?.lock().unwrap_or_else(|p| p.into_inner());
         owner.send(Cmd::DramRead(segments, reply))
     };
     if sent.is_err() {
@@ -161,22 +161,33 @@ pub(crate) fn dram_read(segments: Vec<DramRange>) -> Result<Vec<Vec<u8>>, String
     reply_rx.recv().map_err(|_| "the Tenstorrent owner thread dropped the reply".to_string())?
 }
 
-/// The owner thread's command channel, started on first use.
-fn owner() -> &'static Mutex<Sender<Cmd>> {
-    OWNER.get_or_init(|| {
-        let (tx, rx) = channel::<Cmd>();
-        let (ready_tx, ready_rx) = channel::<Result<(), String>>();
-        thread::Builder::new()
-            .name("zyx-ttsim".to_string())
-            .spawn(move || serve(rx, ready_tx))
-            .expect("tenstorrent: cannot spawn the owner thread");
-        match ready_rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => panic!("tenstorrent: {e}"),
-            Err(_) => panic!("tenstorrent: the owner thread died while opening the simulator"),
-        }
-        Mutex::new(tx)
-    })
+/// Open the simulator and start the owner thread, once per successful open.
+///
+/// Errors are returned, never panicked: a machine without a usable simulator
+/// has no Tenstorrent device, which is what the backend reports.
+pub(crate) fn ensure_open() -> Result<(), String> {
+    owner().map(|_| ())
+}
+
+/// The owner thread's command channel. The simulator is opened on the first
+/// call; a failure leaves nothing cached, so the next call tries once more
+/// (the simulator refuses a second open, which surfaces as its own error).
+fn owner() -> Result<&'static Mutex<Sender<Cmd>>, String> {
+    if let Some(owner) = OWNER.get() {
+        return Ok(owner);
+    }
+    let (tx, rx) = channel::<Cmd>();
+    let (ready_tx, ready_rx) = channel::<Result<(), String>>();
+    thread::Builder::new()
+        .name("zyx-ttsim".to_string())
+        .spawn(move || serve(rx, ready_tx))
+        .map_err(|e| format!("cannot spawn the owner thread: {e}"))?;
+    match ready_rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err("the owner thread died while opening the simulator".to_string()),
+    }
+    Ok(OWNER.get_or_init(|| Mutex::new(tx)))
 }
 
 /// The owner thread: open the simulator once, then answer runs.

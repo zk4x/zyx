@@ -530,10 +530,6 @@ pub(super) fn pool(id: u16) -> Result<&'static Mutex<VulkanMemoryPool>, BackendE
     backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
 }
 
-pub(super) fn pool_count() -> u16 {
-    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
-}
-
 fn no_pool(id: u16) -> BackendError {
     BackendError { status: ErrorStatus::Initialization, context: format!("Pool::Vulkan({id}) is not available").into() }
 }

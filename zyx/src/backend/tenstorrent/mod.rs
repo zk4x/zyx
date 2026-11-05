@@ -81,9 +81,11 @@ use tt_isa::tensix::Core;
 
 // ── Global state ──────────────────────────────────────────────────────────────
 
-// The single backend global: pools + devices, built once. One `OnceLock` runs
-// `init_global` exactly once — concurrent threads block until it returns and
-// reuse the tables.
+// The single backend global: pools + devices, published on the first
+// successful init. A failed init is not cached — the next call tries once more
+// (the simulator itself refuses a second open, so the retry errors out fast).
+// Device enumeration is what remembers the outcome: `Dev::all` caches its list,
+// so a backend that failed once never enters the device list of the process.
 struct TTGlobal {
     backend: TTBackend,
 }
@@ -95,16 +97,10 @@ struct TTBackend {
     devices: Vec<Mutex<TTDevice>>,
 }
 
-fn init_global() -> TTGlobal {
-    TTGlobal { backend: initialize_backend() }
-}
-
-/// Builds pools + devices together in one pass and publishes the combined
-/// table. Runs once.
-fn initialize_backend() -> TTBackend {
+fn initialize_backend() -> Result<TTBackend, BackendError> {
     let config = super::config();
     let debug_dev = super::debug_backends();
-    let pools = ensure_pool_table(&config.tenstorrent, debug_dev).expect("tenstorrent: pool table init failed");
+    let pools = ensure_pool_table(&config.tenstorrent, debug_dev)?;
     let mut devices = Vec::with_capacity(pools.len());
     for (idx, pool) in pools.iter().enumerate() {
         let pool_id = Pool::TT(u16::try_from(idx).expect("So many Tenstorrent devices..."));
@@ -118,7 +114,7 @@ fn initialize_backend() -> TTBackend {
         }));
         drop(guard);
     }
-    TTBackend { pools, devices }
+    Ok(TTBackend { pools, devices })
 }
 
 // ---------------------------------------------------------------------------
@@ -276,16 +272,22 @@ fn io_error(status: ErrorStatus, msg: String) -> BackendError {
 }
 
 fn backend() -> Result<(&'static Vec<Mutex<TTMemoryPool>>, &'static Vec<Mutex<TTDevice>>), BackendError> {
-    let g = TT.get_or_init(init_global);
-    Ok((&g.backend.pools, &g.backend.devices))
+    if let Some(g) = TT.get() {
+        return Ok((&g.backend.pools, &g.backend.devices));
+    }
+    let backend = initialize_backend()?;
+    let _ = TT.set(TTGlobal { backend });
+    match TT.get() {
+        Some(g) => Ok((&g.backend.pools, &g.backend.devices)),
+        None => Err(BackendError {
+            status: ErrorStatus::Initialization,
+            context: "tenstorrent: backend table was not published".into(),
+        }),
+    }
 }
 
 pub(super) fn pool(id: u16) -> Result<&'static Mutex<TTMemoryPool>, BackendError> {
     backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
-}
-
-pub(super) fn pool_count() -> u16 {
-    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
 }
 
 fn no_pool(id: u16) -> BackendError {
@@ -549,6 +551,12 @@ fn ensure_pool_table(config: &TTConfig, debug_dev: bool) -> Result<Vec<Mutex<TTM
         }
         return Ok(pools);
     }
+
+    // The simulator is the device: a machine without it has no Tenstorrent
+    // devices, exactly like CUDA without a driver. This is the one place the
+    // simulator is opened; a failure is an error, never a panic.
+    self::ttsim::ensure_open()
+        .map_err(|e| BackendError { status: ErrorStatus::Initialization, context: format!("tenstorrent: {e}").into() })?;
 
     // One simulated chip, which is device 0. More than one would need a
     // transport each, and the owner thread opens exactly one simulator.

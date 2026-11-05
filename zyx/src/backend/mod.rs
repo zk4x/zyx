@@ -909,31 +909,6 @@ impl Pool {
         }
     }
 
-    /// All currently available pools. Ensures (and skips on failure) every
-    /// backend table, so this triggers lazy init of all present hardware.
-    /// Used for capacity queries like free-memory max.
-    #[must_use]
-    pub fn all() -> Vec<Pool> {
-        let mut out = vec![Pool::Host, Pool::Disk];
-        for i in 0..cuda::pool_count() {
-            out.push(Pool::Cuda(i));
-        }
-        for i in 0..opencl::pool_count() {
-            out.push(Pool::OpenCL(i));
-        }
-        for i in 0..vulkan::pool_count() {
-            out.push(Pool::Vulkan(i));
-        }
-        for i in 0..tenstorrent::pool_count() {
-            out.push(Pool::TT(i));
-        }
-        #[cfg(feature = "wgpu")]
-        for i in 0..wgpu::pool_count() {
-            out.push(Pool::WGPU(i));
-        }
-        out
-    }
-
     /// Allocate a buffer. Lazily initializes the pool (and its device worker, if any).
     pub fn allocate(self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let bytes = bytes + 8; // for the extra element, why not
