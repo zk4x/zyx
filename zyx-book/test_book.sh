@@ -1,24 +1,30 @@
 #!/bin/bash
-# Build and test book — compiles code examples from markdown
+# Test the book's Rust examples. With --docs, also rebuild the committed HTML
+# output in ../docs (publishing).
 set -e
 
 cd "$(dirname "$0")"
 
+docs=0
+if [ "${1:-}" = "--docs" ]; then
+    docs=1
+fi
+
+export CARGO_TARGET_DIR=target
+
 echo "=== Building dependencies ==="
 cargo build 2>&1
 
-echo ""
-echo "=== Building book ==="
-mdbook build 2>&1
+if [ "$docs" = "1" ]; then
+    echo ""
+    echo "=== Building book ==="
+    mdbook build 2>&1
+fi
 
 echo ""
 echo "=== Testing code examples from markdown ==="
-# Build into a book-local target dir: the shared cache holds many stale
-# duplicate rlibs per crate and rustdoc fails on multiple candidates.
-export CARGO_TARGET_DIR=target
-cargo build 2>&1
-
-# Find rlibs and build --extern flags
+# Book-local target dir: the shared cache holds many stale duplicate rlibs per
+# crate and rustdoc fails on multiple candidates.
 RUSTDOCFLAGS=""
 for rlib in target/debug/deps/libzyx-*.rlib target/debug/deps/libzyx_nn-*.rlib target/debug/deps/libzyx_optim-*.rlib; do
     if [ -f "$rlib" ]; then

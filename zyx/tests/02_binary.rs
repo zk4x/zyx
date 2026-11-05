@@ -28,9 +28,7 @@ fn add_2() -> Result<(), ZyxError> {
 
 #[test]
 fn add_3() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD) {
         return Ok(());
     }
     let datax: [f32; 32] = [

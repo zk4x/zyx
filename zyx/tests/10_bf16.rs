@@ -54,9 +54,7 @@ fn bf16_mean() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_binary_mul() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::MUL,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::MUL) {
         return Ok(());
     }
 
@@ -73,12 +71,9 @@ fn bf16_binary_mul() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add1() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST
-            | DTypeCapability::STORAGE
-            | DTypeCapability::ADD
-            | DTypeCapability::SIN,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16)
+        .contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::SIN)
+    {
         return Ok(());
     }
 
@@ -98,12 +93,9 @@ fn bf16_add1() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add2() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST
-            | DTypeCapability::STORAGE
-            | DTypeCapability::ADD
-            | DTypeCapability::SIN,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16)
+        .contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::SIN)
+    {
         return Ok(());
     }
 
@@ -123,9 +115,7 @@ fn bf16_add2() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add3() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::SIN,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::SIN) {
         return Ok(());
     }
 
@@ -144,12 +134,9 @@ fn bf16_add3() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add4() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST
-            | DTypeCapability::STORAGE
-            | DTypeCapability::ADD
-            | DTypeCapability::SIN,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16)
+        .contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::SIN)
+    {
         return Ok(());
     }
 
@@ -170,9 +157,7 @@ fn bf16_add4() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_add5() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD) {
         return Ok(());
     }
 
@@ -193,12 +178,9 @@ fn bf16_add5() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_matmul_1() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST
-            | DTypeCapability::STORAGE
-            | DTypeCapability::ADD
-            | DTypeCapability::MUL,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16)
+        .contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL)
+    {
         return Ok(());
     }
 

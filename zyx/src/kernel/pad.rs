@@ -359,14 +359,13 @@ impl Kernel {
                         }
                     }
                 },
-                Op::Loop { len, .. }
-                    if tt && self.dtype(len) != crate::DType::Bool => {
-                        for pad_to in [8, 16, 32] {
-                            if !self.is_sym_multiple(len, pad_to) {
-                                factors.push((op_id, pad_to));
-                            }
+                Op::Loop { len, .. } if tt && self.dtype(len) != crate::DType::Bool => {
+                    for pad_to in [8, 16, 32] {
+                        if !self.is_sym_multiple(len, pad_to) {
+                            factors.push((op_id, pad_to));
                         }
                     }
+                }
                 _ => {}
             }
             op_id = next;

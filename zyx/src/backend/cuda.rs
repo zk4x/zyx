@@ -2394,7 +2394,7 @@ impl CUDADevice {
                 let n = bytes.min(extent);
                 let (reply, reply_rx) = channel();
                 self.tx.send(CUDACommand::CopyDiskToD { ptr, extent, bytes: n, dst: dst_shard.chunk, reply }).map_err(dead)?;
-                
+
                 reply_rx.recv().map_err(dead_rx)?
             }
             #[cfg(windows)]

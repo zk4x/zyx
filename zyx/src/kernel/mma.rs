@@ -92,7 +92,9 @@ impl Optimization for Tensorize {
         {
             for (range, len) in [(r.m_range, r.m / fm), (r.n_range, r.n / fn_)] {
                 let len = kernel.insert_before(range, Op::Const(Constant::idx(len)));
-                let Op::Range { axis, .. } = kernel.at(range) else { unreachable!() };
+                let Op::Range { axis, .. } = kernel.at(range) else {
+                    unreachable!()
+                };
                 let axis = *axis;
                 kernel.ops[range].op = Op::Range { axis, kind: RangeKind::Group(len) };
             }
@@ -289,8 +291,7 @@ impl Kernel {
             let &Op::Binary { x: la, y: lb, bop: BOp::Mul } = self.at(prod) else {
                 continue;
             };
-            let (&Op::Load { src: a_src, src_idx: a_idx }, &Op::Load { src: b_src, src_idx: b_idx }) =
-                (self.at(la), self.at(lb))
+            let (&Op::Load { src: a_src, src_idx: a_idx }, &Op::Load { src: b_src, src_idx: b_idx }) = (self.at(la), self.at(lb))
             else {
                 continue;
             };

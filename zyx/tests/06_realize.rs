@@ -486,9 +486,7 @@ fn add() -> Result<(), ZyxError> {
 
 #[test]
 fn opt_local() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD) {
         return Ok(());
     }
     let x = Tensor::rand([128255, 2, 1], DType::BF16)?;

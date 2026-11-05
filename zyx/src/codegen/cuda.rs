@@ -1,6 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
+use super::Register;
 use crate::{
     DType, Map,
     backend::{GwsDim, gws_from_kernel},
@@ -13,7 +14,6 @@ use crate::{
     shape::Dim,
     slab::Slab,
 };
-use super::Register;
 use std::hash::BuildHasherDefault;
 
 const VEC_COMPONENTS: [&str; 16] = [

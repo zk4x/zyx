@@ -618,9 +618,7 @@ impl Kernel {
                             // id; they may repeat, but must agree on length.
                             if let Some(&prev) = lids.get(&axis) {
                                 if prev != len {
-                                    println!(
-                                        "index={op_id} reuses local axis={axis} with length {len}, first was {prev}"
-                                    );
+                                    println!("index={op_id} reuses local axis={axis} with length {len}, first was {prev}");
                                     self.debug();
                                     panic!();
                                 }

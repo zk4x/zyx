@@ -414,31 +414,30 @@ pub fn run<T: Transport, N: NocId>(
     } else {
         0
     };
-    let stage_role =
-        |dev: &mut Device<T>, thread: usize, program_len: u32, dump: u32, traced: bool| -> Result<(), RunError> {
-            let mb = Mailbox::of(thread as u32);
-            dev.write32(&w, tile, mb.status(), 0)?;
-            let d = mailbox::Descriptor {
-                thread_index: thread as u32,
-                dst_access_fmt: kernel.dst_fmt,
-                program_len,
-                dump_row_count: dump,
-                trace: u32::from(traced),
-                push_window,
-                unwedge: u32::from(kernel.unwedge),
-                mop_cfg: kernel.mop_words(thread)?,
-                ..Default::default()
-            };
-            for (at, v) in d.writes(mb) {
-                dev.write32(&w, tile, at, v)?;
-            }
-            for row in 0..dump {
-                for col in 0..mailbox::DUMP_ROW_WORDS {
-                    dev.write32(&w, tile, mb.dump_offset(row, col), DUMP_SENTINEL)?;
-                }
-            }
-            Ok(())
+    let stage_role = |dev: &mut Device<T>, thread: usize, program_len: u32, dump: u32, traced: bool| -> Result<(), RunError> {
+        let mb = Mailbox::of(thread as u32);
+        dev.write32(&w, tile, mb.status(), 0)?;
+        let d = mailbox::Descriptor {
+            thread_index: thread as u32,
+            dst_access_fmt: kernel.dst_fmt,
+            program_len,
+            dump_row_count: dump,
+            trace: u32::from(traced),
+            push_window,
+            unwedge: u32::from(kernel.unwedge),
+            mop_cfg: kernel.mop_words(thread)?,
+            ..Default::default()
         };
+        for (at, v) in d.writes(mb) {
+            dev.write32(&w, tile, at, v)?;
+        }
+        for row in 0..dump {
+            for col in 0..mailbox::DUMP_ROW_WORDS {
+                dev.write32(&w, tile, mb.dump_offset(row, col), DUMP_SENTINEL)?;
+            }
+        }
+        Ok(())
+    };
     let wait = |dev: &mut Device<T>, thread: usize| -> Result<Result<(), WaitError>, RunError> {
         let mb = Mailbox::of(thread as u32);
         Ok(dev.wait_for_mailbox(&w, tile, mb.status(), mb.panic_code(), budget, |s| s == status::DONE)?.map(|_| ()))

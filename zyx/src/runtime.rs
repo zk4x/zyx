@@ -750,9 +750,10 @@ impl Runtime {
                             let kd = &self.kernels[depends_on];
                             for &tid in kd.outputs.iter().chain(kd.loads.iter()) {
                                 if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
-                                    && kd.kernel.ops.contains_id(op_id) {
-                                        keep_alive.push(op_id);
-                                    }
+                                    && kd.kernel.ops.contains_id(op_id)
+                                {
+                                    keep_alive.push(op_id);
+                                }
                             }
                         }
                         let mut loads = self.kernels[depends_on].loads.clone();
@@ -768,10 +769,11 @@ impl Runtime {
                                         break;
                                     }
                                     if let Op::Store { dst, src, .. } = kd.kernel.ops[i].op
-                                        && dst == param {
-                                            found = Some((i, src));
-                                            break;
-                                        }
+                                        && dst == param
+                                    {
+                                        found = Some((i, src));
+                                        break;
+                                    }
                                     i = kd.kernel.next_op(i);
                                 }
                                 found
@@ -817,9 +819,10 @@ impl Runtime {
                         for &tid in &self.kernels[kernel_id].loads {
                             if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
                                 &mut self.tensors[tid]
-                                && *k == kernel_id {
-                                    *k = KernelId::NULL;
-                                }
+                                && *k == kernel_id
+                            {
+                                *k = KernelId::NULL;
+                            }
                         }
                         let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
                         self.kernels.remove(kernel_id);
@@ -847,9 +850,10 @@ impl Runtime {
                                 .collect();
                             for &tid in &kd.loads {
                                 if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
-                                    && kd.kernel.ops.contains_id(op_id) {
-                                        out_ops.push(op_id);
-                                    }
+                                    && kd.kernel.ops.contains_id(op_id)
+                                {
+                                    out_ops.push(op_id);
+                                }
                             }
                             (out_ops, kd.loads.clone())
                         };
@@ -889,9 +893,10 @@ impl Runtime {
                         for &tid in &self.kernels[kernel_id].loads {
                             if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
                                 &mut self.tensors[tid]
-                                && *k == kernel_id {
-                                    *k = KernelId::NULL;
-                                }
+                                && *k == kernel_id
+                            {
+                                *k = KernelId::NULL;
+                            }
                         }
                         let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
                         self.kernels.remove(kernel_id);
@@ -919,9 +924,10 @@ impl Runtime {
                                 .collect();
                             for &tid in &kd.loads {
                                 if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
-                                    && kd.kernel.ops.contains_id(op_id) {
-                                        out_ops.push(op_id);
-                                    }
+                                    && kd.kernel.ops.contains_id(op_id)
+                                {
+                                    out_ops.push(op_id);
+                                }
                             }
                             (out_ops, kd.loads.clone())
                         };
@@ -2998,7 +3004,6 @@ impl Runtime {
             | TensorData::Promoted { shape_id, .. } => shape_id,
             ref t => todo!("flip of pure-slab tensor {t:?}"),
         };
-        
 
         match self.tensors[x] {
             TensorData::Graph { class_id: x, graph_id, dtype, .. }
@@ -3038,29 +3043,30 @@ impl Runtime {
         // no kernel launch needed. They are constants/broadcast scalars, so the
         // single resolved value is written to every element of `data`.
         if self.leaf_buffer(x).is_none()
-            && let Some(c) = self.resolve_symbolic(x) {
-                let v = match c.cast(T::dtype()) {
-                    Constant::BF16(v) => T::from_bf16(bf16::from_le_bytes(v)),
-                    Constant::F16(v) => T::from_f16(f16::from_le_bytes(v)),
-                    Constant::F32(v) => T::from_f32(f32::from_le_bytes(v)),
-                    Constant::F64(v) => T::from_f64(f64::from_le_bytes(v)),
-                    Constant::F8E4M3(v) => T::from_f32(f8e4m3::from_bits(v).to_f32()),
-                    Constant::F8E5M2(v) => T::from_f32(f8e5m2::from_bits(v).to_f32()),
-                    Constant::U8(v) => T::from_u8(v),
-                    Constant::U16(v) => T::from_u16(v),
-                    Constant::U32(v) => T::from_u32(v),
-                    Constant::U64(v) => T::from_u64(u64::from_le_bytes(v)),
-                    Constant::I8(v) => T::from_i8(v),
-                    Constant::I16(v) => T::from_i16(v),
-                    Constant::I32(v) => T::from_i32(v),
-                    Constant::I64(v) => T::from_i64(i64::from_le_bytes(v)),
-                    Constant::Bool(v) => T::from_bool(v),
-                };
-                for d in data.iter_mut() {
-                    *d = v;
-                }
-                return Ok(());
+            && let Some(c) = self.resolve_symbolic(x)
+        {
+            let v = match c.cast(T::dtype()) {
+                Constant::BF16(v) => T::from_bf16(bf16::from_le_bytes(v)),
+                Constant::F16(v) => T::from_f16(f16::from_le_bytes(v)),
+                Constant::F32(v) => T::from_f32(f32::from_le_bytes(v)),
+                Constant::F64(v) => T::from_f64(f64::from_le_bytes(v)),
+                Constant::F8E4M3(v) => T::from_f32(f8e4m3::from_bits(v).to_f32()),
+                Constant::F8E5M2(v) => T::from_f32(f8e5m2::from_bits(v).to_f32()),
+                Constant::U8(v) => T::from_u8(v),
+                Constant::U16(v) => T::from_u16(v),
+                Constant::U32(v) => T::from_u32(v),
+                Constant::U64(v) => T::from_u64(u64::from_le_bytes(v)),
+                Constant::I8(v) => T::from_i8(v),
+                Constant::I16(v) => T::from_i16(v),
+                Constant::I32(v) => T::from_i32(v),
+                Constant::I64(v) => T::from_i64(i64::from_le_bytes(v)),
+                Constant::Bool(v) => T::from_bool(v),
+            };
+            for d in data.iter_mut() {
+                *d = v;
             }
+            return Ok(());
+        }
 
         let dt = self.dtype(x);
         if dt != T::dtype() {
@@ -3583,10 +3589,11 @@ impl Runtime {
                     | Op::Expand { x, .. }
                     | Op::Flip { x, .. }
                     | Op::Narrow { x, .. }
-                        if !op_map.contains_key(x) => {
-                            // this is the move on the load
-                            *x = op_map[&dst_param];
-                        }
+                        if !op_map.contains_key(x) =>
+                    {
+                        // this is the move on the load
+                        *x = op_map[&dst_param];
+                    }
                     _ => {}
                 }
                 // Single remap pass: `parameters_mut` covers the view op's `x`
@@ -3656,9 +3663,10 @@ impl Runtime {
             let mut p = kd.kernel.head;
             while !p.is_null() {
                 if let Op::Param { kind, .. } = &kd.kernel.ops[p].op
-                    && *kind != ParamKind::GlobalMut {
-                        n_non_mut += 1;
-                    }
+                    && *kind != ParamKind::GlobalMut
+                {
+                    n_non_mut += 1;
+                }
                 p = kd.kernel.next_op(p);
             }
             assert_eq!(n_non_mut, kd.loads.len(), "assign: loads/params alignment broken for kernel {:?}", src_kid);
@@ -3867,11 +3875,12 @@ impl Runtime {
             // keep or earlier in this merge is reused — its consumers and
             // any tensor holding it as op_id repoint to the survivor below.
             if let Op::Const(c) = op
-                && let Some(&survivor) = const_map.get(&c) {
-                    op_map.insert(i, survivor);
-                    i = merge_ops[i].next;
-                    continue;
-                }
+                && let Some(&survivor) = const_map.get(&c)
+            {
+                op_map.insert(i, survivor);
+                i = merge_ops[i].next;
+                continue;
+            }
             let new_op_id = self.kernels[keep_kid].kernel.push_back(op);
             if let Op::Const(c) = merge_ops[i].op {
                 const_map.insert(c, new_op_id);
@@ -3912,9 +3921,10 @@ impl Runtime {
         keep_data.stores.extend(merge_stores);
         for &tid in &store_tids {
             if let TensorData::PendingLeaf { depends_on, .. } = &mut self.tensors[tid]
-                && *depends_on == merge_kid {
-                    *depends_on = keep_kid;
-                }
+                && *depends_on == merge_kid
+            {
+                *depends_on = keep_kid;
+            }
         }
 
         // Inventory invariant: after the merge every repointed tensor is in
@@ -4244,9 +4254,10 @@ impl Runtime {
         // after the launch; the NULL kernel_id ends that recursion cleanly.
         for &tid in &self.kernels[kid].loads {
             if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } = &mut self.tensors[tid]
-                && *k == kid {
-                    *k = KernelId::NULL;
-                }
+                && *k == kid
+            {
+                *k = KernelId::NULL;
+            }
         }
         let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
 
@@ -4428,18 +4439,15 @@ impl Runtime {
                 .into_iter()
                 .filter(|&dev_id| {
                     !dev_id.aot_only()
-                        && dev_id.info().is_ok_and(|info| {
-                            required_caps.iter().all(|(dt, caps)| info.supports_dtype(*dt).contains(*caps))
-                        })
+                        && dev_id
+                            .info()
+                            .is_ok_and(|info| required_caps.iter().all(|(dt, caps)| info.supports_dtype(*dt).contains(*caps)))
                 })
                 .collect();
             if capable.is_empty() {
                 let req: Vec<String> = required_caps.iter().map(|(dt, caps)| format!("{dt:?}:{caps:?}")).collect();
                 return Err(ZyxError::AllocationError(
-                    format!(
-                        "kernel requires unsupported dtype/ops {req:?} (dtypes {kdtypes:?}) on every device"
-                    )
-                    .into(),
+                    format!("kernel requires unsupported dtype/ops {req:?} (dtypes {kdtypes:?}) on every device").into(),
                 ));
             }
             let mut loaded_bytes: Map<Pool, Dim> = Map::default();

@@ -88,6 +88,9 @@ pip install zyx-py
 > The PyPI package is `zyx-py`, not `zyx` — `pip install zyx` installs an
 > unrelated project. The import name is still `zyx`.
 
+See [INSTALL.md](INSTALL.md) for backend prerequisites (compilers, GPU runtimes,
+the Tenstorrent simulator) and for building zyx from source.
+
 
 ## Configuration & Debugging
 

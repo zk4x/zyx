@@ -1045,10 +1045,9 @@ impl Kernel {
                     match binding {
                         Binding::None => {}
                         _ => {
-                            if key.contains(n)
-                                && !probe.try_insert(*n, *op, binding.clone()) {
-                                    return false;
-                                }
+                            if key.contains(n) && !probe.try_insert(*n, *op, binding.clone()) {
+                                return false;
+                            }
                         }
                     }
                 }
@@ -1244,10 +1243,9 @@ impl Kernel {
                     PMatch::Exact(e) => *u == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings)
-                            && bindings.try_insert(*name, id, Binding::Uop(*u)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Uop(*u)) {
+                            return true;
+                        }
                         *bindings = snap;
                         false
                     }
@@ -1334,10 +1332,9 @@ impl Kernel {
                     PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings)
-                            && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                            return true;
+                        }
                         *bindings = snap;
                         false
                     }
@@ -1349,10 +1346,9 @@ impl Kernel {
                     PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings)
-                            && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                            return true;
+                        }
                         *bindings = snap;
                         false
                     }
@@ -1471,10 +1467,9 @@ impl Kernel {
                     PMatch::Exact(e) => *r == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings)
-                            && bindings.try_insert(*name, id, Binding::Bop(*r)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Bop(*r)) {
+                            return true;
+                        }
                         *bindings = snap;
                         false
                     }

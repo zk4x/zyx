@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7c15c8c2.js";
+            window.path_to_searchindex_js = "searchindex-7478f1f3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-58fb2f25.js"></script>
+        <script src="toc-e6cf6f81.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -212,6 +212,59 @@
 </code></pre>
 <p>Inside a tape, graph ops accumulate lazily. At realize time, the kernelizer builds fusion variants for the full graph, each candidate kernel is autotuned and measured, and extraction keeps the fastest path (including device placement). Autograd reuses the same graph ops — the tape prevents their deletion so the backward pass can traverse them.</p>
 <p>The trade-off in tape mode is that evaluation is lazy — you must call <code>realize()</code> to trigger computation. But this laziness enables optimizations that eager execution cannot do: autograd without allocation of unnecessary intermediaries (there is no “save for backward”), fusion variants chosen by measured time, device placement, and plan caching across structurally identical iterations. Outside a tape, optimization is lighter-weight (greedy fusion only), which is basically the “numpy” mode. But you still get to run on all the devices and you get minimalistic fusion too, so for example matmul + relu will be just one kernel, as it should be.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="building-from-source"><a class="header" href="#building-from-source">Building from Source</a></h1>
+<p>Users installing zyx as a dependency do not need this chapter — <code>cargo add zyx</code>
+or <code>pip install zyx-py</code> is enough. Prerequisites for every backend are listed in
+<a href="https://github.com/zk4x/zyx/blob/main/INSTALL.md">INSTALL.md</a>.</p>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<ul>
+<li>Rust <strong>1.88</strong> or newer</li>
+<li>a C compiler (<code>clang</code> or <code>gcc</code>) for the C backend</li>
+<li>optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU) or the Tenstorrent
+simulator; a missing runtime only means that backend contributes no devices</li>
+</ul>
+<p>The <code>zyx</code> crate has path dependencies on two crates from
+<a href="https://github.com/Knight-Ops/metalium-rs">metalium-rs</a>: the Tenstorrent ISA
+tables and firmware images. A <strong>sibling checkout</strong> is therefore required:</p>
+<pre><code class="language-bash">git clone https://github.com/zk4x/zyx
+git clone https://github.com/Knight-Ops/metalium-rs
+cd zyx/zyx
+cargo build
+</code></pre>
+<p>The layout must be:</p>
+<pre><code class="language-text">your-workspace/
+├── zyx/
+└── metalium-rs/
+</code></pre>
+<h2 id="tests"><a class="header" href="#tests">Tests</a></h2>
+<p>No GPU is needed for the CPU backend:</p>
+<pre><code class="language-bash">cd zyx
+AGENT=1 ZYX_DEV=cpu cargo test
+AGENT=1 cargo test --doc
+</code></pre>
+<p><code>AGENT=1</code> strips ANSI colors; <code>ZYX_DEV=cpu</code> pins the C backend. A single test
+binary is <code>cargo test --test 01_unary</code>, and a single test is
+<code>cargo test --test 01_unary abs_1 -- --exact</code>.</p>
+<h2 id="the-local-check-gate"><a class="header" href="#the-local-check-gate">The Local Check Gate</a></h2>
+<p>The same checks the pre-push hook runs live in <code>ci.sh</code> at the repository root:</p>
+<pre><code class="language-bash">./ci.sh
+</code></pre>
+<p>It runs the unit tests, the doctests for every README-bearing crate, rustdoc
+with private items (so stale doc links fail), <code>cargo fmt --check</code>, and the
+book’s code examples.</p>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<pre><code class="language-bash">cd examples
+./tiny-net/run.sh          # simplest
+./readme-test/run.sh       # transformer block
+</code></pre>
+<p>Each example has a <code>run.sh</code> that downloads its data if needed and runs in
+release mode.</p>
+<h2 id="the-book-itself"><a class="header" href="#the-book-itself">The Book Itself</a></h2>
+<pre><code class="language-bash">cd zyx-book
+./test_book.sh             # dependencies + mdbook test
+./test_book.sh --docs      # also rebuild the committed docs/ output
+</code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
 <p>zyx has two intermediate representations:</p>

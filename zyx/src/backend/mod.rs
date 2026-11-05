@@ -874,18 +874,14 @@ impl Dev {
         match self {
             Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
             Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).launch_timed(program_id, args),
-            Dev::OpenCL(id) => {
-                dlock(self, opencl::device(id).expect("OpenCL device unavailable")).launch_timed(program_id, args)
-            }
+            Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).launch_timed(program_id, args),
             Dev::C => {
                 let pool = self.pool();
                 c::device().expect("C device unavailable").lock().unwrap().launch_timed(program_id, pool, args)
             }
             Dev::Cblas => todo!("launch_timed not yet ported to the CBLAS device"),
             Dev::Host => panic!("Dev::Host cannot launch; it is transfer-only"),
-            Dev::Vulkan(id) => {
-                dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args)
-            }
+            Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args),
             Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).launch_timed(program_id, args),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).launch_timed(program_id, args),

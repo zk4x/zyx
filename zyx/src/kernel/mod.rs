@@ -1131,9 +1131,10 @@ impl Kernel {
                     break;
                 }
                 if let Op::Param { kind, .. } = &self.ops[id].op
-                    && *kind != ParamKind::GlobalMut {
-                        ops.push(id);
-                    }
+                    && *kind != ParamKind::GlobalMut
+                {
+                    ops.push(id);
+                }
                 id = self.next_op(id);
             }
             if !id.is_null() {

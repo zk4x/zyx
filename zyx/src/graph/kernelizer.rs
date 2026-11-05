@@ -1240,9 +1240,11 @@ impl Graph {
                 }
                 for c in &order[..=i] {
                     if let Some(&rc) = rcs.get(c)
-                        && rc == 0 && visited.contains_key(c) {
-                            panic!("class={c:?} with rcs=0 in visited");
-                        }
+                        && rc == 0
+                        && visited.contains_key(c)
+                    {
+                        panic!("class={c:?} with rcs=0 in visited");
+                    }
                 }
             }
         }

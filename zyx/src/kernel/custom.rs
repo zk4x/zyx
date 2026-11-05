@@ -1714,14 +1714,15 @@ impl Kernel {
         let mut op_id = self.tail;
         while !op_id.is_null() {
             if let Op::Range { axis, kind: RangeKind::Local(len), .. } = self.ops[op_id].op
-                && axis == 0 {
-                    let warp_size = u32::from(self.device_info().warp_size);
-                    assert_eq!(
-                        len, warp_size,
-                        "partition: local axis 0 is the warp lane and must have length {warp_size}, got {len}"
-                    );
-                    return op_id;
-                }
+                && axis == 0
+            {
+                let warp_size = u32::from(self.device_info().warp_size);
+                assert_eq!(
+                    len, warp_size,
+                    "partition: local axis 0 is the warp lane and must have length {warp_size}, got {len}"
+                );
+                return op_id;
+            }
             op_id = self.prev_op(op_id);
         }
         panic!("partition: no local axis 0 (the warp lane) behind this point — emit k.local_range(0, warp_size) first");

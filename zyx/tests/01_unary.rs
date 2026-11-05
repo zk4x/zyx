@@ -708,9 +708,7 @@ fn f16_sin() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_relu() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::MAX,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::MAX) {
         return Ok(());
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
@@ -725,9 +723,7 @@ fn bf16_relu() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_neg() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::NEG,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::NEG) {
         return Ok(());
     }
     let data: [f32; 6] = [-3.0, -1.0, 0.0, 1.0, 2.0, 5.0];
@@ -741,9 +737,7 @@ fn bf16_neg() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_exp2() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::EXP2,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::EXP2) {
         return Ok(());
     }
     let data: [f32; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
@@ -757,9 +751,7 @@ fn bf16_exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn bf16_log2() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).contains(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::LOG2,
-    ) {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::LOG2) {
         return Ok(());
     }
     let data: [f32; 5] = [0.5, 1.0, 2.0, 4.0, 8.0];

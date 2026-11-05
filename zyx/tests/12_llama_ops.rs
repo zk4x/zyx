@@ -33,9 +33,7 @@ fn assert_close(got: &[f32], expected: &[f32], tol: f32, what: &str) {
 
 #[test]
 fn llama_embedding_one_hot() -> Result<(), ZyxError> {
-    if !bf16_can(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL,
-    ) {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
         return Ok(());
     }
     // weight rows are distinct, exact-in-bf16 constants.
@@ -112,11 +110,7 @@ fn llama_rms_norm() -> Result<(), ZyxError> {
 #[test]
 fn llama_rope() -> Result<(), ZyxError> {
     if !bf16_can(
-        DTypeCapability::CAST
-            | DTypeCapability::STORAGE
-            | DTypeCapability::ADD
-            | DTypeCapability::SUB
-            | DTypeCapability::MUL,
+        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::SUB | DTypeCapability::MUL,
     ) {
         return Ok(());
     }
@@ -248,9 +242,7 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
-    if !bf16_can(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL,
-    ) {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
         return Ok(());
     }
     let max_ctx = 16i64;
@@ -306,9 +298,7 @@ fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
-    if !bf16_can(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL,
-    ) {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
         return Ok(());
     }
     let max_ctx = 8i64;
@@ -347,9 +337,7 @@ fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
-    if !bf16_can(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL,
-    ) {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
         return Ok(());
     }
     let max_ctx = 8i64;
@@ -391,9 +379,7 @@ fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_promote_realized_eager_load() -> Result<(), ZyxError> {
-    if !bf16_can(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL,
-    ) {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
         return Ok(());
     }
     let x = Tensor::ones([4], DType::F32).contiguous()?;
@@ -513,9 +499,7 @@ fn llama_feedforward_glu() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_lm_head_projection() -> Result<(), ZyxError> {
-    if !bf16_can(
-        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL,
-    ) {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
         return Ok(());
     }
     let vocab = 16i64;

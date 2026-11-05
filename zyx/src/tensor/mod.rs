@@ -2452,13 +2452,7 @@ impl Tensor {
         I: IntoIterator<Item = (Dim, Dim)>,
         I::IntoIter: DoubleEndedIterator,
     {
-        self.rpad_zeros(
-            self.resolve_shape()
-                .into_iter()
-                .rev()
-                .zip(dims.into_iter().rev())
-                .map(|(d, (s, e))| (-s, -(d - e))),
-        )
+        self.rpad_zeros(self.resolve_shape().into_iter().rev().zip(dims.into_iter().rev()).map(|(d, (s, e))| (-s, -(d - e))))
     }
 
     /// Convert `self` (class indices) into a one-hot tensor with `num_classes`
@@ -2815,24 +2809,16 @@ impl Tensor {
             }
             let pos = usize::try_from(-dim).unwrap();
             let pos = rank - pos + 1;
-            let new_shape: Vec<Tensor> = symbolic[..pos]
-                .iter()
-                .cloned()
-                .chain(std::iter::once(Tensor::from(1)))
-                .chain(symbolic[pos..].to_vec())
-                .collect();
+            let new_shape: Vec<Tensor> =
+                symbolic[..pos].iter().cloned().chain(std::iter::once(Tensor::from(1))).chain(symbolic[pos..].to_vec()).collect();
             self.reshape(new_shape)
         } else {
             let pos = usize::try_from(dim).unwrap();
             if pos > rank {
                 return Err(ZyxError::shape_error(format!("Unsqueeze dim {dim} is not possible on rank {rank} tensor.").into()));
             }
-            let new_shape: Vec<Tensor> = symbolic[..pos]
-                .iter()
-                .cloned()
-                .chain(std::iter::once(Tensor::from(1)))
-                .chain(symbolic[pos..].to_vec())
-                .collect();
+            let new_shape: Vec<Tensor> =
+                symbolic[..pos].iter().cloned().chain(std::iter::once(Tensor::from(1))).chain(symbolic[pos..].to_vec()).collect();
             self.reshape(new_shape)
         }
     }
@@ -3203,11 +3189,7 @@ impl Tensor {
             .iter()
             .cloned()
             .chain(
-                k_.iter()
-                    .copied()
-                    .zip(o_.iter().copied())
-                    .zip(s_.iter().copied())
-                    .flat_map(|((k, o), s)| [(0..k), (0..(o * s))]),
+                k_.iter().copied().zip(o_.iter().copied()).zip(s_.iter().copied()).flat_map(|((k, o), s)| [(0..k), (0..(o * s))]),
             )
             .collect();
         xup = xup.slice(padding)?;

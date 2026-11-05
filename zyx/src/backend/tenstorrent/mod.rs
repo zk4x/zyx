@@ -854,7 +854,10 @@ impl TTDevice {
             op_id = rendered.next_op(op_id);
         }
         let Some(gws) = gws else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "rendered kernel has no TensixGrid".into() });
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: "rendered kernel has no TensixGrid".into(),
+            });
         };
         if debug_asm {
             eprintln!("[tenstorrent] reader:\n{}", sources[0]);
@@ -976,7 +979,9 @@ impl TTDevice {
         let Ok(tpool) = pool(dev_id) else { return };
         let mut tpool = super::lock(self.memory_pool, tpool);
         for id in sequence.iter() {
-            let Some(image) = self.images.get(*id).copied() else { continue };
+            let Some(image) = self.images.get(*id).copied() else {
+                continue;
+            };
             self.images.remove(*id);
             let chunk = tpool.chunks.iter().find(|(_, c)| c.addr == image.address).map(|(chunk, _)| chunk);
             if let Some(chunk) = chunk {

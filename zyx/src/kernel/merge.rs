@@ -378,9 +378,11 @@ impl Kernel {
                 let is_local = matches!(kind, RangeKind::Local(_));
                 if is_group || is_local {
                     if let Some((prev_id, prev_axis, prev_group)) = prev
-                        && prev_group == is_group && prev_axis < axis {
-                            pairs.push(vec![prev_id, op_id]);
-                        }
+                        && prev_group == is_group
+                        && prev_axis < axis
+                    {
+                        pairs.push(vec![prev_id, op_id]);
+                    }
                     prev = Some((op_id, axis, is_group));
                 }
             }

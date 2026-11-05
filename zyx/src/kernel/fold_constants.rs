@@ -630,9 +630,10 @@ impl Kernel {
             // a root like a store. Removing it would silently unbalance
             // CB push/pop traffic. The scope chases the load's base.
             if let Op::Load { src, .. } = op
-                && matches!(self.at(*src), Op::Storage { scope: MemScope::Circular, .. }) {
-                    params.push(op_id);
-                }
+                && matches!(self.at(*src), Op::Storage { scope: MemScope::Circular, .. })
+            {
+                params.push(op_id);
+            }
         }
         while let Some(op_id) = params.pop() {
             if visited.insert(op_id) {

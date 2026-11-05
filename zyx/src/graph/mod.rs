@@ -495,10 +495,9 @@ impl Graph {
                         }
                     }
                 }
-                Op::ToDevice { x, .. }
-                    if !kdeps.contains(&x) => {
-                        kdeps.push(x);
-                    }
+                Op::ToDevice { x, .. } if !kdeps.contains(&x) => {
+                    kdeps.push(x);
+                }
                 _ => {}
             }
         }
@@ -1133,11 +1132,12 @@ impl Graph {
                 // consts are never removed), so it is resolved by value here;
                 // absent (foreign stacks) keeps today's [].
                 if let Some(&e) = ops.iter().find(|&&e| !self.shape(e).is_empty())
-                    && let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64))) {
-                        let mut s = self.shape(e);
-                        s.insert(0, self.ops[nid].class_of);
-                        return s;
-                    }
+                    && let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64)))
+                {
+                    let mut s = self.shape(e);
+                    s.insert(0, self.ops[nid].class_of);
+                    return s;
+                }
                 Vec::new()
             }
             Op::Index { vec, idx } => match &self.ops[*vec].op {
@@ -2082,13 +2082,10 @@ impl Runtime {
                             class_id
                         }
                     }
-                    Op::Const(x) => {
-                        
-                        self.push_const(graph_id, x)
-                    }
+                    Op::Const(x) => self.push_const(graph_id, x),
                     Op::Unary { x, uop } => {
                         let x_class = op_to_class[&x];
-                        
+
                         self.push_op(graph_id, Op::Unary { x: x_class, uop })
                     }
                     Op::Binary { x, y, bop } => {
@@ -2098,17 +2095,17 @@ impl Runtime {
                     }
                     Op::Cast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        
+
                         self.push_op(graph_id, Op::Cast { x: x_class, dtype })
                     }
                     Op::Bitcast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        
+
                         self.push_op(graph_id, Op::Bitcast { x: x_class, dtype })
                     }
                     Op::Stack { ref ops } => {
                         let ops: Box<[OpId]> = ops.iter().map(|o| op_to_class[o]).collect();
-                        
+
                         self.push_op(graph_id, Op::Stack { ops })
                     }
                     Op::Select { cond, if_true, if_false } => {
@@ -2117,9 +2114,8 @@ impl Runtime {
                         let cond_class = op_to_class[&cond];
                         let if_true_class = op_to_class[&if_true];
                         let if_false_class = op_to_class[&if_false];
-                        
-                        self
-                            .push_op(graph_id, Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class })
+
+                        self.push_op(graph_id, Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class })
                     }
                     Op::Reduce { x, rop, reduce_axis } => {
                         let x_class = op_to_class[&x];
@@ -2128,19 +2124,19 @@ impl Runtime {
                         } else {
                             op_to_class[&reduce_axis]
                         };
-                        
+
                         self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis })
                     }
                     Op::Reshape { x, shape } => {
                         let x_class = op_to_class[&x];
                         let shape = op_to_class[&shape];
-                        
+
                         self.push_op(graph_id, Op::Reshape { x: x_class, shape })
                     }
                     Op::Expand { x, shape } => {
                         let x_class = op_to_class[&x];
                         let shape = op_to_class[&shape];
-                        
+
                         self.push_op(graph_id, Op::Expand { x: x_class, shape })
                     }
                     Op::Permute { x, ref axes } => {
@@ -2163,21 +2159,21 @@ impl Runtime {
                             in_shape
                         );*/
                         let axes = axes.clone();
-                        
+
                         self.push_op(graph_id, Op::Permute { x: x_class, axes })
                     }
                     Op::Pad { x, axis, lp, len } => {
                         let x_class = op_to_class[&x];
                         let lp = op_to_class[&lp];
                         let len = op_to_class[&len];
-                        
+
                         self.push_op(graph_id, Op::Pad { x: x_class, axis, lp, len })
                     }
                     Op::Narrow { x, axis, start, len } => {
                         let x_class = op_to_class[&x];
                         let start = op_to_class[&start];
                         let len = op_to_class[&len];
-                        
+
                         self.push_op(graph_id, Op::Narrow { x: x_class, axis, start, len })
                     }
                     Op::Flip { x, ref axes } => {
@@ -2190,7 +2186,7 @@ impl Runtime {
                             in_shape
                         );
                         let axes = axes.clone();
-                        
+
                         self.push_op(graph_id, Op::Flip { x: x_class, axes })
                     }
                     _ => unreachable!(),

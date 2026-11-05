@@ -466,8 +466,12 @@ impl Tensor {
             // shape (NOTE there is no explicit check for endiannes here)
             let mut shape = vec![0u8; rank as usize * 8];
             f.read_exact(&mut shape)?;
-            let mut shape: Vec<Dim> =
-                shape.as_chunks::<8>().0.iter().map(|x| i64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).collect();
+            let mut shape: Vec<Dim> = shape
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|x| i64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
+                .collect();
             // GGUF stores dims fastest-first (`ne`); row-major needs them
             // slowest-first, same as gguf-python/HF (`arr.shape == reversed(ne)`).
             // Quantized arms below discard this for loader-built block shapes;

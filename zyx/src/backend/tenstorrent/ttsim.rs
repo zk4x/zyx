@@ -404,8 +404,7 @@ fn mover_list(
             entries.extend_from_slice(&word.to_le_bytes());
         }
     }
-    dev.l1_write(window, tile, m.list, &entries)
-        .map_err(|e| format!("cannot write the {:?} mover's list: {e}", m.core))?;
+    dev.l1_write(window, tile, m.list, &entries).map_err(|e| format!("cannot write the {:?} mover's list: {e}", m.core))?;
     write32(dev, window, tile, m.at(dm::OP), dm::op::LIST)?;
     write32(dev, window, tile, m.at(dm::LEN), list.len() as u32)?;
     let seq = movers.seq[which].wrapping_add(1).max(1);
@@ -488,12 +487,7 @@ fn execute(
                 eprintln!("[tt] role T{thread}: {} bytes, {} entries, len {words}", words as u64 * 4, p.ranges.len());
             }
         }
-        eprintln!(
-            "[tt] moves: {} in (B), {} out (NC), {} read back",
-            run.reads.len(),
-            run.writes.len(),
-            run.read_back.len()
-        );
+        eprintln!("[tt] moves: {} in (B), {} out (NC), {} read back", run.reads.len(), run.writes.len(), run.read_back.len());
     }
     let tile =
         NocCoord::<Noc0>::new(run.tile.0, run.tile.1).ok_or_else(|| format!("{:?} is not a Tensix coordinate", run.tile))?;

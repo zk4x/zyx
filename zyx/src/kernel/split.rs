@@ -139,7 +139,9 @@ impl Kernel {
                 // the make scan and apply, so the state matches make's view.
                 let mut next_lane_axis = 0u64;
                 for (_, op) in self.iter_unordered() {
-                    if let Op::Unroll { axis, .. } = op { next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1) }
+                    if let Op::Unroll { axis, .. } = op {
+                        next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1)
+                    }
                 }
                 let axis = u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
                 let lanes = factor;
@@ -502,10 +504,10 @@ impl Kernel {
                                         if !self
                                             .at(use_id)
                                             .parameters()
-                                            .any(|p| p == axis_id || self.depends_on(p, axis_id, &mut Set::default()))
-                                        => {
-                                            unfed = true;
-                                        }
+                                            .any(|p| p == axis_id || self.depends_on(p, axis_id, &mut Set::default())) =>
+                                    {
+                                        unfed = true;
+                                    }
                                     _ => {}
                                 }
                                 use_id = self.next_op(use_id);
@@ -605,7 +607,9 @@ impl Kernel {
                         // Next free lane axis for the Unroll node.
                         let mut next_lane_axis = 0u64;
                         for (_, op) in self.iter_unordered() {
-                            if let Op::Unroll { axis, .. } = op { next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1) }
+                            if let Op::Unroll { axis, .. } = op {
+                                next_lane_axis = next_lane_axis.max(u64::from(*axis) + 1)
+                            }
                         }
                         let lane_axis = u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
 
@@ -949,7 +953,9 @@ mod tests {
         assert!(matches!(k.at(acc), Op::Storage { len, scope: MemScope::Register, .. } if *len == 8));
         let mut unrolls = 0;
         for (_, op) in k.iter_unordered() {
-            if let Op::Unroll { len: 8, .. } = op { unrolls += 1 }
+            if let Op::Unroll { len: 8, .. } = op {
+                unrolls += 1
+            }
         }
         assert!(unrolls >= 1);
     }

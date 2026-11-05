@@ -478,22 +478,14 @@ impl Tape {
                         )
                     })
                     .collect();
-                assert!(
-                    !classes.is_empty(),
-                    "freeze input tid {} is not a tape leaf",
-                    t.id
-                );
+                assert!(!classes.is_empty(), "freeze input tid {} is not a tape leaf", t.id);
                 // A symbolic input leaf is a variable binding: remember its
                 // expression so replay can fold any output shape that
                 // references it against the new value.
                 let var_expr = classes.iter().find_map(|&c| {
                     let tid = rt.graphs[graph_id].leaf_map[&c];
                     match rt.tensors[tid] {
-                        TensorData::Symbolic { expr, .. }
-                            if matches!(rt.exprs[expr], Expr::Variable { .. }) =>
-                        {
-                            Some(expr)
-                        }
+                        TensorData::Symbolic { expr, .. } if matches!(rt.exprs[expr], Expr::Variable { .. }) => Some(expr),
                         _ => None,
                     }
                 });
@@ -532,9 +524,7 @@ impl Tape {
             if let Some(buf) = rt.leaf_buffer(tid) {
                 captured_buf.insert(cid, buf);
             } else {
-                let value = rt
-                    .resolve_symbolic(tid)
-                    .expect("frozen leaf resolves neither to a buffer nor to a variable");
+                let value = rt.resolve_symbolic(tid).expect("frozen leaf resolves neither to a buffer nor to a variable");
                 captured_vars.insert(cid, value);
             }
         }
@@ -547,14 +537,7 @@ impl Tape {
             rt.plan_cache.insert(cache_key, plan);
         }
 
-        Ok(FrozenTape {
-            cache_key,
-            input_classes,
-            input_var_exprs,
-            captured_buf,
-            captured_vars,
-            outputs,
-        })
+        Ok(FrozenTape { cache_key, input_classes, input_var_exprs, captured_buf, captured_vars, outputs })
     }
 }
 
@@ -615,11 +598,8 @@ impl FrozenTape {
             let ids: Vec<TensorId> = shape
                 .iter()
                 .map(|&expr| {
-                    let value = rt
-                        .fold_dim(expr, &mut dim_memo)
-                        .0
-                        .as_dim()
-                        .expect("frozen output dim does not evaluate to an integer");
+                    let value =
+                        rt.fold_dim(expr, &mut dim_memo).0.as_dim().expect("frozen output dim does not evaluate to an integer");
                     rt.new_constant_tensor(Constant::idx(value))
                 })
                 .collect();
