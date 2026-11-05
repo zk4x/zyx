@@ -209,17 +209,23 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let [unpack, math, pack] = program.roles;
-        let [_, math_loops, _] = program.loops;
+        let [unpack_loops, math_loops, pack_loops] = program.loops;
         let mut rendered =
             Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
-        rendered.push_back(Op::TT(TTOp::Unpack(unpack.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Unpack(Box::new(crate::kernel::TTRoleProgram {
+            words: unpack.into_boxed_slice(),
+            loops: unpack_loops.into_boxed_slice(),
+        }))));
         rendered.push_back(Op::TT(TTOp::Math(Box::new(crate::kernel::TTRoleProgram {
             words: math.into_boxed_slice(),
             loops: math_loops.into_boxed_slice(),
         }))));
-        rendered.push_back(Op::TT(TTOp::Pack(pack.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Pack(Box::new(crate::kernel::TTRoleProgram {
+            words: pack.into_boxed_slice(),
+            loops: pack_loops.into_boxed_slice(),
+        }))));
         // The reader list: one op per 4 KB page, so the stream's shape is
         // fixed here and the launch only substitutes addresses (NOTES §2).
         rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
@@ -550,6 +556,15 @@ struct TtSection<'a> {
     section: u8,
     params: Vec<OpId>,
     loop_names: Map<OpId, String>,
+    /// The iteration each `Op::Loop` is being emitted for. A loop reaches the
+    /// role programs one iteration at a time: the body's words are the
+    /// iteration's (a CB slot is the counter), so every index it names has a
+    /// concrete value at emission.
+    bind: Map<OpId, i64>,
+    /// The innermost `Op::Loop` whose body is being emitted **once** with a
+    /// block repeat: an address that moves per iteration is then a register the
+    /// translator steps (`ttinsn::STEP_STORE`), not a different word.
+    loop_var: Option<(OpId, i64)>,
     range_names: Map<OpId, String>,
     var_names: Map<OpId, String>,
     slots: Map<OpId, u32>,
@@ -612,7 +627,10 @@ impl<'a> TtSection<'a> {
     fn expr(&self, id: OpId) -> Result<String, BackendError> {
         match self.k.at(id) {
             Op::Const(c) => tt_const_lit(c),
-            Op::Loop { .. } => self.loop_names.get(&id).cloned().ok_or_else(|| self.err(format!("{id:?} is no loop counter"))),
+            Op::Loop { .. } => match self.bind.get(&id) {
+                Some(t) => Ok(t.to_string()),
+                None => self.loop_names.get(&id).cloned().ok_or_else(|| self.err(format!("{id:?} is no loop counter"))),
+            },
             Op::Range { axis, kind, .. } => match kind {
                 RangeKind::Group(_) => self
                     .range_names
@@ -907,9 +925,67 @@ impl<'a> TtSection<'a> {
 /// Locks are discipline-checked (compute-only, paired, closed at
 /// section end — the old verify lock block).
 
+/// The `EndLoop` matching the `Op::Loop` at `ops[start]`, honouring nesting.
+fn tt_matching_end(k: &Kernel, ops: &[OpId], start: usize) -> Result<usize, BackendError> {
+    let mut depth = 0usize;
+    for i in start..ops.len() {
+        match k.at(ops[i]) {
+            Op::Loop { .. } => depth += 1,
+            Op::EndLoop => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(tt_err(format!("tenstorrent: loop {:?} has no EndLoop in its section", ops[start])))
+}
+
 fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError> {
     let mut loop_stack: Vec<OpId> = Vec::new();
-    for id in ops.iter().copied() {
+    let mut at = 0usize;
+    while at < ops.len() {
+        let id = ops[at];
+        // A loop reaches the role programs one iteration at a time: its body's
+        // words are the iteration's (a multi-tile CB's slot is the counter), so
+        // the streams get the body once per iteration with the counter bound,
+        // not one copy with the counter unresolved.
+        if let Op::Loop { len } = sec.k.at(id) {
+            let trip = sec
+                .k
+                .resolve_const(*len)
+                .and_then(Constant::as_dim)
+                .filter(|t| *t > 0)
+                .ok_or_else(|| sec.err(format!("loop {id:?} needs a positive constant trip count")))?;
+            let end = tt_matching_end(sec.k, ops, at)?;
+            // One copy of the body and a block repeat per role: the words are
+            // the *first* iteration's, and anything that must move with the
+            // counter (a tile CB's slot) is a register the translator steps
+            // (`ttinsn::STEP_STORE`), never a second copy of the words. A body
+            // that already spends the table's entries (a replay longer than the
+            // 32-word hardware buffer) keeps its own; the two nest.
+            let started = [sec.native_t0.len(), sec.native.len(), sec.native_t2.len()];
+            let outer = sec.loop_var;
+            sec.loop_var = Some((id, trip));
+            sec.bind.insert(id, 0);
+            render_section(sec, &ops[at + 1..end])?;
+            sec.bind.remove(&id);
+            sec.loop_var = outer;
+            let ended = [sec.native_t0.len(), sec.native.len(), sec.native_t2.len()];
+            for (role, (start, stop)) in started.iter().zip(ended.iter()).enumerate() {
+                if stop > start {
+                    let len = (stop - start) as u32;
+                    if len >= 1 << tt_isa::mailbox::loops::LEN_BITS || trip > 1 << tt_isa::mailbox::loops::COUNT_BITS {
+                        return Err(sec.err(format!("loop {id:?} does not fit a block repeat")));
+                    }
+                    sec.loops[role].push([*start as u32, len, trip as u32]);
+                }
+            }
+            at = end + 1;
+            continue;
+        }
         match sec.k.at(id) {
             Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } | Op::Stack { .. } => {}
             // Unrolled lanes emit no code: traffic addresses are
@@ -996,6 +1072,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             // A pack is one op, not the end of the section:
                             // the register hand-off (`tt_reg_sync`) can put
                             // another tile's pack after this one.
+                            at += 1;
                             continue;
                         }
                         if sec.section != 0 {
@@ -1047,9 +1124,57 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         // the DST path needs the same header compensation the
                         // Src path does (`tt_src_base`). Without it the tile is
                         // shifted by one 16-byte unit (four F32 datums).
-                        let l1 = tt_src_base(sec.cb_l1(scb)?);
-                        let words = crate::codegen::tenstorrent::datapath::unpack_tile_to_dst(l1, dst);
-                        sec.native_t0.extend(words.iter().map(|i| i.word()));
+                        //
+                        // A multi-tile CB's slot is the index's. Inside a loop
+                        // the body is written once, so the slot of iteration 0 is
+                        // what the words say and the rest of the loop is a
+                        // register the translator advances by the index's own
+                        // step — a slot that does not move with the counter is a
+                        // different loop and is refused below rather than
+                        // silently reading tile 0 every time.
+                        let uab = u32::from(cb_dtype(sec.k, scb)?.bit_size()) / 8;
+                        let base_l1 = tt_src_base(sec.cb_l1(scb)?);
+                        let words: Vec<u32> = match sec.loop_var {
+                            Some((var, _)) => {
+                                let mut first = sec.bind.clone();
+                                first.insert(var, 0);
+                                let mut next = sec.bind.clone();
+                                next.insert(var, 1);
+                                let slot0 = tt_cb_offset(sec.k, *src_idx, uab, &first)?;
+                                let slot1 = tt_cb_offset(sec.k, *src_idx, uab, &next)?;
+                                let step = slot1.checked_sub(slot0).unwrap_or(0);
+                                // A slot that does not move with the counter is
+                                // loop-invariant: the repeat reads it again,
+                                // which is what the body says.
+                                if step == 0 {
+                                    crate::codegen::tenstorrent::datapath::unpack_tile_to_dst(
+                                        base_l1 + u64::from(slot0),
+                                        dst,
+                                    )
+                                    .iter()
+                                    .map(|i| i.word())
+                                    .collect()
+                                } else if step % 16 != 0 {
+                                    return Err(sec.err(format!(
+                                        "unpack {id:?} moves its CB slot {step} bytes a step, not a 16-byte unit"
+                                    )));
+                                } else {
+                                    crate::codegen::tenstorrent::datapath::unpack_tile_stepped(
+                                        base_l1 + u64::from(slot0),
+                                        step,
+                                        dst,
+                                    )
+                                }
+                            }
+                            None => {
+                                let slot = tt_cb_offset(sec.k, *src_idx, uab, &sec.bind)?;
+                                crate::codegen::tenstorrent::datapath::unpack_tile_to_dst(base_l1 + u64::from(slot), dst)
+                                    .iter()
+                                    .map(|i| i.word())
+                                    .collect()
+                            }
+                        };
+                        sec.native_t0.extend(words);
                         sec.last_role = 0;
                         sec.compute_ops += 1;
                         sec.out.push_str(&format!("{}copy_tile({cb}, 0, {dst});\n", sec.indent));
@@ -1394,6 +1519,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             _ => return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)"))),
         }
         sec.finish_replay()?;
+        at += 1;
     }
     if sec.replay.is_some() {
         return Err(sec.err("a replay body is truncated by the section end".to_string()));
@@ -1572,6 +1698,21 @@ fn tt_slice(
 /// The buffer side never moves with the grid: a grid axis there would mean a
 /// per-core slot, which the plan does not express. So every variable the index
 /// names must be a bound loop (or the constant term).
+/// The staged word the firmware translator turns into `sw t2, 0(t3)`: the store
+/// of the loop's address register into the config word it names
+/// (`tt-firmware`'s `ttinsn::STEP_STORE`). The low 20 bits are the register's
+/// first value, in 16-byte units.
+fn ttinsn_step_store(l1: u64) -> u32 {
+    0x7F50_0000 | ((l1 / 16) as u32 & 0xF_FFFF)
+}
+
+/// The staged word the translator turns into `addi t2, t2, step`: the advance
+/// of that register for the next iteration, in 16-byte units
+/// (`ttinsn::STEP_ADVANCE`).
+fn ttinsn_step_advance(units: u32) -> u32 {
+    0x7F60_0000 | (units & 0xFFF)
+}
+
 fn tt_cb_offset(k: &Kernel, idx: OpId, elem_bytes: u32, bind: &Map<OpId, i64>) -> Result<u32, BackendError> {
     if idx.is_null() {
         return Ok(0);
@@ -1798,16 +1939,17 @@ fn setrwc_clear() -> u32 {
     tt_isa::isa::generated::encode::Setrwc::ZERO.dst(1).encode().unwrap().word()
 }
 
-fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
+fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> (Vec<u32>, u32) {
     use tt_isa::backend::{Before, wait_for_unpacker0, wait_for_unpacker1};
     if body.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let config = if src_mode {
         crate::codegen::tenstorrent::datapath::src_thread_config()
     } else {
         crate::codegen::tenstorrent::datapath::thread_config()
     };
+    let preamble = config.len() as u32;
     let mut role: Vec<u32> = config.iter().map(|i| i.word()).collect();
     role.extend(body);
     // Both unpackers can have run (a Src matmul unpacks `SrcA` and `SrcB`),
@@ -1816,7 +1958,7 @@ fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
     if src_mode {
         role.push(wait_for_unpacker1(Before::EVERYTHING).expect("wait_for_unpacker1(EVERYTHING) is encodable").word());
     }
-    role
+    (role, preamble)
 }
 
 /// T1, the math role: the state id, then the per-op math programs in
@@ -1836,15 +1978,15 @@ fn tt_math_role(body: Vec<u32>) -> (Vec<u32>, u32) {
 /// T2, the pack role: the state id, then one self-contained DST -> CB pack
 /// per `Store`, then a packer drain (the thread unblocks once the packer
 /// accepts work, not when it finishes).
-fn tt_pack_role(body: Vec<u32>) -> Vec<u32> {
+fn tt_pack_role(body: Vec<u32>) -> (Vec<u32>, u32) {
     use tt_isa::backend::{Before, wait_for_packer};
     if body.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let mut role: Vec<u32> = vec![crate::codegen::tenstorrent::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_packer(Before::EVERYTHING).expect("wait_for_packer(EVERYTHING) is encodable").word());
-    role
+    (role, 1)
 }
 
 fn render(
@@ -2005,6 +2147,8 @@ fn render(
             section: s as u8,
             params: params[s].clone(),
             loop_names,
+            bind: Map::default(),
+            loop_var: None,
             range_names,
             var_names,
             slots: Map::default(),
@@ -2184,11 +2328,18 @@ fn render(
             // unit before the firmware reports it done. The three streams
             // become `TTOp::Unpack`/`Math`/`Pack`: codegen is the encoder.
             let (math, preamble) = tt_math_role(section_native);
-            roles = [tt_unpack_role(section_t0, sec.has_src_unpack), math, tt_pack_role(section_t2)];
+            let (unpack, unpack_preamble) = tt_unpack_role(section_t0, sec.has_src_unpack);
+            let (pack, pack_preamble) = tt_pack_role(section_t2);
+            roles = [unpack, math, pack];
             *sems = std::mem::take(&mut sec.sems);
             loops = std::mem::take(&mut sec.loops);
-            for entry in &mut loops[1] {
-                entry[0] += preamble;
+            // Each role's program leads with its own preamble (a thread config
+            // on T0, a state id on T1/T2), and a block repeat indexes the words
+            // as pushed, so every entry moves by its role's preamble.
+            for (role, shift) in [(0usize, unpack_preamble), (1, preamble), (2, pack_preamble)] {
+                for entry in &mut loops[role] {
+                    entry[0] += shift;
+                }
             }
         } else {
             debug_assert!(section_native.is_empty(), "native compute words outside the compute section");

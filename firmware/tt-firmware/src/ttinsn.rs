@@ -42,11 +42,46 @@ const fn opcode_bitmap() -> [u32; OPCODE_WORDS] {
 const ZERO: u32 = 0;
 const T0: u32 = 5;
 const T1: u32 = 6;
+/// The value register of a stepped address (the unpacker's base), and the
+/// register holding that config word's address. The loop counters never use
+/// them, and `.ttinsn` pushes do not touch a register.
+const T2: u32 = 7;
+const T3: u32 = 28;
 const A0: u32 = 10;
 /// `jalr x0, 0(ra)`.
 const RET: u32 = 0x0000_8067;
 /// Loop counts that fit `addi`'s signed 12-bit immediate.
 const MAX_COUNT: u32 = 2047;
+
+/// A staged word the translator turns into `sw t2, 0(t3)`: the store of the
+/// address register into the config word it names. The low 20 bits are the
+/// register's first value, in the field's own units (the unpacker's base is in
+/// 16-byte units, so an L1 address below 1 MiB fits). The body of a loop is one
+/// copy: this is how an address that moves per iteration is expressed without
+/// writing the body out.
+pub const STEP_STORE: u32 = 0x7F50_0000;
+/// A staged word the translator turns into `addi t2, t2, step`: the advance of
+/// that register for the next iteration, low 12 bits, in the same units.
+pub const STEP_ADVANCE: u32 = 0x7F60_0000;
+/// The bits a step word is recognised by.
+pub const STEP_MASK: u32 = 0xFFF0_0000;
+
+/// `lui rd, imm20`.
+pub const fn lui(rd: u32, imm20: u32) -> u32 {
+    ((imm20 & 0xf_ffff) << 12) | (rd << 7) | 0x37
+}
+
+/// `sw rs2, imm(rs1)`.
+pub const fn sw(rs2: u32, rs1: u32, imm: i32) -> u32 {
+    let imm = imm as u32;
+    (((imm >> 5) & 0x7f) << 25) | (rs2 << 20) | (rs1 << 15) | (0b010 << 12) | ((imm & 0x1f) << 7) | 0x23
+}
+
+/// `rd = value`, for a 32-bit constant: `lui` and a signed 12-bit remainder.
+pub fn load_const(rd: u32, value: u32) -> [u32; 2] {
+    let hi = (value >> 12) + u32::from(value & 0x800 != 0);
+    [lui(rd, hi & 0xf_ffff), addi(rd, rd, ((value & 0xfff) as i32) - if value & 0x800 != 0 { 0x1000 } else { 0 })]
+}
 
 /// `addi rd, rs1, imm`.
 pub const fn addi(rd: u32, rs1: u32, imm: i32) -> u32 {
@@ -114,6 +149,15 @@ fn emit(
         if depth >= 2 || count == 0 || count > MAX_COUNT {
             return None;
         }
+        // A body that steps an address needs that register loaded before the
+        // loop: the config word's address into `t3`, its first value into `t2`.
+        if let Some(base) = step_base(code, start, start + len) {
+            let cfg = tt_isa::cfg::generated::thcon::THCON_SEC0_REG3_Base_address
+                .riscv_address(tt_isa::cfg::ConfigBank::Bank0) as u32;
+            for word in load_const(T3, cfg).into_iter().chain(load_const(T2, base)) {
+                out.push(word)?;
+            }
+        }
         let reg = [T0, T1][depth];
         out.push(addi(reg, ZERO, count as i32))?;
         let body = out.len;
@@ -137,15 +181,20 @@ fn words(
     hi: u32,
 ) -> Option<()> {
     let n = (hi - lo) as usize;
-    if out.len + n > out.cap {
-        return None;
-    }
     let src = (code + 4 * lo as u64) as *const u32;
-    // SAFETY: `n` words fit the buffer (checked above), which the caller owns.
-    let dst = unsafe { (out.base as *mut u32).add(out.len) };
     for k in 0..n {
         // SAFETY: inside the staged program, whose length the runner checked.
         let w = unsafe { core::ptr::read_volatile(src.add(k)) };
+        // A step word is the translator's own: the address register's store and
+        // advance, never an instruction of the machine.
+        if w & STEP_MASK == STEP_STORE {
+            out.push(sw(T2, T3, 0))?;
+            continue;
+        }
+        if w & STEP_MASK == STEP_ADVANCE {
+            out.push(addi(T2, T2, (w & 0xfff) as i32))?;
+            continue;
+        }
         // `.ttinsn` is only valid below 0xC000_0000: the rotated word's low two
         // bits must not both be set, or it would be an ordinary instruction.
         if w >= 0xC000_0000 {
@@ -156,11 +205,22 @@ fn words(
                 return None;
             }
         }
-        // SAFETY: inside the buffer, bounded above.
-        unsafe { core::ptr::write_volatile(dst.add(k), w.rotate_left(2)) };
+        out.push(w.rotate_left(2))?;
     }
-    out.len += n;
     Some(())
+}
+
+/// The first value of a body's stepping address, if it has one: the low 20 bits
+/// of its [`STEP_STORE`] word.
+fn step_base(code: u64, lo: u32, hi: u32) -> Option<u32> {
+    for i in lo..hi {
+        // SAFETY: inside the staged program, whose extent the runner checked.
+        let w = unsafe { core::ptr::read_volatile((code + 4 * i as u64) as *const u32) };
+        if w & STEP_MASK == STEP_STORE {
+            return Some(w & 0xf_ffff);
+        }
+    }
+    None
 }
 
 /// Translate the staged program (`code_len` words at `code`, block repeats

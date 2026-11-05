@@ -749,10 +749,12 @@ pub enum TTOp {
         count: u16,
     },
     /// The compute core's T0 program: raw instruction words in emission
-    /// order, already encoded by codegen. The launch pushes them into the
-    /// role's program slot; nothing decodes them. Operand-free effect like
-    /// [`TTOp::EndReader`]. Boxed to keep `Op` in budget.
-    Unpack(Box<[u32]>),
+    /// order, already encoded by codegen, plus the block repeats the runner
+    /// pushes (`mailbox::loops`) — a loop over tiles is one copy of the body
+    /// and a table entry, like [`TTOp::Math`]'s. The launch pushes them into
+    /// the role's program slot; nothing decodes them. Boxed to keep `Op` in
+    /// budget.
+    Unpack(Box<TTRoleProgram>),
     /// The compute core's T1 program: its instruction words plus the block
     /// repeats the runner pushes (`mailbox::loops`, at most
     /// `loops::MAX` entries of `[start, len, count]` word ranges). Codegen
@@ -761,7 +763,7 @@ pub enum TTOp {
     /// costs one copy in the program. Boxed to keep `Op` in budget.
     Math(Box<TTRoleProgram>),
     /// The compute core's T2 program. See [`TTOp::Unpack`].
-    Pack(Box<[u32]>),
+    Pack(Box<TTRoleProgram>),
     /// TT copy: DRAM<->CB traffic, CB->DRAM drain, and the CB->DST
     /// unpack. Both indices are lane-invariant bases (unrolls stripped
     /// at lowering); the size carries the transfer, never the index

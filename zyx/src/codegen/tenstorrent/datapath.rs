@@ -687,6 +687,23 @@ pub fn unpack_tile_to_dst(l1: u64, row: u32) -> Vec<Instruction> {
     unpack_datums_to_dst(l1, 0, TILE_DATUMS, row)
 }
 
+/// `unpack_tile_to_dst`, for a tile loop whose base advances one `step` bytes
+/// per iteration: the config still seeds slot 0, and the address the unpacker
+/// actually uses comes from a register the translator stores before each unpack
+/// and advances at the end of the body (`ttinsn::STEP_STORE`). One copy of the
+/// body then serves the whole loop, which is what a block repeat needs.
+pub fn unpack_tile_stepped(l1: u64, step: u32, row: u32) -> Vec<u32> {
+    assert!(step > 0 && step % TileImage::ALIGNMENT as u32 == 0, "a stepped base moves in 16-byte units");
+    let units = step / TileImage::ALIGNMENT as u32;
+    assert!(units < 1 << 12, "a per-iteration step must fit the advance's 12 bits");
+    let mut words: Vec<u32> = unpack_tile_to_dst(l1, row).iter().map(|i| i.word()).collect();
+    // After the config and its stallwait, before the unpack instruction.
+    let at = words.len() - 1;
+    words.insert(at, crate::codegen::tenstorrent::ttinsn_step_store(l1));
+    words.push(crate::codegen::tenstorrent::ttinsn_step_advance(units));
+    words
+}
+
 /// Unpack `count` datums of the FP32 tile image at `l1`, from datum `first`
 /// (a multiple of four, so the run starts on a 16-byte unit), into `Dst` from
 /// row `row`. An uncompressed unpack always starts at the image's first datum

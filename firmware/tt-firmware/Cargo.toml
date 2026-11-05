@@ -40,7 +40,10 @@ tt-isa = { path = "../../../metalium-rs/crates/tt-isa" }
 tt-isa = { path = "../../../metalium-rs/crates/tt-isa" }
 
 [profile.release]
-opt-level = 3
+# Code size, not speed: every role image is linked into a 10 KiB L1 slot, and
+# the loop translator lives in all three. The pusher's inner loop is a few
+# instructions either way.
+opt-level = "z"
 lto = true
 codegen-units = 1
 # There is no unwinder, and `ebreak` cannot back a panic path, so firmware

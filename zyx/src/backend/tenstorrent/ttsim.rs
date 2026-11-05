@@ -351,6 +351,7 @@ fn mover_list(
     movers: &mut Movers,
     which: usize,
     segments: &[(DramRange, u32)],
+    broadcast: bool,
 ) -> Result<(), String> {
     if segments.is_empty() {
         return Ok(());
@@ -378,7 +379,11 @@ fn mover_list(
     let mut entries = Vec::with_capacity(list.len() * dm::ENTRY_BYTES as usize);
     for (range, l1) in list {
         let op = match which {
-            B if range.len() == dm::TILE_SLOT => dm::op::READ_BROADCAST_COL,
+            // A shaped read is a *data* read: one tile image into a CB. A role
+            // program's bytes are code, whatever their length, so `broadcast`
+            // is false there and a program of exactly one tile-slot is loaded
+            // as it is written.
+            B if broadcast && range.len() == dm::TILE_SLOT => dm::op::READ_BROADCAST_COL,
             B => dm::op::READ,
             NC => dm::op::WRITE,
             other => unreachable!("mover index {other} is neither B nor NC"),
@@ -503,7 +508,7 @@ fn execute(
         }
     }
     if !run.reads.is_empty() {
-        mover_list(dev, window, tile, state, B, &run.reads)?;
+        mover_list(dev, window, tile, state, B, &run.reads, true)?;
     }
     // Which role slots already hold their program. The concurrent schedule's
     // setup run pushes its own words into slot 0, so that slot is a miss by
@@ -523,7 +528,9 @@ fn execute(
     let mut loaded = [false; 3];
     let mut load = |dev: &mut Device<sim::LibTtsim<'_>>, thread: usize| -> Result<(), runtime::RunError> {
         let program = run.programs[thread].as_ref().expect("the loader is called only for a role with a program");
-        mover_list(dev, window, tile, state, B, &program.ranges)
+        // A program's bytes are code: a plain read, never a tile image's shaped
+        // one, whatever the range's length.
+        mover_list(dev, window, tile, state, B, &program.ranges, false)
             .map_err(|reason| runtime::RunError::Program { thread, reason })?;
         loaded[thread] = true;
         Ok(())
@@ -561,7 +568,7 @@ fn execute(
     }
     let out = out.map_err(|e| e.to_string())?;
     if !run.writes.is_empty() {
-        mover_list(dev, window, tile, state, NC, &run.writes)?;
+        mover_list(dev, window, tile, state, NC, &run.writes, false)?;
     }
     Ok(NativeOutcome { l1: out.l1, dst: out.dst })
 }

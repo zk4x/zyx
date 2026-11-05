@@ -105,12 +105,24 @@ const CODE_WORDS: usize = 0x0A00 / 4;
 /// long-expanded, short-stored program (an SFPU row body repeated per tile)
 /// cheap. It is left in the window: the next translated program overwrites it.
 fn translate<Thread: TensixThread>(code: u64, code_len: u32, loops: &[(u32, u32, u32)]) -> bool {
+    // A staged word that steps an address is the translator's own (it becomes
+    // `sw`/`addi`, never an instruction of the machine), so a program holding
+    // one is translated whether or not the exchange pays: pushing it as it is
+    // would push a word the coprocessor cannot decode.
+    let mut stepped = false;
+    for i in 0..code_len {
+        // SAFETY: inside the runner's checked program.
+        if unsafe { crate::l1_read32(code + 4 * u64::from(i)) } & crate::ttinsn::STEP_MASK == crate::ttinsn::STEP_STORE {
+            stepped = true;
+            break;
+        }
+    }
     let stored = u64::from(code_len);
     let mut expanded = stored;
     for &(_, len, count) in loops {
         expanded += u64::from(len) * u64::from(count.saturating_sub(1));
     }
-    if expanded * TRANSLATE_GAIN <= stored * TRANSLATE_COST + TRANSLATE_FIXED {
+    if !stepped && expanded * TRANSLATE_GAIN <= stored * TRANSLATE_COST + TRANSLATE_FIXED {
         return false;
     }
     let window = CODE_WINDOW[Thread::INDEX as usize];

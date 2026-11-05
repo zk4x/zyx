@@ -736,6 +736,8 @@ impl TTDevice {
         let mut writer: Vec<TTDmMove> = Vec::new();
         let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut math_loops: Vec<[u32; 3]> = Vec::new();
+        let mut unpack_loops: Vec<[u32; 3]> = Vec::new();
+        let mut pack_loops: Vec<[u32; 3]> = Vec::new();
         let mut semset: Vec<TTSemaphoreInit> = Vec::new();
         let mut gws: Option<Vec<GwsDim>> = None;
         let mut n_inputs = 0u32;
@@ -761,12 +763,18 @@ impl TTDevice {
                     }
                 }
                 Op::TT(TTOp::TensixGrid(grid)) => gws = Some(grid.to_vec()),
-                Op::TT(TTOp::Unpack(words)) => roles[0] = words.to_vec(),
+                Op::TT(TTOp::Unpack(program)) => {
+                    roles[0] = program.words.to_vec();
+                    unpack_loops = program.loops.to_vec();
+                }
                 Op::TT(TTOp::Math(program)) => {
                     roles[1] = program.words.to_vec();
                     math_loops = program.loops.to_vec();
                 }
-                Op::TT(TTOp::Pack(words)) => roles[2] = words.to_vec(),
+                Op::TT(TTOp::Pack(program)) => {
+                    roles[2] = program.words.to_vec();
+                    pack_loops = program.loops.to_vec();
+                }
                 Op::TT(TTOp::DmRead(page)) => reader.push(TTDmMove {
                     param: page.param,
                     l1: page.l1,
@@ -851,12 +859,10 @@ impl TTDevice {
             if words.is_empty() {
                 continue;
             }
-            // Block repeats belong to T1's stream (row loops are SFPU work).
-            let loops: Vec<Loop> = if thread == 1 {
-                math_loops.iter().map(|l| Loop { start: l[0], len: l[1], count: l[2] }).collect()
-            } else {
-                Vec::new()
-            };
+            // Each role has its own program header, and so its own block
+            // repeats: a tile loop's unpack lives on T0, its math on T1.
+            let table = [&unpack_loops, &math_loops, &pack_loops][thread];
+            let loops: Vec<Loop> = table.iter().map(|l| Loop { start: l[0], len: l[1], count: l[2] }).collect();
             let (stored, len) = crate::codegen::tenstorrent::code::stored(words, &loops).map_err(|e| BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("tenstorrent: role T{thread} program: {e}").into(),
