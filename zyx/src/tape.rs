@@ -226,6 +226,11 @@ impl Tape {
         }
         rt.debug_assert_no_stray_buffers(graph_id, &output_tids);
 
+        // Leftover loader kernels keep their inputs alive through `loads`; a
+        // realize boundary is the point where no op is in flight, so anything
+        // with no outputs/stores and no owning tensor is dead weight.
+        rt.prune_husk_kernels();
+
         Ok(())
     }
 
@@ -426,6 +431,7 @@ impl Drop for Tape {
         if rt.graphs[graph_id].ref_count == 0 {
             rt.remove_dead_graph(graph_id);
         }
+
     }
 }
 

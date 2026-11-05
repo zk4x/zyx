@@ -441,6 +441,10 @@ pub struct Runtime {
     pub implicit_casts: bool,
     pub training: bool,
     pub plan_cache: Map<u64, Plan>,
+    /// Input placements already warned about: `(source placement, from, to)`.
+    /// Keyed by the source placement, not the tensor id, so a fresh view of
+    /// the same buffer in a later iteration dedupes to one message.
+    warned_input_copies: Set<(usize, Pool, Pool)>,
     #[cfg(feature = "viz")]
     pub viz: Viz,
 }
@@ -468,6 +472,34 @@ impl Runtime {
         hasher.finish()
     }
 
+    /// Tell the caller once when the runtime has to copy a large input across
+    /// pools. A one-shot `Tape` (or one realize) cannot know the tensor will be
+    /// reused, so it must keep paying that copy on every execution; moving the
+    /// tensor once outside the graph (`Tensor::to`) is always preferable.
+    /// Small transfers (index tensors, metadata) are normal and stay silent.
+    pub(crate) fn warn_input_copy(&mut self, placement: usize, tid: TensorId, src: Pool, dst: Pool) {
+        const MIN_BYTES: Dim = 1 << 20;
+        if std::env::var_os("ZYX_QUIET_INPUT_COPIES").is_some() {
+            return;
+        }
+        let bytes = self.resolve_shape(tid).iter().product::<Dim>() * self.dtype(tid).bit_size() as Dim / 8;
+        if bytes < MIN_BYTES {
+            return;
+        }
+        if !self.warned_input_copies.insert((placement, src, dst)) {
+            return;
+        }
+        let shape = self.resolve_shape(tid);
+        let dtype = self.dtype(tid);
+        let target = Dev::all().into_iter().find(|d| d.pool() == dst).map_or_else(|| format!("{dst:?}"), |d| format!("{d:?}"));
+        eprintln!(
+            "zyx: input tensor {tid} ({dtype:?} {shape:?}, {:.1} MiB) is implicitly copied {src:?} -> {dst:?} on every execution.\n\
+             zyx: move it once before building the graph: `let x = x.to({target});` and use that tensor.\n\
+             zyx: set ZYX_QUIET_INPUT_COPIES=1 to silence this hint.",
+            bytes as f64 / (1024.0 * 1024.0)
+        );
+    }
+
     pub const fn new() -> Self {
         Runtime {
             graphs: Slab::new(),
@@ -482,6 +514,7 @@ impl Runtime {
             implicit_casts: true,
             training: false,
             plan_cache: Map::with_hasher(BuildHasherDefault::new()),
+            warned_input_copies: Set::with_hasher(BuildHasherDefault::new()),
             #[cfg(feature = "viz")]
             viz: Viz::new(),
         }
@@ -615,6 +648,42 @@ impl Runtime {
     /// surviving output needs), free the buffer, drop the kernel if it was the
     /// last live output. Graph tensors are kept by their graph instead; its
     /// `ref_count` tears it down when it hits zero.
+    /// Drop kernels that no longer own or produce anything: no outputs, no
+    /// stores, and not the producer of any live tensor. Such a kernel is a
+    /// leftover loader (e.g. an operand's load kernel after the operation was
+    /// merged elsewhere); its `loads` edges keep those inputs alive forever if
+    /// nothing prunes it. Runs at realize boundaries, where no op is in flight.
+    pub(crate) fn prune_husk_kernels(&mut self) {
+        let mut owned: Set<KernelId> = Set::default();
+        for (_, td) in self.tensors.iter() {
+            match td {
+                TensorData::Eager { kernel_id, .. } | TensorData::Promoted { kernel_id, .. } => {
+                    owned.insert(*kernel_id);
+                }
+                TensorData::PendingLeaf { depends_on, .. } => {
+                    owned.insert(*depends_on);
+                }
+                _ => {}
+            }
+        }
+        let husks: Vec<KernelId> = self
+            .kernels
+            .iter()
+            .filter(|(kid, kd)| kd.outputs.is_empty() && kd.stores.is_empty() && !owned.contains(kid))
+            .map(|(kid, _)| kid)
+            .collect();
+        for kid in husks {
+            let loads = std::mem::take(&mut self.kernels[kid].loads);
+            self.kernels.remove(kid);
+            // One load entry is one edge: release every occurrence.
+            for tid in loads {
+                if self.tensors.contains_id(tid) {
+                    self.release(tid);
+                }
+            }
+        }
+    }
+
     pub fn release(&mut self, x: TensorId) {
         #[cfg(feature = "debug_tensor_op")]
         {
@@ -1269,10 +1338,11 @@ impl Runtime {
                 | Expr::Stack4 { .. }
                 | Expr::Stack5 { .. } => {
                     let nested = self.push(Expr::Cast { x: expr, dtype });
-                    let tid = self.tensors.push(TensorData::Symbolic { expr: nested, rc: 1 });
-                    // The cast node holds an edge to x.
-                    self.retain(x);
-                    tid
+                    // No retain of `x`: the child lives in the append-only expr
+                    // slab (an ExprId), and this node stores that ExprId, not a
+                    // tensor edge. Retaining here leaked one tensor per symbolic
+                    // cast per step — nothing ever releases it.
+                    self.tensors.push(TensorData::Symbolic { expr: nested, rc: 1 })
                 }
             },
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
@@ -2339,10 +2409,11 @@ impl Runtime {
                 _ => self.push(Expr::Stack { exprs: exprs.into_boxed_slice() }),
             };
             let tid = self.tensors.push(TensorData::Symbolic { expr, rc: 1 });
-            // The stack node holds an edge to every element.
-            for &t in tensors {
-                self.retain(t);
-            }
+            // No retain of the elements: the stack node stores their ExprIds in
+            // the append-only expr slab, not tensor edges. Retaining them here
+            // leaked every element of every symbolic shape stack (nothing ever
+            // releases those edges), which was the bulk of the per-step slab
+            // growth.
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> symbolic: tid={tid}");
             return Ok(tid);
@@ -2517,13 +2588,11 @@ impl Runtime {
                 // a view is not an operation, so no kernel is created and nothing
                 // is listed in any kernel's outputs — consumers mint their own
                 // load kernels via `new_kernel_from_leaf`. This avoids copying data for a
-                // view-only reshape. The view retains x, so x (the owner)
-                // outlives all its views and deallocates the buffer on death.
+                // view-only reshape. The shared `Arc` keeps the buffer alive, so
+                // no slab edge to the owner is needed: retaining here pinned the
+                // owner's slab entry forever (nothing releases it when the view
+                // dies) — one leaked reference per view per step.
                 if let Some(buf) = self.leaf_buffer(x) {
-                    self.retain(x);
-                    // The view shares the owner's placement: the `Arc` clone
-                    // is the retain (no pool-level refcount anymore), so a
-                    // dying view never frees the owner's buffer early.
                     let tid = self.tensors.push(TensorData::Leaf { shape_id: shape_expr, dtype, buffer: buf, rc: 1 });
                     #[cfg(feature = "debug_tensor_op")]
                     println!("  -> eager: tid={tid} (Leaf, shares buffer with x={x})");
@@ -3287,7 +3356,14 @@ impl Runtime {
                         | Op::Flip { x, .. }
                         | Op::Narrow { x, .. } => dst_leaf_cid = x,
                         Op::After { .. } | Op::Param { .. } => break,
-                        ref op => unreachable!("{op:?}"),
+                        // `dst` is not backed by a realized leaf: its class is
+                        // the computation that produced it (e.g. a lazy `uniform`
+                        // parameter). Documented contract: assign needs a
+                        // realized destination, so report it instead of
+                        // panicking — callers can realize and retry.
+                        ref op => {
+                            return Err(ZyxError::graph_tensor_not_realized(dst));
+                        }
                     }
                 }
                 // Resolve the base leaf through any After chain (a previous assign on
@@ -4503,6 +4579,8 @@ impl Runtime {
             if src_pool != pool_id {
                 let shape = self.resolve_shape(tid);
                 debug_assert_ne!(src_pool, pool_id, "copy across the same pool is disallowed");
+                let src_key = Arc::as_ptr(&buf) as usize;
+                self.warn_input_copy(src_key, tid, src_pool, pool_id);
                 // Single-copy queue: slot 0 is the source placement, slot 1
                 // the destination, allocated by replay from dtype and shape.
                 let mut queue = CmdQueue::new();

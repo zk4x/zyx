@@ -867,8 +867,13 @@ fn spawn_worker(
         }
 
         let mut buffers: Slab<ChunkId, CUDABuffer> = Slab::new();
-        // stack of buffers that are unused and can be reused
-        let mut free_set: Set<ChunkId> = Set::default();
+        // Unused buffers keyed by their exact byte size. Exact-size reuse (the
+        // same policy as tinygrad's `Allocator.cache`) is what keeps a small
+        // request from consuming a large block: a 1 KiB tensor can never squat
+        // the 188 MB `train_x` upload, so that upload reuses its own chunk on
+        // every step instead of forcing a fresh `cuMemAlloc`. No size classes,
+        // no splitting, no coalescing — sizes repeat, so the buckets converge.
+        let mut free_set: Map<usize, Vec<ChunkId>> = Map::default();
         let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
         // Captured partition executables by worker-side id. The
         // partition holds the live handle; a stale id recaptures, a
@@ -893,18 +898,12 @@ fn spawn_worker(
         'work_thread_loop: while let Ok(cmd) = rx.recv() {
             match cmd {
                 CUDACommand::Allocate { bytes, reply } => {
-                    // Best-fit from the free list first (stable addresses
-                    // across repeats — those bytes were already paid for);
-                    // else fresh.
-                    let best = free_set
-                        .iter()
-                        .filter_map(|id| {
-                            let b = &buffers[*id];
-                            (b.bytes >= bytes).then_some((b.bytes, *id))
-                        })
-                        .min();
-                    if let Some((_, id)) = best {
-                        free_set.remove(&id);
+                    // Exact-size reuse first (stable addresses across repeats —
+                    // those bytes were already paid for). A larger free block is
+                    // deliberately NOT taken: it stays available for the large
+                    // request it was allocated for.
+                    if let Some(id) = free_set.get_mut(&(bytes as usize)).and_then(|ids| ids.pop()) {
+                        free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                         let _ = reply.send(Ok(id));
                         continue;
                     }
@@ -928,8 +927,15 @@ fn spawn_worker(
                         debug_assert!(false, "release of unknown buffer {buffer_id:?}");
                         continue;
                     }
-                    debug_assert!(!free_set.contains(&buffer_id), "double release of buffer {buffer_id:?}");
-                    free_set.insert(buffer_id);
+                    let bytes = buffers[buffer_id].bytes as usize;
+                    debug_assert!(
+                        !free_set.get(&bytes).is_some_and(|ids| ids.contains(&buffer_id)),
+                        "double release of buffer {buffer_id:?}"
+                    );
+                    free_set.entry(bytes).or_default().push(buffer_id);
+                    // `free_bytes` is device_total - live: the chunk is no
+                    // longer owned by a tensor.
+                    free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
                 }
                 CUDACommand::Dispose => {
                     todo!("Dispose drains the free list under a full device sync")
@@ -937,10 +943,17 @@ fn spawn_worker(
                 CUDACommand::TryReuse { buffer_ids, reply } => {
                     // All-or-nothing: every id must be on the free list, else
                     // some address moved and the graph must be retraced.
-                    let ok = buffer_ids.iter().all(|id| free_set.contains(id));
+                    let ok = buffer_ids.iter().all(|id| {
+                        buffers.contains_id(*id)
+                            && free_set.get(&(buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id))
+                    });
                     if ok {
                         for id in &buffer_ids {
-                            free_set.remove(id);
+                            let bytes = buffers[*id].bytes as usize;
+                            let ids = free_set.get_mut(&bytes).unwrap();
+                            let pos = ids.iter().position(|x| x == id).unwrap();
+                            ids.remove(pos);
+                            free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                         }
                     }
                     let _ = reply.send(Ok(ok));
@@ -1096,18 +1109,13 @@ fn spawn_worker(
                                                 context: format!("replay allocated negative bytes for {slot:?}").into(),
                                             });
                                         }
-                                        // Stable-address reuse first: steady-state
-                                        // replays land on the same chunks.
-                                        let id = match free_set
-                                            .iter()
-                                            .filter_map(|bid| {
-                                                let b = &buffers[*bid];
-                                                (b.bytes >= bytes).then_some((b.bytes, *bid))
-                                            })
-                                            .min()
-                                        {
-                                            Some((_, id)) => {
-                                                free_set.remove(&id);
+                                        // Exact-size reuse first: steady-state
+                                        // replays land on the same chunks, and
+                                        // a small output never takes a large
+                                        // block that a big copy needs.
+                                        let id = match free_set.get_mut(&(bytes as usize)).and_then(|ids| ids.pop()) {
+                                            Some(id) => {
+                                                free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                                                 id
                                             }
                                             None => {
@@ -1115,6 +1123,7 @@ fn spawn_worker(
                                                 unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }
                                                     .check(ErrorStatus::MemoryAllocation)?;
                                                 assert!(ptr.is_multiple_of(8), "Memory is not 8-byte aligned!");
+                                                debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
                                                 free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                                                 buffers.push(CUDABuffer { ptr, bytes })
                                             }
@@ -1909,9 +1918,9 @@ impl CUDAMemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        if bytes > self.free_bytes.load(Ordering::SeqCst) as i64 {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
-        }
+        // No `free_bytes` pre-check: a request may be served from the exact-size
+        // cache even when little VRAM is unallocated. The worker tries the cache
+        // first and only then asks the driver, which reports a real OOM.
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Allocate { bytes, reply }).unwrap();
         reply_rx.recv().unwrap()

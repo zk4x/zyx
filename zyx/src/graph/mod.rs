@@ -2645,6 +2645,31 @@ impl Runtime {
             self.graphs[graph_id].leaf_map.values().filter_map(|&tid| self.leaf_buffer(tid).map(|buf| (tid, buf))).collect();
         let nodes = self.graphs[graph_id].add_memory_ops(&buffer_map, &nodes);
 
+        // Inputs extraction had to move: a one-shot tape cannot know the caller
+        // will reuse this tensor, so it pays the copy on every execution. Tell
+        // the caller once (per source placement/pool pair) to move it outside
+        // the graph instead — that is the only place the reuse is visible.
+        // Realized leaves only: kernel outputs were planned here, not supplied.
+        let mut moved_inputs: Vec<(usize, TensorId, Pool, Pool)> = Vec::new();
+        for &nid in &nodes {
+            let Op::ToDevice { x, device, .. } = &self.graphs[graph_id].ops[nid].op else {
+                continue;
+            };
+            let Some(&tid) = self.graphs[graph_id].leaf_map.get(x) else {
+                continue;
+            };
+            let Some(buf) = self.leaf_buffer(tid) else {
+                continue;
+            };
+            let [Shard { pool: src, .. }] = &buf.shards[..] else {
+                continue;
+            };
+            moved_inputs.push((Arc::as_ptr(&buf) as usize, tid, *src, device.pool()));
+        }
+        for (placement, tid, src, dst) in moved_inputs {
+            self.warn_input_copy(placement, tid, src, dst);
+        }
+
         // Leaf pools at compile time — cross-pool aliases copy through the
         // kernel pool, so leaves must stay put across replays.
         let mut leaf_pools: Map<OpId, Pool> = Map::default();

@@ -354,6 +354,13 @@ impl Kernel {
     /// i = index
     /// acc = source;
     /// ```
+    ///
+    /// `mask * source` reaches this pass in either spelling: the product
+    /// itself, or the `select(mask, source, 0)` rewrite that
+    /// `algebraic_simplifications` makes for `cast(bool) * value` (a Bool is
+    /// 0/1, so the product is a pick). Both are the same indicator, so both
+    /// are folded here — the Select form is what a gather actually looks like
+    /// after the default epilogue.
     fn replace_gather_loop(
         &mut self,
         _acc_dtype: DType,
@@ -361,19 +368,33 @@ impl Kernel {
         accumulated_value_id: OpId,
         after_loop_load_id: OpId,
     ) -> bool {
-        // accumulated value must be a binary multiply (mask * source)
-        // Peel through Cast ops to find the Mul (e.g., f32(mask * source))
-        let mul_id = self.peel_casts(accumulated_value_id);
-        let &Op::Binary { x, y, bop: BOp::Mul } = self.at(mul_id) else {
-            return false;
-        };
-
-        let (source_id, indices_id) = if let Some(indices_id) = self.get_indices(x, loop_id) {
-            (y, indices_id)
-        } else if let Some(indices_id) = self.get_indices(y, loop_id) {
-            (x, indices_id)
-        } else {
-            return false;
+        // Peel through Cast ops to find the mask-and-value product
+        // (e.g., f32(select(mask, source, 0))).
+        let acc_id = self.peel_casts(accumulated_value_id);
+        let (source_id, indices_id) = match self.at(acc_id) {
+            &Op::Binary { x, y, bop: BOp::Mul } => {
+                if let Some(indices_id) = self.get_indices(x, loop_id) {
+                    (y, indices_id)
+                } else if let Some(indices_id) = self.get_indices(y, loop_id) {
+                    (x, indices_id)
+                } else {
+                    return false;
+                }
+            }
+            // `select(cond, source, 0)` is `float(cond) * source`. Only the
+            // zero false-arm qualifies: it is the indicator's "no value",
+            // and the true-arm must carry the source (no constant).
+            &Op::Select { cond, if_true, if_false } => {
+                let zero = self.peel_casts(if_false);
+                if !matches!(self.at(zero), Op::Const(c) if c.is_zero()) {
+                    return false;
+                }
+                let Some(indices_id) = self.get_indices(cond, loop_id) else {
+                    return false;
+                };
+                (if_true, indices_id)
+            }
+            _ => return false,
         };
 
         // Sort it so that indices_id comes first in the loop body

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 use std::{collections::HashMap, time::Instant};
-use zyx::{DType, Module, Reduction, Tape, Tensor, ZyxError};
+use zyx::{DType, Dev, Module, Reduction, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, Module};
 use zyx_optim::SGD;
 
@@ -27,14 +27,38 @@ impl MnistNet {
     }
 }
 
+/// The device the dataset is moved to once, before the training loop. Moving
+/// it inside the loop is exactly what the runtime warns about: every realize
+/// would re-upload the whole dataset. `ZYX_MNIST_DEVICE` overrides the pick
+/// (e.g. `cuda:0`, `c`, `vulkan:0`); by default the first available non-CPU
+/// device is used.
+fn compute_device() -> Dev {
+    if let Ok(s) = std::env::var("ZYX_MNIST_DEVICE") {
+        return s
+            .parse()
+            .unwrap_or_else(|e| panic!("ZYX_MNIST_DEVICE: {e}"));
+    }
+    Dev::all()
+        .into_iter()
+        .find(|d| !matches!(d, Dev::C | Dev::Cblas))
+        .unwrap_or(Dev::C)
+}
+
 fn main() -> Result<(), ZyxError> {
     println!("Loading MNIST...");
     let train_dataset: HashMap<String, Tensor> =
         Tensor::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/mnist_dataset.safetensors"))?;
-    let train_x = train_dataset["train_x"].clone().reshape([60000, 784])?;
-    let train_y = train_dataset["train_y"].clone();
-    let _test_x = train_dataset["test_x"].clone().reshape([10000, 784])?;
-    let _test_y = train_dataset["test_y"].clone();
+    let dev = compute_device();
+    let train_x = train_dataset["train_x"]
+        .clone()
+        .reshape([60000, 784])?
+        .to(dev)?;
+    let train_y = train_dataset["train_y"].clone().to(dev)?;
+    let _test_x = train_dataset["test_x"]
+        .clone()
+        .reshape([10000, 784])?
+        .to(dev)?;
+    let _test_y = train_dataset["test_y"].clone().to(dev)?;
 
     let batch_size = 128;
     let n_train = train_x.shape()[0].item::<i64>();

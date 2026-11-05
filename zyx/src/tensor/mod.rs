@@ -239,12 +239,13 @@ impl Tensor {
     pub fn shape(&self) -> Vec<Tensor> {
         let mut rt = RT.lock();
         let tids = rt.shape(self.id);
-        // Each returned Tensor takes ownership of a reference to the slab dim
-        // node; retain so dropping the handle does not free a node the source
-        // tensor's `shape_id` still references.
-        for &tid in &tids {
-            rt.retain(tid);
-        }
+        // `Runtime::shape` mints a fresh `Symbolic` slab node (rc = 1) per dim,
+        // all sharing the tensor's interned shape expression. The source's
+        // shape is an `ExprId`, not a tensor edge, so these nodes have no other
+        // owner: the returned handles are it. Retaining here leaked one node
+        // per dimension per `shape()` call (nothing ever released the extra
+        // reference), which grew the tensor slab — and every O(slab) pass —
+        // without bound in a training loop.
         tids.into_iter().map(|tid| Tensor { id: tid }).collect()
     }
 
