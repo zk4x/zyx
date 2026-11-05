@@ -6,7 +6,7 @@
 [![PyPI](https://badgen.net/pypi/v/zyx-py)](https://pypi.org/project/zyx-py/)
 [![docs.rs](https://badgen.net/badge/docs.rs/zyx/blue)](https://docs.rs/zyx)
 [![build status](https://github.com/zk4x/zyx/workflows/Build%20and%20Publish%20Wheels/badge.svg)](https://github.com/zk4x/zyx/actions/workflows/build-wheels.yml)
-[![license](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://github.com/zk4x/zyx/blob/main/LICENSE)
+[![license](https://img.shields.io/badge/License-LGPL%20v3-blue.svg)](https://github.com/zk4x/zyx/blob/main/LICENSE.md)
 [![maintenance](https://img.shields.io/badge/maintenance-active-green.svg)](https://github.com/zk4x/zyx)
 
 
@@ -56,14 +56,14 @@ CUDA, any GPU driver with Vulkan support is sufficient.
 
 - **Eager mode, Lazy JIT Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one-off computations.
 - **Tape (e-graph)** — wrap loop bodies in a `Tape` for lazy graph building, autograd and e-graph-based fusion optimization. Computation happens when realize is called. For repeated computations.
-- **Cross‑Platform Backends** — codegen for C, CUDA, PTX, OpenCL and SPIR-V (Vulkan/WGPU).
+- **Cross‑Platform Backends** — codegen for C, CUDA (CUDA C or PTX), OpenCL, SPIR-V (Vulkan/WGPU), and the Tensix RISC-V path for Tenstorrent.
 - **Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage; zyx auto fuses and optimizes it.
-- **Immutable Tensors** — tensors cannot be modified in place, preventing back‑prop errors common in PyTorch (`RuntimeError: a tensor was modified in place`).
+- **Explicit In-Place Writes** — tensors are values, so nothing mutates behind your back; the one in-place write is `Tensor::assign`, and it is recorded as an op in the graph.
 - **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` or requires_grad semantics.
 - **Everything is diff** — every tensor in a tape can be differentiated w.r.t. any other tensor in a tape.
 - **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed.
-- **Parallel Pipelining** — kernels allocate across heterogeneous devices (GPU, CPU, WebGPU) in a pipelined fashion via the scheduler automatically. e-graph tries all options, picks the fastest measured path.
-- **Small Footprint** — compiled library is only a few MB with two dependencies (`libloading`, `nanoserde`) and std. This means for all models, a few-MB binary runs (and trains) them on all backends. Training and deployment can freely use the same API.
+- **Parallel Pipelining** — the graph's fusion and device paths compete and extraction keeps the fastest measured one; plans pipeline kernels and cross-device copies across heterogeneous devices automatically.
+- **Lean Dependencies** — the core needs `libloading` (driver loading) and `nanoserde` (config), plus `libc`/`libm` for the simulator; the Tenstorrent path adds its firmware and ISA crates. WGPU is the only large optional dependency.
 
 
 ## Crates
@@ -122,12 +122,12 @@ See [zyx-py/README.md](zyx-py/README.md) for the full Python guide.
 
 A training loop with a two-layer network, using `Tape` for autograd and optimizations:
 
-```rust
-use zyx::{Tensor, DType, Tape};
-use zyx_nn::{Linear, Module};
+```rust,no_run
+use zyx::{Tensor, DType, Tape, Module};
+use zyx_nn::Linear;
 use zyx_optim::SGD;
 
-#[derive(Module)]
+#[derive(zyx_nn::Module)]
 struct SimpleNet {
     linear1: Linear,
     linear2: Linear,
@@ -153,13 +153,13 @@ fn main() -> Result<(), zyx::ZyxError> {
     let x = Tensor::randn([64, 784], DType::F32)?;
     let target = Tensor::randn([64, 10], DType::F32)?;
     
-    for epoch in 0..100 {
+    for _ in 0..100 {
         let tape = Tape::new(&model)?;
         let output = model.forward(&x);
         let loss = output.mse_loss(&target)?;
         let grads = tape.gradient(&loss, &model);
         optim.update(&mut model, grads);
-        tape.realize(&model)?;
+        tape.realize(model.iter().chain([&loss]))?;
     }
     
     Ok(())
@@ -167,37 +167,36 @@ fn main() -> Result<(), zyx::ZyxError> {
 ```
 
 For more complex examples:
-- [Examples](zyx-examples/) - MNIST, RNN and others
+- [Examples](examples/) - MNIST, RNN, llama, nanogpt and others
 
 
 ## Custom Kernels
 
-Hand-optimize kernels for peak performance using hardware-specific features (e.g. tensor cores) using zyx IR:
+Hand-optimize kernels for peak performance using hardware-specific features (e.g. tensor cores) with the zyx kernel IR:
 
 ```rust
-use zyx::kernel::{Kernel, Scope, DeviceId};
+use zyx::kernel::{Dev, Kernel};
 use zyx::{DType, Tensor};
 
-fn main() -> Result<(), zyx::ZyxError> {
-    let mut kernel = Kernel::new(DeviceId::AUTO);
-    let n = 4;
-    let inp = kernel.define(DType::F32, Scope::Global, true, n);
-    let gidx = kernel.gidx(0, n);
-    let loaded = kernel.load(inp, gidx);
-    let doubled = kernel.add(loaded, loaded);
-    let out = kernel.define(DType::F32, Scope::Global, false, n);
-    kernel.store(out, doubled, gidx);
+let mut kernel = Kernel::new(Dev::Auto);
+let n = 4;
+let inp = kernel.param(DType::F32);
+let len = kernel.const_idx(n);
+let gidx = kernel.group_range(0, len);
+let loaded = kernel.load(inp, gidx);
+let result = kernel.mad(loaded, loaded, loaded); // x*x + x
+let out = kernel.param_mut(DType::F32);
+kernel.store(out, result, gidx);
 
-    let compiled = kernel.compile()?;
-    let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]);
-    let result = compiled.forward(&[&x], [n]);
-    let data: Vec<f32> = result.try_into().unwrap();
-    assert_eq!(data, vec![2.0, 4.0, 6.0, 8.0]);
-    Ok(())
-}
+let compiled = kernel.compile()?;
+let x = Tensor::from([1.0f32, 2.0, 3.0, 4.0]).to(compiled.device())?;
+let result = compiled.forward(&[&x], vec![[n]])?;
+let data: Vec<f32> = result.into_iter().next().unwrap().try_into()?;
+assert_eq!(data, vec![2.0, 6.0, 12.0, 20.0]);
+# Ok::<(), zyx::ZyxError>(())
 ```
 
-See the [WMMA matmul example](zyx/src/kernel/mod.rs#L9-L89) for a tensor-core matmul example.
+See the [kernel module docs](https://docs.rs/zyx/latest/zyx/kernel/) for a WMMA (tensor-core) matmul example.
 
 
 ## Architecture
@@ -236,20 +235,21 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 | **Fusion** | `torch.compile` | XLA | operator fusion | heuristics | manual | automatic kernel fusion | e-graph fusion variants | e-graph fusion variants |
 | **Autotuning** | Triton autotune | XLA | explores optimization sequences | over kernel variants | n/a | autotuned kernel selection | via e-graph (egglog) | out-of-order passes, each measured |
 | **Custom kernels** | C++/CUDA ops, Triton | pallas, custom calls | codegen templates | written in UOp IR | embed foreign kernels (flash-attn) | custom kernels | e-graph pattern-matching AOT kernels | written in zyx IR, or e-graph AOT patterns |
-| **Tensor mutability** | mutable | immutable | n/a (compile-time) | immutable | mutable | mutable | n/a (compile-time) | immutable |
+| **Tensor mutability** | mutable | immutable | n/a (compile-time) | immutable | mutable | mutable | n/a (compile-time) | values; one explicit `assign` |
 | **Device/memory movement** | manual `.to()` | explicit placement | pipelines across devices/memories | per-op device semantics | manual | manual | compiler-searched ahead of time | pipelines across devices/memories |
-| **Hardware backends** | CPU, CUDA, MPS, ROCm, XPU | CPU, GPU, TPU | CPU, GPU, NPU | CPU, CUDA, OpenCL, Metal, HIP, NV, QCOM | CPU, CUDA, Metal, WASM | CPU, CUDA, ROCm, Metal, Vulkan, WebGPU, LibTorch | CPU, CUDA, Metal | C, CUDA, OpenCL, Vulkan, WGPU — one small codegen file per backend |
+| **Hardware backends** | CPU, CUDA, MPS, ROCm, XPU | CPU, GPU, TPU | CPU, GPU, NPU | CPU, CUDA, OpenCL, Metal, HIP, NV, QCOM | CPU, CUDA, Metal, WASM | CPU, CUDA, ROCm, Metal, Vulkan, WebGPU, LibTorch | CPU, CUDA, Metal | C, CUDA, OpenCL, Vulkan, WGPU, Tensix — one small codegen file per backend |
 | **Data parallelism** | DDP/FSDP | data-parallel sharding | — | multi-GPU sharding | multi-GPU via NCCL (tensor parallel) | DDP | — | manual (automatic in the roadmap) |
 
 
 ## Backends
 
 - [x] **C** - C codegen (clang/gcc)
+- [x] **CBLAS** - AOT matmul via OpenBLAS
 - [x] **CUDA**
 - [x] **OpenCL**
 - [x] **Vulkan** - SPIR-V codegen
 - [x] **WGPU** - SPIR-V codegen, feature: `wgpu`
-- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `tenstorrent`
+- [ ] **Tenstorrent** - preliminary, always built, runs through the bundled simulator (`TT_TTSIM_LIB`)
 
 If you'd like to add a new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)

@@ -1,14 +1,33 @@
 # Architecture Overview
 
-The zyx pipeline transforms high-level tensor operations into device-specific machine code.
+zyx has two intermediate representations:
+
+- a **tensor graph** — an e-graph of equivalence classes, built lazily inside a
+  `Tape`, where fusion variants compete;
+- a **kernel IR** — a linear SSA list of ops, the unit that passes optimize,
+  autotune searches, and backends compile.
+
+Eager code produces kernel IR directly. Graph code goes through the kernelizer,
+which turns structural graph nodes into JIT kernels; those kernels are compiled
+and measured, and extraction then chooses the cheapest measured path through the
+e-graph.
 
 ```text
-Tensor API ──► Eager-ish: append to kernel ──► compile + execute
-            │
-            └── Tape: Graph (lazy) ──► Kernelizer ──► Kernel IR ──► Opt Passes ──► Backend Codegen
-                                                                                    │
-                                       Autotune (clone + evaluate)  └── deSSA + linear pass
+eager:  Tensor op ──► append to producing kernel ──► compile kernel ──► launch
+                                                    (linearize, passes,
+                                                     autotune, codegen)
+
+Tape:   Tensor op ──► e-graph ──► kernelizer ──► JIT kernels ──► autotune
+                                                                    │
+                                              measured times ───────┘
+                                                     │
+                                            extract cheapest path
+                                                     │
+                                                Plan (Cmd queue) ──► replay
 ```
+
+Both paths end in the same place: a `Plan`, which is a scheduled command queue
+(launches, copies, aliases) replayed against memory placements.
 
 ## Pipeline Stages
 
@@ -27,16 +46,26 @@ let z = y * 2.0;
 # }
 ```
 
-Outside a `Tape`, each op is appended directly to the kernel that produced its inputs. When fusion is not possible, the kernel compiles and executes — no graph, no separate realize step. Inside a `Tape`, ops build graph ops lazily. Either way, each operation returns a lightweight `Tensor` handle.
+A `Tensor` is a `u32` handle into the runtime slab. Outside a `Tape`, each op is
+appended to the kernel that produced its inputs; that kernel is compiled and
+launched when its value is first needed, not at every op. Inside a `Tape`, ops
+build graph nodes instead, and `Tape::realize` compiles and executes the
+subgraph.
 
 ### 2. The Graph
 
-The graph opset was taken from tinygrad, with changes to make it even smaller. This is the minimal set of operations that can express ALL linear algebra operations and ALL PyTorch ops — by stacking these ops:
+The graph is an e-graph: `Graph { hashcons, ops, jit_kernels, leaf_classes,
+leaf_map, ... }`. Every node belongs to an equivalence class (`class_of`), and a
+class chains its alternative forms through `next_in_class`. Structural
+hashconsing makes identical expressions share one class.
+
+The graph and the kernel IR share one `Op` enum (`kernel/ops.rs`). The
+graph-level subset is the structural, device-agnostic vocabulary:
 
 | Variant | Meaning |
 |---------|---------|
 | `Const` | A constant value baked into kernels |
-| `Param` | A kernel parameter — one of the arguments passed to the compiled GPU kernel at launch |
+| `Param` | A buffer or scalar argument (a graph leaf) |
 | `Expand` | Broadcast a dimension |
 | `Permute` | Transpose axes |
 | `Reshape` | Change shape without changing data |
@@ -45,93 +74,163 @@ The graph opset was taken from tinygrad, with changes to make it even smaller. T
 | `Narrow` | Slice one axis |
 | `Stack` | Build a vector from operands |
 | `Reduce` | Sum, max, etc. |
-| `Cast` | Change dtype |
-| `Bitcast` | Reinterpret raw bits |
-| `Unary` | Element-wise: relu, exp, sin, etc. |
-| `Binary` | Element-wise: add, mul, etc. |
-| `After` | Ordering for side-effecting ops |
-| `ToDevice` | Move data between devices |
-| `Contiguous` | Materialize a layout |
-| `Program` | A compiled program/kernel |
-| `Kernel` | An opaque custom kernel |
+| `Cast` / `Bitcast` | Change dtype / reinterpret raw bits |
+| `Unary` / `Binary` / `Select` | Element-wise arithmetic |
+| `After` | Ordering edge between side-effecting values |
+| `ToDevice` | Move a value between devices |
+| `Contiguous` | Fusion-break hint: materialize an output |
+| `Detach` | Autograd-break hint (value identity forward) |
+| `Program` | A compiled kernel boundary with a measured time |
+| `Kernel` | An opaque user custom kernel |
 
-Tensor handles are `u32` (4 bytes) into the slab. Still small enough that 10,000 handles cost ~40 kB.
-
-The graph is stored in a `Slab` — a dense array with free-list tracking. `TensorId` is a `u32` index into this slab, making tensor handles 4 bytes.
+Kernel-only variants (`Load`, `Store`, `Storage`, `Range`, `Loop`, `Wmma`,
+`TT`, ...) are described in [The Kernel IR](./kernel_ir.md). Shape expressions
+are interned separately (`Runtime::exprs` / `expr_hash`), so symbolic dims are
+cheap to share and compare.
 
 ### 3. The Kernelizer
 
-The kernelizer fuses compatible graph ops into kernels. Outside a tape it runs incrementally as ops are added; inside a tape it runs when `Tape::realize()` is called (dropping only cleans up graph state). The kernelizer uses heuristics to decide where kernel boundaries go — it's not a simple rule. A reduce op used by multiple downstream ops does not necessarily force a split. If two downstream ops are both expand ops, that may force fusion. Element-wise chains will almost always fuse into one kernel.
+The kernelizer (`graph/kernelizer.rs`) fuses structural graph nodes into
+kernels. It walks classes in topological order with reference counts: a class is
+fused into the kernel of its consumer when the surrounding ops allow it, and a
+value with several consumers is produced once with one output copy per consumer.
+Storing a value and reloading it for later consumers creates a load kernel at
+that boundary. `fill_gaps` runs the same machinery per connected region so that
+AOT kernels (e.g. a CBLAS matmul) and custom kernels can compete with fused
+kernels inside the same graph.
 
-View operations (reshape, expand, permute, pad) are unfolded into index arithmetic in the kernel, becoming "free" — they don't create separate operations.
+Movement ops are not materialized just to be read back. Their index arithmetic
+is replayed into the consumer, and the `linearize` pass unfolds it, so a
+reshape/expand/permute chain costs index arithmetic rather than extra kernels.
 
-### 4. The Kernel IR
+The kernelizer's invariant: after it runs, every output class has a path to the
+leaves composed only of `Program` and `ToDevice` nodes.
 
-After unfolding, the DAG is converted into a **linear structure** — a doubly-linked list of ops stored in an arena (the `Slab<OpId, OpNode>`). Each `OpNode` is **32 bytes** stored inline in the arena — no `Box`, no vtables, no indirection.
+### 4. Autotune Each Kernel
 
-OpId is a `u32` index into the slab — random access is O(1). The IR is SSA, except for loops and `Define` ops (which can be mutable).
+Every JIT kernel produced by the kernelizer goes through the same compilation
+path as an eager kernel:
 
-The design goal of the small opset: optimizations are easy to write. If you understand the IR, you can add a new pass in an afternoon.
+1. `linearize`
+2. readability passes (CSE, DCE, instruction scheduling)
+3. global-index merge to the device's limit, renumbering
+4. `verify`
+5. three rounds of `default_epilogue`
+6. `BeamSearch` over `default_optimizations`, ranked by cost and decided by
+   measured launches
+7. `device_epilogue` (lowering that must not be searched, e.g. `Pow` expansion
+   and the Tenstorrent physical IR)
+8. codegen
 
-### 5. Optimization Passes
+The measured time of the winning kernel is recorded on the graph as an
+`Op::Program { info: (ProgramId, nanos) }` node. Its program id stays alive; the
+extraction decides whether to use it.
 
-Optimization passes work on the linear IR. Kernels are cloned and each variant is evaluated separately — no egraphs. The cost function evaluates **thousands of variants per second**.
+### 5. Extract
 
-Optimization passes emit IR that is deliberately simple to lower to backend instructions. A backend just does deSSA + a single linear pass over the IR. No complex backend-specific lowering.
+`Graph::extract` walks the classes in extraction order and picks, for each
+class, the producer with the cheapest **measured** time. There is no estimated
+cost model: a kernel competes only after it has been compiled and timed. Leaf
+classes are already realized and need no producer.
 
-The autotune system explores the search space by:
-1. Starting with the initial kernel
-2. Applying one optimization variant
-3. Hashing the kernel to detect duplicates
-4. Evaluating with the cost function (or launching and timing)
-5. Repeating by combining optimization sequences
-6. Selecting the best variant
+After extraction, `add_memory_ops` inserts `ToDevice` transfers for the selected
+producer/consumer pairs that live on different devices.
 
-There is no fixed number of optimization passes zyx aims to have. The design goal was a small opset in the graph and IR so that passes are easy to write. More passes will be added over time.
+### 6. The Plan
 
-### 6. Backend Codegen
+Extracted nodes are lowered to a `CmdQueue`:
 
-Each backend converts the stabilized kernel IR into target code. Since the IR is designed for this, codegen is a straight line: deSSA, then one pass over the ops emitting instructions. No further optimizations, no complex lowering. Hardware whose compute model can't be expressed this way (Tenstorrent) gets an explicit **physical IR** — see [Codegen and the Physical IR](./codegen.md).
+- `Cmd::Launch` — a compiled program plus its argument and output slots;
+- `Cmd::Copy` — a value moved to a destination pool (and device);
+- `Cmd::Alias` — an in-place assign output aliasing its base buffer.
 
-Backends are dispatch via enums (no `dyn Backend` — that would require downcasting, which is ugly in Rust):
+`CmdQueue::schedule(outputs)` slices the queue into maximal same-device launch
+runs; copies execute on the destination device, and aliases join the surrounding
+run as zero-cost bindings. The result is a `Plan`, cached in
+`Runtime::plan_cache` and replayed with the leaf values bound at call time.
+`PlanDim` keeps output sizes symbolic until replay, so a plan compiled for one
+iteration serves later iterations with different variable dims.
+
+### 7. Backend Codegen
+
+Each backend compiles the winning kernel IR: deSSA, then one linear pass over the
+ops emitting target code. The IR is deliberately shaped so no backend repeats
+optimization work. Hardware whose compute model cannot be expressed as a linear
+SSA pass (Tenstorrent) gets an explicit **physical IR** below the kernel IR —
+see [Codegen and the Physical IR](./codegen.md).
+
+Backends are dispatched by enum, with no `dyn Backend`:
 
 ```rust,ignore
-pub enum Device {
-    C(CDevice),
-    CUDA(CUDADevice),
-    OpenCL(OpenCLDevice),
-    Vulkan(VulkanDevice),
-    WGPU(WGPUDevice),
-    HIP(HIPDevice),
-    // Tenstorrent, etc.
+pub enum Dev {
+    Auto,
+    C,
+    Cblas,
+    Host,
+    Cuda(u16),
+    TT(u16),
+    Vulkan(u16),
+    OpenCL(u16),
+    WGPU(u16),   // feature = "wgpu"
 }
 ```
 
-All backends are compiled into the library and selected at runtime.
+Every backend except WGPU is compiled in unconditionally and selected at
+runtime. A backend whose driver, hardware, or (for Tenstorrent) simulator is
+missing simply contributes no devices; initialization failures are errors, not
+panics.
 
-### 7. Runtime and Scheduler (Current)
+### 8. Runtime
 
-The scheduler picks a device based on free memory and compute capacity. Cross-device data transfers are scheduled as kernels; asynchronous execution is managed per backend (e.g. CUDA's micro-batched submission over hardware queues — see [Backend System](./backends.md)).
+The runtime (`runtime.rs`) is the process-wide state: graphs, tensors, kernels,
+programs, timings, interned shape expressions, RNG, and the plan cache. A global
+`Mutex<Runtime>` guards it.
+
+Device selection for generic work is `Runtime::pick_device(bytes)`: start from
+`Dev::all()`, drop AOT-only devices, keep devices whose pool has at least
+`bytes` free, and pick the one with the most free compute capacity. Cross-device
+movement is scheduled as copies in the plan, and asynchronous execution is a
+per-backend concern (CUDA's worker micro-batches launches) — see
+[Runtime and Plans](./runtime.md).
 
 ## Debugging the Pipeline
 
 | `ZYX_DEBUG` | Output |
 |-------------|--------|
-| 1 | Devices + configuration, kernel launches |
-| 2 | Egraph print (after realize) |
-| 4 | Scheduler kernels — IR before linearization |
-| 8 | Kernel IR after linearization + optimization |
-| 16 | Generated assembly/code |
-| 32 | Launch + memory movement |
+| 1 | Devices + configuration |
+| 2 | Graph/e-graph dump |
+| 4 | Kernel IR before linearization (the scheduler's view) |
+| 8 | Winning kernel IR after the search |
+| 16 | Generated assembly/source |
+| 32 | Kernel launches |
 | 64 | Alloc/dealloc |
 | 128 | Kernel compilation |
-| 256 | Disable autotune search |
+| 256 | Disable the search (`NoSearch`) |
+
+`ZYX_DEBUG=4` and `ZYX_DEBUG=8` are complementary: the first shows the
+pre-linearize DAG (structural ops, vector values), the second the post-search
+linear form the backend receives. `ZYX_TT_IR=1` dumps the Tenstorrent physical
+IR phases.
 
 ## Key Design Decisions
 
-- **One graph for everything** — autograd and computation share the same graph. No need to specify which tensors require gradients.
-- **Symbolic dims everywhere** — the eager path and the graph path BOTH work with symbolic dimensions, always. Every symbolic dim bottoms out in a `Param { Variable }` scalar (`IDX_T`) whose value lives in a backend pool's variable slot, so any dim expression can be fully evaluated to a concrete constant at any time: walk the tree, fold `Const` leaves via `Constant::unary` / `Constant::binary`, and read variable slots at `Param { Variable }` leaves. Consumers must evaluate dims this way instead of fabricating placeholder values (`0`, `-1`, ...) where evaluation can produce the real value.
-- **Inline ops** — all ops live in the arena as flat 32-byte entries. No `Box`, no vtables, no indirection. Passes allocate their own working data (hash maps, vecs) as needed.
-- **Linear IR** — linked list of fixed-size ops. Optimizations traverse front-to-back or back-to-back.
-- **Backend codegen is trivial** — the hard work is in the IR-level optimization passes.
-- **Tape-scoped lazy graph** — ops inside a tape build graph ops instead of executing eagerly. Enables egraph fusion, device allocation search, and plan caching across iterations.
+- **One graph for everything** — autograd and computation share the same graph.
+  No need to specify which tensors require gradients.
+- **Symbolic dims everywhere** — the eager path and the graph path both work
+  with symbolic dimensions, always. Every symbolic dim bottoms out in a
+  `Param { Variable }` scalar (`IDX_T`) whose value lives in a backend pool's
+  variable slot. Consumers evaluate dims by folding `Const` leaves and reading
+  variable slots, never by fabricating placeholders (`0`, `-1`, ...).
+- **Measured search, no cost model** — kernel variants are ranked by a cheap
+  feature cost, then decided by real launches; extraction also uses measured
+  times. This keeps rewrites exact: the winner is the one that actually ran
+  fastest.
+- **Inline ops** — all kernel ops live in the arena as flat entries: `Op` is 24
+  bytes, `OpLinked` 32. No `Box`, no vtables, no per-op indirection.
+- **Linear IR** — a linked list of fixed-size ops; passes traverse it
+  front-to-back or back-to-back.
+- **Backend codegen is trivial** — the hard work lives in the kernel IR search
+  and passes.
+- **Tape-scoped lazy graph** — ops inside a tape build graph nodes instead of
+  executing eagerly. This enables fusion search, device placement, and plan
+  caching across iterations.

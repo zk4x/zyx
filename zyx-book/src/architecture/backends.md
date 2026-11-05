@@ -1,6 +1,6 @@
 # Backend System
 
-Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (feature gates for WGPU and TT), and selected at runtime through a lightweight `Copy` handle.
+Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (only WGPU is feature-gated), and selected at runtime through a lightweight `Copy` handle.
 
 ## `Dev` — Device Handle and Selector
 
@@ -14,10 +14,12 @@ pub enum Dev {
     C,
     /// CBLAS backend for AOT matmuls (runs on Pool::Host).
     Cblas,
+    /// Transfer-only pseudo-device (runs on Pool::Host); never enumerated.
+    Host,
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),
     /// Tenstorrent chip with the given id.
-    TT(u16),          // feature = "tenstorrent"
+    TT(u16),
     /// Vulkan physical device with the given index.
     Vulkan(u16),
     /// OpenCL device with the given index.
@@ -35,14 +37,14 @@ Memory belongs to pools, and pools are process-wide: they outlive any `Runtime` 
 
 ```rust,ignore
 pub enum Pool {
-    /// Host RAM. Shared by the C and CBLAS devices, which own no pool.
+    /// Host RAM. Shared by the C, CBLAS and Host devices, which own no pool.
     Host,
     /// Disk-backed tensors (paths, not bytes).
     Disk,
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),          // feature = "tenstorrent"
+    TT(u16),
     WGPU(u16),        // feature = "wgpu"
 }
 ```
@@ -88,13 +90,12 @@ What is left for a backend is exactly the **non-searchable, non-SSA residue**: r
 | C | `c.rs` | C99 (compiled to .so) | Clang/GCC |
 | CBLAS | `cblas.rs` | AOT matmul calls | Host BLAS (shares `Pool::Host`) |
 | CUDA | `cuda.rs` | CUDA C → SASS, cuDNN for AOT matmul | CUDA driver via `libloading` |
-| HIP | `hip.rs` | HIP | ROCm via `libloading` |
 | OpenCL | `opencl.rs` | OpenCL C | OpenCL runtime via `libloading` |
 | Vulkan | `vulkan.rs` | SPIR-V | Vulkan via `ash` crate |
 | WGPU | `wgpu.rs` | SPIR-V | WGPU (feature: `wgpu`) |
-| Tenstorrent | `tenstorrent.rs` | C++ RISC-V kernels | TT-Metalium (feature: `tenstorrent`) |
+| Tenstorrent | `tenstorrent/` | Tensix RISC-V programs | Bundled tt-sim simulator |
 
-All backends except WGPU and Tenstorrent are compiled in by default; those two require `--features wgpu` / `--features tenstorrent`.
+Every backend except WGPU is compiled in unconditionally.
 
 ### CBLAS
 

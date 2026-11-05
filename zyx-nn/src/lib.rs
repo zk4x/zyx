@@ -16,6 +16,15 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
+// Compile the workspace README's Rust examples as doctests. The training loop
+// needs both `zyx` and `zyx-optim` (a dev-dependency here), so `zyx-nn` is the
+// crate that can host it. Hidden and doctest-only: it must not appear in the
+// rendered docs or in normal builds.
+#[cfg(doctest)]
+#[doc(hidden)]
+#[doc = include_str!("../../README.md")]
+pub struct ReadmeDoctests;
+
 pub use zyx_derive::Module;
 
 mod linear;
