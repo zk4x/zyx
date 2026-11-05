@@ -46,15 +46,17 @@ binary is `cargo test --test 01_unary`, and a single test is
 
 ## The Local Check Gate
 
-The same checks the pre-push hook runs live in `ci.sh` at the repository root:
+The same checks the pre-push hook runs live in `run_ci.sh` at the repository
+root:
 
 ```bash
-./ci.sh
+./run_ci.sh
 ```
 
-It runs the unit tests, the doctests for every README-bearing crate, rustdoc
-with private items (so stale doc links fail), `cargo fmt --check`, and the
-book's code examples.
+It runs the unit and integration tests, the doctests for every README-bearing
+crate, rustdoc with private items (so stale doc links fail), the examples,
+the Python bindings when a torch-enabled interpreter is available,
+`cargo fmt --check`, and the book's code examples.
 
 ## Examples
 

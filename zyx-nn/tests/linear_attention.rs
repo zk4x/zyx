@@ -147,7 +147,7 @@ fn linear_attention() -> Result<(), ZyxError> {
     let decay = (gdiff * &tril_f).exp() * &tril_f;
     let mut attn = k5.matmul(k5.transpose(3, 4)?)?;
     attn = &attn * &decay;
-    attn = triu_incl.where_(Tensor::zeros_like(&attn), &attn)?;
+    attn = triu_incl.select(Tensor::zeros_like(&attn), &attn)?;
 
     let eye = Tensor::eye(ch, DType::F32);
     let attn = attn + eye;
@@ -167,7 +167,7 @@ fn linear_attention() -> Result<(), ZyxError> {
     let mut _state = Tensor::zeros([1i64, vh, kd, vd], DType::F32);
 
     let a2 = qi.matmul(ki.transpose(2, 3)?)? * dec;
-    let a2 = triu_strict.where_(Tensor::zeros_like(&a2), &a2)?;
+    let a2 = triu_strict.select(Tensor::zeros_like(&a2), &a2)?;
     let v_prime = kcd.matmul(&_state)?;
     let v_new = &vi - &v_prime;
     let ge = gc.exp().unsqueeze(3)?;

@@ -280,7 +280,7 @@ your measured results.
 - **Status**: Stable API with active performance optimization
 - **License**: LGPL-3.0-only (all crates)
 - **Rust Version**: stable rust >= 1.88.0
-- **Platforms**: Linux (primary), macOS, Windows (planned)
+- **Platforms**: Linux (primary), macOS. Windows is unsupported — open a GitHub issue if you need it.
 
 
 ## For Devs

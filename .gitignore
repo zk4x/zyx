@@ -9,11 +9,6 @@ model.safetensors
 tokenizer.json
 examples/data/*
 examples/models/*
-zyx-examples/phi1_5-model.safetensors
-zyx-examples/phi1_5-tokenizer.json
-zyx-examples/data
-zyx-examples/models
-zyx-examples/venv
 generated/
 
 zyx/Cargo.lock

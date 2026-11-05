@@ -57,12 +57,13 @@ do not loop on it.
 Run the same gate locally:
 
 ```bash
-./ci.sh
+./run_ci.sh
 ```
 
-It runs the unit tests, doctests for every README-bearing crate, private-item
-rustdoc (so broken doc links fail), `cargo fmt --check`, and the book's code
-examples.
+It runs the unit and integration tests (CPU), doctests for every
+README-bearing crate, private-item rustdoc (so broken doc links fail), the
+examples, the Python bindings when a torch-enabled interpreter is available,
+`cargo fmt --check`, and the book's code examples.
 
 Formatting: only `zyx/` has a `rustfmt.toml`, so run `cargo fmt` inside `zyx/`.
 Do not reformat the other crates with the default config — it would rewrap them

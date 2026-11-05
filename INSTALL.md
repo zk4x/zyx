@@ -79,11 +79,12 @@ AGENT=1 ZYX_DEV=cpu cargo test
 AGENT=1 cargo test --doc
 ```
 
-Run the full local gate (unit tests, doctests, private-item docs, formatting,
-and the architecture book) from the repository root:
+Run the full local gate (unit and integration tests, doctests, private-item
+docs, formatting, examples, Python tests when available, and the architecture
+book) from the repository root:
 
 ```bash
-./ci.sh
+./run_ci.sh
 ```
 
 Try the examples:

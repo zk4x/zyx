@@ -12,8 +12,8 @@ and has a `run.sh`.
 | 4 | `rnn` | `rnn` | — | `RNNCell` training loop with `Tape` autograd |
 | 5 | `mnist` | `mnist` | `data/mnist_dataset.safetensors` | MLP training on MNIST |
 | 6 | `mnist-snn` | `mnist-snn` | `data/mnist_dataset.safetensors` | spiking neural net on MNIST |
-| 7 | `nanogpt` | `nanogpt` | `nanogpt/data/input.txt` | character-level GPT (tiny shakespeare) |
-| 8 | `phi` | `phi` | `phi/phi1_5-model.safetensors` | phi-1.5 inference |
+| 7 | `nanogpt` | `nanogpt` | `data/input.txt` | character-level GPT (tiny shakespeare) |
+| 8 | `phi` | `phi` | `models/phi-1.5/` | phi-1.5 inference |
 | 9 | `llama` | `llama` | `models/llama-3.2-3b/` | Llama 3.2 3B Instruct GGUF inference |
 | 10 | `tt_gemm` | `tt_gemm` | — | hand-tiled BF16 GEMM for Tenstorrent; see [`tt_gemm/README.md`](tt_gemm/README.md) |
 | 11 | `qwen3.8-27b` | `qwen3-8-27b` | 17 GB GGUF (see `plan.md`) | Qwen3.8-27B quantized inference — **work in progress, no runner** |
@@ -22,8 +22,7 @@ and has a `run.sh`.
 
 Each example's `run.sh`:
 
-1. downloads its data into `examples/data/` and models into `examples/models/`
-   (or the example's own directory when its code reads from there),
+1. downloads its data into `examples/data/` and models into `examples/models/`,
 2. skips the download when the file already exists (idempotent),
 3. runs the example in release mode (`cargo run --release`).
 

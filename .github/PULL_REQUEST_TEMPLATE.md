@@ -10,7 +10,7 @@
 
 <!-- Say what actually ran, on which backends/hardware. -->
 
-- [ ] `./ci.sh`
+- [ ] `./run_ci.sh`
 - [ ] Targeted test: `cd zyx && AGENT=1 ZYX_DEV=cpu cargo test --test <file> <name> -- --exact`
 - [ ] Backend(s) exercised: <!-- C / CUDA / OpenCL / Vulkan / WGPU / Tenstorrent -->
 - [ ] Docs/book updated if behavior or architecture changed

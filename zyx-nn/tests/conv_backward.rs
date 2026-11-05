@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::{DType, ReduceOp, Tape, Tensor, ZyxError};
+use zyx::{DType, Reduction, Tape, Tensor, ZyxError};
 use zyx_nn::{BatchNorm, Conv2d, Linear};
 
 fn make_bn(num_features: i64) -> BatchNorm {
@@ -34,7 +34,7 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
     let h = h.mean([2, 3])?;
     let h = h.reshape([-1, 16])?;
     let logits = linear.forward(h)?;
-    let loss = logits.cross_entropy(y, ReduceOp::Mean)?;
+    let loss = logits.cross_entropy(y, Reduction::Mean)?;
 
     let _grads = tape.gradient(
         &loss,
