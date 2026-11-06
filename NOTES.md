@@ -75,13 +75,48 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
 
 | gate | failure | note |
 |---|---|---|
-| `softmax` | value assertion, `23_tt_lowering.rs:829`: all 65536 values are `inf` (worst error `inf`) | compiles and runs, ~52 s; wrong numbers, not a shape. Unchanged by the matmul fix (verified by A/B) |
+| `softmax` | value assertion, `23_tt_lowering.rs:829`: all 65536 values are `inf` (worst error `inf`) | compiles and runs, ~52 s; wrong numbers, not a shape. Unchanged by the matmul fix (verified by A/B). Diagnosis below |
 | `sum_drop_col` | `z[0]` right, `z[1..]` zero | pre-existing (session 11): `Col` fold leaves row 0, rank-1 boundary is a column |
 | `sum_one_row` | `boundary offset 32 is not a whole tile` | pre-existing: `tt_slice` divides logical offsets by a hard-coded 1024; a rank-1 `[N]` is `N` rows x 1 lane, so tile 1 starts at logical 32 |
 
 `24_tt` (llama op groups) red list is in session 13 below; `causal_mask_compare`,
 `llama_feedforward_glu` and `llama_lm_head_projection` now pass. The other
 eight are the index-path / softmax / kv-cache work listed under Next.
+
+### `softmax` diagnosis (session 14, read-only; no fix chosen)
+
+Established, each by a run:
+
+- **Eager is correct, the promoted graph is not.** `max_keepdim`, then `exp`,
+  then `sum_keepdim`, then divide, each realized and checked separately, is
+  green at `[64,64]` and `[256,256]`. The single inline chain
+  (`x.softmax([1])`) is all-`inf` at both sizes. So the ops are fine; the
+  fused/promoted form is what breaks.
+- **`ZYX_DEBUG=256` (NoSearch) makes `softmax` pass** (~12 s). The seed +
+  epilogue lowers it correctly; a search-selected variant does not.
+- **The winning sum kernel ignores the group base for its input.** The graph
+  kernelizer fuses `exp(x - max)` into the reduce, so the sum kernel recomputes
+  `exp(x - max)` from two DRAM params. In the winner's IR (`ZYX_DEBUG=8`,
+  `[256,256]`) the `max` tile is read per row group
+  (`tt_copy r47, 1024*g -> ...`) but the `x` block is read **once from element
+  offset 0** (`tt_copy r67, 0 -> cb (32768B)`, 8 tiles) while the grid has 8
+  row groups: every group sums rows 0..31.
+- The non-winning sum candidates that were traced keep the row base through
+  `tt_tile` (`r62 = r55 + r3`, `r55 = (32*g + lane) * 64`), so the loss is in
+  the block-hoist path (`tt_cb_lower`'s `strip_unrolls(..., strip_loops=true)`
+  zeroes a loop-valued row base) or in the candidate itself, not in
+  `tt_tile`'s split. Some search candidates also cover 512/1024 rows on a
+  256-row axis (group over 16/32), i.e. the search still offers split shapes
+  the tiling cannot represent — the same class as the `opt_register_tiling`
+  bug.
+- Candidate IR dumps for the record: `ZYX_TT_IR=1` (before/after
+  `tt_tile`/`tt_reindex`/`tt_cb_lower`), `ZYX_DEBUG=8` (winner IR),
+  `ZYX_DEBUG=256` (NoSearch).
+
+Open decision (not taken): fix the block-hoist base / group term in
+`tt_cb_lower`, or make the TT search reject variants it cannot lower, or
+rework the graph fusion of a reduce over `exp(x - max)`. `tt_tile` and the
+eager path need no change.
 
 ### Next, in order
 
