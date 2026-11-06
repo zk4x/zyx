@@ -130,15 +130,38 @@ Still open, separate: the TT search offers split shapes that overshoot the
 axis (group over 16/32 on a 256-row axis); no failing gate now, but it is
 the same legality hole as `opt_register_tiling`.
 
-`24_tt::llama_attention_softmax` stays red, and it is a *different*,
-pre-existing failure: `dead_code_elimination` indexes a dangling `OpId`
-(`fold_constants.rs:640`, called from `tt_dataflow_select`,
-`kernel/tenstorrent.rs:2518`). Verified identical with and without the fold
-fix.
+### `24_tt::llama_attention_softmax`: transposed B has no lowering
+
+The DCE dangling-`OpId` panic (`fold_constants.rs:640`, from
+`tt_dataflow_select`) is a **symptom**, not the bug. Traced end to end:
+
+1. The graph's `q.matmul(k.transpose(2,3))` produces a matmul whose B index is
+   `n*K + k` (B is k's `[N,K]` buffer; the reduce axis is innermost).
+2. The TT matmul pattern only matches B stored `[K,N]`: `pat_b = f + g*k`
+   binds the reduced lane to the **multiplier** (`k*N + n`). With
+   `n*K + k`, the matcher binds `k` to the constant `K`, so `fab` is `None`
+   and `TtEmit::Matmul` bails (verified with a temporary print: "no shared K",
+   `pat_a` k=`r101` vs `pat_b` k=`r1`=4).
+3. The reduce therefore never lowers, the high-level `Add` above it stays in
+   the IR, `tt_dataflow_select` phase 3 removes every Circular load, and the
+   next DCE walks the stale `Add` operand.
+
+There is no transpose path to fall back on: `TTOp::DmReadTransposed` has a
+verifier/debug arm but **no producer** (same scaffolding state as `CbPlan`).
+the compute codegen's include list has `transpose_wh.h`, but nothing emits it.
+
+So llama's attention needs one of: a transposed-B matmul emitter (hardware
+unpack transpose / `DmReadTransposed`), or a standalone transpose op/kernel.
+That is a design decision; nothing was changed. `llama_attention_softmax`
+stays red until then.
 
 ### Next, in order
 
-1. The CB ring with credits (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`, per
+1. Transposed-B matmul (or a transpose op/kernel): `q @ k^T` is what blocks
+   `llama_attention_softmax` and llama's attention, and it is the only
+   remaining TT op-group failure with a known cause. Decide the design first
+   (`DmReadTransposed` has no producer, no transpose lowering exists).
+2. The CB ring with credits (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`, per
    iteration when `t > depth`, the overfill guard, the grid capped at the core
    count with the remainder looped). Required for llama's widths: ffn 8192 is
    256 tile columns, lm_head 128256 is 4008, the grid is ~120 cores and
@@ -146,9 +169,9 @@ fix.
    streaming is prohibited — the CB is never sized from the loop. Session 13
    below has the old implementation (`588110a9`), the `t > config[cb].2`
    streaming rule, and the 14.444 TFLOPS origin.
-2. The index path (aligned envelope + L1 fixup) for embedding's row select,
+3. The index path (aligned envelope + L1 fixup) for embedding's row select,
    rope's rotate-half and the transposes.
-3. Then `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
+4. Then `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
 
 ### Traps
 
