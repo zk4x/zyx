@@ -619,6 +619,200 @@ impl Kernel {
     }
 }
 
+/// One MMA fragment staged through shared memory.
+#[derive(Debug, Clone)]
+struct MmaStage {
+    /// The `Op::Wmma` whose operand is staged.
+    wmma: OpId,
+    /// `true`: the A operand; `false`: B.
+    a_side: bool,
+    /// The kernel's local (lane) range.
+    lane: OpId,
+    /// The operand's fragment map, cloned from the device variant.
+    fields: Vec<crate::backend::FragField>,
+    /// `(row offset, col offset, slot load)` per fragment slot.
+    slots: Vec<(i16, i16, OpId)>,
+    /// Fragment rows and contraction width.
+    rows: Dim,
+    k: Dim,
+}
+
+/// Staging for tensor-core fragments: copy the A/B tile each warp needs into
+/// shared memory once, cooperatively, so the fragment slots read it back
+/// instead of issuing lane-scattered global loads. A following peephole can
+/// then fold those reads into `ldmatrix`.
+#[derive(Debug, Clone)]
+pub struct MmaStaging {
+    stages: Vec<MmaStage>,
+}
+
+/// Build one fragment axis from the lane bit-fields: sum of
+/// `((lane >> shift) & mask) * stride` over the fields feeding `axis`.
+fn lane_axis(kernel: &mut Kernel, before: OpId, lane: OpId, fields: &[crate::backend::FragField], axis: crate::backend::FragAxis) -> OpId {
+    let mut sum = kernel.insert_before(before, Op::Const(Constant::idx(0u32)));
+    for f in fields.iter().filter(|f| f.axis == axis) {
+        let mut term = lane;
+        if f.shift > 0 {
+            let d = kernel.insert_before(before, Op::Const(Constant::idx(1u32 << f.shift)));
+            term = kernel.insert_before(before, Op::Binary { x: term, y: d, bop: BOp::Div });
+        }
+        let mask = (1u32 << f.width) - 1;
+        let m = kernel.insert_before(before, Op::Const(Constant::idx(mask + 1)));
+        term = kernel.insert_before(before, Op::Binary { x: term, y: m, bop: BOp::Mod });
+        if f.stride != 1 {
+            let s = kernel.insert_before(before, Op::Const(Constant::idx(f.stride as u32)));
+            term = kernel.insert_before(before, Op::Binary { x: term, y: s, bop: BOp::Mul });
+        }
+        sum = kernel.insert_before(before, Op::Binary { x: sum, y: term, bop: BOp::Add });
+    }
+    sum
+}
+
+impl Optimization for MmaStaging {
+    fn nconfigs(&self) -> u64 {
+        self.stages.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        let Some(st) = self.stages.get(config as usize) else {
+            return;
+        };
+        let wmma = st.wmma;
+        let head = kernel.head;
+
+        // One shared tile per fragment, row-major with `k` elements per row.
+        // Inserted after the params: global params must precede local
+        // storages in the kernel.
+        let mut at = head;
+        while matches!(kernel.at(at), Op::Param { .. }) {
+            at = kernel.next_op(at);
+        }
+        let buf = kernel.insert_before(
+            at,
+            Op::Storage { dtype: DType::F16, scope: MemScope::Local, len: st.rows * st.k, id: 0 },
+        );
+
+        let row = lane_axis(kernel, wmma, st.lane, &st.fields, crate::backend::FragAxis::Row);
+        let col = lane_axis(kernel, wmma, st.lane, &st.fields, crate::backend::FragAxis::Col);
+        let k_const = kernel.insert_before(wmma, Op::Const(Constant::idx(st.k as u32)));
+        let base = kernel.insert_before(wmma, Op::Binary { x: row, y: k_const, bop: BOp::Mul });
+        let base = kernel.insert_before(wmma, Op::Binary { x: base, y: col, bop: BOp::Add });
+
+        // Fill: every lane stores its own fragment elements at their tile
+        // positions, then a barrier makes the tile whole for the reads.
+        let mut positions = Vec::with_capacity(st.slots.len());
+        for &(roff, coff, src) in &st.slots {
+            let mut pos = base;
+            if roff != 0 {
+                let c = kernel.insert_before(wmma, Op::Const(Constant::idx((Dim::from(roff) * st.k) as u32)));
+                pos = kernel.insert_before(wmma, Op::Binary { x: pos, y: c, bop: BOp::Add });
+            }
+            if coff != 0 {
+                let c = kernel.insert_before(wmma, Op::Const(Constant::idx(coff as u32)));
+                pos = kernel.insert_before(wmma, Op::Binary { x: pos, y: c, bop: BOp::Add });
+            }
+            kernel.insert_before(wmma, Op::Store { dst: buf, dst_idx: pos, src });
+            positions.push(pos);
+        }
+        kernel.insert_before(wmma, Op::Barrier);
+
+        // Compute: the fragment reads the staged tile. The old stack and its
+        // global loads stay in place; the operand repoint makes them dead and
+        // DCE removes what is unused.
+        let mut staged = Vec::with_capacity(positions.len());
+        for &pos in &positions {
+            staged.push(kernel.insert_before(wmma, Op::Load { src: buf, src_idx: pos }));
+        }
+        let stack = kernel.insert_before(wmma, Op::Stack { ops: staged.into() });
+        match &mut kernel.ops[wmma].op {
+            Op::Wmma { a, b, .. } => {
+                if st.a_side {
+                    *a = stack;
+                } else {
+                    *b = stack;
+                }
+            }
+            _ => unreachable!("MmaStaging: config is not a wmma"),
+        }
+    }
+}
+
+impl Kernel {
+    /// Stage MMA fragments in shared memory, one config per (wmma, operand).
+    ///
+    /// The matcher is structural: it binds the operand stack, checks that
+    /// every slot is a load of the same global buffer, and derives the slot
+    /// positions from the device variant's [`crate::backend::FragMap`] rather
+    /// than from the (epilogue-simplified) index arithmetic.
+    pub fn opt_mma_staging(&self) -> Box<dyn Optimization> {
+        let info = self.device_info();
+        let mut stages = Vec::new();
+        if info.mma_variants.is_empty() {
+            return Box::new(MmaStaging { stages });
+        }
+        let lane = self.iter_unordered().find_map(|(id, op)| {
+            matches!(op, Op::Range { kind: RangeKind::Local(_), .. }).then_some(id)
+        });
+        let Some(lane) = lane else {
+            return Box::new(MmaStaging { stages });
+        };
+        for (wmma, op) in self.iter_unordered() {
+            let Op::Wmma { dims, layout, dtype, a, b, .. } = *op else {
+                continue;
+            };
+            let Some(v) = info
+                .mma_variants
+                .iter()
+                .find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype)
+            else {
+                continue;
+            };
+            let (fm, fn_, fk) = dims.decompose_mnk();
+            for (a_side, operand, map, rows) in [(true, a, &v.a, fm), (false, b, &v.b, fn_)] {
+                let Op::Stack { ref ops } = *self.at(operand) else {
+                    continue;
+                };
+                if ops.len() != map.slots.len() {
+                    continue;
+                }
+                let mut buf = OpId::NULL;
+                let mut slots = Vec::with_capacity(ops.len());
+                let mut ok = true;
+                for (i, &slot_op) in ops.iter().enumerate() {
+                    let Op::Load { src, .. } = *self.at(slot_op) else {
+                        ok = false;
+                        break;
+                    };
+                    if !matches!(self.at(src), Op::Param { kind: ParamKind::Global, .. }) {
+                        ok = false;
+                        break;
+                    }
+                    if buf.is_null() {
+                        buf = src;
+                    } else if buf != src {
+                        ok = false;
+                        break;
+                    }
+                    slots.push((map.slots[i].0, map.slots[i].1, slot_op));
+                }
+                if !ok || buf.is_null() {
+                    continue;
+                }
+                stages.push(MmaStage {
+                    wmma,
+                    a_side,
+                    lane,
+                    fields: map.fields.clone(),
+                    slots,
+                    rows: Dim::from(rows as Dim),
+                    k: Dim::from(fk as Dim),
+                });
+            }
+        }
+        Box::new(MmaStaging { stages })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

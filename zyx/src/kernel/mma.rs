@@ -900,6 +900,66 @@ mod tests {
         assert_eq!(matched, ops.len(), "every A slot must match the fragment pattern");
     }
 
+    /// Staging on a tensorized kernel: the MMA staging pass must stage both
+    /// fragment operands, and after it the wmma reads shared memory.
+    #[test]
+    fn mma_staging_rewrites_fragments() {
+        const M: i64 = 16;
+        const N: i64 = 8;
+        const K: i64 = 64;
+
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cuda()));
+        let a = k.param(DType::F16);
+        let b = k.param(DType::F16);
+        let c = k.param_mut(DType::F32);
+        let m = k.group_range(0, M);
+        let n = k.group_range(1, N);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zero = k.const_val(0.0f32);
+        k.store(acc, zero, 0i64);
+        k.loop_over(K, |k, lv| {
+            let a_idx = k.mad(m, K, lv);
+            let a_load = k.load(a, a_idx);
+            let b_idx = k.mad(n, K, lv);
+            let b_load = k.load(b, b_idx);
+            let prod = k.mul(a_load, b_load);
+            let prod = k.cast(prod, DType::F32);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prod, prev);
+            k.store(acc, sum, 0i64);
+        });
+        let res = k.load(acc, 0i64);
+        let c_idx = k.mad(m, N, n);
+        k.store(c, res, c_idx);
+        k.linearize();
+        k.opt_tensorize().apply(&mut k, 0);
+
+        let staging = k.opt_mma_staging();
+        assert_eq!(staging.nconfigs(), 2, "A and B are staged");
+        staging.apply(&mut k, 0);
+        staging.apply(&mut k, 1);
+        k.default_epilogue();
+        k.verify();
+
+        // The wmma now reads a fragment whose slots load shared storage.
+        let wmma = k
+            .iter_unordered()
+            .find_map(|(id, op)| matches!(op, Op::Wmma { .. }).then_some(id))
+            .expect("wmma present");
+        let Op::Wmma { a: a_frag, b: b_frag, .. } = *k.at(wmma) else { unreachable!() };
+        for operand in [a_frag, b_frag] {
+            let Op::Stack { ref ops } = *k.at(operand) else { panic!("operand is not a stack") };
+            for &slot in ops.iter() {
+                let Op::Load { src, .. } = *k.at(slot) else { panic!("slot is not a load") };
+                assert!(
+                    matches!(k.at(src), Op::Storage { scope: MemScope::Local, .. }),
+                    "slot must read the staged shared tile"
+                );
+            }
+        }
+    }
+
     /// Tiling is the split's job, not the pass's: splitting the M and N tile
     /// ranges into unroll lanes multiplies the tile per warp to 4x8 fragments,
     /// and `devectorize` duplicates the mma per lane. The pass itself stays

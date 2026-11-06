@@ -263,10 +263,12 @@ pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
                 while !op_id.is_null() {
                     match &rendered.ops[op_id].op {
                         Op::Source(src) => return src.as_str().to_string(),
-                        Op::PTX(ptx) => {
-                            let PTXOp::Bytes(bytes) = ptx.as_ref();
-                            return String::from_utf8_lossy(bytes).into_owned();
-                        }
+                        Op::PTX(ptx) => match ptx.as_ref() {
+                            PTXOp::Bytes(bytes) => return String::from_utf8_lossy(bytes).into_owned(),
+                            // Non-portable instruction in the kernel IR, not a
+                            // rendered payload: nothing to show as source.
+                            PTXOp::LdMatrix { .. } => {}
+                        },
                         _ => {}
                     }
                     op_id = rendered.next_op(op_id);
