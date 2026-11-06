@@ -235,7 +235,11 @@ impl Kernel {
                         // A shared-memory fragment load: both operands stay
                         // live; the traffic is already counted on the staging
                         // storage itself.
-                        PTXOp::LdMatrix { src, addr, .. } => {
+                        PTXOp::LdMatrix { frags, src, addr, .. } => {
+                            // Same value rule as the canonical pass: `frags`
+                            // 32-bit registers, i.e. `frags * 2` f16 lanes.
+                            let n = Dim::from(i64::from(*frags) * 2);
+                            dtypes.insert(op_id, (DType::F16, vec![n]));
                             *rcs.entry(*src).or_insert(0) += 1;
                             *rcs.entry(*addr).or_insert(0) += 1;
                         }
@@ -335,7 +339,9 @@ impl Kernel {
                 }
             };
             if produces && let Some(&rc) = rcs.get(&op_id) {
-                let dtype = dtypes[&op_id].clone();
+                let Some(dtype) = dtypes.get(&op_id).cloned() else {
+                    panic!("cost: no dtype for producing op {op_id}: {:?}", self.ops[op_id].op);
+                };
                 let idx = reg_slots.iter().position(|(r, dt)| *r == 0 && *dt == dtype).unwrap_or_else(|| {
                     let i = reg_slots.len();
                     reg_slots.push((0, dtype));

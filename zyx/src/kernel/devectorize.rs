@@ -21,7 +21,8 @@
 use crate::{
     Map, Set,
     dtype::Constant,
-    kernel::{Kernel, Op, OpId},
+    kernel::{BOp, Kernel, MemScope, Op, OpId},
+    shape::Dim,
 };
 
 impl Kernel {
@@ -38,6 +39,7 @@ impl Kernel {
     /// per-lane index expressions into literals, CSE merges the
     /// identical forms, DCE removes what is dead.
     pub fn devectorize(&mut self) {
+        let mut kept: Set<OpId> = Set::default();
         for _ in 0..10000 {
             // Upstream first (IR order, not unordered): expanding an inner
             // reduce before its consumers keeps nested reduces out of each
@@ -56,8 +58,18 @@ impl Kernel {
                 self.devectorize_reduce_one(found);
                 continue;
             }
-            let found = self.iter_unordered().find_map(|(op, x)| matches!(x, Op::Unroll { .. }).then_some(op));
+            let found = self
+                .iter_unordered()
+                .find_map(|(op, x)| (matches!(x, Op::Unroll { .. }) && !kept.contains(&op)).then_some(op));
             let Some(unroll_id) = found else { break };
+            // A lane that is a contiguous access vector the device supports
+            // stays in the IR: it is the vector width, not a thread/lane
+            // bundle to unfold. The backend renders the load/store as one
+            // vector access.
+            if self.keep_address_lane(unroll_id) {
+                kept.insert(unroll_id);
+                continue;
+            }
             // A refused node (none exist today) stays in place — stop
             // instead of looping on it forever.
             if !self.devectorize_unroll_one(unroll_id) {
@@ -350,6 +362,183 @@ impl Kernel {
 
         self.remove_op(unroll_id);
         true
+    }
+}
+
+impl Kernel {
+    /// Slots the instruction expects in `operand` (`a`/`b`) of `wmma`.
+    fn wmma_operand_slots(&self, wmma: OpId, operand: OpId) -> Option<Dim> {
+        let Op::Wmma { dims, layout, dtype, a, b, .. } = *self.at(wmma) else {
+            return None;
+        };
+        let info = self.device_info();
+        let v = info
+            .mma_variants
+            .iter()
+            .find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype)?;
+        if operand == a {
+            Some(v.a.slots.len() as Dim)
+        } else if operand == b {
+            Some(v.b.slots.len() as Dim)
+        } else {
+            None
+        }
+    }
+
+    /// Element count of a value, from its shape.
+    fn elements(&self, op: OpId) -> Dim {
+        self.shape(op).iter().product()
+    }
+
+    /// The lane appears as an additive term with coefficient one in `idx`:
+    /// the innermost contiguous element of the access.
+    fn unit_lane_term(&self, idx: OpId, id: OpId) -> bool {
+        let mut stack = vec![idx];
+        let mut seen = Set::default();
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            match *self.at(x) {
+                Op::Binary { x: a, y: b, bop: BOp::Add } => {
+                    if b == id && !self.depends_on(a, id, &mut Set::default()) {
+                        return true;
+                    }
+                    if a == id && !self.depends_on(b, id, &mut Set::default()) {
+                        return true;
+                    }
+                    stack.push(a);
+                    stack.push(b);
+                }
+                Op::Binary { x: a, y: b, bop: BOp::Mul } => {
+                    let one = |k: &Kernel, v: OpId| {
+                        k.resolve_const(v).and_then(Constant::as_dim) == Some(1)
+                    };
+                    if (a == id && one(self, b)) || (b == id && one(self, a)) {
+                        return true;
+                    }
+                    stack.push(a);
+                    stack.push(b);
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// A lane that is the innermost, unit-stride term of a load/store access
+    /// and whose width the device supports is a *vector width*, not a
+    /// thread/lane bundle: keep it so the backend renders one vector access.
+    fn keep_address_lane(&self, id: OpId) -> bool {
+        let Op::Unroll { len, .. } = *self.at(id) else {
+            return false;
+        };
+        let info = self.device_info();
+        let len = Dim::from(len);
+        if !info.supported_vec_lens.iter().any(|&v| Dim::from(v) == len) {
+            return false;
+        }
+
+        // The lane must feed addresses only: it and every op it reaches must
+        // be part of some load/store index expression.
+        let mut address: Set<OpId> = Set::default();
+        let mut stack: Vec<OpId> = Vec::new();
+        for (_, op) in self.iter_unordered() {
+            match op {
+                Op::Load { src_idx, .. } => stack.push(*src_idx),
+                Op::Store { dst_idx, .. } => stack.push(*dst_idx),
+                _ => {}
+            }
+        }
+        while let Some(op) = stack.pop() {
+            if !address.insert(op) {
+                continue;
+            }
+            for p in self.at(op).parameters() {
+                if !p.is_null() {
+                    stack.push(p);
+                }
+            }
+        }
+        if !address.contains(&id) {
+            return false;
+        }
+        for (cid, op) in self.iter_unordered() {
+            if op.parameters().any(|p| p == id) && !address.contains(&cid) {
+                return false;
+            }
+        }
+
+        // A rank-1 access of exactly this width with the lane at stride 1:
+        // the contiguous innermost term the vector load/store covers.
+        // The lane must be the width of *every* access it shapes, and each
+        // such access must use its value as a full vector: a load consumed
+        // lane by lane through `Index`, or a store of a vector into memory.
+        // A split lane also shapes accesses whose values are lane bundles
+        // (the mma operands), so it is rejected.
+        let mut qualified = false;
+        for (op_id, op) in self.iter_unordered() {
+            let idx = match op {
+                Op::Load { src_idx, .. } => *src_idx,
+                Op::Store { dst_idx, .. } => *dst_idx,
+                _ => continue,
+            };
+            if !self.unit_lane_term(idx, id) {
+                continue;
+            }
+            if self.shape(op_id) != vec![len] {
+                return false;
+            }
+            match op {
+                Op::Load { .. } => {
+                    let mut used: Set<usize> = Set::default();
+                    for (cid, cop) in self.iter_unordered() {
+                        if !cop.parameters().any(|p| p == op_id) {
+                            continue;
+                        }
+                        match *cop {
+                            Op::Index { vec, idx: j } if vec == op_id => {
+                                used.insert(j);
+                            }
+                            // A fragment used directly, or through the Stack
+                            // that builds the operand: the instruction's slot
+                            // count is the proof it is a fragment, not a work
+                            // bundle.
+                            Op::Wmma { .. } => {
+                                if self.wmma_operand_slots(cid, op_id) != Some(self.elements(op_id)) {
+                                    return false;
+                                }
+                            }
+                            Op::Stack { ref ops } => {
+                                let total: Dim = ops.iter().map(|&o| self.elements(o)).sum();
+                                let fragment = self.iter_unordered().any(|(wid, wop)| {
+                                    matches!(wop, Op::Wmma { a, b, .. }
+                                        if (*a == cid || *b == cid) && self.wmma_operand_slots(wid, cid) == Some(total))
+                                });
+                                if !fragment {
+                                    return false;
+                                }
+                            }
+                            _ => return false,
+                        }
+                    }
+                    if !used.is_empty() && used.len() as Dim != len {
+                        return false;
+                    }
+                    qualified = true;
+                }
+                Op::Store { src, dst, .. } => {
+                    if self.shape(*src) != vec![len]
+                        || matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. })
+                    {
+                        return false;
+                    }
+                    qualified = true;
+                }
+                _ => {}
+            }
+        }
+        qualified
     }
 }
 

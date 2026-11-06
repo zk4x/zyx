@@ -109,6 +109,118 @@ impl Optimization for Recipe {
     }
 }
 
+/// The tensor-core matmul recipe: split the two output ranges and the K loop
+/// into lanes (the tile grid), then let `opt_tensorize` match the tiled form.
+#[derive(Debug)]
+pub struct TensorRecipe {
+    /// `(m range, n range, k loop, m lanes, n lanes, k lanes)` per config.
+    configs: Vec<(OpId, OpId, OpId, u16, u16, u16)>,
+}
+
+impl Optimization for TensorRecipe {
+    fn nconfigs(&self) -> u64 {
+        self.configs.len() as u64
+    }
+
+    fn apply(&self, kernel: &mut Kernel, config: u64) {
+        let Some(&(m, n, k, m_lanes, n_lanes, k_lanes)) = self.configs.get(config as usize) else {
+            return;
+        };
+        if kernel.split(m, SplitMode::Unroll, m_lanes).is_null()
+            || kernel.split(n, SplitMode::Unroll, n_lanes).is_null()
+            || kernel.split(k, SplitMode::Unroll, k_lanes).is_null()
+        {
+            kernel.verify();
+            return;
+        }
+        let tensor = kernel.opt_tensorize_tiled();
+        for c in 0..tensor.nconfigs() {
+            tensor.apply(kernel, c);
+        }
+        kernel.verify();
+    }
+}
+
+impl Kernel {
+    /// Make the tensor recipe: one config per `(m lanes, n lanes, k lanes)`
+    /// tile grid the device's instructions allow. Never mutates.
+    pub fn opt_tensor_recipe(&self) -> Box<dyn Optimization> {
+        /// Lane multipliers on the instruction tile.
+        const MULT: &[u16] = &[8, 4, 2, 1];
+        /// No config may emit more instructions than this.
+        const MAX_TILES: Dim = 256;
+
+        let mut configs = Vec::new();
+        let info = self.device_info();
+        if !info.tensor_cores || info.mma_variants.is_empty() || !self.plain_state() {
+            return Box::new(TensorRecipe { configs });
+        }
+
+        // The two output ranges and the contraction loop.
+        let mut ranges: Vec<(OpId, u32, Dim)> = Vec::new();
+        let mut loop_id = OpId::NULL;
+        let mut loop_len: Dim = 0;
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::Range { axis, kind: RangeKind::Group(len) } => {
+                    if let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+                        ranges.push((op_id, axis, len));
+                    }
+                }
+                Op::Loop { len } if loop_id.is_null() => {
+                    loop_id = op_id;
+                    loop_len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(0);
+                }
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+        if ranges.len() != 2 || loop_id.is_null() || loop_len <= 0 {
+            return Box::new(TensorRecipe { configs });
+        }
+        ranges.sort_by_key(|&(_, axis, _)| axis);
+        let ((m_range, _, m), (n_range, _, n)) = (ranges[0], ranges[1]);
+
+        for variant in &info.mma_variants {
+            let (fm, fn_, fk) = {
+                let (fm, fn_, fk) = variant.dims.decompose_mnk();
+                (fm as Dim, fn_ as Dim, fk as Dim)
+            };
+            for &mm in MULT {
+                let m_lanes = fm * Dim::from(mm);
+                if m % m_lanes != 0 {
+                    continue;
+                }
+                for &nn in MULT {
+                    let n_lanes = fn_ * Dim::from(nn);
+                    if n % n_lanes != 0 {
+                        continue;
+                    }
+                    for &kk in MULT {
+                        let k_lanes = fk * Dim::from(kk);
+                        if loop_len % k_lanes != 0 {
+                            continue;
+                        }
+                        let tiles = (m_lanes / fm) * (n_lanes / fn_) * (k_lanes / fk);
+                        if tiles > MAX_TILES {
+                            continue;
+                        }
+                        let (Ok(m_lanes), Ok(n_lanes), Ok(k_lanes)) =
+                            (u16::try_from(m_lanes), u16::try_from(n_lanes), u16::try_from(k_lanes))
+                        else {
+                            continue;
+                        };
+                        configs.push((m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes));
+                    }
+                }
+            }
+        }
+
+        Box::new(TensorRecipe { configs })
+    }
+}
+
 impl Kernel {
     /// Make the lane recipe: one config per (group range, lane factor) —
     /// the search ranks the space, the recipe does not pick a winner.

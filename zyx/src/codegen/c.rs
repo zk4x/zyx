@@ -120,7 +120,11 @@ impl Kernel {
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
                 Op::PTX(_) => todo!(),
-                Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before C codegen"),
+                // An address lane the device supports: the load/store covers
+                // the lanes, so the address is the lane-0 base.
+                Op::Unroll { .. } => {
+                    constants.insert(op_id, Constant::new::<i64>(0));
+                }
                 // Branchless select: the ternary copies the winning arm's
                 // bits, so ±inf on the dead side stays dead (unlike the
                 // old sel*a + (1-sel)*b decomposition).

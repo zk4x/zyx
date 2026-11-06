@@ -3,7 +3,7 @@
 
 use super::Register;
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     backend::{GwsDim, gws_from_kernel},
     dtype::Constant,
     error::{BackendError, ErrorStatus},
@@ -204,6 +204,35 @@ impl Kernel {
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
 
+        // A vector access carries its width as an unroll lane in the index.
+        // The address is the scalar base (lane 0): strip the lane term and
+        // skip the lane-dependent address op, which would otherwise render
+        // as vector arithmetic and cannot index a pointer.
+        let mut lane_base: Map<OpId, OpId> = Map::default();
+        let mut skip: Set<OpId> = Set::default();
+        {
+            let mut probe = self.head;
+            while !probe.is_null() {
+                let idx = match &self.ops[probe].op {
+                    Op::Load { src_idx, .. } => Some(*src_idx),
+                    Op::Store { dst_idx, .. } => Some(*dst_idx),
+                    _ => None,
+                };
+                if let Some(idx) = idx
+                    && let Op::Binary { x, y, bop: BOp::Add } = *self.at(idx)
+                {
+                    if matches!(self.at(x), Op::Unroll { .. }) {
+                        lane_base.insert(probe, y);
+                        skip.insert(idx);
+                    } else if matches!(self.at(y), Op::Unroll { .. }) {
+                        lane_base.insert(probe, x);
+                        skip.insert(idx);
+                    }
+                }
+                probe = self.next_op(probe);
+            }
+        }
+
         let mut loop_id = 0;
         let mut indent = String::from("  ");
         let mut source = String::with_capacity(1000);
@@ -217,6 +246,10 @@ impl Kernel {
                     status: ErrorStatus::KernelCompilation,
                     context: "generate_cuda: kernel exceeds 50000 op render limit".into(),
                 });
+            }
+            if skip.contains(&op_id) {
+                op_id = self.next_op(op_id);
+                continue;
             }
             match self.ops[op_id].op {
                 Op::Source(_) => todo!(),
@@ -245,7 +278,11 @@ impl Kernel {
                     }
                     PTXOp::Bytes(_) => todo!("CUDA codegen: assembled PTX payload in kernel IR"),
                 },
-                Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before CUDA codegen"),
+                // An address lane the device supports: the load/store covers
+                // the lanes, so the address is the lane-0 base.
+                Op::Unroll { .. } => {
+                    constants.insert(op_id, Constant::new::<i64>(0));
+                }
                 // Branchless select via the ternary (see the C backend):
                 // per-component copy, so ±inf on the dead side stays dead.
                 Op::Select { cond, if_true, if_false } => {
@@ -341,7 +378,14 @@ impl Kernel {
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
-                            let idx = get_var_addr(src_idx, &constants, &indices, &reg_map, loop_id, &var_params)?;
+                            let idx = get_var_addr(
+                                lane_base.get(&op_id).copied().unwrap_or(src_idx),
+                                &constants,
+                                &indices,
+                                &reg_map,
+                                loop_id,
+                                &var_params,
+                            )?;
                             match access_shape.as_slice() {
                                 [] => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
                                 [len] => {
@@ -360,7 +404,14 @@ impl Kernel {
                 Op::Store { dst: dst_buf, dst_idx, src } => {
                     let access_shape = self.shape(op_id);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let idx = get_var_addr(dst_idx, &constants, &indices, &reg_map, loop_id, &var_params)?;
+                    let idx = get_var_addr(
+                        lane_base.get(&op_id).copied().unwrap_or(dst_idx),
+                        &constants,
+                        &indices,
+                        &reg_map,
+                        loop_id,
+                        &var_params,
+                    )?;
                     match access_shape.as_slice() {
                         [] => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
                         [len] => {

@@ -55,7 +55,6 @@ impl Kernel {
                 | Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
-                | Op::PTX(_)
                 | Op::Pad { .. }
                 | Op::Permute { .. }
                 | Op::Expand { .. }
@@ -68,6 +67,12 @@ impl Kernel {
                 | Op::Kernel(_) => {
                     unreachable!()
                 }
+                // PTX-level instructions are real IR ops now; an assembled
+                // payload is post-render and must never appear here.
+                Op::PTX(ref p) => match p.as_ref() {
+                    crate::kernel::PTXOp::Bytes(_) => unreachable!(),
+                    crate::kernel::PTXOp::LdMatrix { .. } => loop_depth,
+                },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {
                     unreachable!()

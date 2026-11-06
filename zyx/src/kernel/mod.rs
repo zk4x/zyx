@@ -128,6 +128,7 @@ mod fuse;
 mod instr_sched;
 mod licm;
 mod linearize;
+mod ldmatrix;
 mod local_reduce;
 mod local_staging;
 mod merge;

@@ -702,13 +702,11 @@ impl Optimization for MmaStaging {
         // positions, then a barrier makes the tile whole for the reads.
         let mut positions = Vec::with_capacity(st.slots.len());
         for &(roff, coff, src) in &st.slots {
+            // One combined offset keeps the index tree to `base [+ const]`.
+            let off = Dim::from(roff) * st.k + Dim::from(coff);
             let mut pos = base;
-            if roff != 0 {
-                let c = kernel.insert_before(wmma, Op::Const(Constant::idx((Dim::from(roff) * st.k) as u32)));
-                pos = kernel.insert_before(wmma, Op::Binary { x: pos, y: c, bop: BOp::Add });
-            }
-            if coff != 0 {
-                let c = kernel.insert_before(wmma, Op::Const(Constant::idx(coff as u32)));
+            if off != 0 {
+                let c = kernel.insert_before(wmma, Op::Const(Constant::idx(off as u32)));
                 pos = kernel.insert_before(wmma, Op::Binary { x: pos, y: c, bop: BOp::Add });
             }
             kernel.insert_before(wmma, Op::Store { dst: buf, dst_idx: pos, src });
