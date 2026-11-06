@@ -419,98 +419,15 @@ fn elem_stride(dt: DType) -> usize {
 }
 
 impl Kernel {
+    /// SPIR-V render: lower to a descriptor-only kernel — head order
+    /// `Params`, `Grid`, `LocalWorkSize`, `Spirv(WordBytes)`, and the
+    /// `Spirv(PushConstants)` size the Vulkan launcher mirrors. The module
+    /// emits once here; backend `compile` only hands the words to the driver.
     pub(crate) fn render_spirv(&self) -> Result<Kernel, BackendError> {
-        // Max over local ranges per axis, mirroring generate_spirv's Pass 1
-        // exactly (including the axis guard) so the entry-point name derived
-        // there matches the `name` rebuilt at launch from this `lws`.
-        let mut lws = [1u32; 3];
-        let mut op_id = self.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 50_000 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
-                });
-            }
-            if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op
-                && axis < 3
-            {
-                lws[axis as usize] = lws[axis as usize].max(len);
-            }
-            op_id = self.next_op(op_id);
-        }
-        if lws.iter().map(|&x| u64::from(x)).product::<u64>() > u64::from(self.dev_info().max_local_threads) {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
-        }
-        // Debugging TBD: render takes no debug flag, so codegen-side
-        // disassembly is off here. `SPIRV_DUMP` is deleted.
-        let words = self.generate_spirv(false)?;
-        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 3 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("spirv render: grid rank {} exceeds 3D", gws_vec.len()).into(),
-            });
-        }
-        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            gws[i] = g;
-        }
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        // Push-constant block layout from the `Variable` params (same
-        // std140-scalar layout the Vulkan launcher writes): the worker
-        // only ever sees the descriptor, so this is computed here.
-        let mut push_cur: u32 = 0;
-        let mut push_vars = 0u32;
-        let mut op_id = self.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 50_000 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
-                });
-            }
-            if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {
-                let storage_bits = if *dtype == DType::Bool { 32 } else { dtype.bit_size() };
-                let size = storage_bits as u32 / 8;
-                let align = if size >= 8 { 8 } else { 4 };
-                push_cur = push_cur.next_multiple_of(align);
-                push_cur += size;
-                push_vars += 1;
-            }
-            op_id = self.next_op(op_id);
-        }
-        let push_constants_size = if push_vars == 0 {
-            0
-        } else {
-            push_cur.next_multiple_of(4).max(4)
-        };
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
-        rendered.push_back(Op::Spirv(Box::new(SpirvOp::WordBytes(words.into_boxed_slice()))));
-        rendered.push_back(Op::Spirv(Box::new(SpirvOp::PushConstants(push_constants_size))));
-        Ok(rendered)
-    }
-
-    /// Compile kernel to SPIR-V binary.
-    pub(crate) fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
-        // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        // Reject group lengths that are constant and exceed the device grid
+        // limits; the same vector becomes the rendered `Grid` below.
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let dtypes = compute_dtypes(self);
         // Final capability guard: placement already filters devices, but a
         // late pass can introduce an op the chosen device cannot run.
@@ -2032,11 +1949,66 @@ impl Kernel {
         // Set bound
         asm.set_bound();
 
-        if debug_asm {
-            debug_print(&asm.words);
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("spirv render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
         }
-
-        Ok(asm.words)
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let lws = [lws[0] as u32, lws[1] as u32, lws[2] as u32];
+        if lws.iter().map(|&x| u64::from(x)).product::<u64>() > u64::from(self.dev_info().max_local_threads) {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        // Push-constant block layout from the `Variable` params (same
+        // std140-scalar layout the Vulkan launcher writes): the worker only
+        // ever sees the descriptor, so this is computed here.
+        let mut push_cur: u32 = 0;
+        let mut push_vars = 0u32;
+        let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
+        while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 50_000 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
+                });
+            }
+            if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {
+                let storage_bits = if *dtype == DType::Bool { 32 } else { dtype.bit_size() };
+                let size = storage_bits as u32 / 8;
+                let align = if size >= 8 { 8 } else { 4 };
+                push_cur = push_cur.next_multiple_of(align);
+                push_cur += size;
+                push_vars += 1;
+            }
+            op_id = self.next_op(op_id);
+        }
+        let push_constants_size = if push_vars == 0 {
+            0
+        } else {
+            push_cur.next_multiple_of(4).max(4)
+        };
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
+        rendered.push_back(Op::Spirv(Box::new(SpirvOp::WordBytes(asm.words.into_boxed_slice()))));
+        rendered.push_back(Op::Spirv(Box::new(SpirvOp::PushConstants(push_constants_size))));
+        Ok(rendered)
     }
 }
 
@@ -2135,8 +2107,9 @@ fn bit_size(dt: DType) -> u32 {
     }
 }
 
-// ---------- Debug disassembly ----------
+// ---------- Debug disassembly (viz) ----------
 
+#[cfg(feature = "viz")]
 fn storage_class_name(sc: u32) -> &'static str {
     match sc {
         0 => "UniformConstant",
@@ -2154,6 +2127,7 @@ fn storage_class_name(sc: u32) -> &'static str {
     }
 }
 
+#[cfg(feature = "viz")]
 fn builtin_name(b: u32) -> &'static str {
     match b {
         28 => "GlobalInvocationId",
@@ -2164,6 +2138,7 @@ fn builtin_name(b: u32) -> &'static str {
     }
 }
 
+#[cfg(feature = "viz")]
 fn capability_name(c: u32) -> &'static str {
     match c {
         1 => "Shader",
@@ -2173,6 +2148,7 @@ fn capability_name(c: u32) -> &'static str {
     }
 }
 
+#[cfg(feature = "viz")]
 pub fn debug_string(spv: &[u32]) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -2371,8 +2347,4 @@ pub fn debug_string(spv: &[u32]) -> String {
         i += word_count as usize;
     }
     out
-}
-
-pub fn debug_print(spv: &[u32]) {
-    println!("{}", debug_string(spv));
 }

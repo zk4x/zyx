@@ -25,38 +25,10 @@ impl Kernel {
         // pre-render for its disk cache, so both sides compute the same
         // value independently.
         let name = format!("k_{:016x}", self.get_hash());
-        let source = self.generate_c(self.dev_info().has_openmp, &name)?;
+        let has_openmp = self.dev_info().has_openmp;
+        // Reject group lengths that are constant and exceed the device grid
+        // limits; the same vector becomes the rendered `Grid` below.
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 3 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("C render: grid rank {} exceeds 3D", gws_vec.len()).into(),
-            });
-        }
-        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            gws[i] = g;
-        }
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
-        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
-        Ok(rendered)
-    }
-
-    /// Compile kernel to C source code.
-    pub(crate) fn generate_c(&self, has_openmp: bool, name: &str) -> Result<String, BackendError> {
-        // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
         // Rank-1 shape widths lower to u16 vector lanes. Widths are
         // always concrete here — a symbolic width cannot lower, and the
@@ -786,7 +758,7 @@ static inline unsigned char f32_to_f8e5m2(float v) {
         } else {
             String::new()
         };
-        Ok(format!(
+        let source = format!(
             "#include <math.h>\n#include <stdint.h>\n#include <string.h>\n\
              {omp_include}\
              {vec_types}\
@@ -797,7 +769,31 @@ static inline unsigned char f32_to_f8e5m2(float v) {
              {global_cast}\
              {reg_str}\
              {source}}}\n"
-        ))
+        );
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("C render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
+        }
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
+        Ok(rendered)
     }
 }
 

@@ -100,93 +100,14 @@ impl Kernel {
     /// pages, `EndReader`, the compute section, `EndCompute`, the `Semset`s,
     /// the writer's `DmWrite` pages. The section sources are the
     /// not-yet-ported fallback only. Lowering lives in `device_epilogue`
-    /// (which verifies the lowered IR); `generate_tenstorrent` renders 1:1.
+    /// (which verifies the lowered IR); emission derives CBs, DST slots,
+    /// param ordinals, and grid axes from the resulting ops.
     /// Backend `compile` only walks these ops.
     /// The unlowered ops are consumed, never carried. Every kernel
     /// goes through here, including hand-built custom kernels (raw IR
     /// lowers exactly once; kernels already holding a `Source` pass
     /// through untouched in `render` and never reach this).
     pub(crate) fn render_tt(&self) -> Result<Kernel, BackendError> {
-        let program = self.generate_tenstorrent()?;
-        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 2 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("tenstorrent render: grid rank {} exceeds 2D", gws_vec.len()).into(),
-            });
-        }
-        let mut grid = [GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            grid[i] = g;
-        }
-        // Param head order is lowering-invariant: the TT passes only
-        // append effect ops at the tail and never create, remove, or
-        // replace Param ops — so the pre-lowering order matches the
-        // ordinals `generate_tenstorrent` numbered post-lowering.
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        let [unpack, math, pack] = program.roles;
-        let [_, math_loops, _] = program.loops;
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
-        rendered.push_back(Op::TT(TTOp::Unpack(unpack.into_boxed_slice())));
-        rendered.push_back(Op::TT(TTOp::Math(Box::new(crate::kernel::TTRoleProgram {
-            words: math.into_boxed_slice(),
-            loops: math_loops.into_boxed_slice(),
-        }))));
-        rendered.push_back(Op::TT(TTOp::Pack(pack.into_boxed_slice())));
-        // The reader list: one op per 4 KB page, so the stream's shape is
-        // fixed here and the launch only substitutes addresses (NOTES §2).
-        rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
-        for mv in &program.reader {
-            for page in tt_pages(mv) {
-                rendered.push_back(Op::TT(TTOp::DmRead(Box::new(TTDmRead {
-                    param: mv.param,
-                    l1: page.l1,
-                    len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
-                }))));
-            }
-        }
-        rendered.push_back(Op::TT(TTOp::EndReader));
-        rendered.push_back(Op::Source(SourceBlock(program.compute_src.into_boxed_str())));
-        rendered.push_back(Op::TT(TTOp::EndCompute));
-        for sem in &program.sems {
-            rendered.push_back(Op::TT(TTOp::Semset { sem: sem.index, value: sem.value }));
-        }
-        for mv in &program.writer {
-            for page in tt_pages(mv) {
-                rendered.push_back(Op::TT(TTOp::DmWrite(Box::new(TTDmWrite {
-                    param: mv.param,
-                    l1: page.l1,
-                    len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
-                    narrow: mv.narrow,
-                }))));
-            }
-        }
-        rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
-        Ok(rendered)
-    }
-
-    /// Full TTIR codegen: run the kernel TT passes, then emit three
-    /// RISC-V section sources plus the launch tables. The passes run on
-    /// a clone of this kernel (the caller's IR is untouched); emission
-    /// derives CBs, DST slots, param ordinals, and grid axes from the
-    /// resulting ops.
-    pub(crate) fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
         // Render-only: lowering lives in `device_epilogue` (which
         // verifies the lowered IR); this consumes the result 1:1.
         // Never dumps IR here: every candidate compile would print.
@@ -267,7 +188,78 @@ impl Kernel {
         // in program order. `render_tt` splits each into page ops.
         let (reader, writer) = tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?;
 
-        Ok(TTProgram { reader_src, compute_src, writer_src, roles, loops, reader, writer, sems })
+        let program = TTProgram { reader_src, compute_src, writer_src, roles, loops, reader, writer, sems };
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 2 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent render: grid rank {} exceeds 2D", gws_vec.len()).into(),
+            });
+        }
+        let mut grid = [GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            grid[i] = g;
+        }
+        // Param head order is lowering-invariant: the TT passes only append
+        // effect ops at the tail and never create, remove, or replace Param
+        // ops — so the pre-lowering order matches the ordinals emission
+        // numbered post-lowering.
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let [unpack, math, pack] = program.roles;
+        let [_, math_loops, _] = program.loops;
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
+        rendered.push_back(Op::TT(TTOp::Unpack(unpack.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Math(Box::new(crate::kernel::TTRoleProgram {
+            words: math.into_boxed_slice(),
+            loops: math_loops.into_boxed_slice(),
+        }))));
+        rendered.push_back(Op::TT(TTOp::Pack(pack.into_boxed_slice())));
+        // The reader list: one op per 4 KB page, so the stream's shape is
+        // fixed here and the launch only substitutes addresses (NOTES §2).
+        rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
+        for mv in &program.reader {
+            for page in tt_pages(mv) {
+                rendered.push_back(Op::TT(TTOp::DmRead(Box::new(TTDmRead {
+                    param: mv.param,
+                    l1: page.l1,
+                    len: page.len,
+                    base: page.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                }))));
+            }
+        }
+        rendered.push_back(Op::TT(TTOp::EndReader));
+        rendered.push_back(Op::Source(SourceBlock(program.compute_src.into_boxed_str())));
+        rendered.push_back(Op::TT(TTOp::EndCompute));
+        for sem in &program.sems {
+            rendered.push_back(Op::TT(TTOp::Semset { sem: sem.index, value: sem.value }));
+        }
+        for mv in &program.writer {
+            for page in tt_pages(mv) {
+                rendered.push_back(Op::TT(TTOp::DmWrite(Box::new(TTDmWrite {
+                    param: mv.param,
+                    l1: page.l1,
+                    len: page.len,
+                    base: page.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                    narrow: mv.narrow,
+                }))));
+            }
+        }
+        rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
+        Ok(rendered)
     }
 }
 
@@ -2376,8 +2368,18 @@ mod tests {
         k.push_back(Op::TT(TTOp::EndReader));
         k.push_back(Op::TT(TTOp::Setrwc { dst: storage }));
         k.push_back(Op::TT(TTOp::EndCompute));
-        let program = k.generate_tenstorrent().expect("a minimal math-only kernel renders");
-        let mut setrwc = program.roles[1]
+        let rendered = k.render_tt().expect("a minimal math-only kernel renders");
+        // The math stream rides on `TTOp::Math`; pick it out of the rendered ops.
+        let mut math_words = None;
+        let mut op_id = rendered.head;
+        while !op_id.is_null() {
+            if let Op::TT(TTOp::Math(program)) = &rendered.ops[op_id].op {
+                math_words = Some(program.words.clone());
+            }
+            op_id = rendered.next_op(op_id);
+        }
+        let words = math_words.expect("the math section is in the rendered kernel");
+        let mut setrwc = words
             .iter()
             .map(|&word| tt_isa::isa::Instruction::new(word, &tt_isa::isa::generated::defs::SETRWC))
             .filter(|insn| insn.def().mnemonic() == "SETRWC");

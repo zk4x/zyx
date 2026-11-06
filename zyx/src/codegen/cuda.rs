@@ -124,6 +124,10 @@ fn mma_helper(dims: MMADims, layout: MMALayout, dtype: MMADType) -> String {
 }
 
 impl Kernel {
+    /// CUDA render: lower to a descriptor-only kernel — head order `Params`,
+    /// `Grid`, `LocalWorkSize`, and either CUDA C++ source (`Source`) or
+    /// assembled PTX (`PTX`, with `ZYX_PTX` set). The source emits once here;
+    /// backend `compile` only decodes positions and drives NVRTC.
     pub(crate) fn render_cuda(&self) -> Result<Kernel, BackendError> {
         let mut lws = [1u32; 3];
         let mut op_id = self.head;
@@ -145,52 +149,10 @@ impl Kernel {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
         let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
-        // ZYX_PTX: emit PTX assembly directly at render (bypasses NVRTC
-        // at compile); otherwise emit CUDA C++ for the NVRTC path. The
-        // decision lives here so compile only decodes positions: a
-        // `Source` fourth op means CUDA source, a `PTX` fourth op means
-        // assembled bytes.
-        let fourth = if std::env::var("ZYX_PTX").is_ok() {
-            let (ptx, _) = self.generate_ptx(&name)?;
-            Op::PTX(Box::new(PTXOp::Bytes(ptx.into_boxed_slice())))
-        } else {
-            let source = self.generate_cuda(&name)?;
-            Op::Source(SourceBlock(source.into_boxed_str()))
-        };
+        // Reject group lengths that are constant and exceed the device grid
+        // limits; the same vector becomes the rendered `Grid` below.
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 3 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("CUDA render: grid rank {} exceeds 3D", gws_vec.len()).into(),
-            });
-        }
-        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            gws[i] = g;
-        }
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
-        rendered.push_back(fourth);
-        Ok(rendered)
-    }
-
-    /// Compile kernel to CUDA C++ source code.
-    pub(crate) fn generate_cuda(&self, name: &str) -> Result<String, BackendError> {
         use std::fmt::Write;
-
-        // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
 
         let mut global_args = String::new();
         let mut op_id = self.head;
@@ -699,7 +661,42 @@ impl Kernel {
             helper_funcs += &mma_helper(combo.0, combo.1, combo.2);
         }
 
-        Ok(format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0"))
+        let source = format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0");
+        // ZYX_PTX: emit PTX assembly directly at render (bypasses NVRTC at
+        // compile); otherwise the CUDA C++ above is the source. The decision
+        // lives here so compile only decodes positions: a `Source` fourth op
+        // means CUDA source, a `PTX` fourth op means assembled bytes.
+        let fourth = if std::env::var("ZYX_PTX").is_ok() {
+            let (ptx, _) = self.generate_ptx(&name)?;
+            Op::PTX(Box::new(PTXOp::Bytes(ptx.into_boxed_slice())))
+        } else {
+            Op::Source(SourceBlock(source.into_boxed_str()))
+        };
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("CUDA render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
+        }
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
+        rendered.push_back(fourth);
+        Ok(rendered)
     }
 }
 
