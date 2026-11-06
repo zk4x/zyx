@@ -337,10 +337,10 @@ impl Kernel {
         // a fresh copy. No dead ops are created.
         let mut multi: Map<OpId, (Constant, u32)> = Map::default();
         for (&id, &count) in use_count.iter() {
-            if count > 1 {
-                if let Op::Const(value) = self.ops[id].op {
-                    multi.insert(id, (value, count - 1));
-                }
+            if count > 1
+                && let Op::Const(value) = self.ops[id].op
+            {
+                multi.insert(id, (value, count - 1));
             }
         }
         if multi.is_empty() {
@@ -426,10 +426,8 @@ impl Kernel {
         let mut pending = roots;
         for _ in 0..50_000 {
             let Some(op_id) = pending.pop() else { break };
-            if self.ops.contains_id(op_id) {
-                if reachable.insert(op_id) {
-                    pending.extend(self.at(op_id).parameters());
-                }
+            if self.ops.contains_id(op_id) && reachable.insert(op_id) {
+                pending.extend(self.at(op_id).parameters());
             }
         }
         if !pending.is_empty() {
@@ -454,6 +452,11 @@ impl Kernel {
         // Const. The inserted arithmetic is appended at anchor positions; its
         // relative order is fixed up in Phase 2. Reductions are left intact
         // here (their loops are emitted in Phase 3).
+        //
+        // Ops on a store's destination chain (a movement view being written
+        // through) are not values: they name where to write, so a `Pad` there
+        // must stay a pure view and never become a `Select`.
+        let mut store_dst_chain: Set<OpId> = Set::default();
         for &op_id in op_ids.iter().rev() {
             // Leave loop scopes as the reverse walk exits them. Popped after the
             // op is processed: the loop_start op itself sits inside the loop (it
@@ -641,6 +644,7 @@ impl Kernel {
                             | Op::Expand { x, .. }
                             | Op::Flip { x, .. }
                             | Op::Narrow { x, .. } => {
+                                store_dst_chain.insert(dst_param);
                                 dst_param = x;
                             }
                             _ => break,
@@ -702,11 +706,23 @@ impl Kernel {
                     for d in out_view.dims {
                         view.push(SDim::new(d.idx, d.len));
                     }
-                    for a in non_reduce..n {
-                        view.push(SDim::new(loop_id, x_shape[a]));
+                    for &dim in &x_shape[non_reduce..n] {
+                        view.push(SDim::new(loop_id, dim));
                     }
                     views.insert(x, SView { dims: view, mask: out_view.mask });
                     self.ops[op_id].op = Op::Reduce { x, rop, reduce_axis: loop_id };
+                    // A masked-off output element is zero, but the reduce runs
+                    // over zeroed loads and its identity/partial result is not
+                    // zero in general (a max reduce yields its init value), so
+                    // gate the reduce's value.
+                    if let Some(m) = out_view.mask {
+                        let zero = self.push_back(Op::Const(self.dtype(op_id).zero_constant()));
+                        let sel = self.insert_after(op_id, Op::Select { cond: m, if_true: op_id, if_false: zero });
+                        self.remap(op_id, sel);
+                        if let Op::Select { if_true, .. } = &mut self.ops[sel].op {
+                            *if_true = op_id;
+                        }
+                    }
                 }
                 Op::Reshape { x, .. } => {
                     // Reshape merges/splits contiguous dims, so axis indices don't
@@ -862,13 +878,11 @@ impl Kernel {
                     self.remove_op(op_id);
                 }
                 Op::Pad { x, axis, lp, len } => {
-                    // Pure backward pad: the input coordinate is
-                    // the output coordinate shifted left by `lp` (a negative
-                    // `lp` is a slice, shifting right), and the input extent
-                    // is `len - lp - rp`, with `rp = len - lp - orig_len`
-                    // recovered from x's own axis length. The resulting
-                    // `idx >= 0 && idx < len` bounds check at the load is the
-                    // exact validity mask -- no separate pad terms.
+                    // The input coordinate is the output coordinate shifted
+                    // left by `lp` (a negative `lp` is a slice, shifting
+                    // right), and the input extent is `len - lp - rp`, with
+                    // `rp = len - lp - orig_len` recovered from x's own axis
+                    // length.
                     let mut view = views[&op_id].clone();
                     let d = view.dims[axis as usize];
                     let idx = self.sub(d.idx, lp);
@@ -880,23 +894,76 @@ impl Kernel {
                     let rp = self.sub(rp, orig);
                     let in_len = self.sub(d.len, lp);
                     let in_len = self.sub(in_len, rp);
+                    // A pad that only crops (no left and no right padding) has
+                    // no zero region, so it stays a pure view: its validity is
+                    // always true over the output. A pad on a store's
+                    // destination chain is a write location, not a value, so it
+                    // must stay a view too.
+                    let pure_crop = self
+                        .resolve_const(lp)
+                        .and_then(Constant::as_dim)
+                        .zip(self.resolve_const(rp).and_then(Constant::as_dim))
+                        .is_some_and(|(lp, rp)| lp <= 0 && rp <= 0)
+                        || store_dst_chain.contains(&op_id);
+                    // Does any compute sit between this pad and its load? A
+                    // movement-only chain means a zeroed load *is* the padded
+                    // value: the mask is enough and costs no select. Any
+                    // arithmetic in between can turn a zeroed input into a
+                    // nonzero result, so the zero has to be a real value.
+                    let load_only = {
+                        let mut src = x;
+                        let mut found = false;
+                        for _ in 0..10_000 {
+                            match self.ops[src].op {
+                                Op::Param { .. } | Op::Const(_) | Op::Storage { .. } => {
+                                    found = true;
+                                    break;
+                                }
+                                Op::Reshape { x, .. }
+                                | Op::Expand { x, .. }
+                                | Op::Permute { x, .. }
+                                | Op::Flip { x, .. }
+                                | Op::Narrow { x, .. }
+                                | Op::Pad { x, .. } => src = x,
+                                _ => break,
+                            }
+                        }
+                        found
+                    };
+                    let inherited_mask = view.mask;
                     view.dims[axis as usize] = SDim::new(idx, in_len);
-                    // Validity as an explicit mask term in output coordinates:
-                    // the input has an element exactly where the shifted
-                    // coordinate lands inside [0, in_len). The idx/len encoding
-                    // holds the same constraint, but a downstream arm (e.g.
-                    // Expand broadcast) may overwrite idx, so the mask carries
-                    // it independently of the coordinate encoding.
+                    if pure_crop {
+                        views.insert(x, view);
+                        self.remap(op_id, x);
+                        self.remove_op(op_id);
+                        continue;
+                    }
                     let lo = self.cmpge(idx, zero);
                     let hi = self.cmplt(idx, in_len);
                     let term = self.and(lo, hi);
-                    view.mask = Some(match view.mask {
+                    if load_only {
+                        view.mask = Some(match inherited_mask {
+                            Some(m) => self.and(term, m),
+                            None => term,
+                        });
+                        views.insert(x, view);
+                        self.remap(op_id, x);
+                        self.remove_op(op_id);
+                        continue;
+                    }
+                    views.insert(x, view);
+                    // Zero padding must be a real zero for every consumer, not
+                    // just a zeroed load: arithmetic like `x + 1`, `exp(x)` or
+                    // `0 / 0` turns zeroed inputs into a nonzero result. Lower
+                    // the pad to the same value-level select tinygrad's
+                    // rangeify produces (`valid.where(src, 0)`), keeping the
+                    // pad's op id so every consumer already points at it.
+                    let cond = match inherited_mask {
                         Some(m) => self.and(term, m),
                         None => term,
-                    });
-                    views.insert(x, view);
-                    self.remap(op_id, x);
-                    self.remove_op(op_id);
+                    };
+                    let zero_const = self.push_back(Op::Const(self.dtype(op_id).zero_constant()));
+                    self.ops[op_id].op = Op::Select { cond, if_true: x, if_false: zero_const };
                 }
                 Op::Narrow { x, axis, start, .. } => {
                     let x_shape = self.shape_ids(x);
@@ -938,7 +1005,20 @@ impl Kernel {
                 }
                 Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
                     if let Some(view) = views.get(&op_id).cloned() {
+                        let mask = view.mask;
                         views.insert(x, view);
+                        // The mask zeroes the loads this op reaches, but zeroed
+                        // inputs do not imply a zero result: `exp(0)` is 1, not
+                        // 0. Gate the value itself so a masked-off element is
+                        // zero no matter what the arithmetic above it does.
+                        if let Some(m) = mask {
+                            let zero = self.push_back(Op::Const(self.dtype(op_id).zero_constant()));
+                            let sel = self.insert_after(op_id, Op::Select { cond: m, if_true: op_id, if_false: zero });
+                            self.remap(op_id, sel);
+                            if let Op::Select { if_true, .. } = &mut self.ops[sel].op {
+                                *if_true = op_id;
+                            }
+                        }
                     }
                 }
                 Op::Binary { x, y, .. } => {
@@ -947,15 +1027,26 @@ impl Kernel {
                         // element, so their view is empty (load index 0),
                         // not the output view. The output mask is inherited
                         // so padded regions still read zero.
+                        let mask = view.mask;
                         if self.shape(x).is_empty() {
-                            views.insert(x, SView { dims: Vec::new(), mask: view.mask.clone() });
+                            views.insert(x, SView { dims: Vec::new(), mask });
                         } else {
                             views.insert(x, view.clone());
                         }
                         if self.shape(y).is_empty() {
-                            views.insert(y, SView { dims: Vec::new(), mask: view.mask });
+                            views.insert(y, SView { dims: Vec::new(), mask });
                         } else {
                             views.insert(y, view);
+                        }
+                        // Same as Unary: zero inputs do not imply a zero result
+                        // (`x + 1`, `0 / 0`), so gate the value itself.
+                        if let Some(m) = mask {
+                            let zero = self.push_back(Op::Const(self.dtype(op_id).zero_constant()));
+                            let sel = self.insert_after(op_id, Op::Select { cond: m, if_true: op_id, if_false: zero });
+                            self.remap(op_id, sel);
+                            if let Op::Select { if_true, .. } = &mut self.ops[sel].op {
+                                *if_true = op_id;
+                            }
                         }
                     }
                 }
@@ -966,11 +1057,22 @@ impl Kernel {
                         // view), and the output mask is inherited so padded
                         // regions still read zero. The cond is a broadcast
                         // mask over the same elements.
+                        let mask = view.mask;
                         for &o in &[cond, if_true, if_false] {
                             if self.shape(o).is_empty() {
-                                views.insert(o, SView { dims: Vec::new(), mask: view.mask.clone() });
+                                views.insert(o, SView { dims: Vec::new(), mask });
                             } else {
                                 views.insert(o, view.clone());
+                            }
+                        }
+                        // A select can pick a nonzero arm on zeroed inputs, so
+                        // gate its value like any other compute op.
+                        if let Some(m) = mask {
+                            let zero = self.push_back(Op::Const(self.dtype(op_id).zero_constant()));
+                            let sel = self.insert_after(op_id, Op::Select { cond: m, if_true: op_id, if_false: zero });
+                            self.remap(op_id, sel);
+                            if let Op::Select { if_true, .. } = &mut self.ops[sel].op {
+                                *if_true = op_id;
                             }
                         }
                     }
@@ -1052,10 +1154,8 @@ impl Kernel {
         let mut pending = roots;
         for _ in 0..50_000 {
             let Some(op_id) = pending.pop() else { break };
-            if self.ops.contains_id(op_id) {
-                if reachable.insert(op_id) {
-                    pending.extend(self.at(op_id).parameters());
-                }
+            if self.ops.contains_id(op_id) && reachable.insert(op_id) {
+                pending.extend(self.at(op_id).parameters());
             }
         }
         if !pending.is_empty() {

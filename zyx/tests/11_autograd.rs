@@ -383,7 +383,7 @@ fn grad_dot_transpose_square() -> Result<(), ZyxError> {
         [2., 2., 2., 2.],
     ]);
     let tape = Tape::new([&x, &w])?;
-    let y = x.dot(&w.t())?;
+    let y = x.dot(w.t())?;
     let z = (&y * &y).sum_all();
     let mut grads = tape.gradient(&z, [&x, &w]);
     let w_grad = grads.pop().unwrap();

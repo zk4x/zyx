@@ -66,7 +66,7 @@ pub(crate) const TT_DRAM_PAGE_BYTES: u32 = 4096;
 
 /// TT `DataFormat` code for a dtype on the tile path (the
 /// `typecast_tile_init<in, out>` template args). Distinct from the
-/// CB descriptor codes in `generate_tenstorrent` below: the two
+/// CB descriptor codes in `render_tt` below: the two
 /// numberings differ.
 /// zyx dtype -> the hardware's L1/`Src` data format code.
 ///
@@ -94,8 +94,7 @@ fn tt_fmt(dtype: DType) -> Result<u32, BackendError> {
 }
 
 /// Codegen output for the Tenstorrent backend, built from the kernel IR by
-/// [`Kernel::generate_tenstorrent`] and rendered into ops by
-/// [`Kernel::render_tt`].
+/// [`Kernel::render_tt`] and then rendered into ops.
 pub struct TTProgram {
     /// Reader section source.
     pub reader_src: String,
@@ -177,111 +176,13 @@ impl Kernel {
     /// pages, `EndReader`, the compute section, `EndCompute`, the `Semset`s,
     /// the writer's `DmWrite` pages. The section sources are the
     /// not-yet-ported fallback only. Lowering lives in `device_epilogue`
-    /// (which verifies the lowered IR); `generate_tenstorrent` renders 1:1.
+    /// (which verifies the lowered IR).
     /// Backend `compile` only walks these ops.
     /// The unlowered ops are consumed, never carried. Every kernel
     /// goes through here, including hand-built custom kernels (raw IR
     /// lowers exactly once; kernels already holding a `Source` pass
     /// through untouched in `render` and never reach this).
     pub(crate) fn render_tt(&self) -> Result<Kernel, BackendError> {
-        let program = self.generate_tenstorrent()?;
-        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 2 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("tenstorrent render: grid rank {} exceeds 2D", gws_vec.len()).into(),
-            });
-        }
-        let mut grid = [GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            grid[i] = g;
-        }
-        // Param head order is lowering-invariant: the TT passes only
-        // append effect ops at the tail and never create, remove, or
-        // replace Param ops — so the pre-lowering order matches the
-        // ordinals `generate_tenstorrent` numbered post-lowering.
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        let [unpack, math, pack] = program.roles;
-        let [unpack_loops, math_loops, pack_loops] = program.loops;
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
-        rendered.push_back(Op::TT(TTOp::Unpack(Box::new(crate::kernel::TTRoleProgram {
-            words: unpack.into_boxed_slice(),
-            loops: unpack_loops.into_boxed_slice(),
-        }))));
-        rendered.push_back(Op::TT(TTOp::Math(Box::new(crate::kernel::TTRoleProgram {
-            words: math.into_boxed_slice(),
-            loops: math_loops.into_boxed_slice(),
-        }))));
-        rendered.push_back(Op::TT(TTOp::Pack(Box::new(crate::kernel::TTRoleProgram {
-            words: pack.into_boxed_slice(),
-            loops: pack_loops.into_boxed_slice(),
-        }))));
-        // The reader list: one op per 4 KB page, so the stream's shape is
-        // fixed here and the launch only substitutes addresses (NOTES §2).
-        rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
-        for mv in &program.reader {
-            // A `TILE_SLOT` publish is the mover's shaped read of one whole
-            // tile image (`READ_BROADCAST_COL`): one entry, never paged.
-            if mv.bytes == tt_isa::dm::TILE_SLOT as u32 {
-                rendered.push_back(Op::TT(TTOp::DmReadBroadcastCol(Box::new(TTDmTileRead {
-                    param: mv.param,
-                    dst: mv.l1,
-                    base: mv.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
-                }))));
-                continue;
-            }
-            for page in tt_pages(mv) {
-                rendered.push_back(Op::TT(TTOp::DmRead(Box::new(TTDmRead {
-                    param: mv.param,
-                    l1: page.l1,
-                    len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
-                }))));
-            }
-        }
-        rendered.push_back(Op::TT(TTOp::EndReader));
-        rendered.push_back(Op::Source(SourceBlock(program.compute_src.into_boxed_str())));
-        rendered.push_back(Op::TT(TTOp::EndCompute));
-        for sem in &program.sems {
-            rendered.push_back(Op::TT(TTOp::Semset { sem: sem.index, value: sem.value }));
-        }
-        for mv in &program.writer {
-            for page in tt_pages(mv) {
-                rendered.push_back(Op::TT(TTOp::DmWrite(Box::new(TTDmWrite {
-                    param: mv.param,
-                    l1: page.l1,
-                    len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
-                    narrow: mv.narrow,
-                }))));
-            }
-        }
-        rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
-        Ok(rendered)
-    }
-
-    /// Full TTIR codegen: run the kernel TT passes, then emit three
-    /// RISC-V section sources plus the launch tables. The passes run on
-    /// a clone of this kernel (the caller's IR is untouched); emission
-    /// derives CBs, DST slots, param ordinals, and grid axes from the
-    /// resulting ops.
-    pub(crate) fn generate_tenstorrent(&self) -> Result<TTProgram, BackendError> {
         // Render-only: lowering lives in `device_epilogue` (which
         // verifies the lowered IR); this consumes the result 1:1.
         // Never dumps IR here: every candidate compile would print.
@@ -362,7 +263,98 @@ impl Kernel {
         // in program order. `render_tt` splits each into page ops.
         let (reader, writer) = tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?;
 
-        Ok(TTProgram { reader_src, compute_src, writer_src, roles, loops, reader, writer, sems })
+        let program = TTProgram { reader_src, compute_src, writer_src, roles, loops, reader, writer, sems };
+
+        // Render the program into the ops the backend compiles.
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 2 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("tenstorrent render: grid rank {} exceeds 2D", gws_vec.len()).into(),
+            });
+        }
+        let mut grid = [GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            grid[i] = g;
+        }
+        // Param head order is lowering-invariant: the TT passes only
+        // append effect ops at the tail and never create, remove, or
+        // replace Param ops — so the pre-lowering order matches the
+        // ordinals the passes numbered post-lowering.
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let [unpack, math, pack] = program.roles;
+        let [unpack_loops, math_loops, pack_loops] = program.loops;
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
+        rendered.push_back(Op::TT(TTOp::Unpack(Box::new(crate::kernel::TTRoleProgram {
+            words: unpack.into_boxed_slice(),
+            loops: unpack_loops.into_boxed_slice(),
+        }))));
+        rendered.push_back(Op::TT(TTOp::Math(Box::new(crate::kernel::TTRoleProgram {
+            words: math.into_boxed_slice(),
+            loops: math_loops.into_boxed_slice(),
+        }))));
+        rendered.push_back(Op::TT(TTOp::Pack(Box::new(crate::kernel::TTRoleProgram {
+            words: pack.into_boxed_slice(),
+            loops: pack_loops.into_boxed_slice(),
+        }))));
+        // The reader list: one op per 4 KB page, so the stream's shape is
+        // fixed here and the launch only substitutes addresses (NOTES §2).
+        rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
+        for mv in &program.reader {
+            // A `TILE_SLOT` publish is the mover's shaped read of one whole
+            // tile image (`READ_BROADCAST_COL`): one entry, never paged.
+            if mv.bytes == tt_isa::dm::TILE_SLOT as u32 {
+                rendered.push_back(Op::TT(TTOp::DmReadBroadcastCol(Box::new(TTDmTileRead {
+                    param: mv.param,
+                    dst: mv.l1,
+                    base: mv.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                }))));
+                continue;
+            }
+            for page in tt_pages(mv) {
+                rendered.push_back(Op::TT(TTOp::DmRead(Box::new(TTDmRead {
+                    param: mv.param,
+                    l1: page.l1,
+                    len: page.len,
+                    base: page.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                }))));
+            }
+        }
+        rendered.push_back(Op::TT(TTOp::EndReader));
+        rendered.push_back(Op::Source(SourceBlock(program.compute_src.into_boxed_str())));
+        rendered.push_back(Op::TT(TTOp::EndCompute));
+        for sem in &program.sems {
+            rendered.push_back(Op::TT(TTOp::Semset { sem: sem.index, value: sem.value }));
+        }
+        for mv in &program.writer {
+            for page in tt_pages(mv) {
+                rendered.push_back(Op::TT(TTOp::DmWrite(Box::new(TTDmWrite {
+                    param: mv.param,
+                    l1: page.l1,
+                    len: page.len,
+                    base: page.base,
+                    gstride0: mv.gstride0,
+                    gstride1: mv.gstride1,
+                    narrow: mv.narrow,
+                }))));
+            }
+        }
+        rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
+        Ok(rendered)
     }
 }
 
@@ -396,7 +388,7 @@ fn tt_err(context: String) -> BackendError {
 }
 
 /// Tile bytes for a CB dtype (matches the `cb_config` table in
-/// `generate_tenstorrent`).
+/// `render_tt`).
 fn tt_tile_bytes(dtype: DType) -> Result<u32, BackendError> {
     match dtype {
         DType::F32 | DType::U32 | DType::I32 => Ok(4096),
@@ -2769,7 +2761,7 @@ mod tests {
         use crate::shape::Dim;
         use std::sync::Arc;
         let mut k = Kernel::new(crate::Dev::Auto);
-        // `generate_tenstorrent` reads one device property (the CB count); the
+        // `render_tt` reads one device property (the CB count); the
         // test only needs a bound device, not a real one.
         k.dev_info = Some(Arc::new(DeviceInfo {
             compute: 1_000_000,
@@ -2797,8 +2789,17 @@ mod tests {
         k.push_back(Op::TT(TTOp::EndReader));
         k.push_back(Op::TT(TTOp::Setrwc { dst: storage }));
         k.push_back(Op::TT(TTOp::EndCompute));
-        let program = k.generate_tenstorrent().expect("a minimal math-only kernel renders");
-        let mut setrwc = program.roles[1]
+        let rendered = k.render_tt().expect("a minimal math-only kernel renders");
+        let mut math_words: &[u32] = &[];
+        let mut scan = rendered.head;
+        while !scan.is_null() {
+            if let Op::TT(TTOp::Math(program)) = rendered.at(scan) {
+                math_words = &program.words;
+                break;
+            }
+            scan = rendered.next_op(scan);
+        }
+        let mut setrwc = math_words
             .iter()
             .map(|&word| tt_isa::isa::Instruction::new(word, &tt_isa::isa::generated::defs::SETRWC))
             .filter(|insn| insn.def().mnemonic() == "SETRWC");

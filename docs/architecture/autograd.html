@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7478f1f3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58fb2f25.js"></script>
+        <script src="../toc-e6cf6f81.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -207,11 +207,16 @@ let grads = tape.gradient(&amp;z, vec![&amp;x, &amp;y]);  // grads[0] is zero �
 <p>This is more flexible — you don’t need to decide at tensor creation time which tensors will be differentiated. Gradient sources must be part of the tape’s graph: tensors registered via <code>Tape::new</code> or produced by ops inside the tape.</p>
 <h2 id="higher-order-derivatives"><a class="header" href="#higher-order-derivatives">Higher-Order Derivatives</a></h2>
 <p>Autograd is an <strong>append-only transform on the tape</strong>: <code>gradient()</code> doesn’t consume or rewrite anything — it appends backward ops to the same graph, and the gradients it produces are ordinary tensors on the tape. Higher-order derivatives are just another append: differentiate the gradient like any other tensor.</p>
-<pre><code class="language-rust ignore">let x = Tensor::randn([2, 3], DType::F32)?;
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>let x = Tensor::randn([2, 3], DType::F32)?;
 let tape = Tape::new([&amp;x])?;
 let z = x.relu();
 let g = tape.gradient(&amp;z, vec![&amp;x]);
-let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative</code></pre>
+let h = tape.gradient(&amp;g[0], vec![&amp;x]);  // second derivative
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
 <p>Many properties of the autograd system fall out of this fact:</p>
 <ul>
 <li><strong>No separate backward graph</strong> — backward ops live in the same graph as forward ops, so they get the same treatment: CSE, fusion, and kernel caching apply to backward code for free.</li>

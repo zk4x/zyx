@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::{DType, Scalar, Tensor, ZyxError};
+use zyx::{DType, DTypeCapability, Scalar, Tensor, ZyxError};
 
 #[test]
 fn add_1() -> Result<(), ZyxError> {
@@ -28,7 +28,7 @@ fn add_2() -> Result<(), ZyxError> {
 
 #[test]
 fn add_3() -> Result<(), ZyxError> {
-    if !Tensor::dtype_capability(DType::BF16).any() {
+    if !Tensor::dtype_capability(DType::BF16).contains(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD) {
         return Ok(());
     }
     let datax: [f32; 32] = [

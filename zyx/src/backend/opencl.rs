@@ -35,10 +35,18 @@ use std::{
     time::Instant,
 };
 
+/// One initialized OpenCL memory pool per ordinal (process-wide table).
+type PoolTable = Vec<Mutex<OpenCLMemoryPool>>;
+/// One initialized OpenCL device per ordinal (process-wide table).
+type DeviceTable = Vec<Mutex<OpenCLDevice>>;
+/// Worker reply for a `Replay` command: the `(op, chunk, offset)` bindings it
+/// resolved for the launch.
+type ReplayReply = Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>;
+
 // ── Global state ──────────────────────────────────────────────────────────────
 
-static OPENCL_POOLS: OnceLock<Vec<Mutex<OpenCLMemoryPool>>> = OnceLock::new();
-static OPENCL_DEVICES: OnceLock<Vec<Mutex<OpenCLDevice>>> = OnceLock::new();
+static OPENCL_POOLS: OnceLock<PoolTable> = OnceLock::new();
+static OPENCL_DEVICES: OnceLock<DeviceTable> = OnceLock::new();
 
 #[derive(Debug, Default, DeJson)]
 #[nserde(default)]
@@ -162,7 +170,7 @@ enum Command {
         bound: Vec<(OpId, ChunkId, usize)>,
         vars: Vec<(OpId, Constant)>,
         deaths: Vec<Vec<OpId>>,
-        reply: Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>,
+        reply: ReplayReply,
     },
     /// Timed launch for autotune: drain every queue first (uncontended
     /// timing), then run the kernel solo on queue 0 and reply nanos.
@@ -180,7 +188,7 @@ unsafe impl Send for Command {}
 
 /// Single backend initializer: builds pools + devices together in one pass,
 /// publishes both tables. Reads config directly; no init locks.
-fn backend() -> Result<(&'static Vec<Mutex<OpenCLMemoryPool>>, &'static Vec<Mutex<OpenCLDevice>>), BackendError> {
+fn backend() -> Result<(&'static PoolTable, &'static DeviceTable), BackendError> {
     if let Some(pools) = OPENCL_POOLS.get()
         && let Some(devs) = OPENCL_DEVICES.get()
     {
@@ -195,7 +203,7 @@ fn backend() -> Result<(&'static Vec<Mutex<OpenCLMemoryPool>>, &'static Vec<Mute
     }
 }
 
-fn initialize_backend() -> Result<(Vec<Mutex<OpenCLMemoryPool>>, Vec<Mutex<OpenCLDevice>>), BackendError> {
+fn initialize_backend() -> Result<(PoolTable, DeviceTable), BackendError> {
     let config = super::config();
     let debug_dev = super::debug_backends();
     let pools = ensure_pool_table(&config.opencl, debug_dev)?;
@@ -213,10 +221,6 @@ fn initialize_backend() -> Result<(Vec<Mutex<OpenCLMemoryPool>>, Vec<Mutex<OpenC
 
 pub(super) fn pool(id: u16) -> Result<&'static Mutex<OpenCLMemoryPool>, BackendError> {
     backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
-}
-
-pub(super) fn pool_count() -> u16 {
-    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
 }
 
 fn no_pool(id: u16) -> BackendError {
@@ -764,7 +768,16 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         get_program_build_data(program, devices[0], clGetProgramBuildInfo, CL_PROGRAM_BUILD_LOG);
                                     match build_log {
                                         Ok(build_log) => {
-                                            panic!("{e:?} {}", String::from_utf8_lossy(&build_log));
+                                            // A build failure is a normal backend
+                                            // error: return it with the driver
+                                            // log. Panicking here would kill the
+                                            // worker and turn every later channel
+                                            // send into a second panic.
+                                            let _ = reply.send(Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("{e} {}", String::from_utf8_lossy(&build_log)).into(),
+                                            }));
+                                            continue 'work_thread_loop;
                                         }
                                         Err(status) => {
                                             let _ = reply.send(Err(status.check(ErrorStatus::KernelCompilation).err().unwrap()));
@@ -1082,10 +1095,8 @@ fn enqueue_tracked(
     // single groups); work_dim is 3 and every ranged axis is addressable.
     // A caller-side empty grid would be work_dim=0, which is invalid.
     debug_assert!(!global_size.is_empty(), "empty global work size is work_dim=0");
-    let mut i: u32 = 0;
-    for (arg_ptr, arg_size) in params {
+    for (i, (arg_ptr, arg_size)) in (0_u32..).zip(params.iter()) {
         unsafe { (clSetKernelArg)(program.kernel, i, *arg_size, *arg_ptr) }.check(ErrorStatus::IncorrectKernelArg)?;
-        i += 1;
     }
     // The driver requires exactly work_dim local sizes: the stored triple
     // pairs with the 3D grid by construction. Widened to host `size_t`

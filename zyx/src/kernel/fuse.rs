@@ -20,7 +20,7 @@ impl Kernel {
     /// lowers to a single tile op (`rsqrt_tile`, `rsqrt.approx`,
     /// `InverseSqrt`, ...) instead of two.
     ///
-    /// Like [`Kernel::fuse_mad`], the inner sqrt must be single-use
+    /// Like `Kernel::fuse_mad`, the inner sqrt must be single-use
     /// (reference count 1).
     pub fn fuse_rsqrt(&mut self) {
         let mut op_id = self.head;

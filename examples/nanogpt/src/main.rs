@@ -218,7 +218,7 @@ fn main() -> Result<(), ZyxError> {
         eps: 1e-5,
     };
 
-    let data = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/data/input.txt"))
+    let data = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../data/input.txt"))
         .unwrap();
     let chars: Vec<char> = {
         let mut chars: Vec<char> = data.chars().collect();

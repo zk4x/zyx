@@ -14,10 +14,10 @@ impl Graph {
     ///
     /// The zyx graph is very granular — a single matmul produces dozens of structural nodes (Expand,
     /// Reduce, Permute, Cast, etc.). Materializing each as a separate kernel is impossible (e.g.,
-    /// Expand to 2048×2048×2048 would OOM). [`kernelize`] uses eager fusion to batch structural
+    /// Expand to 2048×2048×2048 would OOM). [`Self::kernelize`] uses eager fusion to batch structural
     /// nodes into larger kernels, ensuring the [`extract`](Graph::extract) invariant holds:
     ///
-    /// > A path composed exclusively of [`Node::Kernel`] and [`Node::ToDevice`] nodes must exist
+    /// > A path composed exclusively of [`Op::Program`] and [`Op::ToDevice`] nodes must exist
     /// > from leaves (realized classes) to every output.
     ///
     /// Not every class needs a kernel — only those that lie on output computation paths. Dead graph
@@ -37,7 +37,7 @@ impl Graph {
     /// # Allowed set
     ///
     /// If `Some`, traversal is restricted to classes in `allowed` — classes outside
-    /// it are never fused, even if they feed an output. [`fill_gaps`] uses this to
+    /// it are never fused, even if they feed an output. [`Self::fill_gaps`] uses this to
     /// kernelize each connected structural region in isolation; `None` allows the
     /// whole graph (leaf classes are always excluded via `inputs`).
     ///
@@ -61,7 +61,7 @@ impl Graph {
     ///
     /// # Storage and Load Kernels
     ///
-    /// [`add_store`] stores a class's value into a kernel's `stores` list. On store:
+    /// [`Self::add_store`] stores a class's value into a kernel's `stores` list. On store:
     /// - All instances of the class are removed from the kernel's `outputs` (via `retain`).
     /// - If `rcs[cid] > 0` after the store (remaining consumers exist), a new **load kernel**
     ///   is created with `rcs[cid]` copies of `cid` in its `outputs`. This load kernel provides
@@ -75,7 +75,7 @@ impl Graph {
     ///    kernels' `outputs` lists equals `rcs[cid]`. A class appears in at most one kernel.
     /// 2. **Visited residency**: Every class with `rcs[cid] > 0` that has been produced must have
     ///    exactly one entry in `visited` mapping it to the kernel where its computation lives.
-    ///    [`add_store`] removes the entry and restores it via a load kernel if consumers remain.
+    ///    [`Self::add_store`] removes the entry and restores it via a load kernel if consumers remain.
     /// 3. **Symbolic expressions are replayed, never materialized.** Scalar
     ///    symbolic expressions (consts, dim variables, computed dim
     ///    expressions) never enter `visited`/`jit_kernels` from their own
@@ -121,7 +121,7 @@ impl Graph {
                 continue;
             }
             for nid in self.class_nodes(cid) {
-                // Kernel nodes added by pattern matching (e.g. cblas) are never
+                // Kernel nodes added by pattern matching (e.g. cuDNN) are never
                 // consumed here — kernelize only processes structural nodes.
                 // The same holds for user custom kernels (`Node::Custom` and its
                 // lowered `Node::Kernel` twin): their inputs are materialized via
@@ -262,7 +262,7 @@ impl Graph {
                     Op::Stack { ref ops } => {
                         // Copy the element list out of the node so the shared
                         // borrow of self.nodes ends before we mutate kernels.
-                        let ops: Vec<OpId> = ops.iter().copied().collect();
+                        let ops: Vec<OpId> = ops.to_vec();
                         // Symbolic elements never enter visited: record their
                         // status before any consumption mutates visited.
                         let sym: Vec<bool> = ops.iter().map(|&e| !visited.contains_key(&e)).collect();
@@ -309,7 +309,7 @@ impl Graph {
                                     continue;
                                 }
                                 let (kid, op_id) = visited[&elem];
-                                let (kid, op_id) = self.duplicate_or_store_class(elem, kid, op_id, &mut visited, &mut rcs, false);
+                                let (kid, op_id) = self.duplicate_or_store_class(elem, kid, op_id, &mut visited, &rcs, false);
                                 // Route the merge repointing through the duplicate
                                 // home; merge_kernels repoints every visited entry
                                 // of the merged kernel onto the destination. The
@@ -514,7 +514,7 @@ impl Graph {
                             Some(&kv) => kv,
                             None => todo!("reduce_last of symbolic scalar operand {x:?}"),
                         };
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, false);
+                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, false);
                         let kernel = &mut self.jit_kernels[kid].kernel;
                         let dims = kernel.shape_ids(op_id);
                         debug_assert!(!dims.is_empty(), "reduce_last of scalar");
@@ -565,201 +565,273 @@ impl Graph {
                             None => todo!("assign with symbolic dst {dst:?}"),
                         };
 
-                        assert_ne!(kid, dst_kid, "assign: src and dst must not share kernel {kid:?}");
-                        // The dst kernel's loads mix the owning buffer with
-                        // dim-variable classes. Exactly ONE buffer entry may
-                        // exist — trace it instead of assuming a position,
-                        // fail loud otherwise.
-                        let dst_loads = self.jit_kernels[dst_kid].loads.clone();
-                        let is_var_class = |g: &Self, c: OpId| matches!(&g.ops[c].op, Op::Param { dtype, shape, .. } if dtype == &IDX_T && shape.is_null());
-                        let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
-                        let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
-                            (Some(c), None) => c,
-                            found => panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0),
-                        };
-                        for &c in &dst_loads {
+                        // An assign whose src reads the destination buffer fuses
+                        // into the SAME kernel: `p = p - lr*g` is one elementwise
+                        // pass in every framework, and splitting it costs an extra
+                        // launch plus a full temp buffer per parameter. The store
+                        // writes through a `GlobalMut` alias of the buffer the
+                        // kernel already loads (two params, one buffer — the same
+                        // shape as the eager bare-Leaf assign path).
+                        //
+                        // Only sound while every use of the dst value in this
+                        // kernel keeps the element index: the write of element i
+                        // must not clobber a read of element j. Unary/Binary/Cast/
+                        // Bitcast/Select map index-for-index; a movement, expand or
+                        // reduce on the dst chain does not, so those stay rejected
+                        // (`todo!`) until the WAR split exists.
+
+                        // Value op standing in for the assign's own class for
+                        // later consumers: the stored value in the fused path,
+                        // the last replayed dst op otherwise (unchanged). Both
+                        // branches below assign it before either read.
+                        let value_op;
+                        if kid == dst_kid {
                             assert!(
-                                c == dst_leaf || is_var_class(self, c),
-                                "assign: dst kernel load class {c:?} is neither the buffer nor a dim variable"
+                                self.jit_kernels[kid].stores.is_empty(),
+                                "assign: fused self-update kernel {kid:?} already stores"
                             );
-                        }
-                        assert!(
-                            !self.jit_kernels[kid].loads.contains(&dst_leaf),
-                            "assign: src kernel loads dst tensor, not allowed to avoid data races"
-                        );
-                        // The assign's dst is normally consumed only by the
-                        // assign itself. An After node re-exposes the post-assign
-                        // version of dst, so each `After { x: dst, .. }` is a
-                        // legitimate extra consumer.
-                        let n_after_dst: usize = order
-                            .iter()
-                            .map(|&c| {
-                                self.class_nodes(c)
-                                    .filter(|&nid| matches!(&self.ops[nid].op, Op::After { x, .. } if *x == dst))
-                                    .count()
-                            })
-                            .sum();
-                        let expected_rcs = 1 + n_after_dst + outputs.contains(&dst) as usize;
-                        assert_eq!(
-                            rcs[&dst], expected_rcs as u32,
-                            "assign: dst class {dst:?} must be consumed only by the assign and its After(s) \
+                            let (dtype, shape, id) = match self.jit_kernels[kid].kernel.ops[dst_op].op {
+                                Op::Param { dtype, kind: ParamKind::Global, shape, id } => (dtype, shape, id),
+                                ref op => {
+                                    todo!("assign: fused self-update needs dst to be a plain buffer load, got {op:?}")
+                                }
+                            };
+                            // Every op reachable from dst must be index-preserving.
+                            // The kernel is SSA in order, so one forward pass
+                            // closes over transitive uses.
+                            let mut derived: Vec<OpId> = vec![dst_op];
+                            let mut p = self.jit_kernels[kid].kernel.head;
+                            while !p.is_null() {
+                                let uses_dst = self.jit_kernels[kid].kernel.ops[p].op.parameters().any(|q| derived.contains(&q));
+                                if uses_dst {
+                                    match self.jit_kernels[kid].kernel.ops[p].op {
+                                        Op::Unary { .. }
+                                        | Op::Binary { .. }
+                                        | Op::Cast { .. }
+                                        | Op::Bitcast { .. }
+                                        | Op::Select { .. } => derived.push(p),
+                                        ref op => todo!("assign: in-place self-update through {op:?} reads a different element"),
+                                    }
+                                }
+                                p = self.jit_kernels[kid].kernel.next_op(p);
+                            }
+                            let mut_param = self.jit_kernels[kid].kernel.push_back(Op::Param {
+                                dtype,
+                                kind: ParamKind::GlobalMut,
+                                shape,
+                                id,
+                            });
+                            self.jit_kernels[kid].kernel.push_back(Op::Store {
+                                dst: mut_param,
+                                dst_idx: OpId::NULL,
+                                src: src_op,
+                            });
+                            self.jit_kernels[kid].stores.push(dst);
+                            value_op = src_op;
+                        } else {
+                            // The dst kernel's loads mix the owning buffer with
+                            // dim-variable classes. Exactly ONE buffer entry may
+                            // exist — trace it instead of assuming a position,
+                            // fail loud otherwise.
+                            let dst_loads = self.jit_kernels[dst_kid].loads.clone();
+                            let is_var_class = |g: &Self, c: OpId| matches!(&g.ops[c].op, Op::Param { dtype, shape, .. } if dtype == &IDX_T && shape.is_null());
+                            let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
+                            let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
+                                (Some(c), None) => c,
+                                found => panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0),
+                            };
+                            for &c in &dst_loads {
+                                assert!(
+                                    c == dst_leaf || is_var_class(self, c),
+                                    "assign: dst kernel load class {c:?} is neither the buffer nor a dim variable"
+                                );
+                            }
+                            assert!(
+                                !self.jit_kernels[kid].loads.contains(&dst_leaf),
+                                "assign: src kernel loads dst tensor, not allowed to avoid data races"
+                            );
+                            // The assign's dst is normally consumed only by the
+                            // assign itself. An After node re-exposes the post-assign
+                            // version of dst, so each `After { x: dst, .. }` is a
+                            // legitimate extra consumer.
+                            let n_after_dst: usize = order
+                                .iter()
+                                .map(|&c| {
+                                    self.class_nodes(c)
+                                        .filter(|&nid| matches!(&self.ops[nid].op, Op::After { x, .. } if *x == dst))
+                                        .count()
+                                })
+                                .sum();
+                            let expected_rcs = 1 + n_after_dst + outputs.contains(&dst) as usize;
+                            assert_eq!(
+                                rcs[&dst], expected_rcs as u32,
+                                "assign: dst class {dst:?} must be consumed only by the assign and its After(s) \
                              (rcs={}, expected {expected_rcs})",
-                            rcs[&dst]
-                        );
+                                rcs[&dst]
+                            );
 
-                        // Remove dst's movement-only kernel; its base buffer is
-                        // dst_leaf's. The assign store reuses that buffer in-place.
-                        let JitKernelData { kernel: dst_kernel, stores, outputs, .. } =
-                            unsafe { self.jit_kernels.remove_and_return(dst_kid) };
-                        debug_assert!(stores.is_empty());
+                            // Remove dst's movement-only kernel; its base buffer is
+                            // dst_leaf's. The assign store reuses that buffer in-place.
+                            let JitKernelData { kernel: dst_kernel, stores, outputs, .. } =
+                                unsafe { self.jit_kernels.remove_and_return(dst_kid) };
+                            debug_assert!(stores.is_empty());
 
-                        // Backtrace to dst's base param.
-                        let mut dst_param = dst_op;
-                        for _ in 0..100 {
-                            match dst_kernel.ops[dst_param].op {
-                                Op::Reshape { x, .. }
-                                | Op::Expand { x, .. }
-                                | Op::Permute { x, .. }
-                                | Op::Flip { x, .. }
-                                | Op::Pad { x, .. }
-                                | Op::Narrow { x, .. } => dst_param = x,
-                                Op::Storage { .. } => break,
-                                _ => {}
-                            }
-                        }
-
-                        // Replay dst's movement chain into src's kernel. The
-                        // replayed base param becomes the mutable (GlobalMut)
-                        // store target; the last replayed move yields dst's final
-                        // position. Every replayed param keeps its load class,
-                        // aligned in param order (positional args law).
-                        let mut op_map: Map<OpId, OpId> = Map::default();
-                        // NULL maps to itself: shape operands of scalar
-                        // movement ops (Reshape/Expand to scalar) pass
-                        // through instead of panicking on lookup.
-                        op_map.insert(OpId::NULL, OpId::NULL);
-                        let mut new_def_loads: Vec<OpId> = Vec::new();
-                        let mut def_i = 0usize;
-                        let mut op_id = dst_kernel.head;
-                        while !op_id.is_null() {
-                            match dst_kernel.ops[op_id].op {
-                                Op::Const(value) => {
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
-                                    op_map.insert(op_id, id);
+                            // Backtrace to dst's base param.
+                            let mut dst_param = dst_op;
+                            for _ in 0..100 {
+                                match dst_kernel.ops[dst_param].op {
+                                    Op::Reshape { x, .. }
+                                    | Op::Expand { x, .. }
+                                    | Op::Permute { x, .. }
+                                    | Op::Flip { x, .. }
+                                    | Op::Pad { x, .. }
+                                    | Op::Narrow { x, .. } => dst_param = x,
+                                    Op::Storage { .. } => break,
+                                    _ => {}
                                 }
-                                Op::Param { dtype, mut kind, shape, id } => {
-                                    if op_id == dst_param {
-                                        kind = ParamKind::GlobalMut;
+                            }
+
+                            // Replay dst's movement chain into src's kernel. The
+                            // replayed base param becomes the mutable (GlobalMut)
+                            // store target; the last replayed move yields dst's final
+                            // position. Every replayed param keeps its load class,
+                            // aligned in param order (positional args law).
+                            let mut op_map: Map<OpId, OpId> = Map::default();
+                            // NULL maps to itself: shape operands of scalar
+                            // movement ops (Reshape/Expand to scalar) pass
+                            // through instead of panicking on lookup.
+                            op_map.insert(OpId::NULL, OpId::NULL);
+                            let mut new_def_loads: Vec<OpId> = Vec::new();
+                            let mut def_i = 0usize;
+                            let mut op_id = dst_kernel.head;
+                            while !op_id.is_null() {
+                                match dst_kernel.ops[op_id].op {
+                                    Op::Const(value) => {
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
+                                        op_map.insert(op_id, id);
                                     }
-                                    assert!(
-                                        matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
-                                        "assign: unexpected param kind {kind:?} in dst movement kernel"
-                                    );
-                                    // The shape descriptor is an OpId into the
-                                    // dst kernel; ops are re-pushed into the
-                                    // merged kernel with new IDs, so it must be
-                                    // remapped like the movement refs (the shape
-                                    // stack ops precede the param in head
-                                    // order, so the mapping always exists).
-                                    // Raw id 0 is reserved for unidentified
-                                    // params: graph cons_ids shift by one so a
-                                    // real first class (cons_id 0) stays
-                                    // identifiable.
-                                    let shape = if shape.is_null() { shape } else { op_map[&shape] };
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape, id: id + 1 });
-                                    // Assign turns dst's base from a load into a
-                                    // PURE STORE: it must NOT register in loads —
-                                    // its buffer slot comes via `stores` instead.
-                                    if kind == ParamKind::Variable {
-                                        new_def_loads.push(dst_loads[def_i]);
+                                    Op::Param { dtype, mut kind, shape, id } => {
+                                        if op_id == dst_param {
+                                            kind = ParamKind::GlobalMut;
+                                        }
+                                        assert!(
+                                            matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
+                                            "assign: unexpected param kind {kind:?} in dst movement kernel"
+                                        );
+                                        // The shape descriptor is an OpId into the
+                                        // dst kernel; ops are re-pushed into the
+                                        // merged kernel with new IDs, so it must be
+                                        // remapped like the movement refs (the shape
+                                        // stack ops precede the param in head
+                                        // order, so the mapping always exists).
+                                        // Raw id 0 is reserved for unidentified
+                                        // params: graph cons_ids shift by one so a
+                                        // real first class (cons_id 0) stays
+                                        // identifiable.
+                                        let shape = if shape.is_null() { shape } else { op_map[&shape] };
+                                        let id =
+                                            self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape, id: id + 1 });
+                                        // Assign turns dst's base from a load into a
+                                        // PURE STORE: it must NOT register in loads —
+                                        // its buffer slot comes via `stores` instead.
+                                        if kind == ParamKind::Variable {
+                                            new_def_loads.push(dst_loads[def_i]);
+                                        }
+                                        def_i += 1;
+                                        op_map.insert(op_id, id);
                                     }
-                                    def_i += 1;
-                                    op_map.insert(op_id, id);
+                                    Op::Reshape { x, shape } => {
+                                        let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Reshape { x, shape: op_map[&shape] });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Expand { x, shape } => {
+                                        let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Expand { x, shape: op_map[&shape] });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Permute { x, ref axes } => {
+                                        let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Permute { x, axes: axes.clone() });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Flip { x, ref axes } => {
+                                        let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Flip { x, axes: axes.clone() });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Pad { x, axis, lp, len } => {
+                                        let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Pad {
+                                            x,
+                                            axis,
+                                            lp: op_map[&lp],
+                                            len: op_map[&len],
+                                        });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Narrow { x, axis, start, len } => {
+                                        let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Narrow {
+                                            x,
+                                            axis,
+                                            start: op_map[&start],
+                                            len: op_map[&len],
+                                        });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Stack { ref ops } => {
+                                        let mapped: Box<[OpId]> = ops.iter().map(|&o| op_map[&o]).collect();
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Stack { ops: mapped });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    _ => unreachable!(
+                                        "assign: dst kernel must be movement-only, got {:?}",
+                                        dst_kernel.ops[op_id].op
+                                    ),
                                 }
-                                Op::Reshape { x, shape } => {
-                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Reshape { x, shape: op_map[&shape] });
-                                    op_map.insert(op_id, id);
-                                }
-                                Op::Expand { x, shape } => {
-                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Expand { x, shape: op_map[&shape] });
-                                    op_map.insert(op_id, id);
-                                }
-                                Op::Permute { x, ref axes } => {
-                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Permute { x, axes: axes.clone() });
-                                    op_map.insert(op_id, id);
-                                }
-                                Op::Flip { x, ref axes } => {
-                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Flip { x, axes: axes.clone() });
-                                    op_map.insert(op_id, id);
-                                }
-                                Op::Pad { x, axis, lp, len } => {
-                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Pad {
-                                        x,
-                                        axis,
-                                        lp: op_map[&lp],
-                                        len: op_map[&len],
-                                    });
-                                    op_map.insert(op_id, id);
-                                }
-                                Op::Narrow { x, axis, start, len } => {
-                                    let x = op_map.get(&x).copied().unwrap_or(op_map[&dst_param]);
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Narrow {
-                                        x,
-                                        axis,
-                                        start: op_map[&start],
-                                        len: op_map[&len],
-                                    });
-                                    op_map.insert(op_id, id);
-                                }
-                                Op::Stack { ref ops } => {
-                                    let mapped: Box<[OpId]> = ops.iter().map(|&o| op_map[&o]).collect();
-                                    let id = self.jit_kernels[kid].kernel.push_back(Op::Stack { ops: mapped });
-                                    op_map.insert(op_id, id);
-                                }
-                                _ => unreachable!("assign: dst kernel must be movement-only, got {:?}", dst_kernel.ops[op_id].op),
+                                op_id = dst_kernel.next_op(op_id);
                             }
-                            op_id = dst_kernel.next_op(op_id);
-                        }
+                            value_op = op_id;
 
-                        // Classes still living in the removed dst kernel (e.g.
-                        // shape consts merged into the movement chain) move to
-                        // the replayed kernel: remap visited and carry their
-                        // outstanding output entries over, keeping rc balanced.
-                        for (&vclass, (vkid, vop)) in visited.iter_mut() {
-                            if *vkid == dst_kid && vclass != dst {
-                                let count = outputs.iter().filter(|&&c| c == vclass).count() as u32;
-                                self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(vclass, count as usize));
-                                *vkid = kid;
-                                if let Some(&new_op) = op_map.get(vop) {
-                                    *vop = new_op;
+                            // Classes still living in the removed dst kernel (e.g.
+                            // shape consts merged into the movement chain) move to
+                            // the replayed kernel: remap visited and carry their
+                            // outstanding output entries over, keeping rc balanced.
+                            for (&vclass, (vkid, vop)) in visited.iter_mut() {
+                                if *vkid == dst_kid && vclass != dst {
+                                    let count = outputs.iter().filter(|&&c| c == vclass).count() as u32;
+                                    self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(vclass, count as usize));
+                                    *vkid = kid;
+                                    if let Some(&new_op) = op_map.get(vop) {
+                                        *vop = new_op;
+                                    }
                                 }
                             }
-                        }
 
-                        let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
-                        self.jit_kernels[kid].kernel.push_back(Op::Store { dst: dst_op, dst_idx: OpId::NULL, src: src_op });
-                        self.jit_kernels[kid].stores.push(dst_leaf);
-                        // Register every replayed param's load class in param
-                        // order (variables and the GlobalMut base buffer alike)
-                        // — positional args law.
-                        self.jit_kernels[kid].loads.extend(new_def_loads);
+                            let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);
+                            self.jit_kernels[kid].kernel.push_back(Op::Store { dst: dst_op, dst_idx: OpId::NULL, src: src_op });
+                            self.jit_kernels[kid].stores.push(dst_leaf);
+                            // Register every replayed param's load class in param
+                            // order (variables and the GlobalMut base buffer alike)
+                            // — positional args law.
+                            self.jit_kernels[kid].loads.extend(new_def_loads);
+                        }
 
                         self.consume(src, kid, &mut visited, &mut rcs);
+                        // The store consumes dst once. When dst lives in this
+                        // kernel (fused self-update) one output entry must go too,
+                        // or the kernel's output count and rcs diverge.
+                        remove_first_output(&mut self.jit_kernels, kid, dst);
                         *rcs.get_mut(&dst).unwrap() -= 1;
                         if rcs[&dst] > 0 {
-                            // The After(s) still consume dst: after the in-place
-                            // store, dst's value lives in the (replayed) base
-                            // param inside src's kernel. Remaining consumers load
-                            // it from a fresh loader kernel — the same contract
-                            // `add_store` uses for every other stored class
-                            // (pointing them at the in-kernel op instead breaks
-                            // any later consumer whose force_store flushes).
                             let (new_kid, new_op) = self.new_load_kernel(dst, rcs[&dst]);
+                            // Fused self-update: the remaining consumers (Afters)
+                            // now read through this fresh loader, so dst's leftover
+                            // output slots in the storing kernel move with them —
+                            // left behind, they would outlive rcs and trip the
+                            // output/rcs invariant.
+                            self.jit_kernels[kid].outputs.retain(|&c| c != dst);
                             visited.insert(dst, (new_kid, new_op));
                         } else {
                             visited.remove(&dst);
@@ -767,12 +839,12 @@ impl Graph {
 
                         self.push_outputs(kid, src, rcs[&src]);
                         if rcs[&src] > 0 {
-                            visited.insert(src, (kid, op_id));
+                            visited.insert(src, (kid, value_op));
                         }
 
                         self.push_outputs(kid, cid, rcs[&cid]);
                         if rcs[&cid] > 0 {
-                            visited.insert(cid, (kid, op_id));
+                            visited.insert(cid, (kid, value_op));
                         }
 
                         /*println!("\ncid={cid:?} src={src:?} dst={dst:?}, n_kernels={:?}", self.jit_kernels.len());
@@ -805,7 +877,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -838,7 +910,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -870,7 +942,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -902,7 +974,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -933,7 +1005,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -974,7 +1046,7 @@ impl Graph {
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
                             let force_store = false;
-                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &mut rcs, force_store);
+                            (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
                         };
@@ -1164,7 +1236,7 @@ impl Graph {
                 }
             }
 
-            // AOT kernel classes (e.g. a cblas matmul output) are computed by a
+            // AOT kernel classes (e.g. a cuDNN matmul output) are computed by a
             // backend kernel, not by this fused kernel. Materialize the class into
             // storage and hand off to a fresh load kernel, so downstream ops (e.g.
             // relu) start from the stored class instead of fusing into this kernel.
@@ -1175,7 +1247,7 @@ impl Graph {
 
             // Post-processing: store if final output
             if outputs.contains(&cid) {
-                if !visited.contains_key(&cid) {
+                if let std::collections::hash_map::Entry::Vacant(e) = visited.entry(cid) {
                     // Symbolic scalar output (e.g. a materialized const):
                     // give it a real buffer via the same fresh-kernel replay
                     // the movement arms use, then store normally.
@@ -1187,7 +1259,7 @@ impl Graph {
                     });
                     let op = self.replay_shape_into_kernel(kid, cid);
                     self.push_outputs(kid, cid, 1);
-                    visited.insert(cid, (kid, op));
+                    e.insert((kid, op));
                 }
                 let (mut kid, op_id) = visited[&cid];
                 // Assign classes are in-place aliases of dst's (leaf) buffer; the
@@ -1209,16 +1281,19 @@ impl Graph {
             }
 
             if cfg!(debug_assertions) {
-                for kid in self.jit_kernels.ids() {
-                    let kernel = &self.jit_kernels[kid];
-                    // A kernel must never load a class it also stores — that would
-                    // create a self-referential producer path and break extract.
-                    for load in &kernel.loads {
+                for (kid, kernel) in self.jit_kernels.iter() {
+                    // A class may appear in both `loads` and `stores` only for the
+                    // fused in-place self-update (`p = p - lr*g`): the kernel reads
+                    // the buffer it writes through a Global load plus a GlobalMut
+                    // alias of the same buffer. Any overlap must come with that
+                    // store target; unrelated classes stay disjoint.
+                    if kernel.loads.iter().any(|c| kernel.stores.contains(c)) {
+                        let has_mut =
+                            kernel.kernel.ops.values().any(|n| matches!(n.op, Op::Param { kind: ParamKind::GlobalMut, .. }));
                         debug_assert!(
-                            !kernel.stores.contains(load),
-                            "kernel {kid:?} loads and stores class {load:?}: loads={:?} stores={:?}",
-                            kernel.loads,
-                            kernel.stores,
+                            has_mut,
+                            "kernel {kid:?} loads and stores the same class without a GlobalMut store target: loads={:?} stores={:?}",
+                            kernel.loads, kernel.stores,
                         );
                     }
                 }
@@ -1239,10 +1314,11 @@ impl Graph {
                     }
                 }
                 for c in &order[..=i] {
-                    if let Some(&rc) = rcs.get(c) {
-                        if rc == 0 && visited.contains_key(c) {
-                            panic!("class={c:?} with rcs=0 in visited");
-                        }
+                    if let Some(&rc) = rcs.get(c)
+                        && rc == 0
+                        && visited.contains_key(c)
+                    {
+                        panic!("class={c:?} with rcs=0 in visited");
                     }
                 }
             }
@@ -1339,7 +1415,7 @@ impl Graph {
     /// symbolically from the egraph (see [`Graph::replay_symbolic_into_kernel`]). Its `outputs`
     /// list contains exactly `rc` copies of `cid` — one per remaining consumer; each
     /// `consume(cid, kid, ...)` will pop one. This is the canonical "class was stored, point
-    /// remaining consumers at a fresh loader" contract used by [`add_store`] and the assign
+    /// remaining consumers at a fresh loader" contract used by [`Self::add_store`] and the assign
     /// arm's post-in-place-store handling — the inverse of placement, so consumers never
     /// re-enter a kernel whose `outputs` no longer contains the class.
     fn new_load_kernel(&mut self, cid: OpId, rc: u32) -> (JitKernelId, OpId) {
@@ -1580,20 +1656,17 @@ impl Graph {
     pub fn lower_custom_kernels(&mut self) {
         let node_ids: Vec<OpId> = self.ops.ids().collect();
         for nid in node_ids {
-            match self.ops[nid].op {
-                Op::Kernel(ref inner) => {
-                    let class_of = inner.outputs[0].0;
-                    let info = Box::new((inner.program_id, inner.time));
-                    let ops = inner.outputs.iter().map(|x| x.0).collect();
-                    let inputs = self.push_op(Op::Stack { ops: inner.inputs.clone() });
-                    let outputs = self.push_op(Op::Stack { ops });
-                    // The twin joins the FIRST output class (the Index accessor
-                    // heading it), mirroring backend kernel twins whose
-                    // `class_of` is the output class — downstream discovery of
-                    // the twin's inputs walks `class_nodes(output_class)`.
-                    self.mint_node(Op::Program { inputs, outputs, info }, class_of);
-                }
-                _ => {}
+            if let Op::Kernel(ref inner) = self.ops[nid].op {
+                let class_of = inner.outputs[0].0;
+                let info = Box::new((inner.program_id, inner.time));
+                let ops = inner.outputs.iter().map(|x| x.0).collect();
+                let inputs = self.push_op(Op::Stack { ops: inner.inputs.clone() });
+                let outputs = self.push_op(Op::Stack { ops });
+                // The twin joins the FIRST output class (the Index accessor
+                // heading it), mirroring backend kernel twins whose
+                // `class_of` is the output class — downstream discovery of
+                // the twin's inputs walks `class_nodes(output_class)`.
+                self.mint_node(Op::Program { inputs, outputs, info }, class_of);
             };
         }
     }

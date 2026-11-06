@@ -107,6 +107,25 @@ cd zyx && cargo fmt
 - If all backends fail init, tests print nothing (C is always on;
   CUDA/HIP/etc. skip silently without drivers).
 
+## Testing: one tier per step
+
+Run the smallest tier that can catch the mistake. Never run the whole
+suite after every edit; never make a commit wait for the push gate.
+
+| step | what runs |
+|------|-----------|
+| after an edit | ONLY the test that is failing / the suite being fixed: `cd zyx && AGENT=1 cargo test --test <file> <name> -- --exact`. No sweep, no other suites. |
+| before a commit | the zyx Rust test suite: `cd zyx && AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist`. Other crates and the non-Rust checks are not part of a commit. |
+| before a push | `./run_ci.sh` (repo root): zyx suite, zyx-nn/zyx-optim/zyx-derive tests, doctests, private-item rustdoc, `cargo fmt --check`, examples check + run, zyx-py (when torch/pytest/maturin exist), book examples. |
+
+- Pin the device with `ZYX_DEV` only. NEVER set `XDG_CONFIG_HOME`: the
+  default config dir is the warm kernel cache (compiled kernels live in
+  `$XDG_CONFIG_HOME/zyx/cache/`), and a fresh dir makes every run recompile
+  every kernel — several times slower for no signal.
+- `08_graph`-style failures when no `ZYX_DEV` is pinned are autotune/device
+  selection, not necessarily the change under test; re-run pinned first.
+- A pre-existing red suite is reported, not folded into the current change.
+
 ## Layout
 ```
 zyx/src/backend/  one file per backend

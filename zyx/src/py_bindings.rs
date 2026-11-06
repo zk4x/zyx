@@ -3,6 +3,12 @@
 
 //! Python bindings for zyx - updated for symbolic shapes
 
+// Every entry point here is a thin `*_py` forwarder to an already-documented
+// Rust method on `Tensor`, `Tape`, `Kernel`, ...; the Python name lives in
+// `#[pyo3(name = "...")]`, so repeating the doc comment on the shim would only
+// duplicate the real one.
+#![allow(missing_docs)]
+
 use crate::DebugMask;
 use crate::Dev;
 use crate::GGUFMetadataValue;
@@ -201,10 +207,11 @@ impl Tape {
     }
 
     #[pyo3(name = "freeze")]
-    pub fn freeze_py(&mut self, outputs: &Bound<'_, PyAny>) -> PyResult<FrozenTape> {
-        let tensors = extract_tensor_list(outputs)?;
+    pub fn freeze_py(&mut self, inputs: &Bound<'_, PyAny>, outputs: &Bound<'_, PyAny>) -> PyResult<FrozenTape> {
+        let inputs = extract_tensor_list(inputs)?;
+        let outputs = extract_tensor_list(outputs)?;
         let old = std::mem::replace(self, Tape::empty());
-        old.freeze(&tensors).map_err(|e| e.into())
+        old.freeze(&inputs, &outputs).map_err(|e| e.into())
     }
 }
 
@@ -1436,6 +1443,7 @@ impl Tensor {
     }
 
     #[pyo3(name = "shrink")]
+    #[allow(unused_variables)]
     pub fn shrink_py(&self, dims: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         // shrink expects ranges, simplified: accept list of (start,end)
         // For now not fully implemented; use slice
@@ -1584,6 +1592,44 @@ impl Tensor {
         Ok(x / y)
     }
 
+    /// Reflected addition: `other + x` for a Python scalar (or Tensor) on the
+    /// left, which Python only tries after `Tensor.__add__` returns NotImplemented.
+    fn __radd__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(lhs + self)
+    }
+
+    /// Reflected subtraction: `other - x`.
+    fn __rsub__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(lhs - self)
+    }
+
+    /// Reflected multiplication: `other * x`.
+    fn __rmul__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(lhs * self)
+    }
+
+    /// Reflected true division: `other / x`. Integer inputs are cast to float
+    /// first, same rule as `__truediv__`.
+    fn __rtruediv__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        let ld = lhs.dtype();
+        let l = if ld.is_int() || ld == DType::Bool {
+            lhs.cast(DType::F32)
+        } else {
+            lhs
+        };
+        let sd = self.dtype();
+        let y = if sd.is_int() || sd == DType::Bool {
+            self.cast(DType::F32)
+        } else {
+            self.clone()
+        };
+        Ok(l / y)
+    }
+
     /// Floor division: `x // y`, rounding toward negative infinity
     /// (torch/tinygrad semantics: `floordiv(a,b) = cdiv(a,b) - ((cmod(a,b) != 0) & ((a<0) != (b<0)))`).
     fn __floordiv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
@@ -1678,7 +1724,10 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "item")]
     pub fn item_py(&self) -> f64 {
-        self.item::<f64>()
+        // `Tensor::item::<T>` loads into a `T` buffer of the tensor's own dtype,
+        // so a plain `item::<f64>()` panics on every f32 tensor (the default
+        // dtype of `from_vec`). Cast to f64 first: Python has no f32 scalars.
+        self.cast(DType::F64).item::<f64>()
     }
 
     #[pyo3(name = "cross_entropy")]
@@ -1859,10 +1908,10 @@ impl Tensor {
     }
 
     #[pyo3(name = "rope")]
-    pub fn rope_py(&self, sine: &Bound<'_, PyAny>, cosine: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        let s = extract_tensor_or_scalar(sine).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+    pub fn rope_py(&self, cosine: &Bound<'_, PyAny>, sine: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let c = extract_tensor_or_scalar(cosine).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        self.rope(s, c)
+        let s = extract_tensor_or_scalar(sine).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.rope(c, s)
     }
 
     #[pyo3(name = "to")]
@@ -1942,7 +1991,7 @@ impl Tensor {
 // device bindings
 /// Python-visible device handle. Construct with `Dev.cpu()`, `Dev.cuda(0)`, ...
 /// and pass to `Tensor.to()` or `PyKernel()` instead of fragile integer ordinals.
-#[pyo3::pyclass(name = "Dev")]
+#[pyo3::pyclass(name = "Dev", from_py_object)]
 #[derive(Clone, Copy)]
 pub struct PyDev(pub Dev);
 
@@ -1957,11 +2006,6 @@ impl PyDev {
     #[staticmethod]
     fn cpu() -> Self {
         Self(Dev::C)
-    }
-    /// CBLAS backend for AOT matmuls.
-    #[staticmethod]
-    fn cblas() -> Self {
-        Self(Dev::Cblas)
     }
     /// CUDA GPU with the given driver ordinal.
     #[staticmethod]
@@ -2204,7 +2248,7 @@ pub fn register_dtype(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 /// Re-export helper for zyx-py to register Tape class.
-pub fn register_tape(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub fn register_tape(_m: &Bound<'_, PyModule>) -> PyResult<()> {
     // already registered via register_tensor
     Ok(())
 }

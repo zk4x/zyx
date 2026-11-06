@@ -656,7 +656,7 @@ impl<N: NocId> Resident<N> {
         self.profiling && self.profile_roles
     }
 
-    /// The window this tile is reached through. A [`crate::dm::DataMover`] on
+    /// The window this tile is reached through. A data mover on
     /// the same tile shares it, so a session over every tile of a chip needs
     /// one window per tile, not two.
     pub fn window(&self) -> &super::dev::Window {

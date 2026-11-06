@@ -5,7 +5,7 @@
 
 **zyx** is a machine learning library that runs on your hardware: a lazy tensor
 library with automatic kernel fusion and autotuning, written in Rust, with
-backends for CUDA, Vulkan, OpenCL, CPU (C and CBLAS), WGPU, and Tenstorrent.
+backends for CUDA, Vulkan, OpenCL, CPU (C), WGPU, and Tenstorrent.
 
 The whole install is **2 MB and has no required dependencies** — there is no
 bundled CUDA runtime, no BLAS to link, no toolchain to install. Backends are
@@ -206,7 +206,7 @@ print(pinned.device())                   # Dev::Cuda(0)
 pinned.numpy()                           # [4, 4] float array
 ```
 
-Available selectors: `Dev.cpu()`, `Dev.cblas()`, `Dev.cuda(id)`,
+Available selectors: `Dev.cpu()`, `Dev.cuda(id)`,
 `Dev.opencl(id)`, `Dev.vulkan(id)`, `Dev.dummy()`. `Dev.auto()` resolves the
 pending choice.
 
@@ -228,8 +228,9 @@ Backends can be disabled, enabled, or restricted through
 - `[]` = disable that backend
 - `[0]` = use device 0 only
 
-CUDA, HIP, OpenCL, Vulkan, and Tenstorrent are always compiled in and look for
-their driver libraries at runtime. WGPU is a cargo feature.
+CUDA, OpenCL, Vulkan, and Tenstorrent are always compiled in and look for
+their driver libraries (or, for Tenstorrent, the simulator) at runtime. WGPU is
+a cargo feature.
 
 ## Data types
 
@@ -279,19 +280,41 @@ Combine by summing (e.g. `ZYX_DEBUG=24` = IR + assembly).
 `ZYX_DRY_RUN=1` skips all device launches while still compiling, which is useful
 for inspecting generated code without hardware.
 
-## Optimizers — not usable from Python yet
+## Optimizers
 
-`zyx.optim` exposes `SGD`, `Adam`, `AdamW`, and `RMSprop`, and
-`optimizer.update(model, gradients)` exists, but it requires the model object to
-implement `get_params()` and `set_params(list)`, which the built-in `nn` layers
-do not. Until that is wired up, calling `update()` raises:
+`zyx.optim` exposes `SGD`, `Adam`, `AdamW`, and `RMSprop`. `update(params,
+gradients)` takes two parallel lists and writes each parameter **in place**
+(`Tensor.assign`), so the tensors you pass keep their identity — nothing is
+returned and nothing has to be rebound.
 
+```python
+import zyx
+from zyx import nn
+
+l1 = nn.Linear(784, 128, dtype=zyx.DType.F32)
+l2 = nn.Linear(128, 10, dtype=zyx.DType.F32)
+params = [l1.weight, l1.bias, l2.weight, l2.bias]
+
+opt = zyx.optim.AdamW(learning_rate=3e-3, weight_decay=0.01)
+
+for x, y in batches:
+    tape = zyx.Tape()
+    tape.add(*params)                       # differentiate with respect to these
+
+    loss = l2(l1(x).relu()).cross_entropy(y, zyx.Reduction.Mean)
+    grads = tape.gradient(loss, params)
+    opt.update(params, grads)               # in place; params unchanged
+
+    tape.realize([loss])
 ```
-AttributeError: 'builtins.Linear' object has no attribute 'get_params'
-```
 
-Gradient computation itself works (see above); only the optimizer step is
-missing. Rust users have the full path via the `Module` trait.
+Entry `i` of `gradients` is the gradient of `params[i]`; pass `None` for a
+parameter that does not receive a gradient on this step (specialised operators
+skip it).
+
+Because the update is `assign`, a parameter keeps its buffer across steps,
+which is what makes a `Tape`-scoped loop (and `Tape.freeze` replay) work: the
+optimizer writes into the leaf the graph captured instead of replacing it.
 
 ## Rust API
 
@@ -300,9 +323,8 @@ This package is bindings over the `zyx` crate. The Rust API is the complete one:
 
 ## Status
 
-Experimental. The API is stabilizing and performance is under active
-optimization. Reported numbers should be taken as in-progress; see
-`BENCHMARKS.md` in the repository.
+Actively maintained. Performance is under active optimization; reported
+numbers should be taken as in-progress; see `BENCHMARKS.md` in the repository.
 
 ## License
 

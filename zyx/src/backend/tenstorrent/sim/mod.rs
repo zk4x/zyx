@@ -27,16 +27,13 @@
 //! `libttsim`, there is no one left to report it to.
 
 // `fork_scope` isolates libttsim failures in a child process, which needs
-// `fork`. Windows has no `fork`, so the Windows build runs the closure inline
-// and loses that isolation; see `fork_windows.rs`.
+// `fork`; Windows is unsupported.
 #[cfg(unix)]
-pub mod fork;
-#[cfg(windows)]
-#[path = "fork_windows.rs"]
 pub mod fork;
 pub mod sys;
 pub mod transport;
 
+#[cfg(unix)]
 pub use fork::{ForkError, fork_scope, outside_fork};
 pub use transport::LibTtsim;
 

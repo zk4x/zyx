@@ -310,7 +310,7 @@ fn sample_best<'a>(items: &'a [OptSeq], exhausted: &Set<OptSeq>, rng: &mut Rng) 
 ///
 /// Explores optimization sequences over the seed kernels, ranking candidates
 /// with the cost closure and measuring the most promising ones on the device.
-#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 #[derive(Debug, Clone, SerBin, DeBin, nanoserde::DeJson)]
 #[nserde(default)]
 pub struct BeamSearch {
@@ -352,7 +352,7 @@ impl BeamSearch {
         &self,
         seeds: impl IntoIterator<Item = Kernel>,
         tensors: &[&Tensor],
-        optimizations: &[fn(&Kernel) -> Box<dyn Optimization>],
+        optimizations: &[MakeOpt],
         epilogue: impl Fn(&mut Kernel),
         cost: impl Fn(&Kernel) -> u64,
     ) -> Result<(Kernel, u64), ZyxError> {
@@ -540,20 +540,27 @@ impl BeamSearch {
             }
 
             // Measurement: rebuild each candidate deterministically and launch.
+            // Keep trying past a candidate that fails to compile/launch (an
+            // invalid optimization variant) until `n_launches` successes have
+            // been measured.
             items.sort_by_key(|seq| seq.cost);
-            items.truncate(self.n_launches);
             let mut launched = Set::default();
-            for opt_seq in &items {
+            let mut measured = 0usize;
+            let mut next = 0usize;
+            while measured < self.n_launches && next < items.len() {
+                let opt_seq = &items[next];
+                next += 1;
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
                 // Hardware lowering runs once here, right before timed
                 // launches — never inside the search loop above.
                 kernel.device_epilogue();
                 if launched.insert(kernel.get_hash()) {
-                    match kernel.launch_with_timings(&args, dev, debug) {
+                    match kernel.launch_with_timings(args, dev, debug) {
                         Ok((program_id, time)) => {
                             record_measurement(&kernel, opt_seq, seed_id, Some(time), "measured");
                             programs.push(program_id);
+                            measured += 1;
                             if time < best_time {
                                 best_time = time;
                                 best_kernel = Some(kernel);
@@ -615,7 +622,7 @@ fn record_measurement(kernel: &Kernel, seq: &OptSeq, seed_id: u64, nanos: Option
         line.push_str(&format!("[{opt},{config}]"));
     }
     line.push(']');
-    line.push_str(&format!(",\"seed\":\"{seed_id:016x}\"", ));
+    line.push_str(&format!(",\"seed\":\"{seed_id:016x}\"",));
     line.push_str(&format!(",\"kernel\":\"{:016x}\"", kernel.get_hash()));
     match nanos {
         Some(nanos) => line.push_str(&format!(",\"nanos\":{nanos}")),

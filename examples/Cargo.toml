@@ -17,7 +17,7 @@ members = [
 [profile.release]
 opt-level = 1
 strip = false
-debug-assertions = true
+debug-assertions = false
 overflow-checks = true
 lto = false
 panic = "unwind"

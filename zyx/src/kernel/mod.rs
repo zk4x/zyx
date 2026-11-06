@@ -270,6 +270,11 @@ impl Hash for Kernel {
     }
 }
 
+/// Per-op dtype and reference shape, keyed by op id.
+pub(crate) type DTypeMap = Map<OpId, (DType, Vec<Dim>)>;
+/// Per-op live reference count, keyed by op id.
+pub(crate) type RcMap = Map<OpId, u32>;
+
 // Custom kernel machinery
 impl Kernel {
     /// The device info snapshot bound to this kernel.
@@ -282,12 +287,146 @@ impl Kernel {
         self.dev_info.as_ref().expect("kernel has no device bound (Dev::Auto placeholder)")
     }
 
+    /// Required per-dtype capabilities for the ops in this kernel. Placement
+    /// and codegen both use this: a device must supply every required bit for
+    /// every dtype the kernel touches.
+    pub(crate) fn required_capabilities(&self) -> Map<DType, crate::backend::DTypeCapability> {
+        use crate::backend::DTypeCapability as Cap;
+        let (dtypes, _) = self.compute_dtypes_and_rcs();
+        let mut req: Map<DType, Cap> = Map::default();
+        let mut add = |dt: DType, cap: Cap| {
+            req.entry(dt).and_modify(|c| *c = c.include(cap)).or_insert(cap);
+        };
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let op = &self.ops[op_id].op;
+            let result_dtype = dtypes.get(&op_id).map(|(dt, _)| *dt);
+            let storage = Cap::STORAGE;
+            let cap = match op {
+                Op::Unary { uop, .. } => match uop {
+                    UOp::Neg => Cap::NEG,
+                    UOp::Not | UOp::BitNot => Cap::BITNOT,
+                    UOp::Exp2 => Cap::EXP2,
+                    UOp::Log2 => Cap::LOG2,
+                    UOp::Reciprocal => Cap::RECIPROCAL,
+                    UOp::Sqrt | UOp::Rsqrt => Cap::SQRT,
+                    UOp::Sin => Cap::SIN,
+                    UOp::Cos => Cap::COS,
+                    UOp::Floor => Cap::FLOOR,
+                    UOp::Trunc => Cap::TRUNC,
+                    UOp::Abs => Cap::ABS,
+                },
+                Op::Binary { bop, .. } => match bop {
+                    BOp::Add => Cap::ADD,
+                    BOp::Sub => Cap::SUB,
+                    BOp::Mul => Cap::MUL,
+                    BOp::Div => Cap::DIV,
+                    BOp::Pow => Cap::POW,
+                    BOp::Mod => Cap::MOD,
+                    BOp::Cmplt => Cap::CMPLT,
+                    BOp::Cmpgt | BOp::Cmpge => Cap::CMPGT,
+                    BOp::Max => Cap::MAX,
+                    BOp::Or => Cap::OR,
+                    BOp::And => Cap::AND,
+                    BOp::BitXor => Cap::BITXOR,
+                    BOp::BitOr => Cap::BITOR,
+                    BOp::BitAnd => Cap::BITAND,
+                    BOp::BitShiftLeft => Cap::BITSHIFTLEFT,
+                    BOp::BitShiftRight => Cap::BITSHIFTRIGHT,
+                    BOp::NotEq => Cap::NOTEQ,
+                    BOp::Eq => Cap::EQ,
+                },
+                Op::Reduce { rop, .. } => match rop {
+                    BOp::Add => Cap::ADD,
+                    BOp::Sub => Cap::SUB,
+                    BOp::Mul => Cap::MUL,
+                    BOp::Div => Cap::DIV,
+                    BOp::Pow => Cap::POW,
+                    BOp::Mod => Cap::MOD,
+                    BOp::Cmplt => Cap::CMPLT,
+                    BOp::Cmpgt | BOp::Cmpge => Cap::CMPGT,
+                    BOp::Max => Cap::MAX,
+                    BOp::Or => Cap::OR,
+                    BOp::And => Cap::AND,
+                    BOp::BitXor => Cap::BITXOR,
+                    BOp::BitOr => Cap::BITOR,
+                    BOp::BitAnd => Cap::BITAND,
+                    BOp::BitShiftLeft => Cap::BITSHIFTLEFT,
+                    BOp::BitShiftRight => Cap::BITSHIFTRIGHT,
+                    BOp::NotEq => Cap::NOTEQ,
+                    BOp::Eq => Cap::EQ,
+                },
+                Op::Wmma { .. } => Cap::ADD | Cap::MUL | Cap::CAST | Cap::STORAGE,
+                Op::Cast { .. } | Op::Bitcast { .. } => Cap::CAST,
+                Op::Const(_) => storage,
+                Op::Param { .. }
+                | Op::Storage { .. }
+                | Op::Store { .. }
+                | Op::Load { .. }
+                | Op::Copy { .. }
+                | Op::Select { .. }
+                | Op::Stack { .. }
+                | Op::Index { .. }
+                | Op::Reshape { .. }
+                | Op::Expand { .. }
+                | Op::Permute { .. }
+                | Op::Flip { .. }
+                | Op::Pad { .. }
+                | Op::Narrow { .. }
+                | Op::Unroll { .. } => storage,
+                Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Detach { .. }
+                | Op::Range { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::Asm { .. }
+                | Op::Source(_)
+                | Op::Program { .. }
+                | Op::Kernel(_)
+                | Op::TT(_)
+                | Op::GPU(_)
+                | Op::Spirv(_)
+                | Op::PTX(_) => Cap::ZERO,
+            };
+            if cap != Cap::ZERO {
+                // Effect-only ops may not have a result dtype; use their
+                // source value's dtype instead.
+                let dt = match op {
+                    Op::Const(c) => Some(c.dtype()),
+                    Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
+                    // Arithmetic capability belongs to the operand dtype, not
+                    // the result: comparisons produce Bool but compute on
+                    // their (possibly BF16/F64) operands.
+                    Op::Unary { x, .. } | Op::Binary { x, .. } | Op::Reduce { x, .. } => {
+                        dtypes.get(x).map(|(dt, _)| *dt).or(result_dtype)
+                    }
+                    Op::Store { src, .. } => dtypes.get(src).map(|(dt, _)| *dt).or(result_dtype),
+                    Op::Cast { x, .. } | Op::Bitcast { x, .. } => {
+                        if let Some((src_dt, _)) = dtypes.get(x) {
+                            add(*src_dt, cap);
+                        }
+                        result_dtype
+                    }
+                    _ => result_dtype,
+                };
+                if let Some(dt) = dt {
+                    add(dt, cap);
+                }
+            }
+            op_id = self.next_op(op_id);
+        }
+        req
+    }
+
     /// Compute dtypes and reference counts for all operations. The shape
     /// half of each entry is the value's [`Self::shape`]: `[]` for
     /// scalars, `[n]` for vectors, `[x, y]` for tiles.
-    pub(crate) fn compute_dtypes_and_rcs(&self) -> (Map<OpId, (DType, Vec<Dim>)>, Map<OpId, u32>) {
-        let mut rcs: Map<OpId, u32> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut dtypes: Map<OpId, (DType, Vec<Dim>)> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
+    pub(crate) fn compute_dtypes_and_rcs(&self) -> (DTypeMap, RcMap) {
+        let mut rcs: RcMap = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
+        let mut dtypes: DTypeMap = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
 
         let mut op_id = self.head;
         for _ in 0..250_000 {
@@ -587,7 +726,12 @@ impl Kernel {
                 }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]].0;
-                    dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
+                    // Result is [len] ++ operand dims, like the tensor shape.
+                    // A shape descriptor (stack of scalar dims) has no tail.
+                    let mut dims = Vec::with_capacity(1 + dtypes[&ops[0]].1.len());
+                    dims.push(ops.len() as Dim);
+                    dims.extend_from_slice(&dtypes[&ops[0]].1);
+                    dtypes.insert(op_id, (dtype, dims));
                     for &x in ops.iter() {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -658,7 +802,7 @@ impl Kernel {
         if !op_id.is_null() {
             panic!("compute_dtypes_and_rcs did not finish in 250000 steps");
         }
-        for (_, v) in dtypes.iter_mut() {
+        for v in dtypes.values_mut() {
             v.1.retain(|&d| d != 0);
         }
         (dtypes, rcs)
@@ -944,41 +1088,46 @@ impl Kernel {
     /// Generic over the load payload (`TensorId` in runtime kernels,
     /// `ClassId` in kernelizer jit kernels) — it is never inspected.
     pub(crate) fn remove_unused_chain<T: Copy>(&mut self, x: OpId, keep_alive: &[OpId], loads: &[T]) -> Vec<T> {
+        // Both dependency walks are iterative and keep a visited set: every op
+        // is expanded once, so they normally terminate when the stack drains.
+        // The step cap is a hard limit, not a bound to raise when hit: tripping
+        // it means the kernel is pathologically large, and a loud failure tells
+        // us that instead of turning into a long, unexplained walk.
+        const MAX_STEPS: usize = 250_000;
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
-        for _ in 0..30_000 {
-            let Some(op) = stack.pop() else { break };
+        let mut steps = 0;
+        while let Some(op) = stack.pop() {
+            steps += 1;
+            assert!(steps <= MAX_STEPS, "remove_unused_chain: chain walk exceeded {MAX_STEPS} steps");
             if chain.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
         }
-        if !stack.is_empty() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
-        }
 
+        // The linked list has exactly one node per live op; anything longer is
+        // a corrupted list, so bound the walks by the op count instead of a
+        // constant.
+        let n_ops = usize::from(self.ops.len());
         let mut live: Set<OpId> = Set::default();
         stack.extend_from_slice(keep_alive);
         let mut op_id = self.head;
-        for _ in 0..30_000 {
-            if op_id.is_null() {
-                break;
-            }
+        let mut steps = 0;
+        while !op_id.is_null() {
+            assert!(steps <= n_ops, "remove_unused_chain: op list longer than {n_ops} ops");
+            steps += 1;
             if matches!(self.ops[op_id].op, Op::Store { .. }) {
                 stack.push(op_id);
             }
             op_id = self.next_op(op_id);
         }
-        if !op_id.is_null() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
-        }
-        for _ in 0..30_000 {
-            let Some(op) = stack.pop() else { break };
+        let mut steps = 0;
+        while let Some(op) = stack.pop() {
+            steps += 1;
+            assert!(steps <= MAX_STEPS, "remove_unused_chain: live walk exceeded {MAX_STEPS} steps");
             if live.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
-        }
-        if !stack.is_empty() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
         }
 
         // Collect input (ro) Param OpIds in op order (before removal). These are
@@ -987,37 +1136,31 @@ impl Kernel {
         let param_ops: Vec<OpId> = {
             let mut ops = Vec::new();
             let mut id = self.head;
-            for _ in 0..30_000 {
-                if id.is_null() {
-                    break;
-                }
-                if let Op::Param { kind, .. } = &self.ops[id].op {
-                    if *kind != ParamKind::GlobalMut {
-                        ops.push(id);
-                    }
+            let mut steps = 0;
+            while !id.is_null() {
+                assert!(steps <= n_ops, "remove_unused_chain: op list longer than {n_ops} ops");
+                steps += 1;
+                if let Op::Param { kind, .. } = &self.ops[id].op
+                    && *kind != ParamKind::GlobalMut
+                {
+                    ops.push(id);
                 }
                 id = self.next_op(id);
-            }
-            if !id.is_null() {
-                panic!("remove_unused_chain did not finish in 250000 steps");
             }
             ops
         };
 
         let to_remove: Set<OpId> = chain.difference(&live).copied().collect();
         let mut op_id = self.head;
-        for _ in 0..30_000 {
-            if op_id.is_null() {
-                break;
-            }
+        let mut steps = 0;
+        while !op_id.is_null() {
+            assert!(steps <= n_ops, "remove_unused_chain: op list longer than {n_ops} ops");
+            steps += 1;
             let next = self.next_op(op_id);
             if to_remove.contains(&op_id) {
                 self.remove_op(op_id);
             }
             op_id = next;
-        }
-        if !op_id.is_null() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
         }
 
         // Keep only loads whose corresponding input Param was not removed.
@@ -1708,9 +1851,20 @@ impl Kernel {
                         }
                         visited.insert(id, dims);
                     } else {
-                        let mut dims = [0; 8];
-                        dims[0] = ops.len() as i32;
-                        visited.insert(id, dims);
+                        // Value stack: slot 0 is the count, the tail is the
+                        // operand's own dims (same as the tensor shape).
+                        match visited.get(&ops[0]) {
+                            Some(&first) => {
+                                let mut dims = [0; 8];
+                                dims[0] = ops.len() as i32;
+                                dims[1..].copy_from_slice(&first[..7]);
+                                visited.insert(id, dims);
+                            }
+                            None => {
+                                stack.push(id);
+                                stack.push(ops[0]);
+                            }
+                        }
                     }
                 }
                 Op::Reshape { shape, .. } | Op::Expand { shape, .. } => {
@@ -1752,7 +1906,7 @@ impl Kernel {
                 },
                 Op::Flip { x, .. } => match visited.get(&x) {
                     Some(dims) => {
-                        visited.insert(id, dims.clone());
+                        visited.insert(id, *dims);
                     }
                     None => {
                         stack.push(id);
@@ -1941,9 +2095,7 @@ impl Kernel {
                 Op::Index { vec: x, .. } => match visited.get(&x).cloned() {
                     Some(dims) => {
                         let mut out = [0; 8];
-                        for i in 1..dims.len() {
-                            out[i - 1] = dims[i];
-                        }
+                        out[..dims.len() - 1].copy_from_slice(&dims[1..]);
                         visited.insert(id, out);
                     }
                     None => {
@@ -2076,24 +2228,20 @@ impl Kernel {
             // Const leaf folds into the NULL offset.
             if self.match_pat(param, Pat::Const).is_some() {
                 let Op::Const(c) = self.at(param) else { unreachable!() };
-                let Some(k) = c.as_integer() else { return None };
+                let k = c.as_integer()?;
                 indices.entry(OpId::NULL).and_modify(|(_, v)| *v += k * scale).or_insert((0, k * scale));
                 continue;
             }
             // Bare index var: stride 1 (times the inherited scale).
             if let Some(m) = self.match_pat(param, &bare_idx) {
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
+                let d = index_len_of(self.at(m.op('r')))?;
                 add_stride(&mut indices, m.op('r'), d, scale);
                 continue;
             }
             // Add with an index operand: stride 1 (times the inherited
             // scale), descend the rest.
             if let Some(m) = self.match_pat(param, &add_idx) {
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
+                let d = index_len_of(self.at(m.op('r')))?;
                 add_stride(&mut indices, m.op('r'), d, scale);
                 params.push((m.op('s'), scale));
                 continue;
@@ -2118,26 +2266,22 @@ impl Kernel {
             // Index times const: stride folds the factor in.
             if let Some(m) = self.match_pat(param, &mul_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
-                let Some(k) = c.as_integer() else { return None };
+                let d = index_len_of(self.at(m.op('r')))?;
+                let k = c.as_integer()?;
                 add_stride(&mut indices, m.op('r'), d, k * scale);
                 continue;
             }
             // Shifted index records 2^k; any other shifted expr descends.
             if let Some(m) = self.match_pat(param, &shl_idx) {
                 let Op::Const(c) = self.at(m.op('k')) else { unreachable!() };
-                let Some(d) = index_len_of(self.at(m.op('r'))) else {
-                    return None;
-                };
-                let Some(k) = c.as_dim() else { return None };
+                let d = index_len_of(self.at(m.op('r')))?;
+                let k = c.as_dim()?;
                 add_stride(&mut indices, m.op('r'), d, (1i64 << k) * scale);
                 continue;
             }
             if let Some(m) = self.match_pat(param, &shl) {
                 if let Op::Const(c) = self.at(m.op('k')) {
-                    let Some(k) = c.as_dim() else { return None };
+                    let k = c.as_dim()?;
                     params.push((m.op('e'), scale * (1i64 << k)));
                 }
                 continue;
@@ -2154,7 +2298,7 @@ impl Kernel {
             if let Op::Binary { x, y, bop: BOp::Mul } = self.at(param) {
                 match (self.at(*x), self.at(*y)) {
                     (Op::Unroll { len, .. }, Op::Const(c)) | (Op::Const(c), Op::Unroll { len, .. }) => {
-                        let Some(k) = c.as_integer() else { return None };
+                        let k = c.as_integer()?;
                         let lane = if matches!(self.at(*x), Op::Unroll { .. }) { *x } else { *y };
                         add_stride(&mut indices, lane, i64::from(*len), k * scale);
                         continue;
@@ -2174,23 +2318,21 @@ impl Kernel {
                         let (Some(a), Some(b)) = (a.as_integer(), b.as_integer()) else {
                             return None;
                         };
-                        let Some(p) = a.checked_mul(b).and_then(|p| p.checked_mul(scale)) else {
-                            return None;
-                        };
+                        let p = a.checked_mul(b).and_then(|p| p.checked_mul(scale))?;
                         indices.entry(OpId::NULL).and_modify(|(_, v)| *v += p).or_insert((0, p));
                         continue;
                     }
                     (Op::Const(a), _) => {
-                        let Some(k) = a.as_integer() else { return None };
+                        let k = a.as_integer()?;
                         (k, *y)
                     }
                     (_, Op::Const(b)) => {
-                        let Some(k) = b.as_integer() else { return None };
+                        let k = b.as_integer()?;
                         (k, *x)
                     }
                     _ => return None,
                 };
-                let Some(s) = k.checked_mul(scale) else { return None };
+                let s = k.checked_mul(scale)?;
                 params.push((e, s));
                 continue;
             }

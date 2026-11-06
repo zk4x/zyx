@@ -697,16 +697,16 @@ pub enum TTOp {
     /// One broadcast tile read of the reader list: as [`TTOp::DmReadTransposed`],
     /// but every column of the tile takes the value of column 0.
     DmReadBroadcastCol(Box<TTDmTileRead>),
-    /// One padding fill of a list: see [`TTDmFill`]. Boxed to keep `Op` in
+    /// One padding fill of a list: see `TTDmFill`. Boxed to keep `Op` in
     /// budget.
     DmFill(Box<TTDmFill>),
-    /// One L1-to-L1 word copy of a list: see [`TTDmCopyWords`]. Boxed to keep
+    /// One L1-to-L1 word copy of a list: see `TTDmCopyWords`. Boxed to keep
     /// `Op` in budget.
     DmCopyWords(Box<TTDmCopyWords>),
-    /// One indexed gather of a list: see [`TTDmIndexPick`]. Boxed to keep `Op`
+    /// One indexed gather of a list: see `TTDmIndexPick`. Boxed to keep `Op`
     /// in budget.
     DmIndexPick(Box<TTDmIndexPick>),
-    /// The list entry that runs the three role programs: see [`TTDmKernel`].
+    /// The list entry that runs the three role programs: see `TTDmKernel`.
     /// Boxed to keep `Op` in budget.
     DmKernel(Box<TTDmKernel>),
     /// Wait for every move before it in the list to complete: the boundary
@@ -915,7 +915,7 @@ pub enum TTOp {
     },
 }
 
-/// Boxed payload of [`Op::Custom`]: a custom kernel boundary's inputs,
+/// Boxed payload of [`Op::Kernel`]: a custom kernel boundary's inputs,
 /// output `(class, shape, dtype)` triples, owning program, and measured
 /// timing. Boxed so `Op` keeps its 24-byte budget.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -1621,7 +1621,7 @@ impl Op {
                     vec![a, b, slot]
                 }
             }
-            Op::Stack { ops } => ops.iter().copied().collect(),
+            Op::Stack { ops } => ops.to_vec(),
             &Op::Index { vec, .. } => vec![vec],
             &Op::Wmma { a, b, c, .. } => vec![a, b, c],
             Op::TT(TTOp::EndReader)

@@ -725,8 +725,9 @@ pub fn sigmoid_program(p: &mut Program, spill: u32) {
 /// [`tanh_program`]'s derived bound, relative.
 pub const TANH_BOUND: f64 = 7.5 / 16_777_216.0;
 
-/// `tanh x` of `x` (in `L0`, raw bits, spilled at `spill`) into `L7`: `sign(x) t/(t + 2)`, `t = e^(2|x|)
-/// - 1` ([`expm1_program`], so no cancellation near zero).
+/// `tanh x` of `x` (in `L0`, raw bits, spilled at `spill`) into `L7`:
+/// `sign(x) t/(t + 2)`, `t = e^(2|x|) - 1` ([`expm1_program`], so no
+/// cancellation near zero).
 ///
 /// Error: `t` within `EXPM1_BOUND` (`2|x|` exact), which the quotient carries
 /// scaled by `2/(t + 2) <= 1`; `t + 2` rounds once (`u`), the quotient is
@@ -1512,8 +1513,8 @@ pub const ACOS_BOUND: f64 = 4.7 / 16_777_216.0;
 /// `asin x = sign(x) v` and `acos x = pi/2 - sign(x) v`; beyond, of `z`,
 /// `asin x = sign(x) (pi/2 - 2v)`, and `acos x = 2v` or `pi - 2v` by `x`'s
 /// sign. The switch at 0.7 rather than 1/2 keeps `2v` below the result it is
-/// taken from (`2 asin(0.387) = 0.80 < pi/2 - 0.80`). Spills at `spill..spill
-/// + 128`.
+/// taken from (`2 asin(0.387) = 0.80 < pi/2 - 0.80`). Spills at
+/// `spill..spill + 128`.
 ///
 /// Error, relative, in `u = 2^-24`: the core of `t` exact: `t^3` within `2u`
 /// (`t^2` and the product), `K` within [`ASIN_FIT_BOUND`] `= 2.2u`, the
@@ -1924,8 +1925,8 @@ pub fn gelu_backward_bound(x: f32, g: f32) -> f64 {
 /// more), its complement `2 - erfc` within a third of that, the series path
 /// `4.5u`, the product `h 2Phi` (`h = x/2`, exact) `u`: under [`GELU_BOUND`] `=
 /// 12.5u`. The derivative's density is `e^(-v^2)/sqrt(2 pi)`, from the same
-/// exponential ([`gelu_backward_bound`]). `gelu(-inf)` is NaN as Flex's is (`-inf
-/// * 0`), `+inf` itself, a NaN stays one.
+/// exponential ([`gelu_backward_bound`]). `gelu(-inf)` is NaN as Flex's is
+/// (`-inf * 0`), `+inf` itself, a NaN stays one.
 pub fn gelu_exp_program(p: &mut Program, spill: u32) {
     use LReg as R;
     let (s_a, s_lo, s_x2, s_x) = (spill, spill + 64, spill + 128, spill + 192);
@@ -3170,7 +3171,7 @@ pub fn reference(kind: u32, scalar: f32, a: &[f32], b: Option<&[f32]>, rows: usi
     reference_for(kind, scalar, bcast, a, b, rows, cols)
 }
 
-/// [`reference`] with the broadcast said rather than read from `b`'s length.
+/// [`reference()`] with the broadcast said rather than read from `b`'s length.
 pub fn reference_for(
     kind: u32,
     scalar: f32,
@@ -3184,7 +3185,7 @@ pub fn reference_for(
     reference_op(kind, [scalar, 0.0], bcast, &inputs, rows, cols)
 }
 
-/// What [`crate::session::Session::pow`] computes: `POW` with `y` an `F32`
+/// What `pow` computes: `POW` with `y` an `F32`
 /// tensor of `x`'s shape, or (`y` `None`) `POW_S` with the scalar `s`.
 pub fn pow_reference(x: &[f32], y: Option<&[f32]>, s: f32, rows: usize, cols: usize) -> Vec<f32> {
     let n = Broadcast::None;

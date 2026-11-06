@@ -78,16 +78,16 @@ fn binding_stress_interleaved_muts() -> Result<(), ZyxError> {
     // Exact per-element placement in each cache.
     let mut e1 = vec![0.0f32; 32];
     for (r, row) in k1r.iter().enumerate() {
-        e1[((1 + r) * 4) as usize..((1 + r) * 4 + 4) as usize].copy_from_slice(row);
+        e1[((1 + r) * 4)..((1 + r) * 4 + 4)].copy_from_slice(row);
     }
     for (r, row) in k3r.iter().enumerate() {
-        e1[((6 + r) * 4) as usize..((6 + r) * 4 + 4) as usize].copy_from_slice(row);
+        e1[((6 + r) * 4)..((6 + r) * 4 + 4)].copy_from_slice(row);
     }
     assert_close(&to_f32(&c1)?, &e1, 1e-6, "c1 placement");
 
     let mut e2 = vec![0.0f32; 32];
     for (r, row) in k2r.iter().enumerate() {
-        e2[((5 + r) * 4) as usize..((5 + r) * 4 + 4) as usize].copy_from_slice(row);
+        e2[((5 + r) * 4)..((5 + r) * 4 + 4)].copy_from_slice(row);
     }
     assert_close(&to_f32(&c2)?, &e2, 1e-6, "c2 placement");
     Ok(())
@@ -270,9 +270,9 @@ fn frozen_replay_kv_growth() -> Result<(), ZyxError> {
     cache.narrow(0, &pos, Tensor::from(2i64))?.assign(&block)?;
     // Full-cache read with a fixed output shape: per-row sums [8].
     let read = cache.sum([1])?;
-    let frozen = tape.freeze([&read])?;
+    let frozen = tape.freeze([&cache, &pos, &block], [&read])?;
 
-    // Leaf order = discovery order: cache, then pos, then block.
+    // Replay input order = freeze order: cache, then pos, then block.
     let expected_after = |steps: &[i64]| -> Vec<f32> {
         let mut e = vec![0.0f32; rows as usize];
         for &p in steps {
@@ -331,9 +331,9 @@ fn kv_cache_decode_loop_no_recompile() -> Result<(), ZyxError> {
         // The read is narrow(0, 0, cache_len) summed over cols: its length IS
         // the growing cache_len — [2], [4], [6], [8] per step.
         assert_eq!(got.len(), written, "step {step}: read length != cache_len");
-        for r in 0..got.len() {
+        for (r, &g) in got.iter().enumerate() {
             let expected = if r % 2 == 0 { 3.0 } else { 7.0 };
-            assert!((got[r] - expected).abs() <= 1e-6, "step {step} row {r}: got {}, expected {expected}", got[r]);
+            assert!((g - expected).abs() <= 1e-6, "step {step} row {r}: got {g}, expected {expected}");
         }
     }
     Ok(())
@@ -732,7 +732,7 @@ fn kernel6_scores_repro() -> Result<(), ZyxError> {
     st_rope_ref(&mut q_ref);
     st_rope_ref(&mut k_ref);
     let scale = 1.0 / (ST_HD as f32).sqrt();
-    let mut exp_scores = vec![0.0f32; ST_HEADS * ST_SEQ * ST_SEQ];
+    let mut exp_scores = [0.0f32; ST_HEADS * ST_SEQ * ST_SEQ];
     let mut exp_sums = vec![0.0f32; ST_HEADS * ST_SEQ];
     for head in 0..ST_HEADS {
         for i in 0..ST_SEQ {

@@ -86,6 +86,7 @@ mod viz;
 type Set<T> = std::collections::HashSet<T, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 type Map<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<crate::hashers::FHasher>>;
 
+pub use backend::DTypeCapability;
 pub use dtype::{DType, QDType};
 pub use error::ZyxError;
 pub use module::{GGUFMetadataValue, Module};
@@ -171,7 +172,7 @@ impl DebugMask {
 #[allow(clippy::similar_names)]
 pub fn get_perf(flop: u64, bytes_read: u64, bytes_written: u64, nanos: u64) -> String {
     if nanos == u64::MAX {
-        return format!("INF time taken");
+        return "INF time taken".to_string();
     }
     const fn value_unit(x: u64) -> (u64, &'static str) {
         match x {

@@ -1,6 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
+use super::Register;
 use crate::{
     DType, Map,
     backend::{GwsDim, gws_from_kernel},
@@ -24,38 +25,10 @@ impl Kernel {
         // pre-render for its disk cache, so both sides compute the same
         // value independently.
         let name = format!("k_{:016x}", self.get_hash());
-        let source = self.generate_c(self.dev_info().has_openmp, &name)?;
+        let has_openmp = self.dev_info().has_openmp;
+        // Reject group lengths that are constant and exceed the device grid
+        // limits; the same vector becomes the rendered `Grid` below.
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 3 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("C render: grid rank {} exceeds 3D", gws_vec.len()).into(),
-            });
-        }
-        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            gws[i] = g;
-        }
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
-        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
-        Ok(rendered)
-    }
-
-    /// Compile kernel to C source code.
-    pub(crate) fn generate_c(&self, has_openmp: bool, name: &str) -> Result<String, BackendError> {
-        // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let (dtypes, rcs) = self.compute_dtypes_and_rcs();
         // Rank-1 shape widths lower to u16 vector lanes. Widths are
         // always concrete here — a symbolic width cannot lower, and the
@@ -63,7 +36,7 @@ impl Kernel {
         let width = |n: &Dim| u16::try_from(*n).expect("C codegen: vector width is not a u16");
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, Vec<Dim>), u32, u8)> = Vec::new();
+        let mut registers: Vec<Register> = Vec::new();
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
         let mut var_params: Map<OpId, DType> = Map::with_hasher(BuildHasherDefault::new());
@@ -768,13 +741,7 @@ static inline unsigned char f32_to_f8e5m2(float v) {
 "
             .to_string()
         };
-        let bit_helpers = if !dtypes.values().any(|(dt, _)| matches!(dt, DType::F32 | DType::F64)) {
-            String::new()
-        } else {
-            "static inline float u32tof32(unsigned int b) { union { unsigned int u; float f; } v; v.u = b; return v.f; }\n\
-             static inline double u64tof64(unsigned long b) { union { unsigned long u; double f; } v; v.u = b; return v.f; }\n"
-                .to_string()
-        };
+
         let omp_include = if has_openmp { "#include <omp.h>\n" } else { "" };
         let mut vec_types = String::new();
         for (dt, _, _) in &registers {
@@ -791,26 +758,49 @@ static inline unsigned char f32_to_f8e5m2(float v) {
         } else {
             String::new()
         };
-        Ok(format!(
+        let source = format!(
             "#include <math.h>\n#include <stdint.h>\n#include <string.h>\n\
              {omp_include}\
              {vec_types}\
              {f16_helpers}\
              {f8_helpers}\
-             {bit_helpers}\
              void {name}(void** args, unsigned long nargs) {{\n\
              {nargs_check}\
              {global_cast}\
              {reg_str}\
              {source}}}\n"
-        ))
+        );
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("C render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
+        }
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
+        Ok(rendered)
     }
 }
 
 fn new_reg(
     op_id: OpId,
     reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, Vec<Dim>), u32, u8)>,
+    registers: &mut Vec<Register>,
     dtype: (DType, Vec<Dim>),
     rc: u32,
     current_loop_level: u8,
@@ -834,7 +824,7 @@ fn get_var(
     constants: &Map<OpId, Constant>,
     indices: &Map<OpId, u8>,
     reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, Vec<Dim>), u32, u8)],
+    registers: &mut [Register],
     loop_level: u8,
     var_params: &Map<OpId, DType>,
 ) -> Result<String, BackendError> {
@@ -953,20 +943,31 @@ impl DType {
 impl Constant {
     pub fn c_code(self) -> String {
         match self {
+            // Nine significant digits round-trip an f32 exactly, seventeen an
+            // f64 (`{:.8e}` prints one digit before the point and eight after).
+            // C's strtod is correctly rounded, so the literal is the value.
             Self::F32(x) => {
                 let val = f32::from_le_bytes(x);
                 if val.is_finite() {
-                    format!("{:.16}f", val)
+                    format!("{:.8e}f", val)
+                } else if val.is_nan() {
+                    "NAN".to_string()
+                } else if val.is_sign_negative() {
+                    "(-INFINITY)".to_string()
                 } else {
-                    format!("u32tof32(0x{:08X}u)", val.to_bits())
+                    "INFINITY".to_string()
                 }
             }
             Self::F64(x) => {
                 let val = f64::from_le_bytes(x);
                 if val.is_finite() {
-                    format!("{:.16}", val)
+                    format!("{:.16e}", val)
+                } else if val.is_nan() {
+                    "NAN".to_string()
+                } else if val.is_sign_negative() {
+                    "(-INFINITY)".to_string()
                 } else {
-                    format!("u64tof64(0x{:016X}ul)", val.to_bits())
+                    "INFINITY".to_string()
                 }
             }
             Self::U8(x) => format!("{x}"),
@@ -981,17 +982,25 @@ impl Constant {
             Self::F16(x) => {
                 let val = f16::from_le_bytes(x).to_f32();
                 if val.is_finite() {
-                    format!("{:.16}f", val)
+                    format!("{:.8e}f", val)
+                } else if val.is_nan() {
+                    "NAN".to_string()
+                } else if val.is_sign_negative() {
+                    "(-INFINITY)".to_string()
                 } else {
-                    format!("u32tof32(0x{:08X}u)", val.to_bits())
+                    "INFINITY".to_string()
                 }
             }
             Self::BF16(x) => {
                 let val = bf16::from_le_bytes(x).to_f32();
                 if val.is_finite() {
-                    format!("{:.16}f", val)
+                    format!("{:.8e}f", val)
+                } else if val.is_nan() {
+                    "NAN".to_string()
+                } else if val.is_sign_negative() {
+                    "(-INFINITY)".to_string()
                 } else {
-                    format!("u32tof32(0x{:08X}u)", val.to_bits())
+                    "INFINITY".to_string()
                 }
             }
             // F8 constants ride as raw bits; conversion happens in Cast arms.

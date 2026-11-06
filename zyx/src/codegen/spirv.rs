@@ -81,6 +81,7 @@ const SEM_WORKGROUP_MEMORY: u32 = 0x100;
 pub enum OpCode {
     OpCapability = 17,
     OpExtInstImport = 11,
+    OpExtension = 10,
     OpMemoryModel = 14,
     OpEntryPoint = 15,
     OpExecutionMode = 16,
@@ -97,8 +98,8 @@ pub enum OpCode {
     OpTypePointer = 32,
     OpTypeFunction = 33,
     OpConstant = 43,
-    OpConstantTrue = 44,
-    OpConstantFalse = 45,
+    OpConstantTrue = 41,
+    OpConstantFalse = 42,
     OpVariable = 59,
     OpFunction = 54,
     OpFunctionEnd = 56,
@@ -122,6 +123,7 @@ pub enum OpCode {
     OpIMul = 132,
     OpSDiv = 135,
     OpUDiv = 134,
+    OpUMod = 137,
     OpSRem = 138,
     OpSNegate = 126,
     OpNot = 200,
@@ -169,6 +171,7 @@ impl TryFrom<u16> for OpCode {
         match v {
             17 => Ok(Self::OpCapability),
             11 => Ok(Self::OpExtInstImport),
+            10 => Ok(Self::OpExtension),
             14 => Ok(Self::OpMemoryModel),
             15 => Ok(Self::OpEntryPoint),
             16 => Ok(Self::OpExecutionMode),
@@ -185,8 +188,8 @@ impl TryFrom<u16> for OpCode {
             32 => Ok(Self::OpTypePointer),
             33 => Ok(Self::OpTypeFunction),
             43 => Ok(Self::OpConstant),
-            44 => Ok(Self::OpConstantTrue),
-            45 => Ok(Self::OpConstantFalse),
+            41 => Ok(Self::OpConstantTrue),
+            42 => Ok(Self::OpConstantFalse),
             59 => Ok(Self::OpVariable),
             54 => Ok(Self::OpFunction),
             56 => Ok(Self::OpFunctionEnd),
@@ -210,6 +213,7 @@ impl TryFrom<u16> for OpCode {
             132 => Ok(Self::OpIMul),
             135 => Ok(Self::OpSDiv),
             134 => Ok(Self::OpUDiv),
+            137 => Ok(Self::OpUMod),
             138 => Ok(Self::OpSRem),
             126 => Ok(Self::OpSNegate),
             200 => Ok(Self::OpNot),
@@ -415,99 +419,28 @@ fn elem_stride(dt: DType) -> usize {
 }
 
 impl Kernel {
+    /// SPIR-V render: lower to a descriptor-only kernel — head order
+    /// `Params`, `Grid`, `LocalWorkSize`, `Spirv(WordBytes)`, and the
+    /// `Spirv(PushConstants)` size the Vulkan launcher mirrors. The module
+    /// emits once here; backend `compile` only hands the words to the driver.
     pub(crate) fn render_spirv(&self) -> Result<Kernel, BackendError> {
-        // Max over local ranges per axis, mirroring generate_spirv's Pass 1
-        // exactly (including the axis guard) so the entry-point name derived
-        // there matches the `name` rebuilt at launch from this `lws`.
-        let mut lws = [1u32; 3];
-        let mut op_id = self.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 50_000 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
-                });
-            }
-            if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op
-                && axis < 3
-            {
-                lws[axis as usize] = lws[axis as usize].max(len);
-            }
-            op_id = self.next_op(op_id);
-        }
-        if lws.iter().map(|&x| u64::from(x)).product::<u64>() > u64::from(self.dev_info().max_local_threads) {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
-        }
-        // Debugging TBD: render takes no debug flag, so codegen-side
-        // disassembly is off here. `SPIRV_DUMP` is deleted.
-        let words = self.generate_spirv(false)?;
-        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 3 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("spirv render: grid rank {} exceeds 3D", gws_vec.len()).into(),
-            });
-        }
-        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            gws[i] = g;
-        }
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        // Push-constant block layout from the `Variable` params (same
-        // std140-scalar layout the Vulkan launcher writes): the worker
-        // only ever sees the descriptor, so this is computed here.
-        let mut push_cur: u32 = 0;
-        let mut push_vars = 0u32;
-        let mut op_id = self.head;
-        let mut steps_op_id = 0usize;
-        while !op_id.is_null() {
-            steps_op_id += 1;
-            if steps_op_id > 50_000 {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
-                });
-            }
-            if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {
-                let storage_bits = if *dtype == DType::Bool { 32 } else { dtype.bit_size() };
-                let size = storage_bits as u32 / 8;
-                let align = if size >= 8 { 8 } else { 4 };
-                push_cur = push_cur.next_multiple_of(align);
-                push_cur += size;
-                push_vars += 1;
-            }
-            op_id = self.next_op(op_id);
-        }
-        let push_constants_size = if push_vars == 0 {
-            0
-        } else {
-            push_cur.next_multiple_of(4).max(4)
-        };
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
-        rendered.push_back(Op::Spirv(Box::new(SpirvOp::WordBytes(words.into_boxed_slice()))));
-        rendered.push_back(Op::Spirv(Box::new(SpirvOp::PushConstants(push_constants_size))));
-        Ok(rendered)
-    }
-
-    /// Compile kernel to SPIR-V binary.
-    pub(crate) fn generate_spirv(&self, debug_asm: bool) -> Result<Vec<u32>, BackendError> {
         use OpCode::*;
-        // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        // Reject group lengths that are constant and exceed the device grid
+        // limits; the same vector becomes the rendered `Grid` below.
+        let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let dtypes = compute_dtypes(self);
+        // Final capability guard: placement already filters devices, but a
+        // late pass can introduce an op the chosen device cannot run.
+        let required = self.required_capabilities();
+        for (dt, caps) in &required {
+            let have = self.dev_info().supports_dtype(*dt);
+            if !have.contains(*caps) {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("dtype {dt:?} does not support required ops {caps:?} on this device").into(),
+                });
+            }
+        }
         let mut asm = Asm::new();
 
         // === SPIR-V Header ===
@@ -566,11 +499,38 @@ impl Kernel {
         // Required SPIR-V instructions
         asm.emit(OpCapability, &[1]); // Shader capability
         asm.emit(OpCapability, &[11]); // Int64 (IDX_T is i64, index math is 64-bit)
+        let needs_f16 = dtypes.values().any(|(dt, _)| *dt == DType::F16);
+        let needs_f64 = dtypes.values().any(|(dt, _)| *dt == DType::F64);
+        let needs_i16 = dtypes.values().any(|(dt, _)| matches!(dt, DType::I16 | DType::U16));
+        let needs_i8 = dtypes.values().any(|(dt, _)| matches!(dt, DType::I8 | DType::U8));
+        if needs_f16 {
+            asm.emit(OpCapability, &[9]); // Float16
+        }
+        if needs_f64 {
+            asm.emit(OpCapability, &[10]); // Float64
+        }
+        if needs_i16 {
+            asm.emit(OpCapability, &[22]); // Int16
+        }
+        if needs_i8 {
+            asm.emit(OpCapability, &[39]); // Int8
+        }
         if needs_u8 {
             asm.emit(OpCapability, &[44]); // StorageUniform8BitAccess (for bool buffers)
         }
         if needs_bf16 {
             asm.emit(OpCapability, &[5116]); // BFloat16TypeKHR (BF16 encoding)
+        }
+        if needs_bf16 {
+            let mut words = Vec::new();
+            for chunk in b"SPV_KHR_bfloat16\0".chunks(4) {
+                let mut w = 0u32;
+                for (i, &b) in chunk.iter().enumerate() {
+                    w |= (b as u32) << (i * 8);
+                }
+                words.push(w);
+            }
+            asm.emit(OpExtension, &words);
         }
         let glsl_id = asm.id();
         let glsl_name = b"GLSL.std.450\x00";
@@ -735,6 +695,10 @@ impl Kernel {
         let mut bool_buffers: std::collections::HashSet<OpId> = std::collections::HashSet::new(); // global buffers storing bool as u32
         let mut ptr_cache: Map<(u32, u32), u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
         let mut reg_arrays: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
+        // Function-scope loop counters: (pointer type, variable id). Declared
+        // at function entry (SPIR-V requires all Function OpVariable in the
+        // entry block), initialized in the loop pre-header.
+        let mut loop_vars: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(8, BuildHasherDefault::new());
         let mut cast_u32_consts: Map<OpId, (u32, u32)> = Map::with_capacity_and_hasher(4, BuildHasherDefault::new());
         let mut const_pool: Map<Constant, u32> = Map::with_capacity_and_hasher(16, BuildHasherDefault::new());
         // Scalar variables (Param { kind: Variable }): collected in param order and
@@ -976,28 +940,60 @@ impl Kernel {
                         // Boolean loops are conditionals (the old `If`):
                         // no loop consts needed.
                         if dtypes[&len].0 != DType::Bool {
-                            let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
-                            for &val in &[0u32, 1, len as u32] {
-                                let key = match IDX_T {
-                                    DType::U32 => Constant::U32(val),
-                                    DType::I32 => Constant::I32(val as i32),
-                                    DType::U64 => Constant::U64((val as i64).to_le_bytes()),
-                                    DType::I64 => Constant::I64((val as i64).to_le_bytes()),
-                                    dt => {
-                                        return Err(BackendError {
-                                            status: ErrorStatus::KernelCompilation,
-                                            context: format!("SPIR-V: unexpected index type {dt:?} for const value").into(),
-                                        });
-                                    }
-                                };
-                                const_pool.entry(key).or_insert_with(|| {
-                                    let tid = type_cache[&IDX_T];
-                                    let cid = asm.id();
-                                    let words = const_to_words(&key);
-                                    const_entries.push((tid, cid, words));
-                                    cid
-                                });
+                            // Constant lengths need their bound constant; a
+                            // variable length is read as an SSA value.
+                            if let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+                                for &val in &[0u32, 1, len as u32] {
+                                    let key = match IDX_T {
+                                        DType::U32 => Constant::U32(val),
+                                        DType::I32 => Constant::I32(val as i32),
+                                        DType::U64 => Constant::U64((val as i64).to_le_bytes()),
+                                        DType::I64 => Constant::I64((val as i64).to_le_bytes()),
+                                        dt => {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("SPIR-V: unexpected index type {dt:?} for const value").into(),
+                                            });
+                                        }
+                                    };
+                                    const_pool.entry(key).or_insert_with(|| {
+                                        let tid = type_cache[&IDX_T];
+                                        let cid = asm.id();
+                                        let words = const_to_words(&key);
+                                        const_entries.push((tid, cid, words));
+                                        cid
+                                    });
+                                }
+                            } else {
+                                // Variable length: only the zero/one constants
+                                // are needed to start and advance the counter.
+                                for &val in &[0u32, 1] {
+                                    let key = match IDX_T {
+                                        DType::U32 => Constant::U32(val),
+                                        DType::I32 => Constant::I32(val as i32),
+                                        DType::U64 => Constant::U64((val as i64).to_le_bytes()),
+                                        DType::I64 => Constant::I64((val as i64).to_le_bytes()),
+                                        dt => {
+                                            return Err(BackendError {
+                                                status: ErrorStatus::KernelCompilation,
+                                                context: format!("SPIR-V: unexpected index type {dt:?} for const value").into(),
+                                            });
+                                        }
+                                    };
+                                    const_pool.entry(key).or_insert_with(|| {
+                                        let tid = type_cache[&IDX_T];
+                                        let cid = asm.id();
+                                        let words = const_to_words(&key);
+                                        const_entries.push((tid, cid, words));
+                                        cid
+                                    });
+                                }
                             }
+                            let idx_type = type_cache[&IDX_T];
+                            let counter_ptr_type =
+                                push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
+                            let counter_var = asm.id();
+                            loop_vars.insert(op_id, (counter_ptr_type, counter_var));
                         }
                     }
                     Op::Barrier => {
@@ -1030,6 +1026,8 @@ impl Kernel {
 
         // Pre-populate all dtypes (kernel dtypes + internal ones like Bool for loop conditions)
         push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::Bool);
+        // 32-bit integer type used to narrow 64-bit index division/remainder.
+        push_dtype(&mut asm, &mut type_cache, &mut type_entries, DType::I32);
         for &(dt, _) in dtypes.values() {
             push_dtype(&mut asm, &mut type_cache, &mut type_entries, dt);
         }
@@ -1229,11 +1227,16 @@ impl Kernel {
             asm.emit(OpVariable, &[ptr_type, var_id, SC_FUNCTION]);
             reg_vars.insert(op_id, var_id);
         }
+        // Loop counters too: all Function-storage OpVariable instructions
+        // must be in the entry block (SPIR-V §2.4).
+        for &(ptr_type, var_id) in loop_vars.values() {
+            asm.emit(OpVariable, &[ptr_type, var_id, SC_FUNCTION]);
+        }
 
         // === Function body: walk kernel ops ===
 
-        // Loop stack: (header_label, merge_label, continue_label, counter_var, len)
-        let mut loop_stack: Vec<(u32, u32, u32, u32, Dim)> = Vec::new();
+        // Loop stack: (header_label, merge_label, continue_label, counter_var, length OpId)
+        let mut loop_stack: Vec<(u32, u32, u32, u32, OpId)> = Vec::new();
         let mut if_stack: Vec<u32> = Vec::new(); // merge_label
         // Parallels every open Loop: true = boolean (conditional) close.
         let mut scope_is_bool: Vec<bool> = Vec::new();
@@ -1263,12 +1266,27 @@ impl Kernel {
                         let result_type =
                             layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, &res_shape);
                         let rid = asm.id();
-                        asm.emit_typed(
-                            OpSelect,
-                            result_type,
-                            rid,
-                            &[spv_values[&cond], spv_values[&if_true], spv_values[&if_false]],
-                        );
+                        if res_dt == DType::Bool {
+                            // Vulkan's SPIR-V environment rejects (llvmpipe) or
+                            // crashes (NVIDIA) OpSelect with Bool result type.
+                            // Branchless `(cond & t) | (!cond & f)` is the same
+                            // value and stays in the logical family.
+                            let cond_id = spv_values[&cond];
+                            let not_cond = asm.id();
+                            asm.emit_typed(OpLogicalNot, result_type, not_cond, &[cond_id]);
+                            let a = asm.id();
+                            asm.emit_typed(OpLogicalAnd, result_type, a, &[cond_id, spv_values[&if_true]]);
+                            let b = asm.id();
+                            asm.emit_typed(OpLogicalAnd, result_type, b, &[not_cond, spv_values[&if_false]]);
+                            asm.emit_typed(OpLogicalOr, result_type, rid, &[a, b]);
+                        } else {
+                            asm.emit_typed(
+                                OpSelect,
+                                result_type,
+                                rid,
+                                &[spv_values[&cond], spv_values[&if_true], spv_values[&if_false]],
+                            );
+                        }
                         spv_values.insert(op_id, rid);
                     }
                     Op::TT { .. }
@@ -1681,6 +1699,26 @@ impl Kernel {
                             layout_type_id(&mut asm, &mut type_cache, &mut vec_type_cache, &mut type_entries, res_dt, &res_shape);
                         let rid = asm.id();
 
+                        // NVIDIA's Vulkan compiler miscompiles 64-bit integer
+                        // division/remainder in loop bodies (wrong values once
+                        // an accumulator is carried). Index arithmetic is
+                        // non-negative and bounded by work sizes, so perform
+                        // it in 32 bits and widen the result back to IDX_T.
+                        if dt == IDX_T && res_dt == IDX_T && res_shape.is_empty() && matches!(bop, BOp::Div | BOp::Mod) {
+                            let i32_type = type_cache[&DType::I32];
+                            let x32 = asm.id();
+                            asm.emit_typed(OpSConvert, i32_type, x32, &[x_id]);
+                            let y32 = asm.id();
+                            asm.emit_typed(OpSConvert, i32_type, y32, &[y_id]);
+                            let r32 = asm.id();
+                            let op = if bop == BOp::Div { OpSDiv } else { OpSRem };
+                            asm.emit_typed(op, i32_type, r32, &[x32, y32]);
+                            asm.emit_typed(OpSConvert, result_type, rid, &[r32]);
+                            spv_values.insert(op_id, rid);
+                            op_id = self.next_op(op_id);
+                            continue;
+                        }
+
                         let (float_op, int_op, _): (Option<OpCode>, Option<OpCode>, Option<OpCode>) = match bop {
                             BOp::Add => (Some(OpFAdd), Some(OpIAdd), None),
                             BOp::Sub => (Some(OpFSub), Some(OpISub), None),
@@ -1700,7 +1738,8 @@ impl Kernel {
                                 asm.emit_typed(OpExtInst, result_type, rid, &[glsl_set, glsl::Pow, x_id, y_id]);
                                 (None, None, None)
                             }
-                            BOp::Mod => (Some(OpFMod), Some(OpSRem), None), // SPIR-V uses SRem for C-style %
+                            BOp::Mod => (Some(OpFMod), if dt.is_uint() { Some(OpUMod) } else { None }, None),
+
                             BOp::Cmplt => (
                                 Some(OpFOrdLessThan),
                                 if dt.is_float() {
@@ -1779,6 +1818,15 @@ impl Kernel {
                             if let Some(op) = float_op {
                                 asm.emit_typed(op, result_type, rid, &[x_id, y_id]);
                             }
+                        } else if bop == BOp::Mod && int_op.is_none() {
+                            // Signed C-style remainder, avoiding OpSRem (NVIDIA
+                            // Vulkan miscompiles it). Truncating division makes
+                            // `x - (x / y) * y` exactly `x % y`.
+                            let q = asm.id();
+                            asm.emit_typed(OpSDiv, result_type, q, &[x_id, y_id]);
+                            let p = asm.id();
+                            asm.emit_typed(OpIMul, result_type, p, &[q, y_id]);
+                            asm.emit_typed(OpISub, result_type, rid, &[x_id, p]);
                         } else if let Some(op) = int_op {
                             asm.emit_typed(op, result_type, rid, &[x_id, y_id]);
                         }
@@ -1824,13 +1872,10 @@ impl Kernel {
                             let continue_lbl = asm.id();
                             let merge = asm.id();
                             let idx_type = emit_type(&mut asm, &mut type_cache, IDX_T);
-                            let len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap();
 
-                            // Pre-header: allocate counter var and store 0, then branch to header
-                            let counter_ptr_type =
-                                push_ptr_type(&mut asm, &mut ptr_cache, &mut type_entries, SC_FUNCTION, idx_type);
-                            let counter_var = asm.id();
-                            asm.emit(OpVariable, &[counter_ptr_type, counter_var, SC_FUNCTION]);
+                            // Pre-header: counter var was declared in the
+                            // entry block; store 0 and branch to header.
+                            let (_, counter_var) = loop_vars[&op_id];
                             let zero = const_pool[&Constant::idx(0)];
                             asm.emit(OpStore, &[counter_var, zero]);
                             asm.emit(OpBranch, &[header]);
@@ -1874,10 +1919,13 @@ impl Kernel {
                             asm.emit(OpStore, &[counter_var, inc]);
 
                             // Check if counter < len
-                            let len_cid = const_pool[&Constant::idx(len)];
+                            let len_id = match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+                                Some(len) => const_pool[&Constant::idx(len)],
+                                None => spv_values[&len],
+                            };
                             let cmp_type = emit_type(&mut asm, &mut type_cache, DType::Bool);
                             let cmp = asm.id();
-                            asm.emit_typed(OpULessThan, cmp_type, cmp, &[inc, len_cid]);
+                            asm.emit_typed(OpULessThan, cmp_type, cmp, &[inc, len_id]);
                             asm.emit(OpBranchConditional, &[cmp, header, merge]);
 
                             // Merge block
@@ -1901,11 +1949,66 @@ impl Kernel {
         // Set bound
         asm.set_bound();
 
-        if debug_asm {
-            debug_print(&asm.words);
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("spirv render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
         }
-
-        Ok(asm.words)
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let lws = [lws[0] as u32, lws[1] as u32, lws[2] as u32];
+        if lws.iter().map(|&x| u64::from(x)).product::<u64>() > u64::from(self.dev_info().max_local_threads) {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        // Push-constant block layout from the `Variable` params (same
+        // std140-scalar layout the Vulkan launcher writes): the worker only
+        // ever sees the descriptor, so this is computed here.
+        let mut push_cur: u32 = 0;
+        let mut push_vars = 0u32;
+        let mut op_id = self.head;
+        let mut steps_op_id = 0usize;
+        while !op_id.is_null() {
+            steps_op_id += 1;
+            if steps_op_id > 50_000 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
+                });
+            }
+            if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {
+                let storage_bits = if *dtype == DType::Bool { 32 } else { dtype.bit_size() };
+                let size = storage_bits as u32 / 8;
+                let align = if size >= 8 { 8 } else { 4 };
+                push_cur = push_cur.next_multiple_of(align);
+                push_cur += size;
+                push_vars += 1;
+            }
+            op_id = self.next_op(op_id);
+        }
+        let push_constants_size = if push_vars == 0 {
+            0
+        } else {
+            push_cur.next_multiple_of(4).max(4)
+        };
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
+        rendered.push_back(Op::Spirv(Box::new(SpirvOp::WordBytes(asm.words.into_boxed_slice()))));
+        rendered.push_back(Op::Spirv(Box::new(SpirvOp::PushConstants(push_constants_size))));
+        Ok(rendered)
     }
 }
 
@@ -1950,8 +2053,11 @@ fn cast_op(src: DType, dst: DType) -> Result<OpCode, BackendError> {
                 OpBitcast
             } else if dst.is_float() {
                 OpFConvert
-            } else if dst.is_int() {
-                OpSConvert
+            } else if dst.is_int() || dst.is_uint() {
+                // Integer width conversion keeps the source's signedness: an
+                // unsigned value zero-extends (OpSConvert would sign-extend a
+                // u16 bit pattern such as 0xFFFF to -1).
+                if src.is_uint() { OpUConvert } else { OpSConvert }
             } else {
                 OpUConvert
             }
@@ -2001,8 +2107,9 @@ fn bit_size(dt: DType) -> u32 {
     }
 }
 
-// ---------- Debug disassembly ----------
+// ---------- Debug disassembly (viz) ----------
 
+#[cfg(feature = "viz")]
 fn storage_class_name(sc: u32) -> &'static str {
     match sc {
         0 => "UniformConstant",
@@ -2020,6 +2127,7 @@ fn storage_class_name(sc: u32) -> &'static str {
     }
 }
 
+#[cfg(feature = "viz")]
 fn builtin_name(b: u32) -> &'static str {
     match b {
         28 => "GlobalInvocationId",
@@ -2030,6 +2138,7 @@ fn builtin_name(b: u32) -> &'static str {
     }
 }
 
+#[cfg(feature = "viz")]
 fn capability_name(c: u32) -> &'static str {
     match c {
         1 => "Shader",
@@ -2039,6 +2148,7 @@ fn capability_name(c: u32) -> &'static str {
     }
 }
 
+#[cfg(feature = "viz")]
 pub fn debug_string(spv: &[u32]) -> String {
     use std::fmt::Write;
     let mut out = String::new();
@@ -2237,8 +2347,4 @@ pub fn debug_string(spv: &[u32]) -> String {
         i += word_count as usize;
     }
     out
-}
-
-pub fn debug_print(spv: &[u32]) {
-    println!("{}", debug_string(spv));
 }

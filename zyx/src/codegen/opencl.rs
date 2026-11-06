@@ -1,6 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
+use super::Register;
 use crate::{
     DType, Map,
     backend::{GwsDim, gws_from_kernel},
@@ -46,39 +47,9 @@ impl Kernel {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "Invalid local work size.".into() });
         }
         let name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
-        let source = self.generate_opencl(&name)?;
+        // Reject group lengths that are constant and exceed the device grid
+        // limits; the same vector becomes the rendered `Grid` below.
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
-        if gws_vec.len() > 3 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("OpenCL render: grid rank {} exceeds 3D", gws_vec.len()).into(),
-            });
-        }
-        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            gws[i] = g;
-        }
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
-        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
-        Ok(rendered)
-    }
-
-    /// Compile kernel to OpenCL C source code.
-    fn generate_opencl(&self, name: &str) -> Result<String, BackendError> {
-        // Reject group lengths that are constant and exceed the device grid limits.
-        gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let mut global_args = String::new();
         let mut op_id = self.head;
         let mut steps_op_id = 0usize;
@@ -113,7 +84,7 @@ impl Kernel {
         let width = |n: &Dim| u16::try_from(*n).expect("OpenCL codegen: vector width is not a u16");
 
         let mut reg_map: Map<OpId, usize> = Map::with_capacity_and_hasher(self.ops.len().into(), BuildHasherDefault::new());
-        let mut registers: Vec<((DType, Vec<Dim>), u32, u8)> = Vec::new();
+        let mut registers: Vec<Register> = Vec::new();
 
         let mut constants: Map<OpId, Constant> = Map::with_capacity_and_hasher(100, BuildHasherDefault::new());
         let mut indices: Map<OpId, u8> = Map::with_capacity_and_hasher(20, BuildHasherDefault::new());
@@ -200,18 +171,15 @@ impl Kernel {
                     // Scalar variables are kernel arguments; copy the argument
                     // into a register so every later use resolves through the
                     // normal register path. Params precede their uses.
-                    match rcs.get(&op_id) {
-                        Some(&rc) => {
-                            let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rc, loop_id);
-                            _ = writeln!(source, "{indent}r{reg} = p{op_id};");
-                        }
-                        // No refcount: nothing references this variable.
-                        // Every operand kind is refcounted in
-                        // compute_dtypes_and_rcs (including Range/Loop
-                        // lengths), and DCE never removes Params, so this
-                        // is a live-but-unused kernel argument that stays
-                        // declared in the signature. No register needed.
-                        None => {}
+                    // No refcount: nothing references this variable.
+                    // Every operand kind is refcounted in
+                    // compute_dtypes_and_rcs (including Range/Loop
+                    // lengths), and DCE never removes Params, so this
+                    // is a live-but-unused kernel argument that stays
+                    // declared in the signature. No register needed.
+                    if let Some(&rc) = rcs.get(&op_id) {
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rc, loop_id);
+                        _ = writeln!(source, "{indent}r{reg} = p{op_id};");
                     }
                 }
                 Op::Param { .. } => {}
@@ -561,14 +529,39 @@ impl Kernel {
             pragma += "#pragma OPENCL EXTENSION cl_khr_fp64 : enable\n";
         }
 
-        Ok(format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n"))
+        let source = format!("{pragma}__kernel void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n");
+        if gws_vec.len() > 3 {
+            return Err(BackendError {
+                status: ErrorStatus::KernelCompilation,
+                context: format!("OpenCL render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+            });
+        }
+        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            gws[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                params.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
+        rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));
+        Ok(rendered)
     }
 }
 
 fn new_reg(
     op_id: OpId,
     reg_map: &mut Map<OpId, usize>,
-    registers: &mut Vec<((DType, Vec<Dim>), u32, u8)>,
+    registers: &mut Vec<Register>,
     dtype: (DType, Vec<Dim>),
     rc: u32,
     current_loop_level: u8,
@@ -592,7 +585,7 @@ fn get_var(
     constants: &Map<OpId, Constant>,
     indices: &Map<OpId, u8>,
     reg_map: &Map<OpId, usize>,
-    registers: &mut [((DType, Vec<Dim>), u32, u8)],
+    registers: &mut [Register],
     loop_level: u8,
 ) -> Result<String, BackendError> {
     if let Some(c) = constants.get(&op_id) {

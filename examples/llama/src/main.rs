@@ -1,13 +1,18 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
+
+//! Llama CLI: loads weights, samples tokens, prints text.
+//!
+//! The model itself lives in the `llama` library target (`src/lib.rs`), so
+//! benchmarks and other examples can reuse it without going through the CLI.
+
 use std::collections::HashMap;
 
 use clap::Parser;
+use llama::{Llama, LlamaConfig, load_weights, remap_gguf_weights};
 use rand::{distr::Distribution, SeedableRng};
-use serde::Deserialize;
 use tokenizers::Tokenizer;
-use zyx::{DType, Tape, Tensor, ZyxError};
-use zyx_nn::{Linear, RMSNorm};
+use zyx::{DType, Tensor, ZyxError};
 
 fn parse_dtype(s: &str) -> Result<DType, String> {
     match s.to_lowercase().as_str() {
@@ -15,527 +20,6 @@ fn parse_dtype(s: &str) -> Result<DType, String> {
         "f16" => Ok(DType::F16),
         "bf16" => Ok(DType::BF16),
         _ => Err(format!("unsupported dtype: {s} (use f32, f16, bf16)")),
-    }
-}
-
-fn repeat_kv(xs: Tensor, n_rep: usize) -> Tensor {
-    if n_rep == 1 {
-        return xs;
-    }
-    let [b_sz, n_kv_head, seq_len, head_dim] = xs.dims::<4>().unwrap();
-    // seq_len may be symbolic: pass its dim tensor directly (NOT -1) so the
-    // inferred dim keeps the original TensorId — the merge-time provability
-    // checks in binary/assign require the SAME dim tensor, not just equal
-    // values.
-    xs.unsqueeze(2)
-        .unwrap()
-        .expand([-1i64, -1, n_rep as i64, -1, -1])
-        .unwrap()
-        .reshape([
-            b_sz.clone(),
-            n_kv_head * (n_rep as i64),
-            seq_len.clone(),
-            head_dim.clone(),
-        ])
-        .unwrap()
-}
-
-fn get_mask(size: u64) -> Tensor {
-    let size_u = size as usize;
-    let mask: Vec<f32> = (0..size_u)
-        .flat_map(|i| (0..size_u).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
-        .collect();
-    Tensor::from(mask).reshape([size, size]).unwrap()
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RopeScaling {
-    pub factor: f64,
-    pub high_freq_factor: f64,
-    pub low_freq_factor: f64,
-    pub original_max_position_embeddings: usize,
-    pub rope_type: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LlamaConfig {
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub intermediate_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: Option<usize>,
-    pub max_position_embeddings: usize,
-    pub rms_norm_eps: f64,
-    pub rope_theta: f64,
-    pub head_dim: Option<usize>,
-    pub rope_scaling: Option<RopeScaling>,
-    pub tie_word_embeddings: bool,
-    #[serde(default = "default_max_context")]
-    pub max_context: usize,
-}
-
-#[derive(Deserialize)]
-struct ShardedIndex {
-    weight_map: HashMap<String, String>,
-}
-
-const fn default_max_context() -> usize {
-    4096
-}
-
-impl LlamaConfig {
-    fn num_key_value_heads(&self) -> usize {
-        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
-    }
-
-    fn head_dim(&self) -> usize {
-        self.head_dim
-            .unwrap_or(self.hidden_size / self.num_attention_heads)
-    }
-}
-
-impl Default for LlamaConfig {
-    fn default() -> Self {
-        Self {
-            vocab_size: 128256,
-            hidden_size: 3072,
-            intermediate_size: 8192,
-            num_hidden_layers: 28,
-            num_attention_heads: 24,
-            num_key_value_heads: Some(8),
-            max_position_embeddings: 131072,
-            rms_norm_eps: 1e-5,
-            rope_theta: 500000.0,
-            head_dim: Some(128),
-            rope_scaling: None,
-            tie_word_embeddings: false,
-            max_context: 4096,
-        }
-    }
-}
-
-fn precompute_rope_freqs(cfg: &LlamaConfig) -> (Tensor, Tensor) {
-    let head_dim = cfg.head_dim();
-    let theta = cfg.rope_theta;
-    let mut inv_freq: Vec<f32> = (0..head_dim)
-        .step_by(2)
-        .map(|i| 1.0 / theta.powf(i as f64 / head_dim as f64) as f32)
-        .collect();
-
-    if let Some(scaling) = &cfg.rope_scaling {
-        let low_wavelen = scaling.original_max_position_embeddings as f64 / scaling.low_freq_factor;
-        let high_wavelen =
-            scaling.original_max_position_embeddings as f64 / scaling.high_freq_factor;
-        let factor = scaling.factor;
-        for freq in inv_freq.iter_mut() {
-            let wavelen = 2.0 * std::f64::consts::PI / *freq as f64;
-            if wavelen > low_wavelen {
-                *freq = (*freq as f64 / factor) as f32;
-            } else if wavelen < high_wavelen {
-                // keep original
-            } else {
-                let smooth = (scaling.original_max_position_embeddings as f64 / wavelen
-                    - scaling.low_freq_factor)
-                    / (scaling.high_freq_factor - scaling.low_freq_factor);
-                *freq = ((1.0 - smooth) * *freq as f64 / factor + smooth * *freq as f64) as f32;
-            }
-        }
-    }
-
-    let inv_freq_len = inv_freq.len() as i64;
-    let inv_freq = Tensor::from(inv_freq).reshape([1, inv_freq_len]).unwrap();
-    let max_pos = cfg.max_position_embeddings as i64;
-    let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, 1)
-        .unwrap()
-        .cast(DType::F32)
-        .reshape([max_pos, 1])
-        .unwrap();
-    let freqs = t.matmul(&inv_freq).unwrap();
-    (freqs.cos(), freqs.sin())
-}
-
-fn apply_rope(xs: &Tensor, cos: &Tensor, sin: &Tensor, seqlen_offset: &Tensor) -> Tensor {
-    let [seq_len, _hd] = xs.rdims::<2>().unwrap();
-    let c = cos.narrow(0, seqlen_offset, &seq_len).unwrap();
-    let s = sin.narrow(0, seqlen_offset, &seq_len).unwrap();
-    xs.rope(c, s).unwrap()
-}
-
-trait VarMap {
-    fn remove_prefix(&mut self, prefix: &str) -> Self;
-    fn take(&mut self, key: &str) -> Tensor;
-}
-
-impl VarMap for HashMap<String, Tensor> {
-    fn remove_prefix(&mut self, prefix: &str) -> Self {
-        let p = format!("{prefix}.");
-        let mut res = HashMap::new();
-        let paths: Vec<String> = self.keys().filter(|k| k.starts_with(&p)).cloned().collect();
-        for path in paths {
-            let t = self.remove(&path).unwrap();
-            let stripped = path.strip_prefix(&p).unwrap().to_string();
-            res.insert(stripped, t);
-        }
-        res
-    }
-
-    fn take(&mut self, key: &str) -> Tensor {
-        self.remove(key)
-            .unwrap_or_else(|| panic!("key {key} not found in weight map"))
-    }
-}
-
-struct Attention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
-    o_proj: Linear,
-    cache_k: Tensor,
-    cache_v: Tensor,
-    num_heads: i64,
-    num_kv_heads: i64,
-    head_dim: i64,
-    cos: Tensor,
-    sin: Tensor,
-}
-
-impl Attention {
-    fn new(
-        cfg: &LlamaConfig,
-        cos: &Tensor,
-        sin: &Tensor,
-        vb: &mut HashMap<String, Tensor>,
-        dtype: DType,
-    ) -> Self {
-        let num_heads = cfg.num_attention_heads as i64;
-        let num_kv_heads = cfg.num_key_value_heads() as i64;
-        let head_dim = cfg.head_dim() as i64;
-        let q_proj = Linear {
-            weight: vb.take("q_proj.weight"),
-            bias: None,
-        };
-        let k_proj = Linear {
-            weight: vb.take("k_proj.weight"),
-            bias: None,
-        };
-        let v_proj = Linear {
-            weight: vb.take("v_proj.weight"),
-            bias: None,
-        };
-        let o_proj = Linear {
-            weight: vb.take("o_proj.weight"),
-            bias: None,
-        };
-        let max_context = cfg.max_context as i64;
-        let cache_k = Tensor::zeros([max_context, num_kv_heads, head_dim], dtype)
-            .contiguous()
-            .unwrap();
-        let cache_v = Tensor::zeros([max_context, num_kv_heads, head_dim], dtype)
-            .contiguous()
-            .unwrap();
-        Self {
-            q_proj,
-            k_proj,
-            v_proj,
-            o_proj,
-            cache_k,
-            cache_v,
-            num_heads,
-            num_kv_heads,
-            head_dim,
-            cos: cos.clone(),
-            sin: sin.clone(),
-        }
-    }
-
-    fn forward(&mut self, xs: &Tensor, start_pos: &Tensor, cache_len: &Tensor) -> Tensor {
-        let [b_size, seq_len, _n_embd] = xs.dims::<3>().unwrap();
-        let q = self.q_proj.forward(xs).unwrap();
-        let k = self.k_proj.forward(xs).unwrap();
-        let v = self.v_proj.forward(xs).unwrap();
-
-        let q = q
-            .reshape([
-                b_size.clone(),
-                seq_len.clone(),
-                self.num_heads.into(),
-                self.head_dim.into(),
-            ])
-            .unwrap()
-            .transpose(1, 2)
-            .unwrap();
-        let k = k
-            .reshape([
-                b_size.clone(),
-                seq_len.clone(),
-                self.num_kv_heads.into(),
-                self.head_dim.into(),
-            ])
-            .unwrap()
-            .transpose(1, 2)
-            .unwrap();
-        let v = v
-            .reshape([
-                b_size.clone(),
-                seq_len.clone(),
-                self.num_kv_heads.into(),
-                self.head_dim.into(),
-            ])
-            .unwrap()
-            .transpose(1, 2)
-            .unwrap();
-
-        let q = apply_rope(&q, &self.cos, &self.sin, start_pos);
-        let k = apply_rope(&k, &self.cos, &self.sin, start_pos);
-
-        // update the preallocated cache using assign
-        // (offset is a variable, so the kernel shape never changes)
-        let k_assign = k.squeeze([0]).transpose(0, 1).unwrap();
-        let v_assign = v.squeeze([0]).transpose(0, 1).unwrap();
-        self.cache_k
-            .narrow(0, start_pos, &seq_len)
-            .unwrap()
-            .assign(&k_assign)
-            .unwrap();
-        self.cache_v
-            .narrow(0, start_pos, &seq_len)
-            .unwrap()
-            .assign(&v_assign)
-            .unwrap();
-
-        // read back the full cache up to start_pos+seq_len.
-        // cache_len is a variable: the read shape [1, H, L_var, D] is identical
-        // on every decode step, so the kernels compile exactly once.
-        let k = self
-            .cache_k
-            .narrow(0, 0i64, cache_len.clone())
-            .unwrap()
-            .unsqueeze(0)
-            .unwrap()
-            .transpose(1, 2)
-            .unwrap();
-        let v = self
-            .cache_v
-            .narrow(0, 0i64, cache_len.clone())
-            .unwrap()
-            .unsqueeze(0)
-            .unwrap()
-            .transpose(1, 2)
-            .unwrap();
-
-        let n_kv_groups = (self.num_heads / self.num_kv_heads) as usize;
-        let k = repeat_kv(k, n_kv_groups);
-        let v = repeat_kv(v, n_kv_groups);
-
-        let scale = Tensor::from(1.0f32 / (self.head_dim as f32).sqrt()).cast(q.dtype());
-        let attn = q.matmul(k.transpose(2, 3).unwrap()).unwrap() * scale;
-
-        let seq_len_i = seq_len.item::<i64>();
-        let attn = if seq_len_i <= 1 {
-            attn
-        } else {
-            let mask = get_mask(seq_len_i as u64).cast(attn.dtype());
-            attn + mask
-        };
-        let attn = attn.softmax([-1]).unwrap();
-        let out = attn.matmul(&v).unwrap();
-        let out = out.transpose(1, 2).unwrap();
-        let d = self.num_heads * self.head_dim;
-        let out = out
-            .reshape([b_size.clone(), seq_len.clone(), d.into()])
-            .unwrap();
-        let out = self.o_proj.forward(out).unwrap();
-        out
-    }
-}
-
-struct MLP {
-    gate_proj: Linear,
-    up_proj: Linear,
-    down_proj: Linear,
-}
-
-impl MLP {
-    fn new(vb: &mut HashMap<String, Tensor>) -> Self {
-        let gate_proj = Linear {
-            weight: vb.take("gate_proj.weight"),
-            bias: None,
-        };
-        let up_proj = Linear {
-            weight: vb.take("up_proj.weight"),
-            bias: None,
-        };
-        let down_proj = Linear {
-            weight: vb.take("down_proj.weight"),
-            bias: None,
-        };
-        Self {
-            gate_proj,
-            up_proj,
-            down_proj,
-        }
-    }
-
-    fn forward(&self, xs: &Tensor) -> Tensor {
-        let gate = self.gate_proj.forward(xs).unwrap().swish();
-        let up = self.up_proj.forward(xs).unwrap();
-        self.down_proj.forward(gate * up).unwrap()
-    }
-}
-
-struct DecoderLayer {
-    self_attn: Attention,
-    mlp: MLP,
-    input_layernorm: RMSNorm,
-    post_attention_layernorm: RMSNorm,
-}
-
-impl DecoderLayer {
-    fn new(
-        cfg: &LlamaConfig,
-        cos: &Tensor,
-        sin: &Tensor,
-        vb: &mut HashMap<String, Tensor>,
-        dtype: DType,
-    ) -> Self {
-        let self_attn = Attention::new(cfg, cos, sin, &mut vb.remove_prefix("self_attn"), dtype);
-        let mlp = MLP::new(&mut vb.remove_prefix("mlp"));
-        let input_layernorm = RMSNorm {
-            scale: vb.take("input_layernorm.weight").cast(dtype),
-            eps: cfg.rms_norm_eps,
-        };
-        let post_attention_layernorm = RMSNorm {
-            scale: vb.take("post_attention_layernorm.weight").cast(dtype),
-            eps: cfg.rms_norm_eps,
-        };
-        Self {
-            self_attn,
-            mlp,
-            input_layernorm,
-            post_attention_layernorm,
-        }
-    }
-
-    fn forward(&mut self, xs: &Tensor, start_pos: &Tensor, cache_len: &Tensor) -> Tensor {
-        let residual = xs.clone();
-        let xs = self.input_layernorm.forward(xs).unwrap();
-        let attn_out = self.self_attn.forward(&xs, start_pos, cache_len);
-        let xs = attn_out + residual;
-        let residual = xs.clone();
-        let xs = self.post_attention_layernorm.forward(xs).unwrap();
-        let mlp_out = self.mlp.forward(&xs);
-        let out = mlp_out + residual;
-        out
-    }
-}
-
-fn embedding_forward(weight: &Tensor, input: &Tensor) -> Tensor {
-    let [b_size, seq_len] = input.dims::<2>().unwrap();
-    let [vocab_size, embed_size] = weight.dims::<2>().unwrap();
-    let idx = input
-        .cast(DType::F32)
-        .reshape([b_size, seq_len, 1i64.into(), 1i64.into()])
-        .unwrap();
-    let arange = Tensor::arange(0, vocab_size.item::<i64>(), 1)
-        .unwrap()
-        .reshape([1i64.into(), 1i64.into(), vocab_size.clone(), 1i64.into()])
-        .unwrap()
-        .cast(DType::F32);
-    let w = weight
-        .reshape([1i64.into(), 1i64.into(), vocab_size, embed_size])
-        .unwrap();
-    let one_hot = arange.equal(idx).unwrap().cast(w.dtype());
-    (one_hot * w).sum([2]).unwrap()
-}
-
-struct Llama {
-    embed_weight: Tensor,
-    layers: Vec<DecoderLayer>,
-    norm: RMSNorm,
-    lm_head: Linear,
-}
-
-impl Llama {
-    fn new(cfg: &LlamaConfig, vb: &mut HashMap<String, Tensor>, dtype: DType) -> Self {
-        let (cos, sin) = precompute_rope_freqs(cfg);
-        let cos = cos.cast(dtype);
-        let sin = sin.cast(dtype);
-
-        let embed_weight = vb.take("model.embed_tokens.weight");
-        let lm_head_weight = if cfg.tie_word_embeddings {
-            embed_weight.clone()
-        } else {
-            vb.take("lm_head.weight")
-        };
-
-        let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
-        let mut vb_layers = vb.remove_prefix("model.layers");
-        for i in 0..cfg.num_hidden_layers {
-            let layer = DecoderLayer::new(
-                cfg,
-                &cos,
-                &sin,
-                &mut vb_layers.remove_prefix(&i.to_string()),
-                dtype,
-            );
-            layers.push(layer);
-        }
-        let norm = RMSNorm {
-            scale: vb.take("model.norm.weight").cast(dtype),
-            eps: cfg.rms_norm_eps,
-        };
-        let lm_head = Linear {
-            weight: lm_head_weight,
-            bias: None,
-        };
-        Self {
-            embed_weight,
-            layers,
-            norm,
-            lm_head,
-        }
-    }
-
-    fn forward(&mut self, input_ids: &Tensor, start_pos: usize) -> Tensor {
-        let [_b_size, seq_len] = input_ids.dims::<2>().unwrap();
-        let tape = Tape::empty();
-        tape.add(&self.embed_weight).unwrap();
-        for layer in &self.layers {
-            tape.add(&layer.input_layernorm.scale).unwrap();
-            tape.add(&layer.post_attention_layernorm.scale).unwrap();
-            tape.add(&layer.self_attn.q_proj.weight).unwrap();
-            tape.add(&layer.self_attn.k_proj.weight).unwrap();
-            tape.add(&layer.self_attn.v_proj.weight).unwrap();
-            tape.add(&layer.self_attn.o_proj.weight).unwrap();
-            tape.add(&layer.self_attn.cos).unwrap();
-            tape.add(&layer.self_attn.sin).unwrap();
-            tape.add(&layer.self_attn.cache_k).unwrap();
-            tape.add(&layer.self_attn.cache_v).unwrap();
-            tape.add(&layer.mlp.gate_proj.weight).unwrap();
-            tape.add(&layer.mlp.up_proj.weight).unwrap();
-            tape.add(&layer.mlp.down_proj.weight).unwrap();
-        }
-        tape.add(&self.norm.scale).unwrap();
-        tape.add(&self.lm_head.weight).unwrap();
-        let mut xs = embedding_forward(&self.embed_weight, input_ids);
-        // Symbolic positions: fresh variables each call, but identical kernel
-        // IR every step (params hash by ordinal, not value) — one compile total.
-        let pos = Tensor::variable(start_pos as i64);
-        let cache_len = Tensor::variable(start_pos as i64 + seq_len.item::<i64>());
-        for layer in self.layers.iter_mut() {
-            xs = layer.forward(&xs, &pos, &cache_len);
-        }
-        xs = self.norm.forward(xs).unwrap();
-        xs = xs.narrow(1, seq_len - 1i64, 1i64).unwrap().squeeze([1]);
-        let out = self.lm_head.forward(xs).unwrap();
-        let mut realize_args: Vec<&Tensor> = vec![&out];
-        for layer in &self.layers {
-            realize_args.push(&layer.self_attn.cache_k);
-            realize_args.push(&layer.self_attn.cache_v);
-        }
-        tape.realize(realize_args).unwrap();
-        out
     }
 }
 
@@ -601,8 +85,7 @@ impl LogitsProcessor {
             return self.sample_multinomial(prs);
         }
         let mut argsort: Vec<usize> = (0..prs.len()).collect();
-        let (indices, _, _) =
-            argsort.select_nth_unstable_by(top_k, |&i, &j| prs[j].total_cmp(&prs[i]));
+        let (indices, _, _) = argsort.select_nth_unstable_by(top_k, |&i, &j| prs[j].total_cmp(&prs[i]));
         let top_prs: Vec<f32> = indices.iter().map(|&i| prs[i]).collect();
         let index = self.sample_multinomial(&top_prs);
         indices[index as usize] as u32
@@ -638,8 +121,7 @@ impl LogitsProcessor {
                 let prs = logits.softmax([-1]).unwrap();
                 let prs: Vec<f32> = prs.try_into().unwrap();
                 let mut argsort: Vec<usize> = (0..prs.len()).collect();
-                let (indices, _, _) =
-                    argsort.select_nth_unstable_by(*k, |&i, &j| prs[j].total_cmp(&prs[i]));
+                let (indices, _, _) = argsort.select_nth_unstable_by(*k, |&i, &j| prs[j].total_cmp(&prs[i]));
                 let mut prs_topk = vec![0.0f32; prs.len()];
                 let sum: f32 = indices.iter().map(|&i| prs[i]).sum();
                 for &i in indices.iter() {
@@ -713,10 +195,7 @@ impl TextGeneration {
         }
         if self.verbose_prompt {
             for (token, id) in encoding.get_tokens().iter().zip(encoding.get_ids().iter()) {
-                println!(
-                    "{id:7} -> '{}'",
-                    token.replace('▁', " ").replace("<0x0A>", "\n")
-                );
+                println!("{id:7} -> '{}'", token.replace('▁', " ").replace("<0x0A>", "\n"));
             }
         }
         let tokens: Vec<u32> = encoding.get_ids().to_vec();
@@ -746,11 +225,7 @@ impl TextGeneration {
             let logits = if self.repeat_penalty == 1.0 {
                 logits
             } else {
-                apply_repeat_penalty(
-                    &logits,
-                    self.repeat_penalty,
-                    &tokens[tokens.len().saturating_sub(self.repeat_last_n)..],
-                )
+                apply_repeat_penalty(&logits, self.repeat_penalty, &tokens[tokens.len().saturating_sub(self.repeat_last_n)..])
             };
             let next_token = self.logits_processor.sample(&logits);
             let token_str = self.tokenizer.decode(&[next_token], true).unwrap();
@@ -807,78 +282,11 @@ struct Args {
     config_file: Option<String>,
 }
 
-fn remap_gguf_weights(mut gguf: HashMap<String, Tensor>) -> HashMap<String, Tensor> {
-    let mut out = HashMap::new();
-    if let Some(t) = gguf.remove("token_embd.weight") {
-        out.insert("model.embed_tokens.weight".to_string(), t);
-    }
-    if let Some(t) = gguf.remove("output_norm.weight") {
-        out.insert("model.norm.weight".to_string(), t);
-    }
-    if let Some(t) = gguf.remove("output.weight") {
-        out.insert("lm_head.weight".to_string(), t);
-    }
-    let layer_keys: Vec<String> = gguf
-        .keys()
-        .filter(|k| k.starts_with("blk."))
-        .cloned()
-        .collect();
-    for key in layer_keys {
-        let parts: Vec<&str> = key.splitn(4, '.').collect();
-        if parts.len() < 4 {
-            continue;
-        }
-        let layer: usize = parts[1].parse().unwrap_or(0);
-        let tensor = gguf.remove(&key).unwrap();
-        let hf_key = match parts[2] {
-            "attn_q" => format!("model.layers.{layer}.self_attn.q_proj.weight"),
-            "attn_k" => format!("model.layers.{layer}.self_attn.k_proj.weight"),
-            "attn_v" => format!("model.layers.{layer}.self_attn.v_proj.weight"),
-            "attn_output" => format!("model.layers.{layer}.self_attn.o_proj.weight"),
-            "attn_norm" => format!("model.layers.{layer}.input_layernorm.weight"),
-            "ffn_gate" => format!("model.layers.{layer}.mlp.gate_proj.weight"),
-            "ffn_down" => format!("model.layers.{layer}.mlp.down_proj.weight"),
-            "ffn_up" => format!("model.layers.{layer}.mlp.up_proj.weight"),
-            "ffn_norm" => format!("model.layers.{layer}.post_attention_layernorm.weight"),
-            _ => continue,
-        };
-        out.insert(hf_key, tensor);
-    }
-    out
-}
-
-fn load_weights(weight_path: &str) -> HashMap<String, Tensor> {
-    let path = std::path::Path::new(weight_path);
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    match ext {
-        "json" => {
-            let content = std::fs::read_to_string(weight_path).unwrap();
-            let index: ShardedIndex = serde_json::from_str(&content).unwrap();
-            let base = path.parent().unwrap();
-            let mut shard_files: Vec<&String> = index.weight_map.values().collect();
-            shard_files.sort();
-            shard_files.dedup();
-            let mut all_weights = HashMap::new();
-            for f in shard_files {
-                let shard_path = base.join(f);
-                let weights = Tensor::load(&shard_path).unwrap();
-                all_weights.extend(weights);
-            }
-            all_weights
-        }
-        _ => Tensor::load(weight_path).unwrap(),
-    }
-}
-
 fn main() -> Result<(), ZyxError> {
     Tensor::set_implicit_casts(false);
     let args = Args::parse();
-    let weight_file = args
-        .weight_file
-        .unwrap_or_else(|| "model.safetensors".to_string());
-    let tokenizer_file = args
-        .tokenizer_file
-        .unwrap_or_else(|| "tokenizer.json".to_string());
+    let weight_file = args.weight_file.unwrap_or_else(|| "model.safetensors".to_string());
+    let tokenizer_file = args.tokenizer_file.unwrap_or_else(|| "tokenizer.json".to_string());
     let tokenizer = Tokenizer::from_file(&tokenizer_file).unwrap();
 
     let cfg: LlamaConfig = match &args.config_file {

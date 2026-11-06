@@ -211,8 +211,9 @@ pub trait Transport {
     /// Write device *memory* -- L1 or GDDR -- in bulk.
     ///
     /// A transport may use a faster, weaker path here (write-combining on
-    /// silicon), so only [`crate::Device`]'s memory accessors call it: never a
-    /// register, which may be dword-only and must see its stores in order. The
+    /// silicon), so only [`crate::backend::tenstorrent::dev::Device`]'s memory
+    /// accessors call it: never a register, which may be dword-only and must
+    /// see its stores in order. The
     /// write is complete from the CPU's side when this returns (nothing buffered
     /// may be overtaken by a later access), but, as with every PCIe write, not
     /// necessarily landed; see `Device::fence`.

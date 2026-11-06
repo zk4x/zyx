@@ -3,23 +3,24 @@
     - [x] optional openmp
   - [x] cuda
     - [x] fix async memcopy
-    - [ ] tensor cores
-    - [ ] fix load calculation
+    - [x] tensor cores (`opt_tensorize` MakeOpt; CUDA m16n8k8 f16→f32/f16 variants; other dtype variants open)
+    - [ ] fix load calculation (no CUDA-specific accounting: the cost model is generic in kernel/cost.rs; `compute` is still a TODO estimate)
     - [x] fix event memory leaks, all events must be properly destroyed
     - [x] channel for context, because cuda context is thread local
     - [x] rewrite PTX compiler to have proper register manager that handles constants and everything
   - [ ] hip
   - [x] opencl
-    - [ ] fix load calculation
+    - [ ] fix load calculation (generic cost model only; same codegen tile / rank-3 load todo arms as CUDA)
   - [ ] vulkan
     - [x] initialization
     - [x] memory management
     - [x] spirv compiler (to spirv binary)
-      - [ ] replace opcodes and other things with enums instead of constants
+      - [ ] replace opcodes and other things with enums instead of constants (`OpCode` enum landed in codegen/spirv.rs; storage classes, builtins, exec modes and GLSL ext-instruction ids are still numeric)
     - [x] kernel launch
   - [x] wgpu
-    - [ ] fix load calculation, probably using Atomic usize
-    - [x] spirv compiler
+    - [ ] fix load calculation, probably using Atomic usize (`free_bytes` is a plain `Dim` initialised to a hardcoded 1 GB)
+    - [x] wgsl compiler (superseded the spirv path; the backend submits `ShaderSource::Wgsl`, `Op::Spirv` is rejected)
+    - [ ] launch path: `PlanPartition::WGPU` + uniform params buffer (`backend/mod.rs` still `todo!("schedule launch run for wgpu")`; only autotune `launch_timed` can launch today)
   - [ ] tenstorrent
     - [x] memory pool, allocation, movement
     - [x] cpp runtime
@@ -34,8 +35,8 @@
   - [x] staging buffers fully removed — all pool_to_pool copies go directly into the destination buffer (file mapping read straight into dst, device DMA into dst host buffer, `Pool::Host` as the only staging pool); supersedes "clean up completed transfer events to free host staging buffers early" (transfer events were also removed — worker owns foreign-buffer lifetime)
   - [x] when promoting to graph, promote the whole kernel without materializing
   - [x] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
-  - [ ] add user ability to have custom assembly, cuda, spirv, ptx, tenstorrent, etc. kernels
-  - [ ] add user ability to add custom kernel optimization passes to the autotune
+  - [ ] custom kernels: zyx-IR kernels + inline asm are public and tested (`kernel/custom.rs` `source`/`asm`, 08_graph `custom_kernel_*`); a source-only foreign C/CUDA/SPIR-V kernel is still unreachable (`push_back` is `pub(crate)`)
+  - [ ] user-supplied passes in the autotune: `BeamSearch::run` takes `&[MakeOpt]`, but realize hardcodes `Kernel::default_optimizations()`
 - [ ] graph
   - [x] autograd
     - [x] fix t6 test
@@ -56,15 +57,15 @@
     - [x] register memory pressure (spill)
     - [x] global memory pressure (loads + stores)
   - [x] fix is expandable conditions
-  - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion
-  - [ ] tenstorrent tilization pass inside egraph as a variant (timing decides; settle boundary placement vs opaque custom kernels)
-  - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately in the egraph
+  - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion — dependent load/store fusion landed in the kernelizer; full fusion does not (a store still opens a fresh load kernel, multi-consumer classes duplicate)
+  - [ ] tenstorrent tilization pass inside egraph as a variant (timing decides; settle boundary placement vs opaque custom kernels) — `tt_tile` exists as a device-epilogue lowering, not an egraph/timing variant
+  - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately in the egraph — still structural predicates only (outputs>1 / contains_stores / preceded_by_reduce); no cost model is consulted
   - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
-    - [x] softmax fusion test (eventually should be single kernel)
+    - [ ] softmax fusion test (eventually should be single kernel) — UNCHECKED: no test in zyx/tests asserts fused kernel count/shape
     - [ ] just asserts that various graphs fuse into single kernel
   - [x] scheduling to multiple devices
   - [x] automatic dropping of unneeded tensors
-  - [ ] deduplicate tensor loads
+  - [x] deduplicate tensor loads (same-buffer/same-index CSE with WAR invalidation in kernel/fold_constants.rs; intra-kernel only, no cross-kernel sharing)
   - [ ] automatic sharding across devices
   - [x] add assign node to the graph
   - [x] add contiguous node to the graph
@@ -85,9 +86,9 @@
     - [x] in optimizer
     - [x] in kernel
   - [x] potentially integrate optimizer into kernel
-  - [ ] improve unfold_pows
-    - [ ] specialized case for integers
-    - [ ] specialized case for constants
+  - [x] improve unfold_pows
+    - [x] specialized case for integers (const exponent incl. negative, dynamic int exponent bit loop)
+    - [x] specialized case for constants (host binary exponentiation, both-constant fold)
   - [x] loop invariant code motion
   - [x] comutative reorder (put before LICM)
   - [x] div mod simplifications
@@ -102,16 +103,16 @@
   - [x] register tiling (needs improvement)
   - [x] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
   - [x] fully symbolic shapes (ExprId/shape_id, dim tensors, resolve_symbolic; only serialize-by-value remains, tracked separately)
-  - [ ] local memory tiling for matmul like kernels
-  - [ ] wmma optimization pass (automatic tensorization: revive `fuse_mma` as autotuner MakeOpt, timing decides; CUDA/WMMA first, TT `matmul_tile` after; matcher stays linear-time, 30us budget)
-  - [ ] tiling optimization passes for tenstorrent (epilogue passes: tiling + reader/writer section generation, extends `opt_tenstorrent_tile`; remove TEMP DEBUG eprints in backend/tenstorrent.rs first)
+  - [x] local memory tiling for matmul like kernels (`opt_local_staging` stages the lane-invariant operand; the matmul recipe combines lanes + per-thread tile + staging; both-operand staging open)
+  - [x] wmma optimization pass (automatic tensorization: `opt_tensorize` MakeOpt, timing decides, device-gated on `tensor_cores` + `mma_variants`; CUDA m16n8k8 done, TT `matmul_tile` builder still `todo!()`)
+  - [ ] tiling optimization passes for tenstorrent (epilogue passes: tiling + reader/writer section generation; `tt_tile` + `tt_dataflow_select` live in the device epilogue)
     - [x] elementwise
-    - [ ] reduce
-      - [ ] scalar
-      - [ ] row
-      - [ ] col
-    - [ ] matmul
-    - [ ] transpose
+    - [x] reduce (Add/Max only)
+      - [x] scalar
+      - [x] row
+      - [x] col
+    - [x] matmul (single-tile)
+    - [ ] transpose (no `TtEmit::Transpose`, `DmReadTransposed` never constructed, `transpose_tile` is `todo!()`)
 - [ ] tensor
   - [x] gather
   - [x] scatter
@@ -142,19 +143,19 @@
 
 - [ ] dtype
   - [x] quantized dtypes (full QDType enum Q4_0..IQ4_XS with GGUF codes; 16_quantization green)
-  - [ ] make binary if one side is scalar do autopromotion to the dtype of the dtype of the non-scalar tensor
+  - [x] make binary if one side is scalar do autopromotion to the dtype of the dtype of the non-scalar tensor (rank-0 operand cast to the other operand's dtype, tensor/mod.rs:3751; only rank-0 counts as scalar)
   - [x] optional implicit dtype casts
 - [x] index select, gather, remove last loop
 - [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)
-- [ ] improved memory mapper with graph-level decision making
+- [ ] improved memory mapper with graph-level decision making — PARTIAL: one command queue per graph with graph-wide last-use deaths; buffer reuse planning is per backend (OpenCL/Vulkan `AllocPlan::Reuse`, CUDA best-fit, C on the fly), no cross-device/cross-pool mapper
 - [x] tensor layout (RowMajor, TileMajor for Tenstorrent, Sharded for multi-device) — OBSOLETE, will not implement: layout lives structurally in movement ops (tilize/untilize chains), no per-tensor layout tags, no layout_map, no native_layout
       - Runtime stores layout per-tensor in `layout_map`
       - Scheduler converts layout during pool migration when `src_layout != dst_layout`
       - Backends declare native layout via `DeviceInfo::native_layout`
       - Conversion utility: row-major ↔ tile-major byte rearrangement
-- [ ] tensor cores
-    - [ ] tensor core ops
-  - [ ] local memory tiling (automatic shared memory tiling: loop tiling + smem staging as MakeOpt with per-backend `local_mem_size` budgets; watch BeamSearch growth)
+- [x] tensor cores
+    - [x] tensor core ops (`Op::Wmma` + `opt_tensorize`; m16n8k8 helpers in codegen/cuda.rs and codegen/ptx.rs)
+  - [x] local memory tiling (automatic shared memory tiling: `opt_local_staging` stages into local memory as a MakeOpt, gated on `DeviceInfo::local_mem_size`/`max_local_threads`; recipe combines it with lanes + per-thread tile)
     - [x] merge all mul + add into mad instructions
   - [ ] local memory tiling
     - [x] local tiling for accumulators in large reduces
@@ -164,10 +165,7 @@
   - [x] optimizer with search
   
 - [ ] testing
-  - [ ] fuzzy tester
-    - [x] unary ops
-    - [ ] movemnt ops
-    - [ ] binary ops
+  - [x] fuzzy tester — DELETED as obsolete in 7842e9f6; no property/fuzz harness remains (the unary/movement/binary sub-items died with the crate)
   - [x] pad_2
   - [x] reshape_permute_1
   - [x] rope_1
@@ -199,10 +197,10 @@
   - [x] mnist
   - [x] RNN
   - [ ] resnet
-  - [ ] llama
+  - [x] llama (examples/llama: GGUF load, sampling loop, tests under examples/llama/tests)
     - [ ] optimize speed of llama 3b example (after tensorize + smem tiling land; profile first: matmul vs bandwidth vs fusion bound)
-  - [ ] phi LLM
-  - [ ] tenstorrent 300 tflop gemm (autotune MT/NT/KT tile sizes; keep as vendor-kernel competitor)
+  - [x] phi LLM (examples/phi: safetensors load, generation, MMLU eval)
+  - [ ] tenstorrent 300 tflop gemm — example + MT/NT/subblock autotune landed (examples/tt_gemm); target unmet: README reports ~2.4–3.1 TFLOP/s, multicast/L1 sharing missing, `KT_TILES` is a fixed const
 
 - [x] device/pool global handles (device-layer rewrite, RT/slab/TensorId/tape unchanged) — DONE (commits `1c9ef7bb` separate pool locks, `362f344f` device API refactor, `3343d4ea` backend rewrite)
   - [x] add Copy `Pool` enum (Host, Disk(u16), Cuda(u16), TT(u16), ...) as the only way to access memory pools
@@ -239,7 +237,7 @@
 - [ ] per-thread runtimes (later, after device layer)
   - [ ] per-thread Runtime (slab + kernels + rng/config as thread-locals), no cross-thread tensors
   - [ ] shared layer is only backends/devices/kernel cache behind `Arc<Mutex<>>`
-- [ ] python bindings
+- [ ] python bindings — PARTIAL: `argwhere` absent in Rust and Python, no public tilize/untilize binding
   - [x] basic tensor creation (randn, zeros, ones, from numpy)
   - [x] elementwise ops: abs, cos, cosh, exp, floor, ln, log2, relu, rsqrt, sigmoid, sin, sinh, sqrt, tan, tanh, leaky_relu, celu, elu, softplus, exp2, mish, quick_gelu, selu, hard_sigmoid, swish, cmplt, cmpgt, maximum, minimum, clamp
   - [x] elementwise ops: bitnot, ceil, erf, frac, isnan, isinf, isclose, log10, rad2deg, deg2rad, round, sign, square, trunc, logical_and, logical_or

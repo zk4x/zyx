@@ -183,7 +183,7 @@ impl DiskMemoryPool {
             unsafe {
                 core::ptr::copy_nonoverlapping(mapping.base.add(buffer.offset_bytes as usize), dst.as_mut_ptr(), dst.len());
             }
-            return Ok(());
+            Ok(())
         }
         #[cfg(windows)]
         {

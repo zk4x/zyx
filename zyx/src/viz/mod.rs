@@ -21,7 +21,7 @@ use crate::{
     Map,
     backend::{Cmd, Dev, DeviceInfo, ProgramId},
     graph::Graph,
-    kernel::{Kernel, Op, OpId},
+    kernel::{Kernel, Op, OpId, PTXOp, SpirvOp},
 };
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -250,11 +250,33 @@ fn derive_optimized(cap: &KernelCapture) -> Kernel {
 /// Errors are rendered into the returned string (the UI shows them inline).
 pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
     let mut kernel = derive_optimized(cap);
+    // `C`, `CudaC` and `OpenCL` all read back the source the render embedded.
+    let render_source = |kernel: &mut Kernel, dev: Dev| -> String {
+        kernel.dev = dev;
+        kernel.dev_info = match dev.info() {
+            Ok(info) => Some(info),
+            Err(e) => return format!("device info failed: {e:?}"),
+        };
+        match kernel.render() {
+            Ok(rendered) => {
+                let mut op_id = rendered.head;
+                while !op_id.is_null() {
+                    match &rendered.ops[op_id].op {
+                        Op::Source(src) => return src.as_str().to_string(),
+                        Op::PTX(ptx) => {
+                            let PTXOp::Bytes(bytes) = ptx.as_ref();
+                            return String::from_utf8_lossy(bytes).into_owned();
+                        }
+                        _ => {}
+                    }
+                    op_id = rendered.next_op(op_id);
+                }
+                "render produced no Source".to_string()
+            }
+            Err(e) => format!("render failed: {e:?}"),
+        }
+    };
     match target {
-        Target::CudaC => match kernel.generate_cuda("zyx_viz") {
-            Ok(source) => source,
-            Err(e) => format!("generate_cuda failed: {e:?}"),
-        },
         Target::Ptx => {
             if cap.cc.is_none() {
                 return "PTX requires a CUDA device (no compute capability recorded).".to_string();
@@ -264,11 +286,18 @@ pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
                 Err(e) => format!("generate_ptx failed: {e:?}"),
             }
         }
-        Target::OpenCL => {
-            // Render through the kernel IR: switch the kernel to an
-            // available OpenCL device, then read back the embedded Source.
-            let Some(dev) = Dev::all().into_iter().find(|d| matches!(d, Dev::OpenCL(_))) else {
-                return "OpenCL render needs an OpenCL device (none available).".to_string();
+        Target::C => render_source(&mut kernel, Dev::C),
+        Target::CudaC => match Dev::all().into_iter().find(|d| matches!(d, Dev::Cuda(_))) {
+            Some(dev) => render_source(&mut kernel, dev),
+            None => "CUDA render needs a CUDA device (none available).".to_string(),
+        },
+        Target::OpenCL => match Dev::all().into_iter().find(|d| matches!(d, Dev::OpenCL(_))) {
+            Some(dev) => render_source(&mut kernel, dev),
+            None => "OpenCL render needs an OpenCL device (none available).".to_string(),
+        },
+        Target::Spirv => {
+            let Some(dev) = Dev::all().into_iter().find(|d| matches!(d, Dev::Vulkan(_))) else {
+                return "SPIR-V render needs a Vulkan device (none available).".to_string();
             };
             kernel.dev = dev;
             kernel.dev_info = match dev.info() {
@@ -279,23 +308,17 @@ pub(crate) fn generate_source(cap: &KernelCapture, target: Target) -> String {
                 Ok(rendered) => {
                     let mut op_id = rendered.head;
                     while !op_id.is_null() {
-                        if let Op::Source(src) = &rendered.ops[op_id].op {
-                            return src.as_str().to_string();
+                        if let Op::Spirv(spv) = &rendered.ops[op_id].op
+                            && let SpirvOp::WordBytes(words) = spv.as_ref()
+                        {
+                            return crate::codegen::spirv::debug_string(words);
                         }
                         op_id = rendered.next_op(op_id);
                     }
-                    "render produced no Source".to_string()
+                    "render produced no SPIR-V".to_string()
                 }
                 Err(e) => format!("render failed: {e:?}"),
             }
         }
-        Target::C => match kernel.generate_c(cap.has_openmp, "zyx_viz") {
-            Ok(source) => source,
-            Err(e) => format!("generate_c failed: {e:?}"),
-        },
-        Target::Spirv => match kernel.generate_spirv(false) {
-            Ok(words) => crate::codegen::spirv::debug_string(&words),
-            Err(e) => format!("generate_spirv failed: {e:?}"),
-        },
     }
 }

@@ -16,6 +16,15 @@
 #![forbid(rustdoc::unescaped_backticks)]
 #![forbid(rustdoc::redundant_explicit_links)]
 
+// Compile the workspace README's Rust examples as doctests. The training loop
+// needs both `zyx` and `zyx-optim` (a dev-dependency here), so `zyx-nn` is the
+// crate that can host it. Hidden and doctest-only: it must not appear in the
+// rendered docs or in normal builds.
+#[cfg(doctest)]
+#[doc(hidden)]
+#[doc = include_str!("../../README.md")]
+pub struct ReadmeDoctests;
+
 pub use zyx_derive::Module;
 
 mod linear;
@@ -64,6 +73,17 @@ pub use transformer_encoder_layer::TransformerEncoderLayer;
 
 mod transformer_decoder_layer;
 pub use transformer_decoder_layer::TransformerDecoderLayer;
+
+// LLM blocks (llama-family): grouped-query attention with rotary embeddings,
+// a SwiGLU feed-forward, and the pre-norm decoder block that chains them.
+mod gqa_attention;
+pub use gqa_attention::{GqaAttention, RopeConfig, RopeScaling};
+
+mod swiglu;
+pub use swiglu::SwiGlu;
+
+mod decoder_block;
+pub use decoder_block::DecoderBlock;
 
 // I don't like this, use fn(&Tensor) -> Tensor or something like that instead
 // fn(impl Into<Tensor>) -> Tensor

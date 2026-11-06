@@ -9,6 +9,10 @@ use zyx::{DType, Tape, Tensor, ZyxError};
 
 #[test]
 fn rmsnorm_large_rank3() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
+
     const H: usize = 3072;
     let x = Tensor::randn([1i64, 2, H as i64], DType::F16)?;
     let scale = Tensor::from(vec![1.0f32; H]).cast(DType::F16);
@@ -47,6 +51,10 @@ fn rmsnorm_large_rank3() -> Result<(), ZyxError> {
 
 #[test]
 fn rmsnorm_large_rank3_eager() -> Result<(), ZyxError> {
+    if !Tensor::dtype_capability(DType::F16).any() {
+        return Ok(());
+    }
+
     const H: usize = 3072;
     let x = Tensor::randn([1i64, 2, H as i64], DType::F16)?;
     let scale = Tensor::from(vec![1.0f32; H]).cast(DType::F16);

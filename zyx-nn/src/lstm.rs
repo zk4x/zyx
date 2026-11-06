@@ -121,7 +121,7 @@ impl LSTMCell {
         }
 
         // Split gates: [i, f, g, o]
-        let i = gates.narrow(1, 0, hs)?.sigmoid();
+        let i = gates.narrow(1, 0i64, hs)?.sigmoid();
         let f = gates.narrow(1, hs, hs)?.sigmoid();
         let g = gates.narrow(1, 2 * hs, hs)?.tanh();
         let o = gates.narrow(1, 3 * hs, hs)?.sigmoid();

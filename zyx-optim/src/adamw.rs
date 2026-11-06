@@ -81,17 +81,19 @@ impl AdamW {
                     self.vm.push(vh);
                 }
                 // Parameter update with AMSGrad max
-                *param = (&*param - mh / ((self.vm[i].sqrt() + self.eps) * self.learning_rate))
-                    .cast(param.dtype());
+                let updated =
+                    (&*param - mh / ((self.vm[i].sqrt() + self.eps) * self.learning_rate)).cast(param.dtype());
+                param.clone().assign(&updated).expect("AdamW: failed to assign the updated parameter");
             } else {
                 // Parameter update standard AdamW
-                *param = (&*param - mh / ((vh.sqrt() + self.eps) * self.learning_rate))
-                    .cast(param.dtype());
+                let updated = (&*param - mh / ((vh.sqrt() + self.eps) * self.learning_rate)).cast(param.dtype());
+                param.clone().assign(&updated).expect("AdamW: failed to assign the updated parameter");
             }
 
             // Decoupled weight decay step applied directly to parameter
             if self.weight_decay != 0.0 {
-                *param = &*param * (1.0 - self.learning_rate * self.weight_decay);
+                let decayed = &*param * (1.0 - self.learning_rate * self.weight_decay);
+                param.clone().assign(&decayed).expect("AdamW: failed to assign the weight decay step");
             }
         }
     }

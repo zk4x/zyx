@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::{DType, Scalar, Tape, Tensor, ZyxError};
+use zyx::{DType, Dev, Scalar, Tape, Tensor, ZyxError};
 
 #[test]
 fn sin() -> Result<(), ZyxError> {
@@ -169,6 +169,43 @@ fn assign_graph_computed_src() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// An assign whose src reads the destination — the optimizer's
+/// `p = p - lr*g` — fuses into one kernel. With a device-resident
+/// destination that kernel reads and writes the *same* buffer, and the
+/// post-assign class aliases it (no copy, no extra launch).
+#[test]
+fn assign_self_update() -> Result<(), ZyxError> {
+    let Some(dev) = Dev::all().into_iter().find(|d| !matches!(d, Dev::Host)) else {
+        return Ok(());
+    };
+    let x = Tensor::from([1f32, 2.0, 3.0, 4.0]).to(dev)?;
+    let tape = Tape::new([&x])?;
+    let src = (&x * 0.5f32) + 1.0f32;
+    x.clone().assign(&src)?;
+    tape.realize([&x])?;
+    let out: Vec<f32> = x.try_into()?;
+    assert_eq!(out, vec![1.5, 2.0, 2.5, 3.0]);
+    Ok(())
+}
+
+/// Two successive self-updates in one tape: the second reads the `After`
+/// class the first produced, so it takes the `After` path on top of the
+/// fused store.
+#[test]
+fn assign_self_update_chained() -> Result<(), ZyxError> {
+    let Some(dev) = Dev::all().into_iter().find(|d| !matches!(d, Dev::Host)) else {
+        return Ok(());
+    };
+    let x = Tensor::from([1f32, 2.0, 3.0, 4.0]).to(dev)?;
+    let tape = Tape::new([&x])?;
+    x.clone().assign(&(&x * 0.5f32 + 1.0f32))?;
+    x.clone().assign(&(&x * 2.0f32))?;
+    tape.realize([&x])?;
+    let out: Vec<f32> = x.try_into()?;
+    assert_eq!(out, vec![3.0, 4.0, 5.0, 6.0]);
+    Ok(())
+}
+
 #[test]
 fn assign_graph_movement_dst() -> Result<(), ZyxError> {
     let base = Tensor::from([1.6f32, 0f32, 0f32, 2.3f32, 4.7f32]);
@@ -309,7 +346,7 @@ fn frozen_tape_replay() -> Result<(), ZyxError> {
     let frozen = {
         let tape = Tape::new([&x])?;
         let z = x.relu();
-        tape.freeze([&z])?
+        tape.freeze([&x], [&z])?
     };
     let zs = frozen.replay([&x])?;
     assert_eq!(zs.len(), 1);
@@ -327,7 +364,7 @@ fn use_frozen_output_panics() {
     {
         let tape = Tape::new([&x]).unwrap();
         z = x.relu();
-        let _frozen = tape.freeze([&z]).unwrap();
+        let _frozen = tape.freeze([&x], [&z]).unwrap();
     }
     let _ = z + 1.0f32;
 }
@@ -370,6 +407,28 @@ fn two_tapes_update_repro() -> Result<(), ZyxError> {
         let g = &grads[0] + &bias * 0.9f32;
         w = (&w - &g * 0.01f32).cast(w.dtype());
         tape.realize([&w, &bias, &loss])?;
+    }
+    Ok(())
+}
+
+// A frozen tape must replay a variable-backed outer dim: the output shape is
+// symbolic at freeze and folds to the value bound at replay. This currently
+// trips the kernel store-rank assert in `Kernel::verify` for a reduce.
+#[test]
+fn frozen_replay_symbolic_outer_dim() -> Result<(), ZyxError> {
+    let n = Tensor::variable(1i64);
+    let cols = Tensor::from(4i64);
+    let x = Tensor::from(vec![0.0f32; 4]).reshape([n.clone(), cols.clone()])?;
+    let tape = Tape::empty();
+    tape.add(&x)?;
+    let y = (x.clone() * 2.0f32).sum([1])?;
+    let frozen = tape.freeze([&x, &n], [&y])?;
+    for b in [1i64, 3] {
+        let xb = Tensor::from(vec![1.0f32; b as usize * 4]).reshape([Tensor::variable(b), cols.clone()])?;
+        let out = frozen.replay([&xb, &Tensor::variable(b)])?;
+        assert_eq!(out[0].resolve_shape(), vec![b]);
+        let v: Vec<f32> = out[0].clone().try_into()?;
+        assert!(v.iter().all(|&a| (a - 8.0).abs() < 1e-6), "batch {b}: {v:?}");
     }
     Ok(())
 }

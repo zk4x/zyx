@@ -5,7 +5,7 @@ use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, P
 use crate::{
     DType, Set,
     backend::{DTypeCapability, DeviceProgramId},
-    kernel::{GPUOp, Kernel, Op, ParamKind, SpirvOp},
+    kernel::{GPUOp, Kernel, Op, ParamKind},
     shape::Dim,
     slab::Slab,
 };
@@ -88,10 +88,6 @@ pub(super) fn pool(id: u16) -> Result<&'static Mutex<WGPUMemoryPool>, BackendErr
     backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
 }
 
-pub(super) fn pool_count() -> u16 {
-    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
-}
-
 fn no_pool(id: u16) -> BackendError {
     BackendError { status: ErrorStatus::Initialization, context: format!("Pool::WGPU({id}) is not available").into() }
 }
@@ -106,15 +102,12 @@ pub struct WGPUDevice {
     programs: Slab<DeviceProgramId, WGPUProgram>,
     queue: Arc<wgpu::Queue>,
     /// Pending micro-batch window: launches accumulate here in program order
-    /// until MICRO_BATCH_WINDOW is reached (or a sync point arrives), then
+    /// until the window is flushed (or a sync point arrives), then
     /// the whole window is recorded into ONE command encoder and submitted
     /// with a single `queue.submit` (the single in-order queue preserves
     /// ordering — no waits are needed).
     pending: Vec<(DeviceProgramId, Vec<LaunchArg>)>,
 }
-
-/// Pending commands accumulate until the micro-batch window is flushed.
-const MICRO_BATCH_WINDOW: usize = 100;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -262,9 +255,6 @@ pub(super) fn device_count() -> u16 {
 }
 
 impl WGPUMemoryPool {
-    #[allow(clippy::unused_self)]
-    pub const fn deinitialize(&mut self) {}
-
     pub const fn free_bytes(&self) -> Dim {
         self.free_bytes
     }
@@ -404,15 +394,8 @@ impl WGPUMemoryPool {
 }
 
 impl WGPUDevice {
-    #[allow(clippy::unused_self)]
-    pub const fn deinitialize(&mut self) {}
-
     pub fn info(&self) -> Arc<DeviceInfo> {
         self.dev_info.clone()
-    }
-
-    pub const fn memory_pool(&self) -> Pool {
-        self.memory_pool
     }
 
     pub fn free_compute(&self) -> u128 {
@@ -433,19 +416,14 @@ impl WGPUDevice {
         let Some(GPUOp::LocalWorkSize(lws)) = order.next().and_then(Op::as_gpu) else {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not LocalWorkSize".into() });
         };
-        let Some(Op::Spirv(spirv)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Spirv".into() });
-        };
-        let SpirvOp::WordBytes(words) = spirv.as_ref() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not WordBytes".into() });
+        let Some(Op::Source(source)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Source".into() });
         };
         let lws: [u32; 3] = *lws;
 
-        let spirv_words = words.to_vec();
-
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(source.as_str())),
         });
 
         let name = format!("k_lws_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
@@ -561,19 +539,6 @@ impl WGPUDevice {
         // Staging is caller-owned: release it through the held guard
         // (Pool::release would re-lock the held host pool).
         hpool.release(stage);
-        Ok(())
-    }
-
-    /// Fire-and-forget launch: appended to the micro-batch window; the whole
-    /// window is recorded into one command encoder and submitted with a
-    /// single `queue.submit` when it flushes.
-    #[allow(clippy::unnecessary_wraps)]
-    pub fn launch(&mut self, program_id: DeviceProgramId, pool_handle: Pool, args: &[LaunchArg]) -> Result<(), BackendError> {
-        debug_assert_eq!(pool_handle, self.memory_pool);
-        self.pending.push((program_id, args.to_vec()));
-        if self.pending.len() >= MICRO_BATCH_WINDOW {
-            self.flush_window()?;
-        }
         Ok(())
     }
 

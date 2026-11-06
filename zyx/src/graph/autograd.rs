@@ -80,13 +80,30 @@ impl Runtime {
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Exp2 => {
-                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f64::consts::LN_2));
+                        // `ln(2)` at the gradient's own precision: an F64
+                        // spelling in an F32 graph promotes the multiply to
+                        // F64, and Vulkan cannot store that into an F32 buffer.
+                        let x_dtype = self.graphs[graph_id].dtype(x);
+                        let ln2_cid = self.push_const(
+                            graph_id,
+                            match x_dtype {
+                                DType::F64 => Constant::new(std::f64::consts::LN_2),
+                                _ => Constant::new(std::f32::consts::LN_2),
+                            },
+                        );
                         let z_ln2 = self.push_binary_node(graph_id, cid, ln2_cid, BOp::Mul);
                         let g = self.push_binary_node(graph_id, grad, z_ln2, BOp::Mul);
                         accum_grad(self, graph_id, &mut grads, x, g);
                     }
                     UOp::Log2 => {
-                        let ln2_cid = self.push_const(graph_id, Constant::new(std::f64::consts::LN_2));
+                        let x_dtype = self.graphs[graph_id].dtype(x);
+                        let ln2_cid = self.push_const(
+                            graph_id,
+                            match x_dtype {
+                                DType::F64 => Constant::new(std::f64::consts::LN_2),
+                                _ => Constant::new(std::f32::consts::LN_2),
+                            },
+                        );
                         let x_ln2 = self.push_binary_node(graph_id, x, ln2_cid, BOp::Mul);
                         let g = self.push_binary_node(graph_id, grad, x_ln2, BOp::Div);
                         accum_grad(self, graph_id, &mut grads, x, g);

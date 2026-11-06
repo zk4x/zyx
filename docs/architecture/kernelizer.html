@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7478f1f3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58fb2f25.js"></script>
+        <script src="../toc-e6cf6f81.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,17 +175,22 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-kernelizer"><a class="header" href="#the-kernelizer">The Kernelizer</a></h1>
-<p>The kernelizer (<code>kernelize.rs</code>) fuses tensor operations into kernels. In eager mode, ops are appended directly to kernels. In tape mode, it traverses the accumulated graph and fuses compatible nodes into kernels.</p>
+<p>The kernelizer (<code>graph/kernelizer.rs</code>) fuses tensor operations into kernels. In eager mode, ops are appended directly to kernels. In tape mode, it traverses the accumulated graph and fuses compatible nodes into kernels.</p>
 <h2 id="when-the-kernelizer-runs"><a class="header" href="#when-the-kernelizer-runs">When the Kernelizer Runs</a></h2>
-<p>Outside a tape, the kernelizer runs incrementally as each op is added — fusing compatible nodes and executing when a fusion boundary is hit. Inside a tape, the kernelizer runs once during <code>Tape::realize()</code> (dropping only cleans up graph state):</p>
-<pre><code class="language-rust ignore">// Tape mode — kernelizer runs at realize
+<p>Outside a tape, there is no graph kernelizer: <code>Runtime</code> appends each op to the kernel that produced its inputs and splits (<code>duplicate_or_store</code>) only when a fusion boundary is hit. Inside a tape, <code>Graph::kernelize</code> runs once during <code>Tape::realize()</code> (dropping only cleans up graph state):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">use zyx::{DType, Tape, Tensor, ZyxError};
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span>// Tape mode — kernelizer runs at realize
 let x = Tensor::randn([4], DType::F32)?;
 let tape = Tape::new([&amp;x])?;
 let y = x.relu();
 let z = y * 2.0;
 // at this point: no computation done yet
 tape.realize([&amp;z])?;
-// kernelizer runs → optimizes → executes</code></pre>
+// kernelizer runs → optimizes → executes
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
 <h2 id="fusion-logic"><a class="header" href="#fusion-logic">Fusion Logic</a></h2>
 <p>In tape mode, the kernelizer processes graph ops <strong>bottom-up</strong> in topological order. Each graph op type adds ops to the kernel its input lives in — fusion is the default, splitting happens only when needed.</p>
 <h3 id="per-op-type-behavior"><a class="header" href="#per-op-type-behavior">Per-Op Type Behavior</a></h3>
@@ -199,30 +204,36 @@ tape.realize([&amp;z])?;
 <tr><td><code>Expand</code>, <code>Permute</code>, <code>Reshape</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code></td><td>Fused into the input’s kernel (unfolded to index arithmetic)</td></tr>
 <tr><td><code>Binary</code></td><td>Merge both input kernels into one</td></tr>
 <tr><td><code>Reduce</code></td><td>Add reduce op to the input’s kernel</td></tr>
-<tr><td><code>Const</code></td><td>Create a new kernel with a constant</td></tr>
+<tr><td><code>Const</code></td><td>Replayed into consumers (scalars are never materialized)</td></tr>
 </tbody>
 </table>
 </div>
 <h3 id="when-splitting-happens"><a class="header" href="#when-splitting-happens">When Splitting Happens</a></h3>
-<p>The key splitting decision is in <code>duplicate_or_store()</code>. When a kernel has multiple outputs (a tensor used by &gt;1 downstream), the kernelizer chooses:</p>
+<p>The key splitting decision is in <code>duplicate_or_store_class()</code>. When a kernel has multiple outputs (a tensor used by &gt;1 downstream), the kernelizer chooses:</p>
 <ol>
 <li><strong>If preceded by a reduce</strong> (expensive to recompute) → store the intermediate result to global memory, create a new load kernel for the next consumer</li>
 <li><strong>If NOT preceded by a reduce</strong> (cheap to recompute) → duplicate the kernel so each consumer gets its own copy</li>
 </ol>
 <p>This is a cost heuristic, not a simple rule: is recomputing cheaper than a global memory store+load?</p>
-<p>Stores also trigger automatically when a graph node is requested as the final output (<code>to_eval</code>), creating a natural boundary there.</p>
+<p>Requested outputs are consumers too: if a class is needed after its producing kernel is closed, it is stored and a fresh load kernel serves the remaining consumers.</p>
 <h3 id="practical-outcome"><a class="header" href="#practical-outcome">Practical Outcome</a></h3>
 <p>Each kernel tends to center around one reduce loop, with all fused element-wise ops grouped before and after it. A chain of element-wise ops always fuses into one kernel. Reduce-heavy graphs may end up with each reduce in its own kernel separated by store/load boundaries.</p>
 <h2 id="the-kernelizer-struct"><a class="header" href="#the-kernelizer-struct">The Kernelizer Struct</a></h2>
-<pre><code class="language-rust ignore">struct Kernelizer&lt;'a&gt; {
-    must_keep_nodes: Set&lt;TensorId&gt;,
-    pending_stores: Set&lt;TensorId&gt;,
-    realized_nodes: Set&lt;TensorId&gt;,
-    kernels: Slab&lt;KMKernelId, Kernel&gt;,
-    visited: Map&lt;TensorId, (KMKernelId, OpId)&gt;,
-    rcs: Map&lt;TensorId, u32&gt;,
-    graph: &amp;'a Graph,
-    // ...
+<p>The kernelizer is a set of methods on <code>Graph</code>; all working state is local to a call:</p>
+<pre><code class="language-rust ignore">impl Graph {
+    pub fn kernelize(&amp;mut self, inputs: &amp;Set&lt;OpId&gt;, outputs: &amp;BTreeSet&lt;OpId&gt;, allowed: Option&lt;&amp;Set&lt;OpId&gt;&gt;) {
+        // `jit_kernels: Slab&lt;JitKernelId, JitKernelData&gt;` is the output table.
+        let mut rcs: Map&lt;OpId, u32&gt; = Map::default();
+        let mut visited: Map&lt;OpId, (JitKernelId, OpId)&gt; = Map::default();
+        // ...
+    }
+}
+
+pub struct JitKernelData {
+    pub(crate) kernel: Kernel,
+    pub(crate) outputs: Vec&lt;OpId&gt;,
+    pub(crate) loads: Vec&lt;OpId&gt;,
+    pub(crate) stores: Vec&lt;OpId&gt;,
 }</code></pre>
 <p>The <code>visited</code> map tracks which graph ops have been converted to kernel ops. When a graph op is already in <code>visited</code>, the kernelizer uses the existing kernel result instead of recomputing — this is how shared subgraphs are handled.</p>
 <h2 id="building-kernel-ops"><a class="header" href="#building-kernel-ops">Building Kernel Ops</a></h2>
@@ -236,7 +247,7 @@ tape.realize([&amp;z])?;
 <tr><td><code>Const</code></td><td><code>Op::Const</code></td></tr>
 <tr><td><code>Param</code></td><td><code>Op::Param</code> (global memory)</td></tr>
 <tr><td><code>Unary</code></td><td><code>Op::Unary</code></td></tr>
-<tr><td><code>Binary</code></td><td><code>Op::Binary</code> or <code>Op::Mad</code></td></tr>
+<tr><td><code>Binary</code></td><td><code>Op::Binary</code></td></tr>
 <tr><td><code>Reduce</code></td><td><code>Op::Reduce</code></td></tr>
 <tr><td><code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Flip</code>, <code>Pad</code>, <code>Narrow</code></td><td>View ops folded into <code>Load</code>/<code>Store</code> index arithmetic</td></tr>
 </tbody>
@@ -244,10 +255,16 @@ tape.realize([&amp;z])?;
 </div>
 <p>View operations (reshape, expand, permute, pad) are unfolded into index arithmetic rather than becoming separate ops. This is how they become “free” — the index computation is inlined into the load/store operations.</p>
 <h2 id="kernel-caching"><a class="header" href="#kernel-caching">Kernel Caching</a></h2>
-<pre><code class="language-rust ignore">pub struct KernelCache {
-    pub cache: Map&lt;KernelId, Kernel&gt;,
-}</code></pre>
-<p>After a kernel is built and optimized, its hash is computed. If the same kernel was compiled before, the cached compiled program is reused. The cache persists across realize() calls, so repeated graph patterns (like training loop iterations) hit the cache on the second iteration.</p>
+<p>Kernels are deduplicated by content, and compiled programs are cached by kernel id:</p>
+<pre><code class="language-rust ignore">// Runtime
+kernel_map: Map&lt;Kernel, KernelId&gt;,          // content-dedup: equal kernels share an id
+programs: Map&lt;KernelId, DeviceProgramId&gt;,   // compiled program per kernel id
+timings: Map&lt;ProgramId, u64&gt;,               // measured nanos</code></pre>
+<p>When a kernel finishes optimization its hash is computed; an equal <code>Kernel</code> already in
+<code>kernel_map</code> reuses the <code>KernelId</code> (and the compiled program, if one exists). Compiled
+programs persist across realizations, so repeated graph patterns — training-loop iterations —
+hit the cache after the first one. The plan cache (<code>Runtime::plan_cache</code>) does the same for
+whole execution plans, keyed by graph content plus leaf pools.</p>
 
                     </main>
 

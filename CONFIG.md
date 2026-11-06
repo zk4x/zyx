@@ -1,122 +1,142 @@
 # Configuration
 
-zyx is configured via a JSON file. The config file is searched for at:
+zyx is configured through a JSON file and environment variables. The file is
+read **once** per process, on the first backend access; changing it requires a
+restart. Missing sections and missing keys fall back to defaults, and a missing
+or unparsable file means “all defaults”.
 
-1. `$XDG_CONFIG_HOME/zyx/config.json` (if `XDG_CONFIG_HOME` is set and is absolute)
+The config file is searched for at:
+
+1. `$XDG_CONFIG_HOME/zyx/config.json` (when `XDG_CONFIG_HOME` is an absolute path)
 2. `$HOME/.config/zyx/config.json`
 
-If no config file exists, **all backends try to initialize** with their defaults — C (CPU) via gcc/clang, GPU backends (CUDA, Vulkan, HIP, OpenCL) scan for hardware, and WGPU if compiled with `--features wgpu`.
-
-The same directory is also used for the kernel cache (file named `cached_kernels`).
-
-Run `ZYX_DEBUG=1` to see which backends initialized.
+Run `ZYX_DEBUG=1` to see whether the file was found and parsed.
 
 ## Example `config.json`
 
+Every section is optional:
+
 ```json
 {
-  "c": {
-    "enabled": true
+  "autotune": {
+    "n_launches": 1,
+    "n_seeds": 200,
+    "n_added_per_step": 200,
+    "n_removed_per_step": 0,
+    "n_total_opts": 1000
   },
-  "cuda": {
-    "device_ids": null
-  },
-  "hip": {
-    "device_ids": null
-  },
-  "opencl": {
-    "platform_ids": null
-  },
-  "vulkan": {
-    "device_ids": null
-  },
-  "wgpu": {
-    "enabled": true
-  }
+  "c": { "enabled": true },
+  "cuda": { "device_ids": null, "cudnn": false, "queues": 8 },
+  "opencl": { "platform_ids": null, "queues": 8 },
+  "vulkan": { "device_ids": null },
+  "tenstorrent": { "device_ids": null },
+  "wgpu": { "enabled": true }
 }
 ```
 
-Any key can be omitted — the missing section falls back to defaults. By default, all backends are enabled. So if you enable just one backend and omit others, all omitted kernels will be enabled as well.
+`wgpu` exists only when the crate is built with the `wgpu` feature.
 
 ## Options Reference
 
-### `autotune` — Kernel autotuning
-
-Controls how zyx searches for optimal kernel configurations.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `n_launches` | `usize` | Max kernel launches during autotune search |
-| `n_seeds` | `usize` | Number of initial optimization seeds |
-| `n_added_per_step` | `usize` | Optimizations to try per iteration |
-| `n_removed_per_step` | `usize` | Optimizations to remove per iteration |
-| `n_total_opts` | `usize` | Max total optimizations to try |
-
-### `c` — C/Clang CPU backend
-
-Compiles kernel IR to C, then compiles with clang and loads via `dlopen`. Uses the host memory pool.
+### `autotune` — kernel autotuning
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | `bool` | `true` | Enable the C/Clang CPU backend |
+| `n_launches` | `usize` | `1` | Candidates actually launched and timed |
+| `n_seeds` | `usize` | `200` | Initial optimization samples |
+| `n_added_per_step` | `usize` | `200` | New candidates per expansion |
+| `n_removed_per_step` | `usize` | `0` | Candidates dropped per expansion |
+| `n_total_opts` | `usize` | `1000` | Expansion iterations |
+
+The cost function only ranks candidates; measured launch times decide the
+winner.
+
+### `c` — C/Clang CPU backend
+
+Compiles kernel IR to C, then compiles with clang/gcc and loads the shared
+object. Uses the host memory pool.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | `bool` | `true` | Enable the C backend |
 
 ### `cuda` — CUDA backend
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `device_ids` | `Option<Vec<i32>>` | `null` | Which CUDA devices to use. `null` = all available devices. `[]` (empty) = disable CUDA. `[0, 1]` = use first two devices. |
-| `cudnn` | `bool` | `true` | Whether to use cuDNN for AOT matmul kernels. Set `false` to disable. |
-
-### `hip` — HIP/AMD backend
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `device_ids` | `Option<Vec<i32>>` | `null` | Which HIP devices to use. `null` = all available devices. |
+| `device_ids` | `Option<Vec<i32>>` | `null` | `null` = all devices; `[]` = disable CUDA; `[0, 1]` = those driver ordinals |
+| `cudnn` | `bool` | `false` | Use cuDNN for AOT matmul kernels |
+| `queues` | `Option<usize>` | `8` | Hardware queues (streams) per device |
 
 ### `opencl` — OpenCL backend
 
-OpenCL supports multiple platforms (e.g., Intel GPU, POCL CPU). Each platform may have multiple devices.
+OpenCL supports multiple platforms (e.g. Intel GPU, POCL CPU); each platform
+may have multiple devices.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `platform_ids` | `Option<Vec<usize>>` | `null` | Which OpenCL platforms to use. `null` = all available. `[]` = disable OpenCL. `[0]` = use first platform only. |
+| `platform_ids` | `Option<Vec<usize>>` | `null` | `null` = all platforms; `[]` = disable OpenCL; `[0]` = first platform only |
+| `queues` | `Option<usize>` | `8` | In-order command queues per device |
 
 ### `vulkan` — Vulkan backend
 
-Uses the vulkano crate for Vulkan compute operations.
+Uses the `ash` crate for Vulkan compute.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `device_ids` | `Option<Vec<i32>>` | `null` | Which Vulkan devices to use. `null` = all available. `[]` = disable Vulkan. `[0]` = use first device only. |
+| `device_ids` | `Option<Vec<i32>>` | `null` | `null` = all devices; `[]` = disable Vulkan; `[0]` = first device only |
+
+### `tenstorrent` — Tenstorrent backend
+
+Always compiled in; it runs through the bundled simulator, which is found
+through `TT_TTSIM_LIB` (default `vendor/libttsim_bh.so`). A machine without a
+usable simulator simply contributes no devices.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `device_ids` | `Option<Vec<i32>>` | `null` | `null` = all devices; `[]` = disable Tenstorrent |
 
 ### `wgpu` — WGPU backend (feature `wgpu`)
 
-Requires `--features wgpu` at compile time. Supports Vulkan, Metal, DX12, and OpenGL ES.
+Requires `--features wgpu`. Supports Vulkan, Metal, DX12, and OpenGL ES.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable the WGPU backend |
 
-### `tenstorrent` — Tenstorrent backend (feature `tenstorrent`)
+## Backend Selection Rules
 
-Requires `--features tenstorrent` at compile time.
+| Backend | Enabled by default | Disable with |
+|---------|--------------------|--------------|
+| `c` | yes | `"enabled": false` |
+| `cuda` | yes | `"device_ids": []` |
+| `opencl` | yes | `"platform_ids": []` |
+| `vulkan` | yes | `"device_ids": []` |
+| `tenstorrent` | yes | `"device_ids": []` |
+| `wgpu` | yes (with the feature) | `"enabled": false` |
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `device_ids` | `Option<Vec<i32>>` | `null` | Which Tenstorrent devices to use. `null` = all available. `[]` = disable Tenstorrent. |
+`null`/absent means “every device the backend finds”; a list selects exactly
+those ordinals.
 
-## Backend selection rules
+C, CUDA, OpenCL, Vulkan, and Tenstorrent are compiled in
+unconditionally (they locate their runtimes at load time); only WGPU is behind a
+cargo feature. There is no global “initialize all backends” step: `Dev::all()`
+probes each compiled-in backend lazily, and backends whose driver, device, or
+simulator is missing contribute nothing.
 
-- **c**: enabled when `"enabled": true` (default: `true`)
-- **cuda**: disabled when `"device_ids": []`; uses all devices when `null`
-- **hip**: currently always tries to initialize (ignores config); disabled only if `libamdhip64.so` is not found
-- **opencl**: disabled when `"platform_ids": []`; uses all platforms when `null`
-- **tenstorrent**: disabled when `"device_ids": []`; uses all devices when `null`
-- **vulkan**: disabled when `"device_ids": []`; uses all devices when `null`
-- **wgpu**: enabled by default; disabled when `"enabled": false`
+## `ZYX_DEV` — pin one device
 
-CUDA, HIP, OpenCL, and Tenstorrent backends are always compiled into zyx (cannot be disabled by cargo features). They search for required `.so` files at runtime. WGPU requires the `wgpu` cargo feature.
+`ZYX_DEV` is applied on top of the config file and leaves exactly one device
+available (every other backend is configured out):
 
-The Vulkan backend is compiled by default. It requires the vulkano crate (vulkan-sys, ash, etc.).
+```bash
+ZYX_DEV=cpu          # C backend
+ZYX_DEV=cuda:0        # CUDA driver ordinal 0
+ZYX_DEV=tt            # Tenstorrent, device 0
+ZYX_DEV=vulkan        # Vulkan device 0
+```
 
-If all backends fail to initialize or are configured out, initialization returns an error.
+Names are case-insensitive: `auto`, `c`/`cpu`, `host`, `cuda`,
+`tt`/`tenstorrent`, `vulkan`/`vk`, `opencl`/`cl`, `wgpu`. An index on an
+indexless device (`c:1`) is an error, and a bad value panics — silently falling
+back would run on the wrong hardware. `ZYX_DEV=auto` narrows nothing.

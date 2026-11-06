@@ -10,6 +10,10 @@ use crate::{
 };
 use std::borrow::Borrow;
 
+/// One cover group under construction: its shared key [`Bindings`], the
+/// root ops that joined it, their lane values, and each root's bindings.
+type CoverGroupParts = (Bindings, Vec<OpId>, Vec<i64>, Vec<Bindings>);
+
 /// Dtype class constraining a [`Pat::Bind`] binder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DtypeClass {
@@ -40,11 +44,11 @@ impl DtypeClass {
 ///
 /// Evaluation returns `None` on overflow (never panics, so guard order
 /// cannot crash a match) and on genuinely unrepresentable shifts; an
-/// unbound name panics via [`Bindings::dim`] (a comparison placed before
+/// unbound name panics via [`Bindings::int`] (a comparison placed before
 /// its binders is a bug, fail loud).
 #[derive(Clone, Debug)]
 pub enum VExpr {
-    /// Value bound by [`Pat::bind_int`] under this name.
+    /// Value bound by [`Bindings::int`] under this name.
     Dim(char),
     /// Constant integer.
     Const(Dim),
@@ -100,7 +104,7 @@ impl From<i64> for VExpr {
 /// Payload matcher for compute-op patterns: an exact payload value, or
 /// a binder name recording the payload under a `Binding` kind — an
 /// exact payload value, or a binder name recording the payload under
-/// [`Binding::Bop`] / [`Binding::Uop`] / [`Binding::Dtype`]. Call sites
+/// `Binding::Bop` / `Binding::Uop` / `Binding::Dtype`. Call sites
 /// pass either side directly (`Pat::binary(BOp::Add, ..)` and
 /// `Pat::binary('b', ..)` both compile via `Into`).
 #[derive(Clone, Copy, Debug)]
@@ -163,7 +167,7 @@ pub enum Pat {
     },
     /// Binds a constant's general integer value (the value-binder: value, not
     /// node). First occurrence matches any integer `Op::Const` (every int
-    /// dtype, both signs, via [`Constant::as_integer`]) and records both
+    /// dtype, both signs, via `Constant::as_integer`) and records both
     /// the op and its value; a repeated name asserts *value* equality, so
     /// distinct const ops with equal values match. Floats never match.
     BindConst {
@@ -188,7 +192,7 @@ pub enum Pat {
     /// Float, dtypeless
     Float(f64),
     /// Matches a constant whose `as_dim` value is less than this bound.
-    /// Unlike [`Pat::Num`], floats and negatives never match (`as_dim`
+    /// Unlike [`Pat::Int`], floats and negatives never match (`as_dim`
     /// semantics): the in-pattern form of a `< bound` value guard.
     DimLt(Dim),
     /// Matches a constant whose `as_dim` value equals this bound. The
@@ -343,7 +347,7 @@ pub enum Pat {
         rop: PMatch<BOp>,
     },
     /// Asserts the matched op's value shape: rank pinned by the entry
-    /// count. Entries are evaluated over the [`Dim`] value itself:
+    /// count. Entries are evaluated over the `Dim` value itself:
     /// `Bind`/`BindConst` capture it (first sight records — concrete
     /// or dynamic alike — repeats assert equality through the shared
     /// value bindings, so one name across positions is named equality
@@ -366,9 +370,9 @@ pub enum Pat {
 /// Bindings produced by [`Kernel::match_pat`]: matched subexpression ids
 /// plus bound integer values.
 ///
-/// Every [`Pat::Bind`] and [`Pat::BindInt`] records its op (read with
+/// Every [`Pat::Bind`] and [`Pat::BindConst`] records its op (read with
 /// `m.op('x')`); value binders additionally record the general integer value
-/// (read with [`Bindings::val`]). A repeated plain name asserts `OpId`
+/// (read with [`Bindings::int`]). A repeated plain name asserts `OpId`
 /// equality; a repeated value name asserts *value* equality across
 /// distinct const ops.
 #[derive(Clone, Debug, Default)]
@@ -404,7 +408,7 @@ impl PartialEq for Binding {
 }
 
 impl Bindings {
-    /// Read a value bound by [`Pat::bind_int`]. Panics on unbound names.
+    /// Read a value bound by [`Bindings::int`]. Panics on unbound names.
     pub fn int(&self, name: char) -> i64 {
         for (n, _, binding) in &self.ops {
             if *n == name {
@@ -417,7 +421,7 @@ impl Bindings {
         panic!("unbound value name");
     }
 
-    /// Read a value bound by [`Pat::bind_float`]. Panics on unbound names.
+    /// Read a value bound by [`Bindings::float`]. Panics on unbound names.
     pub fn float(&self, name: char) -> f64 {
         for (n, _, binding) in &self.ops {
             if *n == name {
@@ -508,14 +512,11 @@ impl Bindings {
                     _ => false,
                 };
             }
-            match binding {
-                Binding::None => {
-                    *n = name;
-                    *op = id;
-                    *binding = value;
-                    return true;
-                }
-                _ => {}
+            if let Binding::None = binding {
+                *n = name;
+                *op = id;
+                *binding = value;
+                return true;
             }
         }
         panic!("too many bindings, keep bindings under 8 values");
@@ -827,7 +828,7 @@ impl Pat {
     }
 
     /// Vector lane of the `vec` pattern; `node` binds the Index node
-    /// itself (use slots via [`Bindings::slots`]), `idx` the lane number.
+    /// itself (use slots via [`Bindings::op`]), `idx` the lane number.
     pub fn index_node(node: char, vec: impl Into<Pat>, idx: char) -> Pat {
         Pat::Index { vec: Box::new(vec.into()), idx, node }
     }
@@ -955,7 +956,7 @@ impl CoverGroup {
 impl Kernel {
     /// Match an [`Op::Stack`] whose member count is one of `widths` and
     /// where every member matches `leaf`, all members agreeing on every
-    /// VALUE-kind binder (payload equality via [`Binding`] equality —
+    /// VALUE-kind binder (payload equality via `Binding` equality —
     /// the same-head condition), while op-kind binders stay per-member.
     /// Returns per-member bindings in stack order.
     pub fn match_stack(&self, id: OpId, leaf: &Pat, widths: &[u8]) -> Option<Vec<Bindings>> {
@@ -1013,7 +1014,7 @@ impl Kernel {
         // Group by try_insert agreement over the named key binders (a
         // group IS a Bindings all members agree with); unnamed int
         // binder = lane, everything else unnamed stays per-root.
-        let mut groups: Vec<(Bindings, Vec<OpId>, Vec<i64>, Vec<Bindings>)> = Vec::new();
+        let mut groups: Vec<CoverGroupParts> = Vec::new();
         for (id, b) in &hits {
             let mut lane: Option<i64> = None;
             let mut bad = false;
@@ -1044,10 +1045,8 @@ impl Kernel {
                     match binding {
                         Binding::None => {}
                         _ => {
-                            if key.contains(n) {
-                                if !probe.try_insert(*n, *op, binding.clone()) {
-                                    return false;
-                                }
+                            if key.contains(n) && !probe.try_insert(*n, *op, binding.clone()) {
+                                return false;
                             }
                         }
                     }
@@ -1244,10 +1243,8 @@ impl Kernel {
                     PMatch::Exact(e) => *u == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Uop(*u)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Uop(*u)) {
+                            return true;
                         }
                         *bindings = snap;
                         false
@@ -1335,10 +1332,8 @@ impl Kernel {
                     PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Dtype(*d)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                            return true;
                         }
                         *bindings = snap;
                         false
@@ -1351,10 +1346,8 @@ impl Kernel {
                     PMatch::Exact(e) => *d == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Dtype(*d)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Dtype(*d)) {
+                            return true;
                         }
                         *bindings = snap;
                         false
@@ -1426,7 +1419,7 @@ impl Kernel {
                     match (xl, yl) {
                         // Bottom link: two lanes of the same vector.
                         (Some((vx, kx)), Some((vy, ky))) => {
-                            if vx == vy && first_vec.map_or(true, |w| w == vx) {
+                            if vx == vy && first_vec.is_none_or(|w| w == vx) {
                                 first_vec = Some(vx);
                                 lanes.push(kx);
                                 lanes.push(ky);
@@ -1436,7 +1429,7 @@ impl Kernel {
                         }
                         // Spine link: one lane, the other side continues.
                         (Some((v, k)), None) | (None, Some((v, k))) => {
-                            if first_vec.map_or(false, |w| w != v) {
+                            if first_vec.is_some_and(|w| w != v) {
                                 break false;
                             }
                             first_vec = Some(v);
@@ -1474,10 +1467,8 @@ impl Kernel {
                     PMatch::Exact(e) => *r == *e && self.match_node(x, *xid, bindings),
                     PMatch::Bind(name) => {
                         let snap = bindings.clone();
-                        if self.match_node(x, *xid, bindings) {
-                            if bindings.try_insert(*name, id, Binding::Bop(*r)) {
-                                return true;
-                            }
+                        if self.match_node(x, *xid, bindings) && bindings.try_insert(*name, id, Binding::Bop(*r)) {
+                            return true;
                         }
                         *bindings = snap;
                         false
@@ -1539,7 +1530,7 @@ impl Kernel {
     }
 }
 
-/// Dtypeless numeric equality for [`Pat::Num`]: true when `c` has the same
+/// Dtypeless numeric equality for [`Pat::Int`]: true when `c` has the same
 /// numeric value as `n`, whatever its dtype. Integers and bool compare
 /// exactly; floats must be integral (`1.0 == 1`, `1.5` never matches).
 fn const_eq_int(c: Constant, n: i64) -> bool {
@@ -1606,7 +1597,7 @@ fn const_eq_float(c: Constant, n: f64) -> bool {
 /// Exact integral-float comparison: `fract == 0` plus a strict range check
 /// so the `as i64` conversion below is exact (no saturation edge at `MAX`).
 fn float_eq_int(v: f64, n: i64) -> bool {
-    v.fract() == 0.0 && v >= -9223372036854775808.0 && v < 9223372036854775808.0 && v as i64 == n
+    v.fract() == 0.0 && (-9223372036854775808.0..9223372036854775808.0).contains(&v) && v as i64 == n
 }
 
 #[cfg(test)]

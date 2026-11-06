@@ -6547,7 +6547,6 @@ mod sfp_row_ops {
     use crate::kernel::Dev;
     use std::collections::HashMap;
     use tt_isa::isa::Instruction;
-    use tt_isa::sfpu as enc;
 
     /// The arm's ops and the interpreter row of every storage they touch.
     fn arm_ops(kind: u32) -> (Vec<Op>, HashMap<u32, u32>) {
@@ -6817,7 +6816,6 @@ mod tt_lower_ops {
     use crate::kernel::Dev;
     use std::collections::HashMap;
     use tt_isa::isa::Instruction;
-    use tt_isa::sfpu as enc;
 
     /// The scratch row the fourth tile takes (`A_ROW`/`B_ROW` are 0 and 64).
     const C_ROW: u32 = 192;
@@ -7789,7 +7787,6 @@ mod reindex_tests {
         let src = k.param(DType::F32);
         let dst = k.param_mut(DType::F32);
         let row_len = k.const_idx(20u32);
-        let thirty_two = k.const_idx(32u32);
         let k_lane = k.push_back(Op::Unroll { axis: 0, len: 32u16 });
         let row_lane = k.push_back(Op::Unroll { axis: 1, len: 32u16 });
         let base = k.push_back(Op::Binary { x: row_lane, y: row_len, bop: BOp::Mul });

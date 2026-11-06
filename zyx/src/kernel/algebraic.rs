@@ -72,7 +72,7 @@ impl Kernel {
         let pat_div_simp =
             (Pat::bind('a').int() * Pat::bind_const('d').int() + Pat::bind('b').int()) / Pat::bind_const('d').int();
         let pat_shl_div = Pat::all([
-            (Pat::bind('a').int() << Pat::bind_const('k').int() + Pat::bind('b').int()) / Pat::bind_const('d').int(),
+            (Pat::bind('a').int() << (Pat::bind_const('k').int() + Pat::bind('b').int())) / Pat::bind_const('d').int(),
             Pat::ge('k', 0),
             Pat::lt('k', 64),
             Pat::eq('d', VExpr::shl(1, 'k')),
@@ -168,7 +168,7 @@ impl Kernel {
                     self.match_pat(x, &pat_mod_mullike).map(|ma| (ma.op('a'), ma.int('c'), ma.op('b'))).or_else(|| {
                         self.match_pat(x, &pat_mod_shllike).and_then(|ma| {
                             let kv = ma.int('k');
-                            (kv >= 0 && kv < 64).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
+                            (0..64).contains(&kv).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
                         })
                     });
                 if let Some((a, c, b)) = mul_like {
@@ -841,7 +841,7 @@ impl Kernel {
                                     .or_else(|| {
                                         self.match_pat(mult_side, &pat_shl_c).and_then(|m| {
                                             let kv = m.int('k');
-                                            (kv >= 0 && kv < 64).then(|| (m.op('b'), 1i64 << kv))
+                                            (0..64).contains(&kv).then(|| (m.op('b'), 1i64 << kv))
                                         })
                                     })
                                     .or_else(|| self.match_pat(mult_side, &pat_mul_c).map(|m| (m.op('b'), m.int('c'))));
@@ -877,7 +877,7 @@ impl Kernel {
                             // amount < 0 never occurred under as_dim; the
                             // shift below would panic on it.
                             let c = match bop {
-                                BOp::BitShiftRight if amount >= 0 && amount < 64 => 1i64 << amount,
+                                BOp::BitShiftRight if (0..64).contains(&amount) => 1i64 << amount,
                                 BOp::Div if amount > 0 => amount,
                                 _ => continue,
                             };
@@ -893,7 +893,7 @@ impl Kernel {
                                         .or_else(|| {
                                             self.match_pat(mult_side, &pat_shl_c).and_then(|m| {
                                                 let kv = m.int('k');
-                                                (kv >= 0 && kv < 64).then(|| (m.op('b'), 1i64 << kv))
+                                                (0..64).contains(&kv).then(|| (m.op('b'), 1i64 << kv))
                                             })
                                         })
                                         .or_else(|| self.match_pat(mult_side, &pat_mul_c).map(|m| (m.op('b'), m.int('c'))));

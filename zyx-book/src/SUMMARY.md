@@ -1,6 +1,7 @@
 # Summary
 
 - [Introduction](./introduction.md)
+- [Building from Source](./building.md)
 - [Architecture Overview](./architecture/overview.md)
 - [The Tensor](./architecture/tensor.md)
 - [The Graph](./architecture/graph.md)

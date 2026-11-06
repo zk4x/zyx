@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7478f1f3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58fb2f25.js"></script>
+        <script src="../toc-e6cf6f81.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -175,26 +175,43 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="the-graph"><a class="header" href="#the-graph">The Graph</a></h1>
-<p>The graph is an e-graph (equivalence graph) used in tape mode for tensor operation rewrites, autograd, fusion and device placement and movement decisions. Inside a <code>Tape</code>, every operation builds an <code>Op</code> in this graph. Outside a tape, there is no graph — ops go directly to kernel fusion. When a tape is active, the graph is shared between computation and autograd — there is only one.</p>
+<p>The graph is an e-graph (equivalence graph) used in tape mode for fusion,
+autograd, and device placement. Inside a <code>Tape</code>, every operation builds an <code>Op</code>
+in this graph. Outside a tape, there is no graph — ops go directly to kernel
+fusion. When a tape is active, the graph is shared between computation and
+autograd — there is only one.</p>
 <h2 id="data-structure"><a class="header" href="#data-structure">Data Structure</a></h2>
 <p>The graph is stored in the <code>Runtime</code>:</p>
 <pre><code class="language-rust ignore">pub struct Graph {
-    hashcons: Map&lt;Op, OpId&gt;,
-    ops: Slab&lt;OpId, OpNode&gt;,
-    jit_kernels: Slab&lt;JitKernelId, JitKernelData&gt;,
-    leaf_classes: Vec&lt;OpId&gt;,
-    leaf_map: Map&lt;OpId, TensorId&gt;,
-    ref_count: u64,
-    dead: bool,
-    max_cons_id: u32,
+    pub(crate) hashcons: Map&lt;Op, OpId&gt;,
+    pub(crate) ops: Slab&lt;OpId, OpNode&gt;,
+    pub(crate) jit_kernels: Slab&lt;JitKernelId, JitKernelData&gt;,
+    pub(crate) leaf_classes: Vec&lt;OpId&gt;,
+    pub(crate) leaf_map: Map&lt;OpId, TensorId&gt;,
+    pub(crate) ref_count: u64,
+    pub(crate) dead: bool,
+    pub(crate) max_cons_id: u32,
+}
+
+pub(crate) struct OpNode {
+    pub(crate) op: Op,
+    pub(crate) class_of: OpId,
+    pub(crate) next_in_class: OpId,
 }</code></pre>
-<p>The <code>hashcons</code> deduplicates structurally identical ops — if the same operation on the same inputs already exists, the existing <code>OpId</code> is reused. This provides CSE (common subexpression elimination) for free.</p>
-<p>Each <code>OpId</code> maps to an <code>OpNode</code> entry in the <code>ops</code> slab. Each op belongs to an equivalence class identified by its <code>class_of</code> field (the root <code>OpId</code> of the class). Equivalent forms of the same computation (e.g. different layouts of a matmul) live in the same class.</p>
+<p>The <code>hashcons</code> deduplicates structurally identical ops — if the same operation
+on the same inputs already exists, the existing <code>OpId</code> is reused. This provides
+CSE (common subexpression elimination) for free.</p>
+<p>Each <code>OpId</code> maps to an <code>OpNode</code> entry in the <code>ops</code> slab. A node joins exactly
+one equivalence class, named by its <code>class_of</code> field (the class’s root <code>OpId</code>);
+alternative forms of the same value are chained through <code>next_in_class</code>, in
+insertion order. <code>max_cons_id</code> allocates the identity used by
+<code>Op::Param::id</code>.</p>
 <h3 id="op-types"><a class="header" href="#op-types">Op Types</a></h3>
-<p>The graph opset is derived from tinygrad. By stacking these variants, zyx can express ALL linear algebra operations and ALL PyTorch ops:</p>
+<p>The graph opset is derived from tinygrad. By stacking these variants, zyx can
+express ALL linear algebra operations and ALL PyTorch ops:</p>
 <pre><code class="language-rust ignore">enum Op {
     Const(Constant),
-    Param { dtype: DType, kind: ParamKind, shape: OpId, cons_id: u32 },
+    Param { dtype: DType, kind: ParamKind, shape: OpId, id: u32 },
     Reshape { x: OpId, shape: OpId },
     Expand { x: OpId, shape: OpId },
     Permute { x: OpId, axes: TinyVec&lt;UAxis&gt; },
@@ -202,32 +219,55 @@
     Flip { x: OpId, axes: TinyVec&lt;UAxis&gt; },
     Narrow { x: OpId, axis: UAxis, start: OpId, len: OpId },
     Stack { ops: Box&lt;[OpId]&gt; },
+    Index { vec: OpId, idx: usize },
     Reduce { x: OpId, rop: BOp, reduce_axis: OpId },
     Cast { x: OpId, dtype: DType },
     Bitcast { x: OpId, dtype: DType },
     Unary { x: OpId, uop: UOp },
     Binary { x: OpId, y: OpId, bop: BOp },
+    Select { cond: OpId, if_true: OpId, if_false: OpId },
+    Store { dst: OpId, dst_idx: OpId, src: OpId },
     After { x: OpId, dep: OpId },
     ToDevice { x: OpId, device: Dev, time: u64 },
     Contiguous { x: OpId },
+    Detach { x: OpId },
     Program { inputs: OpId, outputs: OpId, info: Box&lt;(ProgramId, u64)&gt; },
     Kernel(Box&lt;CustomKernel&gt;),
-    ...
+    // Kernel-only variants (Load, Storage, Range, Loop, Wmma, TT, ...)
+    // are described in The Kernel IR.
 }</code></pre>
-<p>All inputs reference <code>OpId</code> — ops operate on equivalence classes. View ops (<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and stackable; <code>Stack</code> builds vectors; <code>Bitcast</code> reinterprets bits without value conversion; <code>After</code> orders side-effecting ops; <code>Contiguous</code> materializes a layout; <code>Custom</code> wraps opaque custom kernels.</p>
-<p>The reason to use <code>OpId</code> instead of <code>TensorId</code> is to get cannonicalization for free.</p>
+<p>All inputs reference <code>OpId</code> — ops operate on equivalence classes. View ops
+(<code>Reshape</code>, <code>Expand</code>, <code>Permute</code>, <code>Pad</code>, <code>Flip</code>, <code>Narrow</code>) are per-axis and
+stackable; <code>Stack</code> builds vectors; <code>Index</code> selects an element; <code>Bitcast</code>
+reinterprets bits without value conversion; <code>Store</code> is an in-place write
+(assigns lower to it); <code>After</code> orders side-effecting ops; <code>Contiguous</code> forces a
+materialization boundary; <code>Detach</code> is value identity with no gradient; <code>Program</code>
+is a compiled-kernel boundary; <code>Kernel</code> wraps an opaque user custom kernel.</p>
+<p>The reason to use <code>OpId</code> instead of <code>TensorId</code> is to get canonicalization for
+free.</p>
 <h2 id="lifecycle-with-tape"><a class="header" href="#lifecycle-with-tape">Lifecycle with Tape</a></h2>
 <p>There is no graph outside a tape — ops are fused directly into kernels.</p>
-<p>Inside a tape, ops accumulate until <code>Tape::realize()</code> or drop. The graph supports rewrites that produce equivalent forms of a computation:</p>
+<p>Inside a tape, ops accumulate until <code>Tape::realize()</code> or drop. A class can hold
+several alternative producers, and extraction chooses between them:</p>
 <ul>
-<li><strong>CSE</strong> via hashconsing</li>
-<li><strong>Algebraic rewrites</strong> like transpose fusion</li>
-<li><strong>Layout rewrites</strong>: matmul can be realized as transposed or un-transposed</li>
-<li><strong>Shape rewrites</strong>: reshape and padding can be fused or split</li>
+<li><strong>CSE</strong> via hashconsing: identical structural ops share one class.</li>
+<li><strong>Kernel twins</strong>: the kernelizer mints an <code>Op::Program</code> node for every fused
+kernel candidate, on the class it produces.</li>
+<li><strong>AOT pattern matches</strong>: backends add <code>Op::Program</code> nodes for precompiled
+kernels (cuDNN, CBLAS, …), so they compete with fused kernels.</li>
+<li><strong>Transfers</strong>: extraction inserts <code>Op::ToDevice</code> nodes where the chosen
+producer and consumer live on different devices.</li>
 </ul>
-<p>There is no cost model: each fusion variant is individually autotuned, and <code>Graph::extract</code> picks by measured timing. Realized ops that the tape references are preserved for autograd; unreferenced ops are released.</p>
+<p>There is no cost model: each candidate is compiled and autotuned, and
+<code>Graph::extract</code> picks the path by measured timing. Realized ops that the tape
+references are preserved for autograd; unreferenced ops are released.</p>
 <h2 id="graph-size"><a class="header" href="#graph-size">Graph Size</a></h2>
-<p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so 10,000 handles cost ~40 kB. Op is 32 bytes, so 10k ops costs 320kB. When the tape is dropped, the graph is deleted, so there is no more memory being eaten by anything. So there is no gc and no refcounting inside graph, it’s append only for the most part and deleted as a whole (arena style).</p>
+<p>The graph is designed to stay small. Tensor handles are <code>u32</code> (4 bytes), so a
+vector of 10,000 handles costs ~40 kB. The graph nodes themselves are bigger:
+<code>Op</code> is 24 bytes and an <code>OpNode</code> is 32. When the tape is dropped, the graph is
+deleted as a whole, so there is no per-op garbage collection. Per-tensor <code>rc</code>
+and the graph’s <code>ref_count</code> decide when that happens; ops are otherwise
+append-only (arena style).</p>
 
                     </main>
 

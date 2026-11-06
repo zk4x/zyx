@@ -92,4 +92,4 @@ LGPL-3.0-only
 
 ## Badges
 
-[![experimental](https://img.shields.io/badge/maintenance-experimental-yellow)]()
+[![maintenance](https://img.shields.io/badge/maintenance-active-green.svg)](https://github.com/zk4x/zyx)

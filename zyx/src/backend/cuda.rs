@@ -391,6 +391,13 @@ enum CUDACommand {
         bytes: Dim,
         reply: Sender<Result<(), BackendError>>,
     },
+    /// Blocking barrier: the reply is sent after every stream has drained,
+    /// i.e. every command submitted before this one has completed. Unlike
+    /// the opening drain in `Replay` (which is a scheduling primitive and
+    /// cannot report), a failure here is returned to the caller.
+    Synchronize {
+        reply: Sender<Result<(), BackendError>>,
+    },
     /// Export the device pointer, context and in-flight barrier events of a
     /// buffer so another device's worker can copy from it (peer-copy source side).
     Compile {
@@ -559,10 +566,6 @@ fn backend() -> Result<(&'static Vec<Mutex<CUDAMemoryPool>>, &'static Vec<Mutex<
 
 pub(super) fn pool(id: u16) -> Result<&'static Mutex<CUDAMemoryPool>, BackendError> {
     backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
-}
-
-pub(super) fn pool_count() -> u16 {
-    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
 }
 
 fn no_pool(id: u16) -> BackendError {
@@ -871,8 +874,13 @@ fn spawn_worker(
         }
 
         let mut buffers: Slab<ChunkId, CUDABuffer> = Slab::new();
-        // stack of buffers that are unused and can be reused
-        let mut free_set: Set<ChunkId> = Set::default();
+        // Unused buffers keyed by their exact byte size. Exact-size reuse (the
+        // same policy as tinygrad's `Allocator.cache`) is what keeps a small
+        // request from consuming a large block: a 1 KiB tensor can never squat
+        // the 188 MB `train_x` upload, so that upload reuses its own chunk on
+        // every step instead of forcing a fresh `cuMemAlloc`. No size classes,
+        // no splitting, no coalescing — sizes repeat, so the buckets converge.
+        let mut free_set: Map<usize, Vec<ChunkId>> = Map::default();
         let mut programs: Slab<DeviceProgramId, CUDAProgram> = Slab::new();
         // Captured partition executables by worker-side id. The
         // partition holds the live handle; a stale id recaptures, a
@@ -897,18 +905,12 @@ fn spawn_worker(
         'work_thread_loop: while let Ok(cmd) = rx.recv() {
             match cmd {
                 CUDACommand::Allocate { bytes, reply } => {
-                    // Best-fit from the free list first (stable addresses
-                    // across repeats — those bytes were already paid for);
-                    // else fresh.
-                    let best = free_set
-                        .iter()
-                        .filter_map(|id| {
-                            let b = &buffers[*id];
-                            (b.bytes >= bytes).then_some((b.bytes, *id))
-                        })
-                        .min();
-                    if let Some((_, id)) = best {
-                        free_set.remove(&id);
+                    // Exact-size reuse first (stable addresses across repeats —
+                    // those bytes were already paid for). A larger free block is
+                    // deliberately NOT taken: it stays available for the large
+                    // request it was allocated for.
+                    if let Some(id) = free_set.get_mut(&(bytes as usize)).and_then(|ids| ids.pop()) {
+                        free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                         let _ = reply.send(Ok(id));
                         continue;
                     }
@@ -917,7 +919,7 @@ fn spawn_worker(
                         let _ = reply.send(Err(err));
                         continue;
                     }
-                    assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
+                    assert!(ptr.is_multiple_of(8), "Memory is not 8-byte aligned!");
                     debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
                     free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                     let buffer_id = buffers.push(CUDABuffer { ptr, bytes });
@@ -932,8 +934,15 @@ fn spawn_worker(
                         debug_assert!(false, "release of unknown buffer {buffer_id:?}");
                         continue;
                     }
-                    debug_assert!(!free_set.contains(&buffer_id), "double release of buffer {buffer_id:?}");
-                    free_set.insert(buffer_id);
+                    let bytes = buffers[buffer_id].bytes as usize;
+                    debug_assert!(
+                        !free_set.get(&bytes).is_some_and(|ids| ids.contains(&buffer_id)),
+                        "double release of buffer {buffer_id:?}"
+                    );
+                    free_set.entry(bytes).or_default().push(buffer_id);
+                    // `free_bytes` is device_total - live: the chunk is no
+                    // longer owned by a tensor.
+                    free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
                 }
                 CUDACommand::Dispose => {
                     todo!("Dispose drains the free list under a full device sync")
@@ -941,10 +950,17 @@ fn spawn_worker(
                 CUDACommand::TryReuse { buffer_ids, reply } => {
                     // All-or-nothing: every id must be on the free list, else
                     // some address moved and the graph must be retraced.
-                    let ok = buffer_ids.iter().all(|id| free_set.contains(id));
+                    let ok = buffer_ids.iter().all(|id| {
+                        buffers.contains_id(*id)
+                            && free_set.get(&(buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id))
+                    });
                     if ok {
                         for id in &buffer_ids {
-                            free_set.remove(id);
+                            let bytes = buffers[*id].bytes as usize;
+                            let ids = free_set.get_mut(&bytes).unwrap();
+                            let pos = ids.iter().position(|x| x == id).unwrap();
+                            ids.remove(pos);
+                            free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                         }
                     }
                     let _ = reply.send(Ok(ok));
@@ -978,6 +994,19 @@ fn spawn_worker(
                     if let Err(err) = unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::MemoryCopyP2H) {
                         let _ = reply.send(Err(err));
                         continue;
+                    }
+                    let _ = reply.send(Ok(()));
+                }
+                CUDACommand::Synchronize { reply } => {
+                    // Public barrier: drain every stream so the reply means
+                    // "everything submitted before this command is done".
+                    // Same drain as the opening drain in `Replay`, but the
+                    // failure is reported instead of swallowed.
+                    for st in &streams {
+                        if let Err(err) = unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::KernelSync) {
+                            let _ = reply.send(Err(err));
+                            continue 'work_thread_loop;
+                        }
                     }
                     let _ = reply.send(Ok(()));
                 }
@@ -1100,25 +1129,21 @@ fn spawn_worker(
                                                 context: format!("replay allocated negative bytes for {slot:?}").into(),
                                             });
                                         }
-                                        // Stable-address reuse first: steady-state
-                                        // replays land on the same chunks.
-                                        let id = match free_set
-                                            .iter()
-                                            .filter_map(|bid| {
-                                                let b = &buffers[*bid];
-                                                (b.bytes >= bytes).then_some((b.bytes, *bid))
-                                            })
-                                            .min()
-                                        {
-                                            Some((_, id)) => {
-                                                free_set.remove(&id);
+                                        // Exact-size reuse first: steady-state
+                                        // replays land on the same chunks, and
+                                        // a small output never takes a large
+                                        // block that a big copy needs.
+                                        let id = match free_set.get_mut(&(bytes as usize)).and_then(|ids| ids.pop()) {
+                                            Some(id) => {
+                                                free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                                                 id
                                             }
                                             None => {
                                                 let mut ptr: CUdeviceptr = 0;
                                                 unsafe { (cuMemAlloc)(&raw mut ptr, bytes as usize) }
                                                     .check(ErrorStatus::MemoryAllocation)?;
-                                                assert!(ptr % 8 == 0, "Memory is not 8-byte aligned!");
+                                                assert!(ptr.is_multiple_of(8), "Memory is not 8-byte aligned!");
+                                                debug_assert!(free_bytes_atomic.load(Ordering::SeqCst) > bytes as u64);
                                                 free_bytes_atomic.fetch_sub(bytes as u64, Ordering::SeqCst);
                                                 buffers.push(CUDABuffer { ptr, bytes })
                                             }
@@ -1500,8 +1525,8 @@ fn spawn_worker(
                             // EndCapture (UNJOINED otherwise). The origin
                             // waits on each entered side stream's last
                             // recorded event.
-                            for q in 1..streams.len() {
-                                if !entered[q] {
+                            for (q, &entered_q) in entered.iter().enumerate().skip(1) {
+                                if !entered_q {
                                     continue;
                                 }
                                 let mut last = None;
@@ -1845,9 +1870,9 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
         dev.dev_info = Arc::new(DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024, // TODO run a kernel to get an estimate
             max_global_work_dims: vec![
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, cuDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
-                Dim::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
+                Dim::from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X, cuDeviceGetAttribute)?),
+                Dim::from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Y, cuDeviceGetAttribute)?),
+                Dim::from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_Z, cuDeviceGetAttribute)?),
             ],
             max_local_threads: u32::try_from(max_threads_per_block).unwrap(),
             max_local_work_dims: vec![
@@ -1855,10 +1880,9 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 u32::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Y, cuDeviceGetAttribute)?).unwrap(),
                 u32::try_from(dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_Z, cuDeviceGetAttribute)?).unwrap(),
             ],
-            local_mem_size: Dim::try_from(
+            local_mem_size: Dim::from(
                 dev.get(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK, cuDeviceGetAttribute)?,
-            )
-            .unwrap(),
+            ),
             max_register_bytes: (max_regs_per_block as i64 / max_threads_per_block as i64).min(256) * 4,
             preferred_vector_size: 16,
             tensor_cores: major >= 7,
@@ -1871,10 +1895,6 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 // never NONE; fp8 has no codegen yet at any compute capability.
                 capability[DType::F8E4M3 as usize] = DTypeCapability::none();
                 capability[DType::F8E5M2 as usize] = DTypeCapability::none();
-                capability[DType::F16 as usize] =
-                    capability[DType::F16 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
-                capability[DType::F64 as usize] =
-                    capability[DType::F64 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
                 capability
             },
             has_native_exp2: true,
@@ -1914,9 +1934,9 @@ impl CUDAMemoryPool {
     }
 
     pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
-        if bytes > self.free_bytes.load(Ordering::SeqCst) as i64 {
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "Allocation failure.".into() });
-        }
+        // No `free_bytes` pre-check: a request may be served from the exact-size
+        // cache even when little VRAM is unallocated. The worker tries the cache
+        // first and only then asks the driver, which reports a real OOM.
         let (reply, reply_rx) = channel();
         self.tx.send(CUDACommand::Allocate { bytes, reply }).unwrap();
         reply_rx.recv().unwrap()
@@ -1974,6 +1994,16 @@ impl CUDADevice {
 
     pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
+    }
+
+    /// Blocking barrier: returns once every stream has drained, so all work
+    /// submitted to this device before the call has completed. Does not
+    /// allocate, copy, or otherwise disturb the pool.
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn synchronize(&mut self) -> Result<(), BackendError> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::Synchronize { reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -2233,7 +2263,7 @@ pub(crate) struct CudaPartition {
     pub(crate) deaths: Vec<Vec<OpId>>,
     /// Execution lane per command (static stream assignment, slot
     /// affinity mirroring OpenCL queues). All zeros while every launch
-    /// submitted on streams[0]; real values once multi-stream lands.
+    /// submitted on `streams[0]`; real values once multi-stream lands.
     pub(crate) queues: Vec<usize>,
     /// Cross-stream producer-command edges per command (producer indices
     /// into this partition's cmds). Replay turns them into event
@@ -2374,7 +2404,7 @@ impl CUDADevice {
             p if p == self.memory_pool => {
                 let (reply, reply_rx) = channel();
                 self.tx.send(CUDACommand::CopyDtoD { src: src_shard.chunk, dst: dst_shard.chunk, bytes, reply }).map_err(dead)?;
-                return reply_rx.recv().map_err(dead_rx)?;
+                reply_rx.recv().map_err(dead_rx)?
             }
             Pool::Host => {
                 // The host lock is held across the blocking roundtrip: the
@@ -2384,7 +2414,7 @@ impl CUDADevice {
                 let src_ptr = pool.get_buffer(src_shard.chunk).as_ptr();
                 let (reply, reply_rx) = channel();
                 self.tx.send(CUDACommand::CopyHtoD { src: src_ptr, dst: dst_shard.chunk, bytes, reply }).map_err(dead)?;
-                return reply_rx.recv().map_err(dead_rx)?;
+                reply_rx.recv().map_err(dead_rx)?
             }
             #[cfg(unix)]
             Pool::Disk => {
@@ -2399,8 +2429,8 @@ impl CUDADevice {
                 let n = bytes.min(extent);
                 let (reply, reply_rx) = channel();
                 self.tx.send(CUDACommand::CopyDiskToD { ptr, extent, bytes: n, dst: dst_shard.chunk, reply }).map_err(dead)?;
-                let res = reply_rx.recv().map_err(dead_rx)?;
-                return res;
+
+                reply_rx.recv().map_err(dead_rx)?
             }
             #[cfg(windows)]
             Pool::Disk => todo!("CUDA copy from disk on windows"),
@@ -2661,7 +2691,7 @@ unsafe fn build_cudnn_plan(
                 });
             }
             let dtype = cudnn_data_type(tensor.dtype).unwrap_or(CUDNN_DATA_FLOAT);
-            let dims: Vec<i64> = tensor.shape.iter().map(|d| i64::try_from(*d).unwrap()).collect();
+            let dims: Vec<i64> = tensor.shape.to_vec();
             let strides: Vec<i64> = (0..dims.len()).map(|i| dims[i + 1..].iter().product()).collect();
             let is_virtual = tensor.is_virtual as i32;
             if (cudnn.backend_set_attribute)(

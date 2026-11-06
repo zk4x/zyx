@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-"""Train cost model: Ridge on ~167 engineered features, no DT in Rust code."""
+"""Train cost model: Ridge on ~167 engineered features, no DT in Rust code.
 
+Reads `zyx-bench/bench.db` (append-only, written by `cargo run --release` in
+`zyx-bench`) and rewrites `zyx/src/kernel/predict_cost.rs`."""
+
+import json
 import os
+import sqlite3
 import sys
 import warnings
 import numpy as np
@@ -11,7 +16,28 @@ from sklearn.feature_selection import SequentialFeatureSelector as SFS
 from scipy.stats import spearmanr as _spearmanr
 warnings.filterwarnings('ignore')
 
-BENCH_CSV = '/home/x/Dev/rust/zyx/zyx-bench/bench_data.csv'
+BENCH_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bench.db')
+
+
+def load_bench():
+    """Measurements as a DataFrame: flat `Kernel::features` columns, one row per
+    timed candidate. `variant_hash` groups the candidates of one seed kernel."""
+    if not os.path.exists(BENCH_DB):
+        sys.exit(f"missing {BENCH_DB}: run `cargo run --release` in zyx-bench first")
+    con = sqlite3.connect(f"file:{BENCH_DB}?mode=ro", uri=True)
+    df = pd.read_sql_query(
+        "SELECT dev, seed, kernel, nanos, features FROM measurements"
+        " WHERE status = 'measured' AND nanos IS NOT NULL",
+        con,
+    )
+    con.close()
+    if df.empty:
+        sys.exit(f"{BENCH_DB} has no measured rows")
+    features = pd.json_normalize(df.pop('features').map(json.loads))
+    df = pd.concat([df.reset_index(drop=True), features.reset_index(drop=True)], axis=1)
+    df['variant_hash'] = df['seed']
+    df['time_us'] = df['nanos'] / 1000.0
+    return df
 
 # ---- Feature registration ----
 FEATURE_DEFS = []
@@ -311,11 +337,11 @@ def _feature_to_rust(name):
 # ---- MAIN ----
 def main():
     matmul_only = '--matmul' in sys.argv
-    df = pd.read_csv(BENCH_CSV)
+    df = load_bench()
     if matmul_only:
         df = df.tail(9000).reset_index(drop=True)
         print(f"Filtered to last {len(df)} matmul entries")
-    print(f"Read {len(df)} entries from {BENCH_CSV}")
+    print(f"Read {len(df)} entries from {BENCH_DB}")
 
     y = df.groupby('variant_hash')['time_us'].rank(pct=True).fillna(0.5).values
     variant_groups = [g.index.values for _, g in df.groupby('variant_hash') if len(g) >= 2]

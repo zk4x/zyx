@@ -7,7 +7,12 @@
 //! repeated), causal mask, feed-forward GLU, LM head projection.
 
 use std::result::Result;
-use zyx::{DType, Tape, Tensor, ZyxError};
+use zyx::{DType, DTypeCapability, Tape, Tensor, ZyxError};
+
+/// Whether BF16 has every operation capability the test will use.
+fn bf16_can(required: DTypeCapability) -> bool {
+    Tensor::dtype_capability(DType::BF16).contains(required)
+}
 
 /// Cast a bf16 tensor to f32 and read it back host-side.
 fn to_f32(t: &Tensor) -> Result<Vec<f32>, ZyxError> {
@@ -28,6 +33,9 @@ fn assert_close(got: &[f32], expected: &[f32], tol: f32, what: &str) {
 
 #[test]
 fn llama_embedding_one_hot() -> Result<(), ZyxError> {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
+        return Ok(());
+    }
     // weight rows are distinct, exact-in-bf16 constants.
     let weight_f32: Vec<f32> = (0..8).flat_map(|r| vec![r as f32 + 1.0; 8]).collect();
     let weight = Tensor::from(weight_f32).reshape([8, 8])?.cast(DType::BF16);
@@ -60,6 +68,16 @@ fn llama_embedding_one_hot() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_rms_norm() -> Result<(), ZyxError> {
+    if !bf16_can(
+        DTypeCapability::CAST
+            | DTypeCapability::STORAGE
+            | DTypeCapability::ADD
+            | DTypeCapability::MUL
+            | DTypeCapability::DIV
+            | DTypeCapability::SQRT,
+    ) {
+        return Ok(());
+    }
     let x = Tensor::from(vec![1.0f32, 2.0, 3.0, 4.0, -1.0, 0.5, 2.0, 1.0]).reshape([2, 4])?.cast(DType::BF16);
     let scale = Tensor::from(vec![1.0f32; 4]).cast(DType::BF16);
     let eps = Tensor::from(1e-6f32).cast(DType::BF16);
@@ -91,6 +109,11 @@ fn llama_rms_norm() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_rope() -> Result<(), ZyxError> {
+    if !bf16_can(
+        DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::SUB | DTypeCapability::MUL,
+    ) {
+        return Ok(());
+    }
     let head_dim = 4i64;
     let seq = 4i64;
     // llama's precompute_rope_freqs: t [max_pos, 1] @ inv_freq [1, hd/2].
@@ -152,9 +175,20 @@ fn llama_rope() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_attention_softmax() -> Result<(), ZyxError> {
+    if !bf16_can(
+        DTypeCapability::CAST
+            | DTypeCapability::STORAGE
+            | DTypeCapability::ADD
+            | DTypeCapability::MUL
+            | DTypeCapability::DIV
+            | DTypeCapability::EXP
+            | DTypeCapability::MAX,
+    ) {
+        return Ok(());
+    }
     let seq = 4i64;
     let d = 4i64;
-    let scale = (1.0f32 / (d as f32).sqrt()) as f32;
+    let scale = 1.0f32 / (d as f32).sqrt();
     // Fixed, bf16-exact q/k/v so the reference is computable host-side.
     let q = Tensor::from(vec![
         1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -187,7 +221,7 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
     // e^scale / (e^scale + (i-1) * 1) at position i, 1/(...) at earlier ones.
     // v rows are all-identical, so out rows == v row regardless of weights.
     let got = to_f32(&out)?;
-    let expected: Vec<f32> = vec![1.0, 2.0, 4.0, 8.0].repeat(4);
+    let expected: Vec<f32> = [1.0, 2.0, 4.0, 8.0].repeat(4);
     assert_close(&got, &expected, 0.02, "attention out (uniform v)");
 
     let probs_f = to_f32(&probs)?;
@@ -208,6 +242,9 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
+        return Ok(());
+    }
     let max_ctx = 16i64;
     let n_kv = 2i64;
     let hd = 4i64;
@@ -261,6 +298,9 @@ fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
+        return Ok(());
+    }
     let max_ctx = 8i64;
     let n_kv = 1i64;
     let hd = 4i64;
@@ -297,6 +337,9 @@ fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
+        return Ok(());
+    }
     let max_ctx = 8i64;
     let n_kv = 1i64;
     let hd = 4i64;
@@ -321,7 +364,7 @@ fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
     let expected: Vec<f32> = (0..2)
         .flat_map(|_| vec![1.0f32, 2.0, 3.0, 4.0])
         .chain((0..2).flat_map(|_| vec![5.0f32, 6.0, 7.0, 8.0]))
-        .chain(std::iter::repeat(0.0).take(16))
+        .chain(std::iter::repeat_n(0.0, 16))
         .collect();
     assert_close(&got, &expected, 1e-6, "generation assign rows");
     Ok(())
@@ -336,6 +379,9 @@ fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_promote_realized_eager_load() -> Result<(), ZyxError> {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
+        return Ok(());
+    }
     let x = Tensor::ones([4], DType::F32).contiguous()?;
 
     // Tape 1: produce y, realize it. After the tape dies y is eager again.
@@ -375,6 +421,9 @@ fn llama_promote_realized_eager_load() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_causal_mask_compare() -> Result<(), ZyxError> {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD) {
+        return Ok(());
+    }
     let seq = 4i64;
     // Mirror llama's get_mask: the causal mask is built on the HOST with -inf
     // entries and added to the attention scores. No on-graph where_ (see the
@@ -408,6 +457,16 @@ fn llama_causal_mask_compare() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_feedforward_glu() -> Result<(), ZyxError> {
+    if !bf16_can(
+        DTypeCapability::CAST
+            | DTypeCapability::STORAGE
+            | DTypeCapability::ADD
+            | DTypeCapability::MUL
+            | DTypeCapability::DIV
+            | DTypeCapability::EXP,
+    ) {
+        return Ok(());
+    }
     let d = 8i64;
     let i = 16i64;
     // bf16-exact small values.
@@ -440,6 +499,9 @@ fn llama_feedforward_glu() -> Result<(), ZyxError> {
 
 #[test]
 fn llama_lm_head_projection() -> Result<(), ZyxError> {
+    if !bf16_can(DTypeCapability::CAST | DTypeCapability::STORAGE | DTypeCapability::ADD | DTypeCapability::MUL) {
+        return Ok(());
+    }
     let vocab = 16i64;
     let d = 8i64;
     let xs = Tensor::from(vec![1.0f32; (2 * d) as usize]).reshape([2, d])?.cast(DType::BF16);

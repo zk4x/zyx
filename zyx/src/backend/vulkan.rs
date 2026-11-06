@@ -33,10 +33,18 @@ use super::{
     AllocPlan, ChunkId, Cmd, DTypeCapability, DeviceInfo, DeviceProgramId, GwsDim, LaunchArg, Placement, PlanDim, Pool, Shard,
 };
 
+/// One initialized Vulkan memory pool per ordinal (process-wide table).
+type PoolTable = Vec<Mutex<VulkanMemoryPool>>;
+/// One initialized Vulkan device per ordinal (process-wide table).
+type DeviceTable = Vec<Mutex<VulkanDevice>>;
+/// Worker reply for a `Replay` command: the `(op, chunk, offset)` bindings it
+/// resolved for the launch.
+type ReplayReply = Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>;
+
 // ── Global state ──────────────────────────────────────────────────────────────
 
-static VULKAN_POOLS: OnceLock<Vec<Mutex<VulkanMemoryPool>>> = OnceLock::new();
-static VULKAN_DEVICES: OnceLock<Vec<Mutex<VulkanDevice>>> = OnceLock::new();
+static VULKAN_POOLS: OnceLock<PoolTable> = OnceLock::new();
+static VULKAN_DEVICES: OnceLock<DeviceTable> = OnceLock::new();
 
 // ── Vulkan FFI types ─────────────────────────────────────────────────────────
 
@@ -89,7 +97,7 @@ const VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_BFLOAT16_FEATURES_KHR: u32 = 1000
 const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0080;
 const VK_BUFFER_USAGE_TRANSFER_DST_BIT: u32 = 0x0002;
 const VK_BUFFER_USAGE_TRANSFER_SRC_BIT: u32 = 0x0001;
-const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x0001;
+const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x0002;
 const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 0x0004;
 const VK_SHARING_MODE_EXCLUSIVE: u32 = 0;
 const VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT: u32 = 0x0001;
@@ -318,7 +326,7 @@ struct VkPhysicalDeviceProperties {
     device_type: u32,
     device_name: [u8; 256],
     pipeline_cache_uuid: [u8; 16],
-    _pad_to_limits: [u8; 8],
+    _pad_to_limits: [u8; 4],
     _limits_prefix: [u8; 216],
     max_compute_shared_memory_size: u32,
     max_compute_work_group_count: [u32; 3],
@@ -457,7 +465,7 @@ enum VulkanCommand {
         bound: Vec<(OpId, ChunkId, usize, usize)>,
         vars: Vec<(OpId, Constant)>,
         deaths: Vec<Vec<OpId>>,
-        reply: Sender<Result<Vec<(OpId, ChunkId, usize)>, BackendError>>,
+        reply: ReplayReply,
     },
     ReleaseProgram(DeviceProgramId),
 }
@@ -492,7 +500,7 @@ struct InFlight {
 
 /// Single backend initializer: builds pools + devices together in one pass,
 /// publishes both tables. Reads config directly; no init locks.
-fn backend() -> Result<(&'static Vec<Mutex<VulkanMemoryPool>>, &'static Vec<Mutex<VulkanDevice>>), BackendError> {
+fn backend() -> Result<(&'static PoolTable, &'static DeviceTable), BackendError> {
     if let Some(pools) = VULKAN_POOLS.get()
         && let Some(devs) = VULKAN_DEVICES.get()
     {
@@ -520,10 +528,6 @@ fn backend() -> Result<(&'static Vec<Mutex<VulkanMemoryPool>>, &'static Vec<Mute
 
 pub(super) fn pool(id: u16) -> Result<&'static Mutex<VulkanMemoryPool>, BackendError> {
     backend()?.0.get(id as usize).ok_or_else(|| no_pool(id))
-}
-
-pub(super) fn pool_count() -> u16 {
-    backend().map(|(pools, _)| pools.len() as u16).unwrap_or(0)
 }
 
 fn no_pool(id: u16) -> BackendError {
@@ -1169,7 +1173,6 @@ fn drain_all(
 /// Waits for and destroys every in-flight batch that touched `buffer_id`.
 /// Single in-order queue: waiting the batch fence completes all earlier
 /// batches too, so every use of the buffer up to the release is covered.
-#[allow(clippy::too_many_arguments)]
 /// Reaps batches whose fence has signaled (a cheap `vkGetFenceStatus` poll).
 #[allow(clippy::too_many_arguments)]
 fn sweep_inflight(
@@ -1673,7 +1676,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
             compute: 1_000_000_000_000,
             max_global_work_dims: max_wg_count.iter().map(|&c| Dim::from(c)).collect(),
             max_local_threads: max_wg_invocations,
-            max_local_work_dims: vec![u32::from(max_wg_size[0]); max_wg_size.len()],
+            max_local_work_dims: vec![max_wg_size[0]; max_wg_size.len()],
             preferred_vector_size: 4,
             local_mem_size: Dim::from(props.max_compute_shared_memory_size),
             max_register_bytes: 1024,
@@ -1692,11 +1695,14 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                         | DTypeCapability::COS
                         | DTypeCapability::POW,
                 );
-                // Turing/NVIDIA driver crashes on BF16 compute even when
-                // VK_KHR_shader_bfloat16 is enabled. SPIR-V codegen would
-                // need explicit OpFConvert around GLSL.std.450 intrinsics.
-                // Disable until that's implemented.
-                all[DType::BF16 as usize] = DTypeCapability::none();
+                // BF16 arithmetic is not part of SPV_KHR_bfloat16. Vulkan can
+                // store/load/convert/select BF16, but not compute directly on
+                // it; kernels doing BF16 arithmetic must cast to F32 first.
+                all[DType::BF16 as usize] = if has_shader_bf16 {
+                    DTypeCapability::CAST | DTypeCapability::STORAGE
+                } else {
+                    DTypeCapability::none()
+                };
                 if !has_shader_float16 {
                     all[DType::F16 as usize] = DTypeCapability::none();
                 }
@@ -2213,7 +2219,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 flags: 0,
                                 setLayoutCount: 1,
                                 pSetLayouts: &desc_layout,
-                                pushConstantRangeCount: u32::from(push_constants_size > 4),
+                                pushConstantRangeCount: u32::from(push_constants_size > 0),
                                 pPushConstantRanges: &push_constant_range,
                             };
                             let mut pipeline_layout = std::ptr::null_mut();
@@ -2667,7 +2673,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                     vkDestroyFence,
                 );
                 for id in buffers.ids().collect::<Vec<_>>() {
-                    let VulkanBuffer { buf, mem, ptr, bytes: _, .. } = unsafe { buffers.remove_and_return(id) };
+                    let VulkanBuffer { buf, mem, ptr, .. } = unsafe { buffers.remove_and_return(id) };
                     if !ptr.is_null() {
                         unsafe { vkUnmapMemory(device, mem) };
                     }

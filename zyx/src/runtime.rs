@@ -4,7 +4,7 @@
 //! Runtime: the eager tensor executor.
 //!
 //! The `Runtime` holds the per-process tensor slab, kernel pool, variable slots, and the
-//! graph state for the active tape. Most callers go through [`Tensor`], which acquires the
+//! graph state for the active tape. Most callers go through [`crate::Tensor`], which acquires the
 //! process-wide runtime via a `Mutex` (`RT.lock()`).
 //!
 //! # Concurrency and the runtime lock
@@ -441,6 +441,10 @@ pub struct Runtime {
     pub implicit_casts: bool,
     pub training: bool,
     pub plan_cache: Map<u64, Plan>,
+    /// Input placements already warned about: `(source placement, from, to)`.
+    /// Keyed by the source placement, not the tensor id, so a fresh view of
+    /// the same buffer in a later iteration dedupes to one message.
+    warned_input_copies: Set<(usize, Pool, Pool)>,
     #[cfg(feature = "viz")]
     pub viz: Viz,
 }
@@ -468,6 +472,34 @@ impl Runtime {
         hasher.finish()
     }
 
+    /// Tell the caller once when the runtime has to copy a large input across
+    /// pools. A one-shot `Tape` (or one realize) cannot know the tensor will be
+    /// reused, so it must keep paying that copy on every execution; moving the
+    /// tensor once outside the graph (`Tensor::to`) is always preferable.
+    /// Small transfers (index tensors, metadata) are normal and stay silent.
+    pub(crate) fn warn_input_copy(&mut self, placement: usize, tid: TensorId, src: Pool, dst: Pool) {
+        const MIN_BYTES: Dim = 1 << 20;
+        if std::env::var_os("ZYX_QUIET_INPUT_COPIES").is_some() {
+            return;
+        }
+        let bytes = self.resolve_shape(tid).iter().product::<Dim>() * self.dtype(tid).bit_size() as Dim / 8;
+        if bytes < MIN_BYTES {
+            return;
+        }
+        if !self.warned_input_copies.insert((placement, src, dst)) {
+            return;
+        }
+        let shape = self.resolve_shape(tid);
+        let dtype = self.dtype(tid);
+        let target = Dev::all().into_iter().find(|d| d.pool() == dst).map_or_else(|| format!("{dst:?}"), |d| format!("{d:?}"));
+        eprintln!(
+            "zyx: input tensor {tid} ({dtype:?} {shape:?}, {:.1} MiB) is implicitly copied {src:?} -> {dst:?} on every execution.\n\
+             zyx: move it once before building the graph: `let x = x.to({target});` and use that tensor.\n\
+             zyx: set ZYX_QUIET_INPUT_COPIES=1 to silence this hint.",
+            bytes as f64 / (1024.0 * 1024.0)
+        );
+    }
+
     pub const fn new() -> Self {
         Runtime {
             graphs: Slab::new(),
@@ -482,6 +514,7 @@ impl Runtime {
             implicit_casts: true,
             training: false,
             plan_cache: Map::with_hasher(BuildHasherDefault::new()),
+            warned_input_copies: Set::with_hasher(BuildHasherDefault::new()),
             #[cfg(feature = "viz")]
             viz: Viz::new(),
         }
@@ -615,6 +648,42 @@ impl Runtime {
     /// surviving output needs), free the buffer, drop the kernel if it was the
     /// last live output. Graph tensors are kept by their graph instead; its
     /// `ref_count` tears it down when it hits zero.
+    /// Drop kernels that no longer own or produce anything: no outputs, no
+    /// stores, and not the producer of any live tensor. Such a kernel is a
+    /// leftover loader (e.g. an operand's load kernel after the operation was
+    /// merged elsewhere); its `loads` edges keep those inputs alive forever if
+    /// nothing prunes it. Runs at realize boundaries, where no op is in flight.
+    pub(crate) fn prune_husk_kernels(&mut self) {
+        let mut owned: Set<KernelId> = Set::default();
+        for (_, td) in self.tensors.iter() {
+            match td {
+                TensorData::Eager { kernel_id, .. } | TensorData::Promoted { kernel_id, .. } => {
+                    owned.insert(*kernel_id);
+                }
+                TensorData::PendingLeaf { depends_on, .. } => {
+                    owned.insert(*depends_on);
+                }
+                _ => {}
+            }
+        }
+        let husks: Vec<KernelId> = self
+            .kernels
+            .iter()
+            .filter(|(kid, kd)| kd.outputs.is_empty() && kd.stores.is_empty() && !owned.contains(kid))
+            .map(|(kid, _)| kid)
+            .collect();
+        for kid in husks {
+            let loads = std::mem::take(&mut self.kernels[kid].loads);
+            self.kernels.remove(kid);
+            // One load entry is one edge: release every occurrence.
+            for tid in loads {
+                if self.tensors.contains_id(tid) {
+                    self.release(tid);
+                }
+            }
+        }
+    }
+
     pub fn release(&mut self, x: TensorId) {
         #[cfg(feature = "debug_tensor_op")]
         {
@@ -749,10 +818,10 @@ impl Runtime {
                         {
                             let kd = &self.kernels[depends_on];
                             for &tid in kd.outputs.iter().chain(kd.loads.iter()) {
-                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
-                                    if kd.kernel.ops.contains_id(op_id) {
-                                        keep_alive.push(op_id);
-                                    }
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
+                                    && kd.kernel.ops.contains_id(op_id)
+                                {
+                                    keep_alive.push(op_id);
                                 }
                             }
                         }
@@ -768,11 +837,11 @@ impl Runtime {
                                     if i.is_null() {
                                         break;
                                     }
-                                    if let Op::Store { dst, src, .. } = kd.kernel.ops[i].op {
-                                        if dst == param {
-                                            found = Some((i, src));
-                                            break;
-                                        }
+                                    if let Op::Store { dst, src, .. } = kd.kernel.ops[i].op
+                                        && dst == param
+                                    {
+                                        found = Some((i, src));
+                                        break;
                                     }
                                     i = kd.kernel.next_op(i);
                                 }
@@ -819,10 +888,9 @@ impl Runtime {
                         for &tid in &self.kernels[kernel_id].loads {
                             if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
                                 &mut self.tensors[tid]
+                                && *k == kernel_id
                             {
-                                if *k == kernel_id {
-                                    *k = KernelId::NULL;
-                                }
+                                *k = KernelId::NULL;
                             }
                         }
                         let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
@@ -850,10 +918,10 @@ impl Runtime {
                                 })
                                 .collect();
                             for &tid in &kd.loads {
-                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
-                                    if kd.kernel.ops.contains_id(op_id) {
-                                        out_ops.push(op_id);
-                                    }
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
+                                    && kd.kernel.ops.contains_id(op_id)
+                                {
+                                    out_ops.push(op_id);
                                 }
                             }
                             (out_ops, kd.loads.clone())
@@ -894,10 +962,9 @@ impl Runtime {
                         for &tid in &self.kernels[kernel_id].loads {
                             if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
                                 &mut self.tensors[tid]
+                                && *k == kernel_id
                             {
-                                if *k == kernel_id {
-                                    *k = KernelId::NULL;
-                                }
+                                *k = KernelId::NULL;
                             }
                         }
                         let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
@@ -925,10 +992,10 @@ impl Runtime {
                                 })
                                 .collect();
                             for &tid in &kd.loads {
-                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid] {
-                                    if kd.kernel.ops.contains_id(op_id) {
-                                        out_ops.push(op_id);
-                                    }
+                                if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } = self.tensors[tid]
+                                    && kd.kernel.ops.contains_id(op_id)
+                                {
+                                    out_ops.push(op_id);
                                 }
                             }
                             (out_ops, kd.loads.clone())
@@ -1271,10 +1338,11 @@ impl Runtime {
                 | Expr::Stack4 { .. }
                 | Expr::Stack5 { .. } => {
                     let nested = self.push(Expr::Cast { x: expr, dtype });
-                    let tid = self.tensors.push(TensorData::Symbolic { expr: nested, rc: 1 });
-                    // The cast node holds an edge to x.
-                    self.retain(x);
-                    tid
+                    // No retain of `x`: the child lives in the append-only expr
+                    // slab (an ExprId), and this node stores that ExprId, not a
+                    // tensor edge. Retaining here leaked one tensor per symbolic
+                    // cast per step — nothing ever releases it.
+                    self.tensors.push(TensorData::Symbolic { expr: nested, rc: 1 })
                 }
             },
             TensorData::Eager { kernel_id, op_id, shape_id, .. } => {
@@ -1945,7 +2013,7 @@ impl Runtime {
     ///
     /// Realized tensors map through their buffer's pool to the owning device;
     /// unrealized eager and promoted tensors use their kernel's device; graph
-    /// and slab tensors have no device and return [`Dev::Auto`](Dev::Auto).
+    /// and slab tensors have no device and return [`Dev::Auto`].
     ///
     /// # Panics
     ///
@@ -2341,10 +2409,11 @@ impl Runtime {
                 _ => self.push(Expr::Stack { exprs: exprs.into_boxed_slice() }),
             };
             let tid = self.tensors.push(TensorData::Symbolic { expr, rc: 1 });
-            // The stack node holds an edge to every element.
-            for &t in tensors {
-                self.retain(t);
-            }
+            // No retain of the elements: the stack node stores their ExprIds in
+            // the append-only expr slab, not tensor edges. Retaining them here
+            // leaked every element of every symbolic shape stack (nothing ever
+            // releases those edges), which was the bulk of the per-step slab
+            // growth.
             #[cfg(feature = "debug_tensor_op")]
             println!("  -> symbolic: tid={tid}");
             return Ok(tid);
@@ -2519,13 +2588,11 @@ impl Runtime {
                 // a view is not an operation, so no kernel is created and nothing
                 // is listed in any kernel's outputs — consumers mint their own
                 // load kernels via `new_kernel_from_leaf`. This avoids copying data for a
-                // view-only reshape. The view retains x, so x (the owner)
-                // outlives all its views and deallocates the buffer on death.
+                // view-only reshape. The shared `Arc` keeps the buffer alive, so
+                // no slab edge to the owner is needed: retaining here pinned the
+                // owner's slab entry forever (nothing releases it when the view
+                // dies) — one leaked reference per view per step.
                 if let Some(buf) = self.leaf_buffer(x) {
-                    self.retain(x);
-                    // The view shares the owner's placement: the `Arc` clone
-                    // is the retain (no pool-level refcount anymore), so a
-                    // dying view never frees the owner's buffer early.
                     let tid = self.tensors.push(TensorData::Leaf { shape_id: shape_expr, dtype, buffer: buf, rc: 1 });
                     #[cfg(feature = "debug_tensor_op")]
                     println!("  -> eager: tid={tid} (Leaf, shares buffer with x={x})");
@@ -2570,7 +2637,7 @@ impl Runtime {
                 let op_id = self.kernels[kernel_id].kernel.reshape(op_id, shape_op);
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
-                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                debug_assert!(!self.kernels[kernel_id].outputs.contains(&tid));
                 self.kernels[kernel_id].outputs.insert(tid);
 
                 #[cfg(feature = "debug_tensor_op")]
@@ -2672,7 +2739,7 @@ impl Runtime {
 
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
-                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                debug_assert!(!self.kernels[kernel_id].outputs.contains(&tid));
                 self.kernels[kernel_id].outputs.insert(tid);
 
                 #[cfg(feature = "debug_tensor_op")]
@@ -2692,7 +2759,7 @@ impl Runtime {
 
                 let tid = self.tensors.push(TensorData::Eager { kernel_id, op_id, shape_id: shape_expr, dtype, rc: 1 });
 
-                debug_assert_eq!(self.kernels[kernel_id].outputs.contains(&tid), false);
+                debug_assert!(!self.kernels[kernel_id].outputs.contains(&tid));
                 self.kernels[kernel_id].outputs.insert(tid);
 
                 #[cfg(feature = "debug_tensor_op")]
@@ -3006,7 +3073,6 @@ impl Runtime {
             | TensorData::Promoted { shape_id, .. } => shape_id,
             ref t => todo!("flip of pure-slab tensor {t:?}"),
         };
-        if shape_id != ExprId::SCALAR {}
 
         match self.tensors[x] {
             TensorData::Graph { class_id: x, graph_id, dtype, .. }
@@ -3045,30 +3111,30 @@ impl Runtime {
         // Symbolic (slab) tensors carry no buffer; resolve their value directly,
         // no kernel launch needed. They are constants/broadcast scalars, so the
         // single resolved value is written to every element of `data`.
-        if self.leaf_buffer(x).is_none() {
-            if let Some(c) = self.resolve_symbolic(x) {
-                let v = match c.cast(T::dtype()) {
-                    Constant::BF16(v) => T::from_bf16(bf16::from_le_bytes(v)),
-                    Constant::F16(v) => T::from_f16(f16::from_le_bytes(v)),
-                    Constant::F32(v) => T::from_f32(f32::from_le_bytes(v)),
-                    Constant::F64(v) => T::from_f64(f64::from_le_bytes(v)),
-                    Constant::F8E4M3(v) => T::from_f32(f8e4m3::from_bits(v).to_f32()),
-                    Constant::F8E5M2(v) => T::from_f32(f8e5m2::from_bits(v).to_f32()),
-                    Constant::U8(v) => T::from_u8(v),
-                    Constant::U16(v) => T::from_u16(v),
-                    Constant::U32(v) => T::from_u32(v),
-                    Constant::U64(v) => T::from_u64(u64::from_le_bytes(v)),
-                    Constant::I8(v) => T::from_i8(v),
-                    Constant::I16(v) => T::from_i16(v),
-                    Constant::I32(v) => T::from_i32(v),
-                    Constant::I64(v) => T::from_i64(i64::from_le_bytes(v)),
-                    Constant::Bool(v) => T::from_bool(v),
-                };
-                for d in data.iter_mut() {
-                    *d = v;
-                }
-                return Ok(());
+        if self.leaf_buffer(x).is_none()
+            && let Some(c) = self.resolve_symbolic(x)
+        {
+            let v = match c.cast(T::dtype()) {
+                Constant::BF16(v) => T::from_bf16(bf16::from_le_bytes(v)),
+                Constant::F16(v) => T::from_f16(f16::from_le_bytes(v)),
+                Constant::F32(v) => T::from_f32(f32::from_le_bytes(v)),
+                Constant::F64(v) => T::from_f64(f64::from_le_bytes(v)),
+                Constant::F8E4M3(v) => T::from_f32(f8e4m3::from_bits(v).to_f32()),
+                Constant::F8E5M2(v) => T::from_f32(f8e5m2::from_bits(v).to_f32()),
+                Constant::U8(v) => T::from_u8(v),
+                Constant::U16(v) => T::from_u16(v),
+                Constant::U32(v) => T::from_u32(v),
+                Constant::U64(v) => T::from_u64(u64::from_le_bytes(v)),
+                Constant::I8(v) => T::from_i8(v),
+                Constant::I16(v) => T::from_i16(v),
+                Constant::I32(v) => T::from_i32(v),
+                Constant::I64(v) => T::from_i64(i64::from_le_bytes(v)),
+                Constant::Bool(v) => T::from_bool(v),
+            };
+            for d in data.iter_mut() {
+                *d = v;
             }
+            return Ok(());
         }
 
         let dt = self.dtype(x);
@@ -3097,19 +3163,19 @@ impl Runtime {
         // Fast path: already realized. A pending Leaf may hold a buffer with
         // an in-place store still owed (e.g. assign into a Leaf) — run the
         // pending producer kernel before reading.
-        if let TensorData::PendingLeaf { depends_on, .. } = self.tensors[x] {
-            let depends_on = depends_on;
-            if !depends_on.is_null() && self.kernels.contains_id(depends_on) {
-                let outputs: Set<TensorId> = self.kernels[depends_on].outputs.iter().copied().collect();
-                for tid in outputs {
-                    self.add_store(tid)?;
-                }
-                if self.kernels.contains_id(depends_on)
-                    && self.kernels[depends_on].outputs.is_empty()
-                    && !self.kernels[depends_on].stores.is_empty()
-                {
-                    self.materialize_kernel(depends_on)?;
-                }
+        if let TensorData::PendingLeaf { depends_on, .. } = self.tensors[x]
+            && !depends_on.is_null()
+            && self.kernels.contains_id(depends_on)
+        {
+            let outputs: Set<TensorId> = self.kernels[depends_on].outputs.iter().copied().collect();
+            for tid in outputs {
+                self.add_store(tid)?;
+            }
+            if self.kernels.contains_id(depends_on)
+                && self.kernels[depends_on].outputs.is_empty()
+                && !self.kernels[depends_on].stores.is_empty()
+            {
+                self.materialize_kernel(depends_on)?;
             }
         }
         let Some(mut buffer_id) = self.leaf_buffer(x) else {
@@ -3221,14 +3287,18 @@ impl Runtime {
     /// `force_store` would otherwise trigger a second in-place store still finds `dst`
     /// waiting on a load, not buried inside the storing kernel.
     ///
+    /// `dst` with no buffer behind it is **initialization, not a write**:
+    /// like tinygrad's `assign`, the assign replaces `dst`'s value with
+    /// `src`'s (the tensor keeps its id, so every handle sees the new value)
+    /// instead of storing into a buffer that does not exist yet. This is what
+    /// makes a lazily initialized parameter (`uniform`, `rand`, ...) usable as
+    /// an assign target on the first update.
+    ///
     /// # Errors
     ///
     /// Returns [`ZyxError::DTypeError`] if the dtypes do not match.
     ///
     /// Returns [`ZyxError::ShapeError`] if the shapes do not match.
-    ///
-    /// Returns [`ZyxError::GraphTensorNotRealized`] if `dst` is a
-    /// graph tensor that has not been realized yet.
     pub fn assign(&mut self, dst: TensorId, src: TensorId) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::assign(dst={dst}, src={src})");
@@ -3279,23 +3349,125 @@ impl Runtime {
                     }
                 }
                 let mut dst_leaf_cid = dst_cid;
-                // Walk graph to find the source of the lvalue
-                let graph = &self.graphs[graph_id];
-                loop {
-                    match graph.ops[dst_leaf_cid].op {
-                        Op::Reshape { x, .. }
-                        | Op::Permute { x, .. }
-                        | Op::Pad { x, .. }
-                        | Op::Expand { x, .. }
-                        | Op::Flip { x, .. }
-                        | Op::Narrow { x, .. } => dst_leaf_cid = x,
-                        Op::After { .. } | Op::Param { .. } => break,
-                        ref op => unreachable!("{op:?}"),
+                // Walk graph to find the source of the lvalue. `has_base` is
+                // false when dst is a pure computation with nothing bufferable
+                // behind it yet (e.g. a lazily initialized `uniform`
+                // parameter).
+                let has_base = {
+                    let graph = &self.graphs[graph_id];
+                    loop {
+                        match graph.ops[dst_leaf_cid].op {
+                            Op::Reshape { x, .. }
+                            | Op::Permute { x, .. }
+                            | Op::Pad { x, .. }
+                            | Op::Expand { x, .. }
+                            | Op::Flip { x, .. }
+                            | Op::Narrow { x, .. } => dst_leaf_cid = x,
+                            Op::After { .. } | Op::Param { .. } => break true,
+                            _ => break false,
+                        }
                     }
+                };
+                if !has_base {
+                    // Initialization, not a write: dst has no buffer to store
+                    // into, so the assign replaces dst's value with src's
+                    // (tinygrad's `assign`: "assigning to a pending value that
+                    // views no other live tensor is initialization"). dst keeps
+                    // its tensor id — and therefore every handle — and joins
+                    // src's class. Two tensors may share one class (CSE already
+                    // produces that for equal gradient classes); realize hands
+                    // each output its own `Arc` clone of the class buffer.
+                    let src_cid = match self.tensors[src] {
+                        TensorData::Graph { class_id, .. }
+                        | TensorData::GraphLeaf { class_id, .. }
+                        | TensorData::Promoted { class_id, .. } => class_id,
+                        TensorData::Eager { .. }
+                        | TensorData::Leaf { .. }
+                        | TensorData::PendingLeaf { .. }
+                        | TensorData::Symbolic { .. } => {
+                            unreachable!("assign init: src {src} was not promoted: {:?}", self.tensors[src])
+                        }
+                    };
+                    let (shape_id, dtype, rc) = match self.tensors[dst] {
+                        TensorData::Graph { shape_id, dtype, rc, .. } | TensorData::Promoted { shape_id, dtype, rc, .. } => {
+                            (shape_id, dtype, rc)
+                        }
+                        ref t => unreachable!("assign init: dst {dst} is not graph-backed: {t:?}"),
+                    };
+                    if let TensorData::Promoted { kernel_id, op_id, .. } = self.tensors[dst] {
+                        // Detach dst from its eager producer (inlined; the
+                        // former `detach_from_kernel` is duplicated per death
+                        // path by design). This is release's Promoted arm
+                        // minus the slab removal: the id survives with a new
+                        // graph class, so leaving the eager claim behind would
+                        // revert dst to the stale producer on tape teardown.
+                        if !kernel_id.is_null() {
+                            debug_assert!(!op_id.is_null());
+                            debug_assert!(!self.kernels[kernel_id].stores.contains(&dst));
+                            self.kernels[kernel_id].outputs.remove(&dst);
+                            if self.kernels[kernel_id].outputs.is_empty() && self.kernels[kernel_id].stores.is_empty() {
+                                // The kernel dies. Null out the kernel_ids of
+                                // its loads first (they point at this kernel):
+                                // their death paths, triggered by the load
+                                // releases below, must not dereference it.
+                                for &tid in &self.kernels[kernel_id].loads {
+                                    if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
+                                        &mut self.tensors[tid]
+                                        && *k == kernel_id
+                                    {
+                                        *k = KernelId::NULL;
+                                    }
+                                }
+                                let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
+                                self.kernels.remove(kernel_id);
+                                loads.retain(|&id| id != dst);
+                                for tid in loads {
+                                    self.release(tid);
+                                }
+                            } else {
+                                let (out_ops, loads) = {
+                                    let kd = &self.kernels[kernel_id];
+                                    let mut out_ops: Vec<OpId> = kd
+                                        .outputs
+                                        .iter()
+                                        .map(|&tid| match self.tensors[tid] {
+                                            TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
+                                            ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+                                        })
+                                        .collect();
+                                    for &tid in &kd.loads {
+                                        if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } =
+                                            self.tensors[tid]
+                                            && kd.kernel.ops.contains_id(op_id)
+                                        {
+                                            out_ops.push(op_id);
+                                        }
+                                    }
+                                    (out_ops, kd.loads.clone())
+                                };
+                                let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
+                                let pruned = loads_dropped_by_prune(&loads, &new_loads);
+                                for load in pruned {
+                                    if load != dst {
+                                        self.release(load);
+                                    }
+                                }
+                                self.kernels[kernel_id].loads = new_loads;
+                                if self.kernels[kernel_id].outputs.is_empty() {
+                                    // Materialize, which removes the kernel
+                                    self.materialize_kernel(kernel_id)
+                                        .expect("materialization in assign-detach from kernel failed");
+                                }
+                            }
+                        }
+                    }
+                    self.tensors[dst] = TensorData::Graph { class_id: src_cid, graph_id, shape_id, dtype, rc };
+                    return Ok(());
                 }
                 // Resolve the base leaf through any After chain (a previous assign on
                 // the same buffer) to find the base tensor. The After for this assign
                 // threads onto the previous After, not the original buffer.
+                let graph = &self.graphs[graph_id];
                 let mut leaf_cid = dst_leaf_cid;
                 while let Op::After { x, .. } = &graph.ops[leaf_cid].op {
                     leaf_cid = *x;
@@ -3591,11 +3763,11 @@ impl Runtime {
                     | Op::Pad { x, .. }
                     | Op::Expand { x, .. }
                     | Op::Flip { x, .. }
-                    | Op::Narrow { x, .. } => {
-                        if op_map.get(x).is_none() {
-                            // this is the move on the load
-                            *x = op_map[&dst_param];
-                        }
+                    | Op::Narrow { x, .. }
+                        if !op_map.contains_key(x) =>
+                    {
+                        // this is the move on the load
+                        *x = op_map[&dst_param];
                     }
                     _ => {}
                 }
@@ -3665,10 +3837,10 @@ impl Runtime {
             let mut n_non_mut = 0usize;
             let mut p = kd.kernel.head;
             while !p.is_null() {
-                if let Op::Param { kind, .. } = &kd.kernel.ops[p].op {
-                    if *kind != ParamKind::GlobalMut {
-                        n_non_mut += 1;
-                    }
+                if let Op::Param { kind, .. } = &kd.kernel.ops[p].op
+                    && *kind != ParamKind::GlobalMut
+                {
+                    n_non_mut += 1;
                 }
                 p = kd.kernel.next_op(p);
             }
@@ -3758,7 +3930,7 @@ impl Runtime {
     ///
     /// Steps:
     /// 1. If the producer kernel already has stores, or `x`'s op is preceded by a reduce,
-    ///    or `force_store` was set: call [`add_store`] so `x` lands in a fresh load kernel.
+    ///    or `force_store` was set: call `add_store` so `x` lands in a fresh load kernel.
     /// 2. **Duplicate** `x`'s dependency chain into a brand-new kernel with empty
     ///    `outputs` and no stores, retargeting the variables/loads correctly.
     ///
@@ -3877,12 +4049,12 @@ impl Runtime {
             // Const dedup: an identical Const (value + dtype) already in
             // keep or earlier in this merge is reused — its consumers and
             // any tensor holding it as op_id repoint to the survivor below.
-            if let Op::Const(c) = op {
-                if let Some(&survivor) = const_map.get(&c) {
-                    op_map.insert(i, survivor);
-                    i = merge_ops[i].next;
-                    continue;
-                }
+            if let Op::Const(c) = op
+                && let Some(&survivor) = const_map.get(&c)
+            {
+                op_map.insert(i, survivor);
+                i = merge_ops[i].next;
+                continue;
             }
             let new_op_id = self.kernels[keep_kid].kernel.push_back(op);
             if let Op::Const(c) = merge_ops[i].op {
@@ -3923,10 +4095,10 @@ impl Runtime {
         keep_data.loads.extend(merge_loads.iter().copied());
         keep_data.stores.extend(merge_stores);
         for &tid in &store_tids {
-            if let TensorData::PendingLeaf { depends_on, .. } = &mut self.tensors[tid] {
-                if *depends_on == merge_kid {
-                    *depends_on = keep_kid;
-                }
+            if let TensorData::PendingLeaf { depends_on, .. } = &mut self.tensors[tid]
+                && *depends_on == merge_kid
+            {
+                *depends_on = keep_kid;
             }
         }
 
@@ -4162,7 +4334,7 @@ impl Runtime {
                     device_label: device_id.name(),
                     cc: match device_id {
                         Dev::Cuda(_) => Some(dev_info.cc),
-                        Dev::Auto | Dev::C | Dev::Cblas | Dev::Host | Dev::Vulkan(_) | Dev::OpenCL(_) => None,
+                        Dev::Auto | Dev::C | Dev::Host | Dev::Vulkan(_) | Dev::OpenCL(_) => None,
                         #[cfg(feature = "wgpu")]
                         Dev::WGPU(_) => None,
                         Dev::TT(_) => None,
@@ -4256,10 +4428,10 @@ impl Runtime {
         // would alias a *different* kernel afterwards. Their edges are released
         // after the launch; the NULL kernel_id ends that recursion cleanly.
         for &tid in &self.kernels[kid].loads {
-            if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } = &mut self.tensors[tid] {
-                if *k == kid {
-                    *k = KernelId::NULL;
-                }
+            if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } = &mut self.tensors[tid]
+                && *k == kid
+            {
+                *k = KernelId::NULL;
             }
         }
         let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
@@ -4434,21 +4606,23 @@ impl Runtime {
             // Pick the device where most loaded bytes reside, provided it has
             // enough memory for the outputs; otherwise the fastest device
             // with enough memory. The device's codegen must be able to
-            // consume every dtype in the kernel: a capability NONE means the
-            // dtype is unusable there (see DeviceInfo::dtype_capability).
+            // consume every dtype and every op in the kernel: the required
+            // per-dtype capability bits must all be present.
             let kdtypes: &Set<DType> = &dtypes.values().copied().collect();
+            let required_caps = kernel.required_capabilities();
             let capable: &Vec<Dev> = &Dev::all()
                 .into_iter()
                 .filter(|&dev_id| {
                     !dev_id.aot_only()
                         && dev_id
                             .info()
-                            .is_ok_and(|info| kdtypes.iter().all(|&d| info.supports_dtype(d) != DTypeCapability::none()))
+                            .is_ok_and(|info| required_caps.iter().all(|(dt, caps)| info.supports_dtype(*dt).contains(*caps)))
                 })
                 .collect();
             if capable.is_empty() {
+                let req: Vec<String> = required_caps.iter().map(|(dt, caps)| format!("{dt:?}:{caps:?}")).collect();
                 return Err(ZyxError::AllocationError(
-                    format!("kernel dtypes {kdtypes:?} are unusable on every device (capability NONE)").into(),
+                    format!("kernel requires unsupported dtype/ops {req:?} (dtypes {kdtypes:?}) on every device").into(),
                 ));
             }
             let mut loaded_bytes: Map<Pool, Dim> = Map::default();
@@ -4504,6 +4678,8 @@ impl Runtime {
             if src_pool != pool_id {
                 let shape = self.resolve_shape(tid);
                 debug_assert_ne!(src_pool, pool_id, "copy across the same pool is disallowed");
+                let src_key = Arc::as_ptr(&buf) as usize;
+                self.warn_input_copy(src_key, tid, src_pool, pool_id);
                 // Single-copy queue: slot 0 is the source placement, slot 1
                 // the destination, allocated by replay from dtype and shape.
                 let mut queue = CmdQueue::new();

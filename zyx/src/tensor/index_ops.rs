@@ -59,54 +59,51 @@ impl Tensor {
         let padding = index
             .zip(shape)
             .enumerate()
-            .map(|(axis, (dim_index, dim_size))| {
-                let dim_size = dim_size as i64;
-                match dim_index {
-                    DimIndex::Range { start, end } => {
-                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
-                        let s = s.min(dim_size);
-                        let e = if end > dim_size {
-                            dim_size
-                        } else if end < 0 {
-                            (end + dim_size).max(0)
-                        } else {
-                            end
-                        };
-                        let e = e.min(dim_size).max(0);
-                        if e < s {
-                            return Err(ZyxError::shape_error(
-                                format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
-                            ));
-                        }
-                        Ok((-s, -(dim_size - e)))
+            .map(|(axis, (dim_index, dim_size))| match dim_index {
+                DimIndex::Range { start, end } => {
+                    let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                    let s = s.min(dim_size);
+                    let e = if end > dim_size {
+                        dim_size
+                    } else if end < 0 {
+                        (end + dim_size).max(0)
+                    } else {
+                        end
+                    };
+                    let e = e.min(dim_size).max(0);
+                    if e < s {
+                        return Err(ZyxError::shape_error(
+                            format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
+                        ));
                     }
-                    DimIndex::Index(i) => {
-                        squeeze_axes.push(axis as i32);
-                        let i = if i < 0 { i + dim_size } else { i };
-                        if i < 0 || i >= dim_size {
-                            return Err(ZyxError::shape_error(
-                                format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
-                            ));
-                        }
-                        Ok((-i, -(dim_size - i - 1)))
+                    Ok((-s, -(dim_size - e)))
+                }
+                DimIndex::Index(i) => {
+                    squeeze_axes.push(axis as i32);
+                    let i = if i < 0 { i + dim_size } else { i };
+                    if i < 0 || i >= dim_size {
+                        return Err(ZyxError::shape_error(
+                            format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
+                        ));
                     }
-                    DimIndex::RangeFull => Ok((0i64, 0i64)),
-                    DimIndex::RangeFrom { start } => {
-                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
-                        let s = s.min(dim_size);
-                        Ok((-s, 0i64))
-                    }
-                    DimIndex::RangeTo { end } => {
-                        let e = if end > dim_size {
-                            dim_size
-                        } else if end < 0 {
-                            (end + dim_size).max(0)
-                        } else {
-                            end
-                        };
-                        let e = e.min(dim_size).max(0);
-                        Ok((0i64, -(dim_size - e)))
-                    }
+                    Ok((-i, -(dim_size - i - 1)))
+                }
+                DimIndex::RangeFull => Ok((0i64, 0i64)),
+                DimIndex::RangeFrom { start } => {
+                    let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                    let s = s.min(dim_size);
+                    Ok((-s, 0i64))
+                }
+                DimIndex::RangeTo { end } => {
+                    let e = if end > dim_size {
+                        dim_size
+                    } else if end < 0 {
+                        (end + dim_size).max(0)
+                    } else {
+                        end
+                    };
+                    let e = e.min(dim_size).max(0);
+                    Ok((0i64, -(dim_size - e)))
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -152,54 +149,51 @@ impl Tensor {
         let padding = index
             .zip(shape.into_iter().rev())
             .enumerate()
-            .map(|(axis, (dim_index, dim_size))| {
-                let dim_size = dim_size as i64;
-                match dim_index {
-                    DimIndex::Range { start, end } => {
-                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
-                        let s = s.min(dim_size);
-                        let e = if end > dim_size {
-                            dim_size
-                        } else if end < 0 {
-                            (end + dim_size).max(0)
-                        } else {
-                            end
-                        };
-                        let e = e.min(dim_size).max(0);
-                        if e < s {
-                            return Err(ZyxError::shape_error(
-                                format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
-                            ));
-                        }
-                        Ok((-s, -(dim_size - e)))
+            .map(|(axis, (dim_index, dim_size))| match dim_index {
+                DimIndex::Range { start, end } => {
+                    let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                    let s = s.min(dim_size);
+                    let e = if end > dim_size {
+                        dim_size
+                    } else if end < 0 {
+                        (end + dim_size).max(0)
+                    } else {
+                        end
+                    };
+                    let e = e.min(dim_size).max(0);
+                    if e < s {
+                        return Err(ZyxError::shape_error(
+                            format!("Slice range end {e} is less than start {s} for dimension {axis}").into(),
+                        ));
                     }
-                    DimIndex::Index(i) => {
-                        squeeze_axes.push(axis as i32);
-                        let i = if i < 0 { i + dim_size } else { i };
-                        if i < 0 || i >= dim_size {
-                            return Err(ZyxError::shape_error(
-                                format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
-                            ));
-                        }
-                        Ok((-i, -(dim_size - i - 1)))
+                    Ok((-s, -(dim_size - e)))
+                }
+                DimIndex::Index(i) => {
+                    squeeze_axes.push(axis as i32);
+                    let i = if i < 0 { i + dim_size } else { i };
+                    if i < 0 || i >= dim_size {
+                        return Err(ZyxError::shape_error(
+                            format!("Index {i} out of bounds for dimension {axis} of size {dim_size}").into(),
+                        ));
                     }
-                    DimIndex::RangeFull => Ok((0i64, 0i64)),
-                    DimIndex::RangeFrom { start } => {
-                        let s = if start < 0 { (start + dim_size).max(0) } else { start };
-                        let s = s.min(dim_size);
-                        Ok((-s, 0i64))
-                    }
-                    DimIndex::RangeTo { end } => {
-                        let e = if end > dim_size {
-                            dim_size
-                        } else if end < 0 {
-                            (end + dim_size).max(0)
-                        } else {
-                            end
-                        };
-                        let e = e.min(dim_size).max(0);
-                        Ok((0i64, -(dim_size - e)))
-                    }
+                    Ok((-i, -(dim_size - i - 1)))
+                }
+                DimIndex::RangeFull => Ok((0i64, 0i64)),
+                DimIndex::RangeFrom { start } => {
+                    let s = if start < 0 { (start + dim_size).max(0) } else { start };
+                    let s = s.min(dim_size);
+                    Ok((-s, 0i64))
+                }
+                DimIndex::RangeTo { end } => {
+                    let e = if end > dim_size {
+                        dim_size
+                    } else if end < 0 {
+                        (end + dim_size).max(0)
+                    } else {
+                        end
+                    };
+                    let e = e.min(dim_size).max(0);
+                    Ok((0i64, -(dim_size - e)))
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -233,7 +227,7 @@ impl Tensor {
         let n = *self.resolve_shape().last().expect("Shape in invalid state. Internal bug.");
         self.flatten(..)
             .unwrap()
-            .rpad_zeros([(0i64, i64::try_from(n).unwrap())])
+            .rpad_zeros([(0i64, n)])
             .unwrap()
             .reshape([n, n + 1])
             .unwrap()
@@ -356,7 +350,7 @@ impl Tensor {
             if d == dim {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, -(shape[d] as i64 - index_shape[d] as i64)));
+                padding.push((0i64, -(shape[d] - index_shape[d])));
             }
         }
 
@@ -433,7 +427,7 @@ impl Tensor {
             if d == dim || d == rank {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+                padding.push((0i64, (shape[d] - index_shape[d])));
             }
         }
         let mask = mask.rpad_zeros(padding.clone())?;
@@ -519,7 +513,7 @@ impl Tensor {
             if d == dim || d == rank {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+                padding.push((0i64, (shape[d] - index_shape[d])));
             }
         }
         let contrib = contrib.rpad_zeros(padding)?;
@@ -593,7 +587,7 @@ impl Tensor {
             if d == dim || d == rank {
                 padding.push((0i64, 0i64));
             } else {
-                padding.push((0i64, (shape[d] - index_shape[d]) as i64));
+                padding.push((0i64, (shape[d] - index_shape[d])));
             }
         }
         // Pad with the multiplicative identity: zero padding would zero the

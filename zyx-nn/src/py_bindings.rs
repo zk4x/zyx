@@ -167,6 +167,30 @@ impl LayerNorm {
     pub fn call_py(&self, x: &Tensor) -> ZyxResult<Tensor> {
         self.forward(x.clone())
     }
+
+    /// Learnable scale (`None` when `elementwise_affine=False`).
+    #[getter]
+    pub fn weight(&self) -> Option<Tensor> {
+        self.weight.clone()
+    }
+
+    /// Set the learnable scale.
+    #[setter]
+    pub fn set_weight(&mut self, weight: Option<Tensor>) {
+        self.weight = weight;
+    }
+
+    /// Learnable bias (`None` when the layer was built without one).
+    #[getter]
+    pub fn bias(&self) -> Option<Tensor> {
+        self.bias_tensor.clone()
+    }
+
+    /// Set the learnable bias.
+    #[setter]
+    pub fn set_bias(&mut self, bias: Option<Tensor>) {
+        self.bias_tensor = bias;
+    }
 }
 
 /// Python bindings for BatchNorm layer.

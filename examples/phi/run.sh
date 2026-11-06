@@ -3,14 +3,17 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-# Download phi-1.5 weights (skipped when the safetensors file already exists).
-if [ ! -f phi1_5-model.safetensors ]; then
-    python3.12 -c "
+MODELS_DIR="$(pwd)/../models/phi-1.5"
+mkdir -p "$MODELS_DIR"
+
+# Download phi-1.5 weights and tokenizer (skipped when they already exist).
+for file in model.safetensors tokenizer.json; do
+    if [ ! -f "$MODELS_DIR/$file" ]; then
+        python3.12 -c "
 from huggingface_hub import hf_hub_download
-p = hf_hub_download('microsoft/phi-1_5', 'phi-1_5-model.safetensors')
-import shutil
-shutil.move(p, 'phi1_5-model.safetensors')
+hf_hub_download('microsoft/phi-1_5', '$file', local_dir='$MODELS_DIR', local_dir_use_symlinks=False)
 "
-fi
+    fi
+done
 
 exec cargo run --release

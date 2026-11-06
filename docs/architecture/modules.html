@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7478f1f3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58fb2f25.js"></script>
+        <script src="../toc-e6cf6f81.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -182,13 +182,18 @@
     fn iter_mut(&amp;mut self) -&gt; impl Iterator&lt;Item = &amp;mut Tensor&gt;;
     fn iter_tensors(&amp;self) -&gt; impl Iterator&lt;Item = (String, &amp;Tensor)&gt;;
     fn iter_tensors_mut(&amp;mut self) -&gt; impl Iterator&lt;Item = (String, &amp;mut Tensor)&gt;;
-    fn realize(&amp;self) -&gt; Result&lt;(), ZyxError&gt;;
-    fn save(&amp;self, path: impl AsRef&lt;Path&gt;) -&gt; Result&lt;(), ZyxError&gt;;
     fn set_params(&amp;mut self, params: &amp;mut HashMap&lt;String, Tensor&gt;);
+
+    fn save(&amp;self, path: impl AsRef&lt;Path&gt;) -&gt; Result&lt;(), ZyxError&gt;;
+    fn save_numpy(&amp;self, path: impl AsRef&lt;Path&gt;) -&gt; Result&lt;(), ZyxError&gt;;
 }</code></pre>
 <h2 id="derivemodule"><a class="header" href="#derivemodule">#[derive(Module)]</a></h2>
 <p>The <code>#[derive(Module)]</code> macro (from <code>zyx-derive</code>) generates the trait implementation, collecting all tensor fields recursively. This works with nested modules:</p>
-<pre><code class="language-rust ignore">#[derive(Module)]
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">extern crate zyx_nn;
+</span><span class="boring">use zyx::Tensor;
+</span><span class="boring">use zyx_nn::Module;
+</span>#[derive(Module)]
 struct Linear {
     weight: Tensor,
     bias: Tensor,
@@ -199,29 +204,72 @@ struct MLP {
     layer1: Linear,
     layer2: Linear,
     layer3: Linear,
-}</code></pre>
+}
+<span class="boring">fn main() {}</span></code></pre>
 <h2 id="using-modules"><a class="header" href="#using-modules">Using Modules</a></h2>
-<pre><code class="language-rust ignore">#[derive(Module)]
+<pre class="playground"><code class="language-rust"><span class="boring">extern crate zyx;
+</span><span class="boring">extern crate zyx_nn;
+</span><span class="boring">extern crate zyx_optim;
+</span><span class="boring">use zyx::{DType, Module, Tape, Tensor, ZyxError};
+</span><span class="boring">use zyx_nn::Linear;
+</span><span class="boring">use zyx_nn::Module;
+</span><span class="boring">use zyx_optim::SGD;
+</span>#[derive(Module)]
 struct SimpleNet {
     linear1: Linear,
     linear2: Linear,
 }
-
-fn train_step(model: &amp;mut SimpleNet, optim: &amp;mut SGD, x: &amp;Tensor, target: &amp;Tensor) -&gt; f32 {
+<span class="boring">impl SimpleNet {
+</span><span class="boring">    fn new() -&gt; Result&lt;Self, ZyxError&gt; {
+</span><span class="boring">        Ok(Self {
+</span><span class="boring">            linear1: Linear::new(4, 8, true, DType::F32)?,
+</span><span class="boring">            linear2: Linear::new(8, 2, true, DType::F32)?,
+</span><span class="boring">        })
+</span><span class="boring">    }
+</span><span class="boring">    fn forward(&amp;self, x: &amp;Tensor) -&gt; Tensor {
+</span><span class="boring">        let x = self.linear1.forward(x).unwrap().relu();
+</span><span class="boring">        self.linear2.forward(&amp;x).unwrap()
+</span><span class="boring">    }
+</span><span class="boring">}
+</span>
+fn train_step(model: &amp;mut SimpleNet, optim: &amp;mut SGD, x: &amp;Tensor, target: &amp;Tensor) -&gt; Result&lt;f32, ZyxError&gt; {
     let tape = Tape::new(&amp;*model)?;
     let output = model.forward(x);
     let loss = output.mse_loss(target)?;
     let grads = tape.gradient(&amp;loss, &amp;*model);
-    optim.update(model, grads);
+    optim.update(&amp;mut *model, grads);
+    tape.realize(model.iter().chain([&amp;loss]))?;
     // tape drop cleans up graph state; next iteration reuses cached plan
-    loss.item()
-}</code></pre>
+    Ok(loss.item())
+}
+<span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span><span class="boring">    let mut model = SimpleNet::new()?;
+</span><span class="boring">    let mut optim = SGD::default();
+</span><span class="boring">    let x = Tensor::randn([2, 4], DType::F32)?;
+</span><span class="boring">    let target = Tensor::randn([2, 2], DType::F32)?;
+</span><span class="boring">    let _ = train_step(&amp;mut model, &amp;mut optim, &amp;x, &amp;target)?;
+</span><span class="boring">    Ok(())
+</span><span class="boring">}</span></code></pre>
 <p>The <code>tape.gradient(&amp;loss, &amp;model)</code> call passes the model itself as the sources. The autograd system iterates over <code>model.iter()</code> to get all parameters.</p>
 <h2 id="serialization"><a class="header" href="#serialization">Serialization</a></h2>
 <p>Modules can save and load parameters in safetensors format:</p>
-<pre><code class="language-rust ignore">model.save("model.safetensors")?;
-let params = Tensor::load_safetensors("model.safetensors")?;
-model.set_params(&amp;mut params);</code></pre>
+<pre class="playground"><code class="language-rust no_run"><span class="boring">extern crate zyx;
+</span><span class="boring">extern crate zyx_nn;
+</span><span class="boring">use zyx::{DType, Module, Tensor, ZyxError};
+</span><span class="boring">use zyx_nn::Linear;
+</span><span class="boring">
+</span><span class="boring">#[derive(zyx_nn::Module)]
+</span><span class="boring">struct SimpleNet {
+</span><span class="boring">    linear1: Linear,
+</span><span class="boring">}
+</span><span class="boring">
+</span><span class="boring">fn main() -&gt; Result&lt;(), ZyxError&gt; {
+</span><span class="boring">let mut model = SimpleNet { linear1: Linear::new(4, 2, true, DType::F32)? };
+</span>model.save("model.safetensors")?;
+let mut params = Tensor::load_safetensors("model.safetensors")?;
+model.set_params(&amp;mut params);
+<span class="boring">Ok(())
+</span><span class="boring">}</span></code></pre>
 
                     </main>
 

@@ -112,7 +112,7 @@ pub trait Module {
         // magic(6) + version(2) + header_len(2) + header + '\n' must be a
         // multiple of 64.
         let total = 6 + 2 + 2 + header.len() + 1;
-        header.extend(core::iter::repeat(' ').take((64 - total % 64) % 64));
+        header.extend(std::iter::repeat_n(' ', (64 - total % 64) % 64));
         header.push('\n');
         let mut f = File::create(path)?;
         f.write_all(b"\x93NUMPY")?;
@@ -466,8 +466,12 @@ impl Tensor {
             // shape (NOTE there is no explicit check for endiannes here)
             let mut shape = vec![0u8; rank as usize * 8];
             f.read_exact(&mut shape)?;
-            let mut shape: Vec<Dim> =
-                shape.chunks_exact(8).map(|x| i64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]])).collect();
+            let mut shape: Vec<Dim> = shape
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|x| i64::from_le_bytes([x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]]))
+                .collect();
             // GGUF stores dims fastest-first (`ne`); row-major needs them
             // slowest-first, same as gguf-python/HF (`arr.shape == reversed(ne)`).
             // Quantized arms below discard this for loader-built block shapes;
@@ -703,7 +707,7 @@ impl Tensor {
             let start = header.find(&format!("'{key}':"))? + key.len() + 4;
             // Value ends at the next top-level ',' or '}'.
             let rest = &header[start..];
-            let end = rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len());
+            let end = rest.find([',', '}']).unwrap_or(rest.len());
             Some(rest[..end].trim().to_string())
         };
         let descr =

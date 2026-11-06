@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-b69ee546.js";
+            window.path_to_searchindex_js = "../searchindex-7478f1f3.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-58fb2f25.js"></script>
+        <script src="../toc-e6cf6f81.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -174,44 +174,168 @@
 
                 <div id="mdbook-content" class="content">
                     <main>
-                        <h1 id="runtime-and-scheduler"><a class="header" href="#runtime-and-scheduler">Runtime and Scheduler</a></h1>
-<p>The runtime (<code>runtime.rs</code>) is the global state of zyx — the graph, devices, buffers, and kernel cache all live here.</p>
+                        <h1 id="runtime-and-plans"><a class="header" href="#runtime-and-plans">Runtime and Plans</a></h1>
+<p>The runtime (<code>runtime.rs</code>) is the process-wide state of zyx: graphs, tensor
+states, kernels, compiled programs, measured timings, interned shape
+expressions, and the plan cache. Memory pools belong to the backends, not to
+the runtime — they outlive it.</p>
 <h2 id="the-runtime"><a class="header" href="#the-runtime">The Runtime</a></h2>
-<pre><code class="language-rust ignore">pub(crate) struct Runtime {
-    pub graph: Graph,
-    pub devices: Slab&lt;DeviceId, Device&gt;,
-    pub pools: Slab&lt;PoolId, MemoryPool&gt;,
-    pub buffer_map: Map&lt;TensorId, BufferId&gt;,
-    pub events: Map&lt;BTreeSet&lt;BufferId&gt;, Event&gt;,
-    pub kernel_cache: KernelCache,
+<pre><code class="language-rust ignore">pub struct Runtime {
+    pub graphs: Slab&lt;GraphId, Graph&gt;,
+    pub tensors: Slab&lt;TensorId, TensorData&gt;,
+    pub kernels: Slab&lt;KernelId, KernelData&gt;,
+    kernel_map: Map&lt;Kernel, KernelId&gt;,          // content-dedup of kernels
+    programs: Map&lt;KernelId, DeviceProgramId&gt;,   // compiled programs
+    timings: Map&lt;ProgramId, u64&gt;,               // measured nanos
+    pub(crate) expr_hash: Map&lt;Expr, ExprId&gt;,    // hashcons of shape expressions
+    pub exprs: Slab&lt;ExprId, Expr&gt;,              // append-only interned exprs
     pub rng: Rng,
-    pub autotune_config: AutotuneConfig,
-    pub debug: DebugMask,
+    pub implicit_casts: bool,
     pub training: bool,
+    pub plan_cache: Map&lt;u64, Plan&gt;,
+    #[cfg(feature = "viz")]
+    pub viz: Viz,
 }</code></pre>
-<p>The runtime is stored in a global <code>Mutex&lt;Runtime&gt;</code>:</p>
-<pre><code class="language-rust ignore">static RT: Mutex&lt;Runtime&gt; = Mutex::new(Runtime::new());</code></pre>
-<p>Every tensor operation locks this mutex, appends a graph node (microseconds), and releases. The lock is never held during computation — only during graph manipulation.</p>
-<h2 id="memory-pools"><a class="header" href="#memory-pools">Memory Pools</a></h2>
-<p>Each backend provides a <code>MemoryPool</code> for allocating device buffers:</p>
-<pre><code class="language-rust ignore">pub enum MemoryPool {
-    Host(HostMemoryPool),
-    Disk(DiskMemoryPool),
-    C(CMemoryPool),
-    CUDA(CUDAMemoryPool),
-    // ...
+<p>The runtime is stored in a global mutex:</p>
+<pre><code class="language-rust ignore">static RT: mutex::Mutex&lt;Runtime&gt; = mutex::Mutex::new(Runtime::new());</code></pre>
+<p>Every tensor operation locks it. The lock is coarse: it covers graph mutation,
+and also the whole realize path — <code>Tape::realize</code> holds it while compiling the
+plan, replaying launches, and converting outputs to eager tensors. It is not a
+fine-grained per-tensor lock, and nothing re-enters it (helpers that need the
+runtime take <code>&amp;mut Runtime</code> rather than locking again). Backend pools and their
+device worker threads are separate, process-wide globals.</p>
+<p>Shape expressions are interned: <code>ExprId</code>s are stable forever, structural
+equality is one <code>ExprId</code> compare, and symbolic dims never live in the tensors
+slab. Tensor handles are <code>u32</code> indices into <code>tensors</code>.</p>
+<h2 id="tensor-states"><a class="header" href="#tensor-states">Tensor States</a></h2>
+<p>A <code>TensorData</code> is one of:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Symbolic</code></td><td>An interned <code>Expr</code> (a symbolic scalar, dim, or shape)</td></tr>
+<tr><td><code>Leaf</code></td><td>A realized value with a buffer placement</td></tr>
+<tr><td><code>PendingLeaf</code></td><td>A realized value still owed by a kernel that has not launched</td></tr>
+<tr><td><code>Eager</code></td><td>An unrealized value living in a kernel’s op chain</td></tr>
+<tr><td><code>Graph</code></td><td>A value that lives only in a graph class (unrealized)</td></tr>
+<tr><td><code>GraphLeaf</code></td><td>A graph leaf backed by a buffer</td></tr>
+<tr><td><code>Promoted</code></td><td>A graph tensor whose eager producer stays alive</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>item()</code> forces an eager value: the producer kernel is materialized and
+launched. <code>shape()</code> does not force; symbolic shapes are resolved without
+allocating.</p>
+<h2 id="memory-pools-and-placements"><a class="header" href="#memory-pools-and-placements">Memory Pools and Placements</a></h2>
+<p>Pools are process-wide and never deinitialized:</p>
+<pre><code class="language-rust ignore">pub enum Pool {
+    Host,          // RAM, shared by C, CBLAS and Host
+    Disk,          // file-backed chunks (paths, not bytes)
+    Cuda(u16),
+    OpenCL(u16),
+    Vulkan(u16),
+    TT(u16),
+    WGPU(u16),     // feature = "wgpu"
 }</code></pre>
-<h2 id="the-scheduler-current"><a class="header" href="#the-scheduler-current">The Scheduler (Current)</a></h2>
-<p>The current scheduler (<code>schedule.rs</code>) selects a device for kernel execution by calculating required memory, sorting devices by free compute capacity, and picking the first with enough free memory. It handles cross-device transfers via events.</p>
-<h2 id="new-scheduler-in-development"><a class="header" href="#new-scheduler-in-development">New Scheduler (In Development)</a></h2>
-<p>A new scheduling approach is under development in <code>search.rs</code> and <code>search2.rs</code>. It will use an e-graph-like budget-guided exhaustive fusion enumeration, including costs for memory movement operations — replacing the current simple heuristics with exploration of all fusion configurations within a cost budget.</p>
+<p>Each backend owns its globals — one mutex per pool ordinal — and lazily
+initializes them on first use. A value is a <code>Placement</code>:</p>
+<pre><code class="language-rust ignore">pub struct Placement { pub shards: Vec&lt;Shard&gt; }
+
+pub struct Shard {
+    pub pool: Pool,
+    pub chunk: ChunkId,
+    pub offset: usize,
+    pub len: usize,
+}</code></pre>
+<p>One shard is the common case; several shards describe a value split across
+devices. <code>Placement</code>’s <code>Drop</code> returns each chunk to its pool’s free list;
+<code>Pool::release</code> frees nothing by itself.</p>
+<p>Devices and pools are two views of the same hardware: <code>Dev::pool()</code> derives the
+pool from the device, never the reverse.</p>
+<h2 id="device-selection"><a class="header" href="#device-selection">Device Selection</a></h2>
+<p><code>Runtime::pick_device(bytes)</code> is the generic placement rule:</p>
+<ol>
+<li>start from <code>Dev::all()</code> — lazy init of every compiled-in backend, cached in a
+<code>OnceLock</code>; backends that are configured out or whose hardware/driver is
+missing contribute nothing;</li>
+<li>drop AOT-only devices (<code>Dev::aot_only()</code>, e.g. CBLAS) for generic kernels;</li>
+<li>keep devices whose pool has at least <code>bytes</code> free;</li>
+<li>sort by <code>free_compute()</code> descending and take the first.</li>
+</ol>
+<p>If no device has enough free memory the call is an allocation error. A user can
+pin a device with <code>ZYX_DEV=cpu|cuda|vulkan|...</code> (parsed by <code>Dev::from_str</code>) or by
+calling <code>Tensor::to(Dev)</code> explicitly; <code>Dev::Auto</code> resolves through the rule
+above.</p>
+<h2 id="plans"><a class="header" href="#plans">Plans</a></h2>
+<p>Every launch is a <code>Plan</code> — a scheduled <code>CmdQueue</code>:</p>
+<pre><code class="language-rust ignore">pub enum Cmd {
+    Launch { program: ProgramId, args: Vec&lt;OpId&gt;, outputs: Vec&lt;(OpId, DType, Vec&lt;PlanDim&gt;)&gt; },
+    Copy   { src: OpId, dst: OpId, dst_pool: Pool, dst_dtype: DType, dst_dims: Vec&lt;PlanDim&gt; },
+    Alias  { class: OpId, to: OpId },
+}</code></pre>
+<p>Slots are queue-local <code>OpId</code>s. <code>PlanDim</code> is a symbolic output size built from
+constants and leaf classes; it is evaluated at replay against <code>class_vars</code>.</p>
+<p><code>CmdQueue::schedule(outputs)</code>:</p>
+<ul>
+<li>slices the queue into maximal same-device launch runs; each run is scheduled
+by its own device;</li>
+<li>executes every <code>Copy</code> on the <strong>destination</strong> device (device runs never copy);</li>
+<li>joins <code>Alias</code> bindings to the surrounding run as zero-cost map entries;</li>
+<li>pins each run’s outputs plus the slots read after it, and frees everything else
+at last use.</li>
+</ul>
+<p><code>Plan::replay(boundary, class_vars)</code> binds the boundary table to <code>Placement</code>s,
+allocates every unbound output from its <code>PlanDim</code>s, resolves aliases through the
+boundary, and returns the placements of the plan’s outputs. No allocation or
+liveness decision was made at schedule time beyond this structure.</p>
+<h3 id="the-plan-cache"><a class="header" href="#the-plan-cache">The plan cache</a></h3>
+<p><code>Runtime::plan_cache</code> is keyed by the graph’s content hash (structure + outputs)
+folded with the pool of every leaf class at call time. Two realizations of the
+same graph shape share a plan only when their leaf pools match; otherwise the
+plan recompiles. This is what makes a tape loop cheap after the first iteration:
+the kernels are already compiled and the plan is already scheduled, so later
+iterations only replay it with new leaf values and (possibly) new variable dims.</p>
+<h3 id="eager-execution"><a class="header" href="#eager-execution">Eager execution</a></h3>
+<p>An eager kernel follows the same route with a one-kernel queue. On
+materialization the runtime:</p>
+<ol>
+<li>verifies argument arity;</li>
+<li><code>linearize</code>s, runs CSE/DCE/instruction scheduling;</li>
+<li>merges group indices down to the device’s <code>max_global_work_dims</code> and
+renumbers them;</li>
+<li><code>verify</code>s;</li>
+<li>runs <code>delete_useless_loops</code> and three rounds of <code>default_epilogue</code>;</li>
+<li>runs <code>BeamSearch</code> (or <code>NoSearch</code> under <code>ZYX_DEBUG=256</code>);</li>
+<li>stores the winning program and its measured time.</li>
+</ol>
+<p>The resulting plan is executed immediately. Graph kernels go through the same
+compile path via <code>autotune_jit_kernels</code>, but their programs are recorded as
+<code>Op::Program</code> nodes and extraction decides whether they run.</p>
 <h2 id="async-execution"><a class="header" href="#async-execution">Async Execution</a></h2>
-<p>Events track kernel completion:</p>
-<pre><code class="language-rust ignore">events: Map&lt;BTreeSet&lt;BufferId&gt;, Event&gt;</code></pre>
+<p>Synchronization is per backend and lives below <code>Plan</code>. A plan replay issues
+launches and copies in program order; each backend decides how far it can run
+ahead. CUDA, for example, owns each device with a worker thread behind a command
+channel: launches accumulate in a micro-batch window, are distributed over
+several hardware queues with computed stream dependencies, and are submitted
+together. There are no runtime-level event objects — ordering is expressed by
+the plan (<code>After</code>, copy direction, argument dependencies) and enforced by the
+backend worker.</p>
 <h2 id="lazy-device-io"><a class="header" href="#lazy-device-io">Lazy Device I/O</a></h2>
-<p>Tensors can reference data on disk without loading it:</p>
-<pre><code class="language-rust ignore">let t = Tensor::from_safetensors("model.safetensors", "layer.weight")?;</code></pre>
-<p>The disk pool keeps file offset information. Data is loaded lazily when the tensor needs to be realized on a compute device.</p>
+<p>A tensor can describe data that still lives on disk. <code>Runtime::new_disk_tensor</code>
+creates a <code>Leaf</code> whose shard is a <code>Pool::Disk</code> chunk holding a path and an offset
+instead of bytes. When a plan needs the value on a compute device, the copy
+command stages it there; the disk pool keeps the file offset information, so
+nothing is read until the value participates in a launch.</p>
+<p>The eager loader is <code>Module::load_safetensors(path)</code>, which reads a
+safetensors file into a <code>HashMap&lt;String, Tensor&gt;</code>; disk-backed leaves are the
+mechanism underneath for deferring that read.</p>
+<h2 id="lifecycle"><a class="header" href="#lifecycle">Lifecycle</a></h2>
+<p><code>Runtime::deinitialize</code> runs at process exit. With the <code>time</code> feature it prints
+the accumulated timing table first, then drops the tensor and kernel slabs.
+Backend pools are static and are not deinitialized — the process owns the
+hardware for its lifetime. <code>Runtime::manual_seed</code> reseeds the runtime RNG.</p>
 
                     </main>
 

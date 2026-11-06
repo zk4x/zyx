@@ -1,381 +1,651 @@
 # Copyright (C) 2025 zk4x
 # SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
-#!/usr/bin/env python3
-"""Train a sparse MLP on bench_data.csv to predict kernel cost rank."""
+"""Tiny MLP cost model, trained with zyx itself.
 
-import numpy as np
-import torch
-import torch.nn as nn
-from collections import defaultdict
-from sklearn.preprocessing import StandardScaler
-from scipy.stats import spearmanr
-from tqdm import tqdm
+Everything here is zyx: feature engineering, normalisation, the ranking target,
+the model, the optimizer and the metrics. The only non-zyx dependency is
+`sqlite3`/`json`, used to read `zyx-bench/bench.db` (written by `zyx-bench`).
 
-BENCH_CSV = '/home/x/Dev/rust/zyx/zyx-bench/bench_data.csv'
+The model is deliberately small — `N_FEATURES x HIDDEN + HIDDEN` weights — so it
+can be emitted as a few hundred constants in `zyx/src/kernel/predict_cost.rs`.
+After training it writes that file as a self-contained `predict_time_us`
+(TinyMLP forward pass over the same feature formulas the model was trained on).
 
-# ---- Engineered features (from regression.py) ----
-FEATURE_DEFS = []
-FEATURE_NAMES = []
+Run: `python neural_net.py` (after `cargo run --release` in `zyx-bench`).
+"""
 
-def register_feature(name, fn):
-    FEATURE_DEFS.append((name, fn))
-    FEATURE_NAMES.append(name)
+import json
+import os
+import random
+import sqlite3
+import struct
+import sys
 
-register_feature('lng', lambda e: np.log(e['num_groups']))
-register_feature('lwpg', lambda e: np.log(e['wi_per_group'] + 1))
-register_feature('lops', lambda e: np.log(e['wi_ops']))
-register_feature('lcop', lambda e: np.log(e['wi_compute_ops']))
-register_feature('lgmem', lambda e: np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('barr', lambda e: e['wi_barriers'])
-register_feature('wr', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
-register_feature('rr', lambda e: e.get('wi_peak_reg_bytes', 0) / max(e.get('max_register_bytes', 256), 1))
-register_feature('total_threads', lambda e: e['num_groups'] * e['wi_per_group'])
-register_feature('overhead', lambda e: e['wi_ops'] / max(e['wi_compute_ops'], 1))
-register_feature('ci', lambda e: e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))
-register_feature('log1p_ci', lambda e: np.log1p(e['wi_compute_ops'] / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1)))
-register_feature('log1p_overhead', lambda e: np.log1p(e['wi_ops'] / max(e['wi_compute_ops'], 1)))
-register_feature('log1p_mp', lambda e: np.log1p((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['num_groups'] * e['wi_per_group'], 1)))
-register_feature('log1p_lm', lambda e: np.log1p((e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0) + 1) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1, 1)))
-register_feature('log_ops_100', lambda e: np.log(e['wi_ops'] + 100))
-register_feature('log_ops_10', lambda e: np.log(e['wi_ops'] + 10))
-register_feature('log_cops_100', lambda e: np.log(e['wi_compute_ops'] + 100))
-register_feature('log1p_1000_div_ops', lambda e: np.log1p(1000 / max(e['wi_ops'], 1)))
-register_feature('log1p_100_div_ops', lambda e: np.log1p(100 / max(e['wi_ops'], 1)))
-register_feature('log1p_1000_div_cops', lambda e: np.log1p(1000 / max(e['wi_compute_ops'], 1)))
-register_feature('ops_per_thread', lambda e: e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-register_feature('cops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-register_feature('ops_per_group', lambda e: e['wi_ops'] / max(e['num_groups'], 1))
-register_feature('log_lwpg', lambda e: np.log(max(np.log(e['wi_per_group'] + 1), 1e-8)))
-register_feature('raw_ng', lambda e: e['num_groups'])
-register_feature('raw_ng_wpg', lambda e: e['num_groups'] * e['wi_per_group'])
-register_feature('lbranch', lambda e: np.log1p(e.get('wi_branches', 0)))
-register_feature('barr*lbranch', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_branches', 0)))
-register_feature('lwpg*lbranch', lambda e: np.log(e['wi_per_group'] + 1) * np.log1p(e.get('wi_branches', 0)))
-register_feature('lng_lwpg', lambda e: np.log(e['num_groups']) * np.log(e['wi_per_group'] + 1))
-register_feature('lwpg_lops', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops']))
-register_feature('log_ops_per_group', lambda e: np.log(e['wi_ops'] / max(e['num_groups'], 1) + 1))
-register_feature('log_opt', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'], 1)))
-register_feature('inv_threads', lambda e: 1.0 / max(e['num_groups'] * e['wi_per_group'], 1))
-register_feature('log_inv_threads', lambda e: np.log1p(1.0 / max(e['num_groups'] * e['wi_per_group'], 1)))
-register_feature('log_opt_barr', lambda e: np.log1p(e['wi_ops'] / max(e['num_groups'] * e['wi_per_group'] * max(e['wi_barriers'], 1), 1)))
-register_feature('log_wpg_barr', lambda e: np.log1p(e['wi_per_group'] * e['wi_barriers']))
-for bval in [0, 3, 4, 5, 6, 7, 8]:
-    register_feature(f'b{bval}', lambda e, b=bval: 1.0 if e['wi_barriers'] == b else 0.0)
-register_feature('barr_low', lambda e: 1.0 if e['wi_barriers'] == 0 else 0.0)
-register_feature('barr_med', lambda e: 1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0)
-register_feature('barr_high', lambda e: 1.0 if e['wi_barriers'] >= 6 else 0.0)
-register_feature('barr_nonzero', lambda e: 1.0 if e['wi_barriers'] > 0 else 0.0)
-for bval in [0, 3, 4, 5, 6, 7, 8]:
-    register_feature(f'b{bval}*lng', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['num_groups']))
-    register_feature(f'b{bval}*lwpg', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['wi_per_group'] + 1))
-    register_feature(f'b{bval}*lops', lambda e, b=bval: (1.0 if e['wi_barriers'] == b else 0.0) * np.log(e['wi_ops']))
-register_feature('barr*lops', lambda e: e['wi_barriers'] * np.log(e['wi_ops']))
-register_feature('barr*lcop', lambda e: e['wi_barriers'] * np.log(e['wi_compute_ops']))
-register_feature('barr*lgmem', lambda e: e['wi_barriers'] * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('barr*lwpg', lambda e: e['wi_barriers'] * np.log(e['wi_per_group'] + 1))
-register_feature('barr*lng', lambda e: e['wi_barriers'] * np.log(e['num_groups']))
-register_feature('barr*wr', lambda e: e['wi_barriers'] * (e['wi_per_group'] / max(e.get('warp_size', 32), 1)))
-register_feature('lld_st', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)))
-register_feature('lst_st', lambda e: np.log1p(e.get('wi_global_store_lidx_stride', 0)))
-register_feature('lld_st*lops', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_ops']))
-register_feature('lld_st*lcop', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_compute_ops']))
-register_feature('lld_st*lgmem', lambda e: np.log1p(e.get('wi_global_load_lidx_stride', 0)) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('lops*lgmem', lambda e: np.log(e['wi_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('lcop*lgmem', lambda e: np.log(e['wi_compute_ops']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('lng*lgmem', lambda e: np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('lwpg*lgmem', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('lwpg*lops_w', lambda e: np.log(e['wi_per_group'] + 1) * np.log(e['wi_ops']))
-register_feature('lng*lcop', lambda e: np.log(e['num_groups']) * np.log(e['wi_compute_ops']))
-register_feature('lng*lgmem_w', lambda e: np.log(e['num_groups']) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('warp_util', lambda e: e['wi_per_group'] / max(e.get('warp_size', 32), 1))
-register_feature('log_warp_waste', lambda e: np.log(32 / max(e['wi_per_group'], 1)))
-register_feature('lng_warp_waste', lambda e: np.log(e['num_groups']) * np.log(32 / max(e['wi_per_group'], 1)))
-register_feature('lwpg_warp_waste', lambda e: np.log(e['wi_per_group'] + 1) * np.log(32 / max(e['wi_per_group'], 1)))
-register_feature('coalescing_eff', lambda e: 1.0 - min(e.get('wi_global_load_lidx_stride', 0) / 32.0, 1.0))
-register_feature('coalescing_eff_st', lambda e: 1.0 - min(e.get('wi_global_store_lidx_stride', 0) / 32.0, 1.0))
-register_feature('reduce_kind', lambda e: e['wi_barriers'] / max(np.log2(e['wi_per_group'] + 1), 1.0))
-register_feature('element_ops', lambda e: e['wi_compute_ops'] / max(e['num_groups'], 1))
-register_feature('warp_div', lambda e: np.log(max(32 / max(e['wi_per_group'], 1), 1e-8)))
-register_feature('sm_occupancy', lambda e: min((e['num_groups'] * e['wi_per_group']) / 2048.0, 1.0))
-register_feature('tree_height', lambda e: np.log2(e['wi_barriers'] + 1) if e['wi_barriers'] > 0 else 0)
-register_feature('tree_reduce_cost', lambda e: e['wi_barriers'] * np.log1p(e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)))
-register_feature('element_ops_per_thread', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-register_feature('shared_mem_pressure', lambda e: (e.get('wi_local_load_bits', 0) + e.get('wi_local_store_bits', 0)) / 65536.0)
-register_feature('warp_waste', lambda e: (32.0 - e['wi_per_group']) / 32.0)
-register_feature('compute_per_barrier', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * max(e['wi_barriers'], 1), 1))
-register_feature('barrier_overhead_cost', lambda e: e['wi_barriers'] * np.log1p(e['wi_barriers']) / max(np.log1p(e['wi_ops']), 1))
-register_feature('group_work_density', lambda e: e['wi_ops'] / max(e['num_groups'] * np.log1p(e['wi_per_group']), 1))
-register_feature('ops_per_barrier', lambda e: e['wi_ops'] / max(e['wi_barriers'], 1))
-register_feature('barrier_factor', lambda e: e['wi_barriers'] / max(np.log1p(e['wi_ops']), 1))
-register_feature('barrier_efficiency', lambda e: e['wi_barriers'] / max(np.log1p(e['wi_ops']), 1))
-register_feature('mem_compute_ratio_log', lambda e: np.log((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_compute_ops'], 1) + 1))
-register_feature('log1p_lng', lambda e: np.log1p(np.abs(np.log(e['num_groups']))))
-register_feature('log1p_lwpg_raw', lambda e: np.log1p(np.abs(np.log(e['wi_per_group'] + 1))))
-register_feature('log1p_lops_raw', lambda e: np.log1p(np.abs(np.log(e['wi_ops']))))
-register_feature('log_ng_per_ops', lambda e: np.log(e['num_groups'] / max(e['wi_ops'], 1) + 1))
-register_feature('log_threads_per_ops', lambda e: np.log((e['num_groups'] * e['wi_per_group']) / max(e['wi_ops'], 1) + 1))
-register_feature('barr_med_lops', lambda e: (1.0 if e['wi_barriers'] in [3, 4, 5] else 0.0) * np.log(e['wi_ops']))
-register_feature('barr_nonzero_lops', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_ops']))
-register_feature('barr_nonzero_lmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('compute_density', lambda e: e['wi_compute_ops'] / max(e['num_groups'] * e['wi_per_group'], 1))
-register_feature('thread_compute', lambda e: np.log(e['wi_compute_ops'] + 1) * np.log(e['num_groups'] * e['wi_per_group'] + 1))
-register_feature('bgt_lng', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['num_groups']))
-register_feature('bgt_lwpg', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_per_group'] + 1))
-register_feature('bgt_lops', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_ops']))
-register_feature('bgt_lcop', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_compute_ops']))
-register_feature('bgt_lgmem', lambda e: (1.0 if e['wi_barriers'] > 0 else 0.0) * np.log(e['wi_global_load_bits'] + e['wi_global_store_bits'] + 1))
-register_feature('lreg', lambda e: np.log1p(e.get('wi_register_load_bits', 0)))
-register_feature('lreg_st', lambda e: np.log1p(e.get('wi_register_store_bits', 0)))
-register_feature('reg_pressure', lambda e: e.get('wi_register_load_bits', 0) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))
-register_feature('lgws0', lambda e: np.log1p(e.get('gws0', 1)))
-register_feature('lgws1', lambda e: np.log1p(e.get('gws1', 1)))
-register_feature('lgws2', lambda e: np.log1p(e.get('gws2', 1)))
-register_feature('llws0', lambda e: np.log1p(e.get('lws0', 1)))
-register_feature('llws1', lambda e: np.log1p(e.get('lws1', 1)))
-register_feature('llws2', lambda e: np.log1p(e.get('lws2', 1)))
-register_feature('lws0_ratio', lambda e: e.get('lws0', 1) / max(e['wi_per_group'], 1))
-register_feature('lws1_ratio', lambda e: e.get('lws1', 1) / max(e['wi_per_group'], 1))
-register_feature('lws2_ratio', lambda e: e.get('lws2', 1) / max(e['wi_per_group'], 1))
-register_feature('lws0xlws1', lambda e: e.get('lws0', 1) * e.get('lws1', 1))
-register_feature('gws0_ratio', lambda e: e.get('gws0', 1) / max(e['num_groups'], 1))
-register_feature('gws1_ratio', lambda e: e.get('gws1', 1) / max(e['num_groups'], 1))
-register_feature('loop_depth', lambda e: e.get('max_loop_depth', 0))
-register_feature('loop_depth*lops', lambda e: e.get('max_loop_depth', 0) * np.log(max(e['wi_ops'], 1)))
-register_feature('loop_depth*barr', lambda e: e.get('max_loop_depth', 0) * e['wi_barriers'])
-register_feature('log_local_mem', lambda e: np.log1p(e.get('local_mem_size', 1)))
-register_feature('pref_vec', lambda e: e.get('preferred_vector_size', 0))
-register_feature('total_global_load', lambda e: e['wi_global_load_bits'] * e['num_groups'] * e['wi_per_group'])
-register_feature('total_global_store', lambda e: e['wi_global_store_bits'] * e['num_groups'] * e['wi_per_group'])
-register_feature('total_global_mem', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) * e['num_groups'] * e['wi_per_group'])
-register_feature('log_total_global_load', lambda e: np.log(max(e['wi_global_load_bits'] * e['num_groups'] * e['wi_per_group'], 1)))
-register_feature('log_total_global_mem', lambda e: np.log(max((e['wi_global_load_bits'] + e['wi_global_store_bits']) * e['num_groups'] * e['wi_per_group'], 1)))
-register_feature('tile_ratio', lambda e: (e['wi_local_load_bits'] + e['wi_local_store_bits']) / max(e['wi_global_load_bits'] + e['wi_global_store_bits'], 1))
-register_feature('mem_per_compute', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) * e['num_groups'] * e['wi_per_group'] / max(e['wi_compute_ops'] * e['num_groups'] * e['wi_per_group'], 1))
-register_feature('log_mem_per_compute', lambda e: np.log(max((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_compute_ops'], 1), 1e-8)))
-register_feature('occ_regs', lambda e: e['max_register_bytes'] / max(e['wi_peak_reg_bytes'], 1))
-register_feature('occ_threads', lambda e: e['max_local_threads'] / max(e['wi_per_group'], 1))
-register_feature('lmem_global_ratio', lambda e: e['wi_local_load_bits'] / max(e['wi_global_load_bits'], 1))
-register_feature('total_local_traffic', lambda e: (e['wi_local_load_bits'] + e['wi_local_store_bits']) * e['num_groups'] * e['wi_per_group'])
-register_feature('log_total_local', lambda e: np.log(max((e['wi_local_load_bits'] + e['wi_local_store_bits']) * e['num_groups'] * e['wi_per_group'], 1)))
-register_feature('barrier_intensity', lambda e: e['wi_barriers'] / max(e['wi_compute_ops'], 1))
-register_feature('occ_combined', lambda e: min(e['max_register_bytes'] / max(e['wi_peak_reg_bytes'], 1), e['max_local_threads'] / max(e['wi_per_group'], 1)))
-register_feature('log_occ_combined', lambda e: np.log(max(min(e['max_register_bytes'] / max(e['wi_peak_reg_bytes'], 1), e['max_local_threads'] / max(e['wi_per_group'], 1)), 1e-8)))
-register_feature('mem_per_warp', lambda e: (e['wi_global_load_bits'] + e['wi_global_store_bits']) * 32 / max(e['wi_per_group'], 1))
-register_feature('compute_per_warp', lambda e: e['wi_compute_ops'] * 32 / max(e['wi_per_group'], 1))
-register_feature('log_global_per_local', lambda e: np.log(max((e['wi_global_load_bits'] + e['wi_global_store_bits']) / max(e['wi_local_load_bits'] + e['wi_local_store_bits'], 1), 1e-8)))
+import zyx
+from zyx import DType, Tensor
 
-RAW_NAMES = [
-    'num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops', 'wi_barriers',
-    'wi_global_load_bits', 'wi_global_store_bits', 'wi_local_load_bits',
-    'wi_local_store_bits', 'wi_peak_reg_bytes', 'wi_branches',
-    'wi_global_load_lidx_stride', 'wi_global_store_lidx_stride',
-    'wi_local_load_lidx_stride', 'wi_local_store_lidx_stride',
-    'warp_size', 'max_local_threads', 'max_register_bytes',
-    'wi_register_load_bits', 'wi_register_store_bits',
-    'gws0', 'gws1', 'gws2', 'lws0', 'lws1', 'lws2', 'max_loop_depth',
-    'preferred_vector_size', 'local_mem_size',
+BENCH_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench.db")
+
+HIDDEN = 5
+TRAIN_STEPS = 30000
+LR = 3e-3
+L1_LAMBDA = 5e-3
+TEST_ROWS = 20000
+SEED = 42
+
+
+# ---------------------------------------------------------------- tensor utils
+
+def log1p(x: Tensor) -> Tensor:
+    return (x + 1.0).log()
+
+
+def log2(x: Tensor) -> Tensor:
+    return x.log(2.0)
+
+
+def tmax(a, b) -> Tensor:
+    # `hasattr`, not `isinstance(Tensor)`: the same feature builder also runs on
+    # `Expr` (the Rust-codegen stand-in) to emit `predict_cost.rs`.
+    return a.maximum(b) if hasattr(a, "maximum") else b.maximum(a)
+
+
+def tmin(a, b) -> Tensor:
+    return a.minimum(b) if hasattr(a, "minimum") else a.minimum(b)
+
+
+def ind(cond: Tensor) -> Tensor:
+    """Bool tensor -> 1.0 / 0.0."""
+    return cond.where(1.0, 0.0)
+
+
+# ------------------------------------------------------------------ the data
+
+# Defaults match the extended attributes a measurement may not carry.
+DEFAULTS = {
+    "warp_size": 32.0,
+    "max_register_bytes": 256.0,
+    "max_local_threads": 1024.0,
+    "gws0": 1.0,
+    "gws1": 1.0,
+    "gws2": 1.0,
+    "lws0": 1.0,
+    "lws1": 1.0,
+    "lws2": 1.0,
+    "max_loop_depth": 0.0,
+    "preferred_vector_size": 0.0,
+    "local_mem_size": 1.0,
+}
+
+# Raw hardware/kernel fields the emitted `predict_time_us` receives and the
+# feature builder reads. The emitted signature takes two more
+# (`wi_local_{load,store}_lidx_stride`) that no feature uses.
+HW_NAMES = [
+    "num_groups", "wi_per_group", "wi_ops", "wi_compute_ops", "wi_barriers",
+    "wi_global_load_bits", "wi_global_store_bits", "wi_local_load_bits",
+    "wi_local_store_bits", "wi_peak_reg_bytes", "wi_branches",
+    "wi_global_load_lidx_stride", "wi_global_store_lidx_stride",
+    "wi_register_load_bits", "wi_register_store_bits",
+    "warp_size", "max_local_threads", "max_register_bytes",
+    "gws0", "gws1", "gws2", "lws0", "lws1", "lws2",
+    "max_loop_depth", "preferred_vector_size", "local_mem_size",
 ]
-N_RAW = len(RAW_NAMES)
-N_ENG = len(FEATURE_NAMES)
-N_INT = N_RAW * (N_RAW - 1) // 2
 
 
-class MLP(nn.Module):
-    def __init__(self, dims):
-        super().__init__()
-        layers = []
-        for i in range(len(dims) - 1):
-            layers.append(nn.Linear(dims[i], dims[i + 1], bias=True))
-            if i < len(dims) - 2:
-                layers.append(nn.LayerNorm(dims[i + 1]))
-                layers.append(nn.SELU())
-        self.net = nn.Sequential(*layers)
+# ------------------------------------------------------- Rust expression DSL
+#
+# The same `build_features` runs twice: on zyx tensors (training) and on these
+# `Expr` leaves (emission). That keeps the emitted Rust feature formulas from
+# drifting away from the ones the model was trained on.
 
-    def forward(self, x):
-        return self.net(x).squeeze(-1)
+def _rust_float(v) -> str:
+    if isinstance(v, Expr):
+        return v.code
+    return repr(float(v))
 
-    def l1_reg(self):
-        return sum(p.abs().sum() for n, p in self.named_parameters() if 'weight' in n and 'norm' not in n)
 
+class Expr:
+    """Symbolic `f64` expression that renders as a Rust expression."""
+
+    __slots__ = ("code",)
+
+    def __init__(self, code: str):
+        self.code = code
+
+    def __str__(self) -> str:
+        return self.code
+
+    def __add__(self, o):
+        return Expr(f"({self.code} + {_rust_float(o)})")
+
+    def __radd__(self, o):
+        return Expr(f"({_rust_float(o)} + {self.code})")
+
+    def __sub__(self, o):
+        return Expr(f"({self.code} - {_rust_float(o)})")
+
+    def __rsub__(self, o):
+        return Expr(f"({_rust_float(o)} - {self.code})")
+
+    def __mul__(self, o):
+        return Expr(f"({self.code} * {_rust_float(o)})")
+
+    def __rmul__(self, o):
+        return Expr(f"({_rust_float(o)} * {self.code})")
+
+    def __truediv__(self, o):
+        return Expr(f"({self.code} / {_rust_float(o)})")
+
+    def __rtruediv__(self, o):
+        return Expr(f"({_rust_float(o)} / {self.code})")
+
+    def __neg__(self):
+        return Expr(f"(-{self.code})")
+
+    # The `Tensor` surface `build_features` uses.
+    def log(self, base=None):
+        if base is None:
+            return Expr(f"({self.code}).ln()")
+        if isinstance(base, (int, float)) and float(base) == 2.0:
+            return Expr(f"({self.code}).log2()")
+        return Expr(f"({self.code}).ln() / ({_rust_float(base)}).ln()")
+
+    def maximum(self, o):
+        return Expr(f"({self.code}).max({_rust_float(o)})")
+
+    def minimum(self, o):
+        return Expr(f"({self.code}).min({_rust_float(o)})")
+
+    def equal(self, o):
+        return Expr(f"({self.code} == {_rust_float(o)})")
+
+    def cmpge(self, o):
+        return Expr(f"({self.code} >= {_rust_float(o)})")
+
+    def cmpgt(self, o):
+        return Expr(f"({self.code} > {_rust_float(o)})")
+
+    def logical_or(self, o):
+        return Expr(f"({self.code} || {_rust_float(o)})")
+
+    def logical_and(self, o):
+        return Expr(f"({self.code} && {_rust_float(o)})")
+
+    def reciprocal(self):
+        return Expr(f"(1.0 / {self.code})")
+
+    def abs(self):
+        return Expr(f"({self.code}).abs()")
+
+    def where(self, if_true, if_false):
+        return Expr(f"(if {self.code} {{ {_rust_float(if_true)} }} else {{ {_rust_float(if_false)} }})")
+
+
+def load_rows():
+    if not os.path.exists(BENCH_DB):
+        sys.exit(f"missing {BENCH_DB}: run `cargo run --release` in zyx-bench first")
+    con = sqlite3.connect(f"file:{BENCH_DB}?mode=ro", uri=True)
+    rows = con.execute(
+        "SELECT seed, nanos, features FROM measurements"
+        " WHERE status = 'measured' AND nanos IS NOT NULL"
+    ).fetchall()
+    con.close()
+    if not rows:
+        sys.exit(f"{BENCH_DB} has no measured rows")
+    return [(seed, nanos / 1000.0, json.loads(features)) for seed, nanos, features in rows]
+
+
+def column(rows, name: str) -> Tensor:
+    default = DEFAULTS.get(name, 0.0)
+    return Tensor.from_vec([float(f.get(name, default)) for _, _, f in rows], (len(rows),))
+
+
+# --------------------------------------------------------------- the features
+#
+# Same set as the previous numpy implementation, expressed as tensor ops. All
+# are vectorised over the measurement axis: one tensor per feature.
+
+def build_features(c) -> list:
+    f = []
+    f.append(("lng", c["num_groups"].log()))
+    f.append(("lwpg", log1p(c["wi_per_group"])))
+    f.append(("lops", c["wi_ops"].log()))
+    f.append(("lcop", c["wi_compute_ops"].log()))
+    f.append(("lgmem", log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("barr", c["wi_barriers"]))
+    f.append(("wr", c["wi_per_group"] / tmax(c["warp_size"], 1.0)))
+    f.append(("rr", c["wi_peak_reg_bytes"] / tmax(c["max_register_bytes"], 1.0)))
+    f.append(("total_threads", c["num_groups"] * c["wi_per_group"]))
+    f.append(("overhead", c["wi_ops"] / tmax(c["wi_compute_ops"], 1.0)))
+    f.append(("ci", c["wi_compute_ops"] / tmax(c["wi_global_load_bits"] + c["wi_global_store_bits"], 1.0)))
+    f.append(("log1p_ci", log1p(c["wi_compute_ops"] / tmax(c["wi_global_load_bits"] + c["wi_global_store_bits"], 1.0))))
+    f.append(("log1p_overhead", log1p(c["wi_ops"] / tmax(c["wi_compute_ops"], 1.0))))
+    f.append(("log1p_mp", log1p((c["wi_global_load_bits"] + c["wi_global_store_bits"]) / tmax(c["num_groups"] * c["wi_per_group"], 1.0))))
+    f.append(("log1p_lm", log1p((c["wi_local_load_bits"] + c["wi_local_store_bits"] + 1.0) / tmax(c["wi_global_load_bits"] + c["wi_global_store_bits"] + 1.0, 1.0))))
+    f.append(("log_ops_100", (c["wi_ops"] + 100.0).log()))
+    f.append(("log_ops_10", (c["wi_ops"] + 10.0).log()))
+    f.append(("log_cops_100", (c["wi_compute_ops"] + 100.0).log()))
+    f.append(("log1p_1000_div_ops", log1p(tmax(c["wi_ops"], 1.0).reciprocal() * 1000.0)))
+    f.append(("log1p_100_div_ops", log1p(tmax(c["wi_ops"], 1.0).reciprocal() * 100.0)))
+    f.append(("log1p_1000_div_cops", log1p(tmax(c["wi_compute_ops"], 1.0).reciprocal() * 1000.0)))
+    f.append(("ops_per_thread", c["wi_ops"] / tmax(c["num_groups"] * c["wi_per_group"], 1.0)))
+    f.append(("cops_per_thread", c["wi_compute_ops"] / tmax(c["num_groups"] * c["wi_per_group"], 1.0)))
+    f.append(("ops_per_group", c["wi_ops"] / tmax(c["num_groups"], 1.0)))
+    f.append(("log_lwpg", tmax(c["wi_per_group"].log(), 1e-8).log()))
+    f.append(("raw_ng", c["num_groups"]))
+    f.append(("raw_ng_wpg", c["num_groups"] * c["wi_per_group"]))
+    f.append(("lbranch", log1p(c["wi_branches"])))
+    f.append(("barr*lbranch", c["wi_barriers"] * log1p(c["wi_branches"])))
+    f.append(("lwpg*lbranch", log1p(c["wi_per_group"]) * log1p(c["wi_branches"])))
+    f.append(("lng_lwpg", c["num_groups"].log() * log1p(c["wi_per_group"])))
+    f.append(("lwpg_lops", log1p(c["wi_per_group"]) * c["wi_ops"].log()))
+    f.append(("log_ops_per_group", log1p(c["wi_ops"] / tmax(c["num_groups"], 1.0))))
+    f.append(("log_opt", log1p(c["wi_ops"] / tmax(c["num_groups"] * c["wi_per_group"], 1.0))))
+    f.append(("inv_threads", tmax(c["num_groups"] * c["wi_per_group"], 1.0).reciprocal()))
+    f.append(("log_inv_threads", log1p(tmax(c["num_groups"] * c["wi_per_group"], 1.0).reciprocal())))
+    f.append(("log_opt_barr", log1p(c["wi_ops"] / tmax(c["num_groups"] * c["wi_per_group"] * tmax(c["wi_barriers"], 1.0), 1.0))))
+    f.append(("log_wpg_barr", log1p(c["wi_per_group"] * c["wi_barriers"])))
+
+    for bval in [0, 3, 4, 5, 6, 7, 8]:
+        hit = ind(c["wi_barriers"].equal(float(bval)))
+        f.append((f"b{bval}", hit))
+    f.append(("barr_low", ind(c["wi_barriers"].equal(0.0))))
+    f.append(("barr_med", ind(c["wi_barriers"].equal(3.0).logical_or(c["wi_barriers"].equal(4.0)).logical_or(c["wi_barriers"].equal(5.0)))))
+    f.append(("barr_high", ind(c["wi_barriers"].cmpge(6.0))))
+    f.append(("barr_nonzero", ind(c["wi_barriers"].cmpgt(0.0))))
+
+    for bval in [0, 3, 4, 5, 6, 7, 8]:
+        hit = ind(c["wi_barriers"].equal(float(bval)))
+        f.append((f"b{bval}*lng", hit * c["num_groups"].log()))
+        f.append((f"b{bval}*lwpg", hit * log1p(c["wi_per_group"])))
+        f.append((f"b{bval}*lops", hit * c["wi_ops"].log()))
+    f.append(("barr*lops", c["wi_barriers"] * c["wi_ops"].log()))
+    f.append(("barr*lcop", c["wi_barriers"] * c["wi_compute_ops"].log()))
+    f.append(("barr*lgmem", c["wi_barriers"] * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("barr*lwpg", c["wi_barriers"] * log1p(c["wi_per_group"])))
+    f.append(("barr*lng", c["wi_barriers"] * c["num_groups"].log()))
+    f.append(("barr*wr", c["wi_barriers"] * (c["wi_per_group"] / tmax(c["warp_size"], 1.0))))
+    f.append(("lld_st", log1p(c["wi_global_load_lidx_stride"])))
+    f.append(("lst_st", log1p(c["wi_global_store_lidx_stride"])))
+    f.append(("lld_st*lops", log1p(c["wi_global_load_lidx_stride"]) * c["wi_ops"].log()))
+    f.append(("lld_st*lcop", log1p(c["wi_global_load_lidx_stride"]) * c["wi_compute_ops"].log()))
+    f.append(("lld_st*lgmem", log1p(c["wi_global_load_lidx_stride"]) * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("lops*lgmem", c["wi_ops"].log() * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("lcop*lgmem", c["wi_compute_ops"].log() * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("lng*lgmem", c["num_groups"].log() * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("lwpg*lgmem", log1p(c["wi_per_group"]) * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("lwpg*lops_w", log1p(c["wi_per_group"]) * c["wi_ops"].log()))
+    f.append(("lng*lcop", c["num_groups"].log() * c["wi_compute_ops"].log()))
+    f.append(("lng*lgmem_w", c["num_groups"].log() * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("warp_util", c["wi_per_group"] / tmax(c["warp_size"], 1.0)))
+    f.append(("log_warp_waste", (tmax(c["wi_per_group"], 1.0).reciprocal() * 32.0).log()))
+    f.append(("lng_warp_waste", c["num_groups"].log() * (tmax(c["wi_per_group"], 1.0).reciprocal() * 32.0).log()))
+    f.append(("lwpg_warp_waste", log1p(c["wi_per_group"]) * (tmax(c["wi_per_group"], 1.0).reciprocal() * 32.0).log()))
+    f.append(("coalescing_eff", tmin(c["wi_global_load_lidx_stride"] / 32.0, 1.0) * -1.0 + 1.0))
+    f.append(("coalescing_eff_st", tmin(c["wi_global_store_lidx_stride"] / 32.0, 1.0) * -1.0 + 1.0))
+    f.append(("reduce_kind", c["wi_barriers"] / tmax(log2(c["wi_per_group"] + 1.0), 1.0)))
+    f.append(("element_ops", c["wi_compute_ops"] / tmax(c["num_groups"], 1.0)))
+    f.append(("warp_div", tmax(tmax(c["wi_per_group"], 1.0).reciprocal() * 32.0, 1e-8).log()))
+    f.append(("sm_occupancy", tmin((c["num_groups"] * c["wi_per_group"]) / 2048.0, 1.0)))
+    f.append(("tree_height", ind(c["wi_barriers"].cmpgt(0.0)) * log2(c["wi_barriers"] + 1.0)))
+    f.append(("tree_reduce_cost", c["wi_barriers"] * log1p(c["wi_local_load_bits"] + c["wi_local_store_bits"])))
+    f.append(("element_ops_per_thread", c["wi_compute_ops"] / tmax(c["num_groups"] * c["wi_per_group"], 1.0)))
+    f.append(("shared_mem_pressure", (c["wi_local_load_bits"] + c["wi_local_store_bits"]) / 65536.0))
+    f.append(("warp_waste", (c["wi_per_group"] * -1.0 + 32.0) / 32.0))
+    f.append(("compute_per_barrier", c["wi_compute_ops"] / tmax(c["num_groups"] * tmax(c["wi_barriers"], 1.0), 1.0)))
+    f.append(("barrier_overhead_cost", c["wi_barriers"] * log1p(c["wi_barriers"]) / tmax(log1p(c["wi_ops"]), 1.0)))
+    f.append(("group_work_density", c["wi_ops"] / tmax(c["num_groups"] * log1p(c["wi_per_group"]), 1.0)))
+    f.append(("ops_per_barrier", c["wi_ops"] / tmax(c["wi_barriers"], 1.0)))
+    f.append(("barrier_factor", c["wi_barriers"] / tmax(log1p(c["wi_ops"]), 1.0)))
+    f.append(("barrier_efficiency", c["wi_barriers"] / tmax(log1p(c["wi_ops"]), 1.0)))
+    f.append(("mem_compute_ratio_log", ((c["wi_global_load_bits"] + c["wi_global_store_bits"]) / tmax(c["wi_compute_ops"], 1.0) + 1.0).log()))
+    f.append(("log1p_lng", log1p(c["num_groups"].log().abs())))
+    f.append(("log1p_lwpg_raw", log1p(log1p(c["wi_per_group"]).abs())))
+    f.append(("log1p_lops_raw", log1p(c["wi_ops"].log().abs())))
+    f.append(("log_ng_per_ops", (c["num_groups"] / tmax(c["wi_ops"], 1.0) + 1.0).log()))
+    f.append(("log_threads_per_ops", ((c["num_groups"] * c["wi_per_group"]) / tmax(c["wi_ops"], 1.0) + 1.0).log()))
+    f.append(("barr_med_lops", ind(c["wi_barriers"].equal(3.0).logical_or(c["wi_barriers"].equal(4.0)).logical_or(c["wi_barriers"].equal(5.0))) * c["wi_ops"].log()))
+    f.append(("barr_nonzero_lops", ind(c["wi_barriers"].cmpgt(0.0)) * c["wi_ops"].log()))
+    f.append(("barr_nonzero_lmem", ind(c["wi_barriers"].cmpgt(0.0)) * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("compute_density", c["wi_compute_ops"] / tmax(c["num_groups"] * c["wi_per_group"], 1.0)))
+    f.append(("thread_compute", log1p(c["wi_compute_ops"]) * log1p(c["num_groups"] * c["wi_per_group"])))
+    f.append(("bgt_lng", ind(c["wi_barriers"].cmpgt(0.0)) * c["num_groups"].log()))
+    f.append(("bgt_lwpg", ind(c["wi_barriers"].cmpgt(0.0)) * log1p(c["wi_per_group"])))
+    f.append(("bgt_lops", ind(c["wi_barriers"].cmpgt(0.0)) * c["wi_ops"].log()))
+    f.append(("bgt_lcop", ind(c["wi_barriers"].cmpgt(0.0)) * c["wi_compute_ops"].log()))
+    f.append(("bgt_lgmem", ind(c["wi_barriers"].cmpgt(0.0)) * log1p(c["wi_global_load_bits"] + c["wi_global_store_bits"])))
+    f.append(("lreg", log1p(c["wi_register_load_bits"])))
+    f.append(("lreg_st", log1p(c["wi_register_store_bits"])))
+    f.append(("reg_pressure", c["wi_register_load_bits"] / tmax(c["wi_global_load_bits"] + c["wi_global_store_bits"], 1.0)))
+    f.append(("lgws0", log1p(c["gws0"])))
+    f.append(("lgws1", log1p(c["gws1"])))
+    f.append(("lgws2", log1p(c["gws2"])))
+    f.append(("llws0", log1p(c["lws0"])))
+    f.append(("llws1", log1p(c["lws1"])))
+    f.append(("llws2", log1p(c["lws2"])))
+    f.append(("lws0_ratio", c["lws0"] / tmax(c["wi_per_group"], 1.0)))
+    f.append(("lws1_ratio", c["lws1"] / tmax(c["wi_per_group"], 1.0)))
+    f.append(("lws2_ratio", c["lws2"] / tmax(c["wi_per_group"], 1.0)))
+    f.append(("lws0xlws1", c["lws0"] * c["lws1"]))
+    f.append(("gws0_ratio", c["gws0"] / tmax(c["num_groups"], 1.0)))
+    f.append(("gws1_ratio", c["gws1"] / tmax(c["num_groups"], 1.0)))
+    f.append(("loop_depth", c["max_loop_depth"]))
+    f.append(("loop_depth*lops", c["max_loop_depth"] * tmax(c["wi_ops"], 1.0).log()))
+    f.append(("loop_depth*barr", c["max_loop_depth"] * c["wi_barriers"]))
+    f.append(("log_local_mem", log1p(c["local_mem_size"])))
+    f.append(("pref_vec", c["preferred_vector_size"]))
+    f.append(("total_global_load", c["wi_global_load_bits"] * c["num_groups"] * c["wi_per_group"]))
+    f.append(("total_global_store", c["wi_global_store_bits"] * c["num_groups"] * c["wi_per_group"]))
+    f.append(("total_global_mem", (c["wi_global_load_bits"] + c["wi_global_store_bits"]) * c["num_groups"] * c["wi_per_group"]))
+    f.append(("log_total_global_load", tmax(c["wi_global_load_bits"] * c["num_groups"] * c["wi_per_group"], 1.0).log()))
+    f.append(("log_total_global_mem", tmax((c["wi_global_load_bits"] + c["wi_global_store_bits"]) * c["num_groups"] * c["wi_per_group"], 1.0).log()))
+    f.append(("tile_ratio", (c["wi_local_load_bits"] + c["wi_local_store_bits"]) / tmax(c["wi_global_load_bits"] + c["wi_global_store_bits"], 1.0)))
+    f.append(("mem_per_compute", (c["wi_global_load_bits"] + c["wi_global_store_bits"]) * c["num_groups"] * c["wi_per_group"] / tmax(c["wi_compute_ops"] * c["num_groups"] * c["wi_per_group"], 1.0)))
+    f.append(("log_mem_per_compute", tmax((c["wi_global_load_bits"] + c["wi_global_store_bits"]) / tmax(c["wi_compute_ops"], 1.0), 1e-8).log()))
+    f.append(("occ_regs", c["max_register_bytes"] / tmax(c["wi_peak_reg_bytes"], 1.0)))
+    f.append(("occ_threads", c["max_local_threads"] / tmax(c["wi_per_group"], 1.0)))
+    f.append(("lmem_global_ratio", c["wi_local_load_bits"] / tmax(c["wi_global_load_bits"], 1.0)))
+    f.append(("total_local_traffic", (c["wi_local_load_bits"] + c["wi_local_store_bits"]) * c["num_groups"] * c["wi_per_group"]))
+    f.append(("log_total_local", tmax((c["wi_local_load_bits"] + c["wi_local_store_bits"]) * c["num_groups"] * c["wi_per_group"], 1.0).log()))
+    f.append(("barrier_intensity", c["wi_barriers"] / tmax(c["wi_compute_ops"], 1.0)))
+    f.append(("occ_combined", tmin(c["max_register_bytes"] / tmax(c["wi_peak_reg_bytes"], 1.0), c["max_local_threads"] / tmax(c["wi_per_group"], 1.0))))
+    f.append(("log_occ_combined", tmax(tmin(c["max_register_bytes"] / tmax(c["wi_peak_reg_bytes"], 1.0), c["max_local_threads"] / tmax(c["wi_per_group"], 1.0)), 1e-8).log()))
+    f.append(("mem_per_warp", (c["wi_global_load_bits"] + c["wi_global_store_bits"]) * 32.0 / tmax(c["wi_per_group"], 1.0)))
+    f.append(("compute_per_warp", c["wi_compute_ops"] * 32.0 / tmax(c["wi_per_group"], 1.0)))
+    f.append(("log_global_per_local", tmax((c["wi_global_load_bits"] + c["wi_global_store_bits"]) / tmax(c["wi_local_load_bits"] + c["wi_local_store_bits"], 1.0), 1e-8).log()))
+    return f
+
+
+# --------------------------------------------------------------------- ranks
+
+def ranks(t: Tensor) -> Tensor:
+    """0-based rank of each element (0 = fastest), by pairwise comparison.
+
+    Ties share the lower rank; there is no argsort in the bindings, and groups
+    here are small enough that the O(n^2) form is cheap.
+    """
+    n = t.shape[0]
+    return t.unsqueeze(0).cmplt(t.unsqueeze(1)).cast(DType.F32).sum(1).reshape((n,))
+
+
+# --------------------------------------------------------------------- model
+
+class TinyMLP:
+    """Linear -> LayerNorm -> SELU -> Linear, small enough to emit as Rust."""
+
+    def __init__(self, n_in: int):
+        self.n_in = n_in
+        self.l1 = zyx.nn.Linear(n_in, HIDDEN, True, DType.F32)
+        self.ln = zyx.nn.LayerNorm((HIDDEN,), dtype=DType.F32)
+        self.l2 = zyx.nn.Linear(HIDDEN, 1, True, DType.F32)
+        self.params = [self.l1.weight, self.l1.bias, self.ln.weight, self.ln.bias, self.l2.weight, self.l2.bias]
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return self.l2(self.ln(self.l1(x)).selu()).squeeze(-1)
+
+    def n_params(self) -> int:
+        return sum(p.numel() for p in self.params)
+
+
+# ------------------------------------------------------------------ emission
+
+# Constants copied from `Tensor::selu` (`zyx/src/tensor/elementwise.rs`) and
+# `LayerNorm::new` (`zyx-nn/src/layer_norm.rs`).
+SELU_ALPHA = 1.6732632
+SELU_SCALE = 1.050701
+LAYER_NORM_EPS = 1e-5
+
+PREDICT_COST_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "zyx", "src", "kernel", "predict_cost.rs"
+)
+
+# Signature of `cost.rs`'s `predict_time_us` call, in order.
+SIGNATURE = [
+    "num_groups", "wi_per_group", "wi_ops", "wi_compute_ops", "wi_barriers",
+    "wi_global_load_bits", "wi_global_store_bits", "wi_local_load_bits",
+    "wi_local_store_bits", "wi_peak_reg_bytes", "wi_branches",
+    "wi_global_load_lidx_stride", "wi_global_store_lidx_stride",
+    "wi_local_load_lidx_stride", "wi_local_store_lidx_stride",
+    "warp_size", "max_local_threads", "max_register_bytes",
+    "wi_register_load_bits", "wi_register_store_bits",
+    "gws0", "gws1", "gws2", "lws0", "lws1", "lws2",
+    "max_loop_depth", "preferred_vector_size", "local_mem_size",
+]
+
+
+def feature_rust() -> list:
+    """Render the 164 feature formulas as Rust by running `build_features`
+    on `Expr` leaves instead of zyx tensors."""
+    cols = {name: Expr(name) for name in HW_NAMES}
+    return [str(expr) for _, expr in build_features(cols)]
+
+
+def _floats(t) -> tuple:
+    """F32 tensor -> Python floats, without numpy (`numpy()` needs it)."""
+    data = t.cast(DType.F32).to_le_bytes()
+    return struct.unpack(f"<{len(data) // 4}f", data)
+
+
+def emit_predict_cost(model: TinyMLP, path: str = PREDICT_COST_PATH):
+    """Write the trained TinyMLP as a self-contained `predict_time_us`."""
+    features = feature_rust()
+    if len(features) != model.n_in:
+        sys.exit(f"emission: {len(features)} Rust features for a {model.n_in}-input model")
+    if len(SIGNATURE) != 29:
+        sys.exit(f"emission: signature has {len(SIGNATURE)} args, cost.rs passes 29")
+
+    w1 = _floats(model.l1.weight)
+    b1 = _floats(model.l1.bias)
+    ln_w = _floats(model.ln.weight)
+    ln_b = _floats(model.ln.bias)
+    w2 = _floats(model.l2.weight)
+    b2 = _floats(model.l2.bias)
+    if len(w1) != HIDDEN * model.n_in or len(w2) != HIDDEN:
+        sys.exit("emission: weight shapes do not match the TinyMLP architecture")
+
+    def const(name, values):
+        body = ",\n            ".join(f"{v:.9e}" for v in values)
+        return f"        const {name}: [f64; {len(values)}] = [\n            {body},\n        ];\n"
+
+    out = []
+    out.append("// Copyright (C) 2025 zk4x\n")
+    out.append("// SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0\n//\n")
+    out.append("// Auto-generated by zyx-bench/neural_net.py from bench.db.\n")
+    out.append("// TinyMLP: Linear -> LayerNorm -> SELU -> Linear, rank target.\n")
+    out.append("#![allow(unused)]\n")
+    out.append("//! Cost prediction for kernel selection.\n\n")
+    out.append("/// Predict the within-group rank of a kernel (0.0 = fastest).\n")
+    out.append("///\n")
+    out.append("/// The autotuner only uses this value to order candidates, so the\n")
+    out.append("/// rank score is returned directly (lower is better).\n")
+    out.append("#[allow(clippy::too_many_arguments)]\n")
+    out.append("pub(crate) fn predict_time_us(\n")
+    for i, name in enumerate(SIGNATURE):
+        comma = "," if i + 1 < len(SIGNATURE) else ","
+        out.append(f"    {name}: u32{comma}\n")
+    out.append(") -> f64 {\n")
+    for name in SIGNATURE:
+        out.append(f"    let {name} = {name} as f64;\n")
+    out.append("\n    let features: [f64; %d] = [\n" % len(features))
+    for expr in features:
+        out.append(f"        {expr},\n")
+    out.append("    ];\n\n")
+
+    out.append(const("W1", w1))
+    out.append(const("B1", b1))
+    out.append(const("LN_W", ln_w))
+    out.append(const("LN_B", ln_b))
+    out.append(const("W2", w2))
+    out.append(const("B2", b2))
+    out.append(
+        f"""
+        let n_in = {model.n_in};
+        let mut h = [0.0f64; {HIDDEN}];
+        for j in 0..{HIDDEN} {{
+            let mut v = B1[j];
+            for i in 0..n_in {{
+                v += W1[j * n_in + i] * features[i];
+            }}
+            h[j] = v;
+        }}
+        // zyx LayerNorm: mean over the hidden axis, *biased* variance
+        // (correction = 0, same as torch), then `(x - mean) / sqrt(var + eps) * w + b`.
+        let mean = h.iter().sum::<f64>() / {HIDDEN}.0;
+        let var = h.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / {HIDDEN}.0;
+        let inv = 1.0 / (var + {LAYER_NORM_EPS}).sqrt();
+        for j in 0..{HIDDEN} {{
+            let x = (h[j] - mean) * inv * LN_W[j] + LN_B[j];
+            h[j] = {SELU_SCALE} * if x > 0.0 {{ x }} else {{ {SELU_ALPHA} * (x.exp() - 1.0) }};
+        }}
+        let mut out = B2[0];
+        for j in 0..{HIDDEN} {{
+            out += W2[j] * h[j];
+        }}
+        out
+    }}
+"""
+    )
+    with open(path, "w") as f:
+        f.write("".join(out))
+    print(f"Wrote {path}")
+
+
+# --------------------------------------------------------------------- main
 
 def main():
-    import pandas as pd
-    df = pd.read_csv(BENCH_CSV)
-    entries = df.to_dict('records')
-    print(f"Read {len(entries)} entries")
+    rows = load_rows()
+    print(f"Read {len(rows)} measurements")
 
-    hash_map = defaultdict(list)
-    for i, e in enumerate(entries):
-        hash_map[e['variant_hash']].append(i)
-    variant_groups = list(hash_map.values())
-    print(f"Variant groups: {len(variant_groups)}")
+    groups = {}
+    for i, (seed, _, _) in enumerate(rows):
+        groups.setdefault(seed, []).append(i)
+    print(f"Variant groups: {len(groups)}")
 
-    # Target: rank 0..1 within each group
-    y = np.empty(len(entries), dtype=np.float32)
-    for g in variant_groups:
-        times = np.array([entries[i]['time_us'] for i in g])
-        if len(g) >= 2:
-            ranks = np.argsort(np.argsort(times))
-            for j, idx in enumerate(g):
-                y[idx] = ranks[j] / (len(g) - 1)
-        else:
-            for idx in g:
-                y[idx] = 0.5
+    cols = {name: column(rows, name) for name in HW_NAMES}
 
-    # Engineered features
-    X_eng = np.array([[fn(e) for _, fn in FEATURE_DEFS] for e in entries], dtype=np.float32)
+    feats = build_features(cols)
+    n, n_feat = len(rows), len(feats)
+    print(f"Features: {n_feat}")
 
-    # Raw features + log transform
-    raw = np.array([[e[f] for f in RAW_NAMES] for e in entries], dtype=np.float32)
-    for c in [0, 1, 2, 3, 5, 6, 7, 8, 10, 18, 19, 27]:
-        raw[:, c] = np.log(np.maximum(raw[:, c], 1.0))
+    X = Tensor.cat([t.reshape((n, 1)) for _, t in feats], dim=1)
 
-    # All pairwise interactions of raw features
-    interactions = []
-    for i in range(N_RAW):
-        for j in range(i + 1, N_RAW):
-            interactions.append(raw[:, i] * raw[:, j])
-    X_int = np.column_stack(interactions)
+    # Rank target in [0, 1] within each variant group.
+    y = [0.5] * n
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        times = Tensor.from_vec([rows[i][1] for i in members], (len(members),)).cast(DType.F32)
+        rv = struct.unpack(f"<{len(members)}f", ranks(times).to_le_bytes())
+        denom = float(len(members) - 1)
+        for k, i in enumerate(members):
+            y[i] = rv[k] / denom
 
-    X = np.column_stack([X_eng, X_int])
-    print(f"Features: eng={N_ENG} + interactions={N_INT} = {X.shape[1]}")
-
-    # Fixed 20k test split by variant_hash
-    rng = np.random.RandomState(42)
-    hashes = list(hash_map.keys())
-    rng.shuffle(hashes)
-    test_idx = np.array([], dtype=int)
-    for h in hashes:
-        if len(test_idx) + len(hash_map[h]) > 20000:
+    # Group split: hold out whole variant groups, up to TEST_ROWS measurements.
+    rng = random.Random(SEED)
+    seeds = list(groups.keys())
+    rng.shuffle(seeds)
+    test_idx = []
+    for s in seeds:
+        if len(test_idx) + len(groups[s]) > TEST_ROWS:
             break
-        test_idx = np.concatenate([test_idx, hash_map[h]])
-    test_mask = np.zeros(len(entries), dtype=bool)
-    test_mask[test_idx] = True
-    train_mask = ~test_mask
+        test_idx.extend(groups[s])
+    test_mask = [False] * n
+    for i in test_idx:
+        test_mask[i] = True
+    train_idx = [i for i in range(n) if not test_mask[i]]
+    test_idx = [i for i in range(n) if test_mask[i]]
+    print(f"Train {len(train_idx)} / test {len(test_idx)}")
 
-    scaler = StandardScaler()
-    X_train_all = scaler.fit_transform(X[train_mask])
-    X_test = scaler.transform(X[test_mask])
-    y_train_all, y_test = y[train_mask], y[test_mask]
+    def gather(idx):
+        return X.index_select(0, Tensor.from_vec([float(i) for i in idx], (len(idx),)).cast(DType.I64))
 
-    device = torch.device('cuda')
-    X_test_t = torch.tensor(X_test, device=device)
+    # zyx StandardScaler: centre and scale on the training split.
+    Xtr_raw = gather(train_idx)
+    mu = Xtr_raw.mean(0)
+    sd = Xtr_raw.std(0)
+    norm = lambda t: (t - mu) / (sd + 1e-8)
+    Xtr = norm(Xtr_raw)
+    Xte = norm(gather(test_idx))
 
-    # Build group index: local indices into training subset
-    train_global_to_local = {int(i): int(idx) for idx, i in enumerate(np.where(train_mask)[0])}
-    train_hash_map = defaultdict(list)
-    for i in np.where(train_mask)[0]:
-        train_hash_map[entries[i]['variant_hash']].append(i)
-    train_groups = [torch.tensor([train_global_to_local[int(i)] for i in v], device=device)
-                    for v in train_hash_map.values() if len(v) >= 4]
+    model = TinyMLP(n_feat)
+    print(f"Model params: {model.n_params()}")
+    opt = zyx.optim.AdamW(learning_rate=LR)
+
+    target_tr = Tensor.from_vec([y[i] for i in train_idx], (len(train_idx),))
+    # Local row index inside the training block, per group.
+    train_pos = {i: k for k, i in enumerate(train_idx)}
+    train_groups = []
+    for members in groups.values():
+        local = [train_pos[i] for i in members if i in train_pos]
+        if len(local) >= 4:
+            train_groups.append(Tensor.from_vec([float(i) for i in local], (len(local),)).cast(DType.I64))
     print(f"Training groups with >=4 variants: {len(train_groups)}")
 
-    X_train_t = torch.tensor(X_train_all, device=device)
-    y_train_t = torch.tensor(y_train_all, device=device)
-
-    model = MLP([X.shape[1], 500, 200, 1]).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"Model params: {n_params}")
-
-    opt = torch.optim.AdamW(model.parameters(), lr=3e-3, weight_decay=0.0)
-    l1_lambda = 5e-3
-    n_steps = 30000
-    n_groups = len(train_groups)
-    pbar = tqdm(total=n_steps, desc="Training")
+    perm = list(range(len(train_groups)))
     step = 0
-    perm = np.arange(n_groups)
-    while step < n_steps:
+    while step < TRAIN_STEPS:
         rng.shuffle(perm)
         for gi in perm:
-            if step >= n_steps:
+            if step >= TRAIN_STEPS:
                 break
-            local_idx = train_groups[gi]
-            pred = model(X_train_t[local_idx])
-            targets = y_train_t[local_idx]
-
-            diff = pred.unsqueeze(0) - pred.unsqueeze(1)  # pred_i - pred_j
-            # S_ij = 1 if target_i < target_j (i faster), -1 if target_i > target_j (i slower)
-            S = torch.sign(targets.unsqueeze(1) - targets.unsqueeze(0))
-            loss = torch.log(1 + torch.exp(S * diff)).mean()
-            loss = loss + l1_lambda * model.l1_reg()
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
-
+            idx = train_groups[gi]
+            tape = zyx.Tape()
+            tape.add(*model.params)
+            x = Xtr.index_select(0, idx)
+            target = target_tr.index_select(0, idx)
+            pred = model(x)
+            diff = pred.unsqueeze(0) - pred.unsqueeze(1)
+            s = (target.unsqueeze(0) - target.unsqueeze(1)).sign()
+            loss = ((s * diff).exp() + 1.0).log().mean()
+            loss = loss + sum(p.abs().sum() for p in model.params) * L1_LAMBDA
+            grads = tape.gradient(loss, model.params)
+            opt.update(model.params, grads)
+            tape.realize([loss, *model.params])
             step += 1
-            if step % 100 == 0:
-                pbar.update(100)
-                pbar.set_postfix(loss=f"{loss.item():.4f}")
-    if step % 100 != 0:
-        pbar.update(step % 100)
-    pbar.close()
+            if step % 5000 == 0:
+                print(f"  step {step} loss {loss.item():.4f}")
 
-    model.eval()
-    with torch.no_grad():
-        pred_train = model(X_train_t).cpu().numpy()
-        pred_test = model(X_test_t).cpu().numpy()
+    evaluate(model, Xte, [y[i] for i in test_idx], test_idx, groups, rows)
+    emit_predict_cost(model)
 
-    # Within-group loss and ρ on train set
-    train_group_map = defaultdict(list)
-    for i in np.where(train_mask)[0]:
-        train_group_map[entries[i]['variant_hash']].append(i)
-    train_losses, train_rhos = [], []
-    for g in train_group_map.values():
-        if len(g) >= 3:
-            local_idx = [train_global_to_local[int(i)] for i in g]
-            pg = torch.tensor(pred_train[local_idx])
-            tg = torch.tensor([entries[i]['time_us'] for i in g])
-            diff = pg.unsqueeze(0) - pg.unsqueeze(1)
-            S = torch.sign(tg.unsqueeze(1) - tg.unsqueeze(0))
-            train_losses.append(torch.log(1 + torch.exp(S * diff)).mean().item())
-            train_rhos.append(spearmanr(tg.numpy(), pg.numpy())[0])
-    train_losses, train_rhos = np.array(train_losses), np.array(train_rhos)
-    print(f"Train:  loss={np.nanmean(train_losses):.6f}  ρ={np.nanmean(train_rhos):.4f}±{np.nanstd(train_rhos):.4f}")
 
-    test_global_to_local = {int(i): int(idx) for idx, i in enumerate(test_idx)}
-    test_group_map = defaultdict(list)
-    for i in test_idx:
-        h = entries[i]['variant_hash']
-        test_group_map[h].append(i)
-    test_losses, test_rhos = [], []
-    n_debug = 0
-    for g in test_group_map.values():
-        if len(g) >= 3:
-            local_idx = [test_global_to_local[int(i)] for i in g]
-            pg = pred_test[local_idx]
-            yg = np.array([entries[i]['time_us'] for i in g])
-            diff = torch.tensor(pg).unsqueeze(0) - torch.tensor(pg).unsqueeze(1)
-            S = torch.sign(torch.tensor(yg).unsqueeze(1) - torch.tensor(yg).unsqueeze(0))
-            test_losses.append(torch.log(1 + torch.exp(S * diff)).mean().item())
-            rho = spearmanr(yg, pg)[0]
-            test_rhos.append(rho)
-            if n_debug < 3 and not np.isnan(rho):
-                print(f"\n  Test group {g[0]:6d}: {len(g)} variants, ρ={rho:.3f}")
-                times = yg
-                order = np.argsort(times)
-                print(f"    actual rank: {np.argsort(np.argsort(times))}")
-                print(f"    pred rank:   {np.argsort(np.argsort(pg))}")
-                print(f"    pred vals:   {np.array([f'{v:.3f}' for v in pg])}")
-                n_debug += 1
-    test_losses, test_rhos = np.array(test_losses), np.array(test_rhos)
-    print(f"Test:  loss={np.nanmean(test_losses):.6f}  ρ={np.nanmean(test_rhos):.4f}±{np.nanstd(test_rhos):.4f}")
-    print(f"  Worst 5% ρ: {np.quantile(test_rhos, 0.05):.4f}, Best 5% ρ: {np.quantile(test_rhos, 0.95):.4f}")
+def evaluate(model, Xte, y_test, test_idx, groups, rows):
+    n = len(test_idx)
+    pos = {i: k for k, i in enumerate(test_idx)}
+    pred = model(Xte).detach()
+    yt = Tensor.from_vec(y_test, (n,)).cast(DType.F32)
 
-    top10_in_top20 = []
-    for g in test_group_map.values():
-        n = len(g)
-        if n < 20:
+    r2s, rhos, topk = [], [], []
+    for members in groups.values():
+        local = [pos[i] for i in members if i in pos]
+        if len(local) < 3:
             continue
-        local_idx = [test_global_to_local[int(i)] for i in g]
-        times = np.array([entries[i]['time_us'] for i in g])
-        preds = pred_test[local_idx]
-        actual_top10 = np.argsort(times)[:10]
-        pred_top20 = np.argsort(preds)[:20]
-        hits = len(set(actual_top10) & set(pred_top20))
-        top10_in_top20.append(hits / 10.0)
-    if len(top10_in_top20) >= 3:
-        print(f"  Top10-in-top20:   {np.mean(top10_in_top20):.3f} (over {len(top10_in_top20)} groups)")
+        li = Tensor.from_vec([float(i) for i in local], (len(local),)).cast(DType.I64)
+        yg = yt.index_select(0, li)
+        pg = pred.index_select(0, li)
+        ss_res = ((yg - pg) ** 2).sum()
+        ss_tot = ((yg - yg.mean()) ** 2).sum()
+        r2s.append(1.0 - (ss_res.item() / ss_tot.item() if ss_tot.item() > 0 else 0.0))
+        ra, rp = ranks(yg), ranks(pg)
+        ra_c = ra - ra.mean()
+        rp_c = rp - rp.mean()
+        denom = (ra_c.pow(2.0).sum().sqrt() * rp_c.pow(2.0).sum().sqrt()).item()
+        rhos.append((ra_c * rp_c).sum().item() / denom if denom > 0 else 0.0)
+        if len(local) >= 20:
+            hit = ra.cmplt(10.0).logical_and(rp.cmplt(20.0)).cast(DType.F32).sum()
+            topk.append(hit.item() / 10.0)
+
+    import statistics
+
+    print(f"\n=== zyx TinyMLP ({n} test rows, {len(r2s)} groups) ===")
+    print(f"  Mean R²:          {statistics.mean(r2s):.4f}")
+    print(f"  Median R²:        {statistics.median(r2s):.4f}")
+    print(f"  Worst R²:         {min(r2s):.4f}")
+    print(f"  Best R²:          {max(r2s):.4f}")
+    print(f"  Spearman ρ:       {statistics.mean(rhos):.4f} ± {statistics.pstdev(rhos):.4f}")
+    if topk:
+        print(f"  Top10-in-top20:   {statistics.mean(topk):.3f} (over {len(topk)} groups)")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

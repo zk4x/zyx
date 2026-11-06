@@ -265,7 +265,7 @@ impl Graph {
     /// Topologically sorts the classes reachable from `outputs` (consumers
     /// first, the returned vector is reversed into dependency order).
     ///
-    /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored when
+    /// With `WITHOUT_KERNELS`, [`Op::Program`] nodes are ignored when
     /// collecting dependencies and the walk stops at the classes in `inputs`
     /// (a boundary input contributes only its non-boundary kernel inputs).
     /// Used when iterating the structural graph — e.g. fusing remaining ops
@@ -424,7 +424,7 @@ impl Graph {
 
     /// Dependencies of class `cid` for [`Self::topo_sort_classes`].
     ///
-    /// With `WITHOUT_KERNELS`, [`Node::Kernel`] nodes are ignored and a
+    /// With `WITHOUT_KERNELS`, [`Op::Program`] nodes are ignored and a
     /// boundary class (in `inputs`) contributes only its non-boundary kernel
     /// inputs; otherwise every op's [`Op::parameters`] is used.
     fn deps<const WITHOUT_KERNELS: bool>(&self, inputs: &Set<OpId>, cid: OpId) -> Vec<OpId> {
@@ -439,7 +439,10 @@ impl Graph {
                         unreachable!()
                     };
                     for p in ops.iter() {
-                        if !deps.contains(p) && !(WITHOUT_KERNELS && inputs.contains(p)) {
+                        // A fused in-place self-update reads the buffer it
+                        // writes, so the kernel is its own producer. That edge
+                        // is not a dependency (it would be a cycle).
+                        if *p != cid && !deps.contains(p) && !(WITHOUT_KERNELS && inputs.contains(p)) {
                             deps.push(*p);
                         }
                     }
@@ -449,7 +452,7 @@ impl Graph {
                         continue;
                     }
                     for p in inner.inputs.iter() {
-                        if !deps.contains(p) && !(WITHOUT_KERNELS && inputs.contains(p)) {
+                        if *p != cid && !deps.contains(p) && !(WITHOUT_KERNELS && inputs.contains(p)) {
                             deps.push(*p);
                         }
                     }
@@ -470,13 +473,13 @@ impl Graph {
     }
 
     /// Dependencies of class `cid` under the **extraction** view: once a
-    /// class is produced by a jit/AOT kernel (or [`Node::ToDevice`]), its
+    /// class is produced by a jit/AOT kernel (or [`Op::ToDevice`]), its
     /// scheduling dependencies are exactly those producers' inputs. The
     /// e-graph keeps competing derivations on the class, and following them
     /// alongside kernel inputs creates false cycles (a kernel may recompute
     /// a value whose structural path runs through another kernel's stores).
     ///
-    /// [`Node::After`] and [`Node::Assign`] edges are kept regardless: they
+    /// [`Op::After`] edges and in-place stores are kept regardless: they
     /// encode store *ordering* between in-place writes, not an alternative
     /// derivation.
     ///
@@ -490,15 +493,16 @@ impl Graph {
                         unreachable!()
                     };
                     for p in ops.iter() {
-                        if !kdeps.contains(p) {
+                        // Fused in-place self-update: the kernel reads the buffer
+                        // it writes, so its own class is an input. Skip that
+                        // self-edge (a cycle, not a dependency).
+                        if *p != cid && !kdeps.contains(p) {
                             kdeps.push(*p);
                         }
                     }
                 }
-                Op::ToDevice { x, .. } => {
-                    if !kdeps.contains(&x) {
-                        kdeps.push(x);
-                    }
+                Op::ToDevice { x, .. } if !kdeps.contains(&x) => {
+                    kdeps.push(x);
                 }
                 _ => {}
             }
@@ -590,8 +594,8 @@ impl Graph {
                     Op::Unary { uop, .. } => format!("Unary {:?}", uop),
                     Op::Cast { dtype, .. } => format!("Cast {:?}", dtype),
                     Op::Bitcast { dtype, .. } => format!("Bitcast {:?}", dtype),
-                    Op::Program { .. } => format!("Kernel"),
-                    Op::Kernel { .. } => format!("Custom"),
+                    Op::Program { .. } => "Kernel".to_string(),
+                    Op::Kernel { .. } => "Custom".to_string(),
                     Op::Reshape { .. } => "Reshape".into(),
                     Op::Expand { .. } => "Expand".into(),
                     Op::Permute { .. } => "Permute".into(),
@@ -613,7 +617,7 @@ impl Graph {
         println!("{}\n", line);
     }
 
-    /// After extraction, inserts [`Node::ToDevice`] transfers on the extracted
+    /// After extraction, inserts [`Op::ToDevice`] transfers on the extracted
     /// path wherever a chosen kernel consumes a class placed on a different
     /// device, and returns the repaired node list in topological order.
     ///
@@ -623,7 +627,7 @@ impl Graph {
     /// producer. A transfer is added only on a real mismatch between the
     /// consumer kernel's device and the placement of its input on the
     /// extracted path (chosen kernel output, chosen transfer output, or
-    /// realized leaf buffer). User-inserted [`Node::ToDevice`] nodes are kept
+    /// realized leaf buffer). User-inserted [`Op::ToDevice`] nodes are kept
     /// as-is and reused through hashconsing.
     pub fn add_memory_ops(&mut self, buffer_map: &Map<TensorId, Arc<Placement>>, chosen: &[OpId]) -> Vec<OpId> {
         // Pool each class lives in on the extracted path. Chosen kernel
@@ -646,7 +650,7 @@ impl Graph {
             let (device_id, inputs, class_of) = match &self.ops[nid].op {
                 Op::Program { info, inputs, .. } => {
                     debug_assert_ne!(info.0.dev, Dev::Auto);
-                    (info.0.dev, inputs.clone(), self.ops[nid].class_of)
+                    (info.0.dev, *inputs, self.ops[nid].class_of)
                 }
                 Op::ToDevice { device, .. } => {
                     // Pool is always derived from the device, never the reverse.
@@ -735,19 +739,19 @@ impl Graph {
     ///
     /// # Cost model
     ///
-    /// Only [`Node::Kernel`] and [`Node::ToDevice`] carry real costs (execution time in nanoseconds).
+    /// Only [`Op::Program`] and [`Op::ToDevice`] carry real costs (execution time in nanoseconds).
     /// All other node types (Expand, Reshape, Cast, Binary, Unary, etc.) are structural/fusing
     /// artifacts — they represent intermediate graph transformations that must be fused into kernels
-    /// by [`kernelize`](self::kernelizer::Graph::kernelize) before extraction.
+    /// by [`Self::kernelize`] before extraction.
     ///
     /// # Invariant
     ///
-    /// A path composed exclusively of [`Node::Kernel`] and [`Node::ToDevice`] nodes must exist
+    /// A path composed exclusively of [`Op::Program`] and [`Op::ToDevice`] nodes must exist
     /// from leaves (the only realized classes) to every output class. Without this path the output
     /// cannot be computed, because non-Kernel/ToDevice nodes have no associated runtime cost.
     ///
     /// Dead graph regions (classes with no kernel path) are harmless as long as they don't appear
-    /// on output computation paths. [`kernelize`](self::kernelizer::Graph::kernelize) is responsible for ensuring every output
+    /// on output computation paths. [`Self::kernelize`] is responsible for ensuring every output
     /// class satisfies this invariant by fusing enough nodes into kernels.
     ///
     /// # Panics
@@ -1110,12 +1114,21 @@ impl Graph {
         }
         match &self.ops[class].op {
             Op::Const(_) => Vec::new(),
-            Op::Select { if_true, if_false, .. } => {
-                // Scalars broadcast implicitly (same rule as `Binary` and
-                // the eager `result_shape`): the result takes the shape of
-                // the non-scalar arm. Both scalars → rank 0.
+            Op::Select { cond, if_true, if_false } => {
+                // Scalars broadcast implicitly (same rule as `Binary`):
+                // the result takes the shape of the non-scalar operand.
+                // The cond participates last — a lane-varying mask over
+                // scalar arms yields the cond's shape, exactly as the
+                // kernel IR's `shape_ids` already computes it. Omitting it
+                // reported rank 0 for a vector result, so replay allocated
+                // one element and the kernel wrote the whole vector past
+                // it. Only when all three are scalars is the result rank 0.
                 let st = self.shape(*if_true);
-                if !st.is_empty() { st } else { self.shape(*if_false) }
+                if !st.is_empty() {
+                    return st;
+                }
+                let sf = self.shape(*if_false);
+                if !sf.is_empty() { sf } else { self.shape(*cond) }
             }
             Op::Stack { ops } => {
                 // Shape-descriptor stacks (scalar dims) have no tensor shape.
@@ -1124,12 +1137,12 @@ impl Graph {
                 // leading dim class is interned by the constructor (egraph
                 // consts are never removed), so it is resolved by value here;
                 // absent (foreign stacks) keeps today's [].
-                if let Some(&e) = ops.iter().find(|&&e| !self.shape(e).is_empty()) {
-                    if let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64))) {
-                        let mut s = self.shape(e);
-                        s.insert(0, self.ops[nid].class_of);
-                        return s;
-                    }
+                if let Some(&e) = ops.iter().find(|&&e| !self.shape(e).is_empty())
+                    && let Some(&nid) = self.hashcons.get(&Op::Const(Constant::idx(ops.len() as i64)))
+                {
+                    let mut s = self.shape(e);
+                    s.insert(0, self.ops[nid].class_of);
+                    return s;
                 }
                 Vec::new()
             }
@@ -1350,7 +1363,7 @@ impl Graph {
         }
         match &self.ops[shape].op {
             Op::Stack { ops } => {
-                let ops: Vec<OpId> = ops.iter().copied().collect();
+                let ops: Vec<OpId> = ops.to_vec();
                 self.replay_symbolic_into_kernel(kid, &ops)
             }
             _ => self.replay_symbolic_into_kernel(kid, &[shape]),
@@ -1429,30 +1442,42 @@ impl Graph {
     /// Tries to resolve the value of a scalar class by walking its const
     /// expression: `Const` leaves evaluated through `Cast`, `Unary` and
     /// `Binary` nodes (iteratively, no recursion). Returns `None` if the
-    /// class is not a scalar, the walk exceeds 10 000 steps, or any leaf
+    /// class is not a scalar, the walk exceeds its step budget, or any leaf
     /// is not a `Const`.
     pub(crate) fn resolve_const(&self, class: OpId) -> Option<Constant> {
-        // Preorder of the const-expression subgraph reachable through
-        // `Cast`, `Unary` and `Binary`; non-const leaves abort.
+        // Postorder of the const-expression subgraph reachable through
+        // `Cast`, `Unary` and `Binary`; non-const leaves abort. A node joins
+        // `order` only after every operand it reads is already there, so
+        // evaluating `order` forward never reaches a missing operand — even
+        // when a node is shared between operands visited at different times
+        // (`add(d, mul(d, c))`), which a reversed preorder gets wrong.
         let mut visited: Set<OpId> = Set::default();
         let mut order: Vec<OpId> = Vec::new();
-        let mut stack = vec![class];
-        for _ in 0..10_000 {
-            let Some(id) = stack.pop() else { break };
-            let node_id = id;
+        // `(node, expanded)`: a not-yet-expanded node pushes its operands
+        // plus its own marker; the marker appends the node after them.
+        let mut stack = vec![(class, false)];
+        // Two stack entries per node (operand visit + marker), so keep the
+        // node budget the same as the single-entry walk had.
+        for _ in 0..20_000 {
+            let Some((node_id, expanded)) = stack.pop() else { break };
+            if expanded {
+                order.push(node_id);
+                continue;
+            }
             if !visited.insert(node_id) {
                 continue;
             }
+            stack.push((node_id, true));
             match &self.ops[node_id].op {
-                Op::Cast { x, .. } => stack.push(*x),
-                Op::Bitcast { x, .. } => stack.push(*x),
-                Op::Unary { x, .. } => stack.push(*x),
+                Op::Cast { x, .. } => stack.push((*x, false)),
+                Op::Bitcast { x, .. } => stack.push((*x, false)),
+                Op::Unary { x, .. } => stack.push((*x, false)),
                 Op::Binary { x, y, .. } => {
-                    stack.push(*y);
-                    stack.push(*x);
+                    stack.push((*y, false));
+                    stack.push((*x, false));
                 }
                 Op::Index { vec, idx } => match &self.ops[*vec].op {
-                    Op::Stack { ops } => stack.push(ops[*idx]),
+                    Op::Stack { ops } => stack.push((ops[*idx], false)),
                     _ => return None,
                 },
                 Op::Const(_) => {}
@@ -1492,23 +1517,20 @@ impl Graph {
                 // Detach is value identity, not const-foldable.
                 Op::Detach { .. } => return None,
             }
-            order.push(node_id);
         }
         if !stack.is_empty() {
-            panic!("resolve_const did not finish in 10000 steps");
+            panic!("resolve_const did not finish in its step budget");
         }
-        // Evaluate bottom-up: `order` is a preorder (parents before their
-        // operands), so reversing it evaluates every operand before its
-        // consumer.
+        // `order` is a postorder: every operand precedes its consumer.
         let mut values: Map<OpId, Constant> = Map::default();
-        for &node_id in order.iter().rev() {
+        for &node_id in order.iter() {
             let value = match &self.ops[node_id].op {
                 Op::Const(value) => *value,
                 Op::Cast { x, dtype } => values[x].cast(*dtype),
                 Op::Bitcast { x, dtype } => values[x].bitcast(*dtype),
                 Op::Unary { x, uop } => values[x].unary(*uop),
                 Op::Index { vec, idx } => match &self.ops[*vec].op {
-                    Op::Stack { ops } => values[&ops[*idx]].clone(),
+                    Op::Stack { ops } => values[&ops[*idx]],
                     n => unreachable!("Index vec must be a Stack class, got {n:?}"),
                 },
                 Op::Binary { x, y, bop } => Constant::binary(values[x], values[y], *bop),
@@ -2075,14 +2097,11 @@ impl Runtime {
                             class_id
                         }
                     }
-                    Op::Const(x) => {
-                        let class_id = self.push_const(graph_id, x);
-                        class_id
-                    }
+                    Op::Const(x) => self.push_const(graph_id, x),
                     Op::Unary { x, uop } => {
                         let x_class = op_to_class[&x];
-                        let class_id = self.push_op(graph_id, Op::Unary { x: x_class, uop });
-                        class_id
+
+                        self.push_op(graph_id, Op::Unary { x: x_class, uop })
                     }
                     Op::Binary { x, y, bop } => {
                         let x_class = op_to_class[&x];
@@ -2091,18 +2110,18 @@ impl Runtime {
                     }
                     Op::Cast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        let class_id = self.push_op(graph_id, Op::Cast { x: x_class, dtype });
-                        class_id
+
+                        self.push_op(graph_id, Op::Cast { x: x_class, dtype })
                     }
                     Op::Bitcast { x, dtype } => {
                         let x_class = op_to_class[&x];
-                        let class_id = self.push_op(graph_id, Op::Bitcast { x: x_class, dtype });
-                        class_id
+
+                        self.push_op(graph_id, Op::Bitcast { x: x_class, dtype })
                     }
                     Op::Stack { ref ops } => {
                         let ops: Box<[OpId]> = ops.iter().map(|o| op_to_class[o]).collect();
-                        let class_id = self.push_op(graph_id, Op::Stack { ops });
-                        class_id
+
+                        self.push_op(graph_id, Op::Stack { ops })
                     }
                     Op::Select { cond, if_true, if_false } => {
                         // Arms are already broadcast upstream
@@ -2110,9 +2129,8 @@ impl Runtime {
                         let cond_class = op_to_class[&cond];
                         let if_true_class = op_to_class[&if_true];
                         let if_false_class = op_to_class[&if_false];
-                        let class_id = self
-                            .push_op(graph_id, Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class });
-                        class_id
+
+                        self.push_op(graph_id, Op::Select { cond: cond_class, if_true: if_true_class, if_false: if_false_class })
                     }
                     Op::Reduce { x, rop, reduce_axis } => {
                         let x_class = op_to_class[&x];
@@ -2121,20 +2139,20 @@ impl Runtime {
                         } else {
                             op_to_class[&reduce_axis]
                         };
-                        let class_id = self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis });
-                        class_id
+
+                        self.push_op(graph_id, Op::Reduce { x: x_class, rop, reduce_axis })
                     }
                     Op::Reshape { x, shape } => {
                         let x_class = op_to_class[&x];
                         let shape = op_to_class[&shape];
-                        let class_id = self.push_op(graph_id, Op::Reshape { x: x_class, shape });
-                        class_id
+
+                        self.push_op(graph_id, Op::Reshape { x: x_class, shape })
                     }
                     Op::Expand { x, shape } => {
                         let x_class = op_to_class[&x];
                         let shape = op_to_class[&shape];
-                        let class_id = self.push_op(graph_id, Op::Expand { x: x_class, shape });
-                        class_id
+
+                        self.push_op(graph_id, Op::Expand { x: x_class, shape })
                     }
                     Op::Permute { x, ref axes } => {
                         let x_class = op_to_class[&x];
@@ -2156,22 +2174,22 @@ impl Runtime {
                             in_shape
                         );*/
                         let axes = axes.clone();
-                        let class_id = self.push_op(graph_id, Op::Permute { x: x_class, axes });
-                        class_id
+
+                        self.push_op(graph_id, Op::Permute { x: x_class, axes })
                     }
                     Op::Pad { x, axis, lp, len } => {
                         let x_class = op_to_class[&x];
                         let lp = op_to_class[&lp];
                         let len = op_to_class[&len];
-                        let class_id = self.push_op(graph_id, Op::Pad { x: x_class, axis, lp, len });
-                        class_id
+
+                        self.push_op(graph_id, Op::Pad { x: x_class, axis, lp, len })
                     }
                     Op::Narrow { x, axis, start, len } => {
                         let x_class = op_to_class[&x];
                         let start = op_to_class[&start];
                         let len = op_to_class[&len];
-                        let class_id = self.push_op(graph_id, Op::Narrow { x: x_class, axis, start, len });
-                        class_id
+
+                        self.push_op(graph_id, Op::Narrow { x: x_class, axis, start, len })
                     }
                     Op::Flip { x, ref axes } => {
                         let x_class = op_to_class[&x];
@@ -2183,8 +2201,8 @@ impl Runtime {
                             in_shape
                         );
                         let axes = axes.clone();
-                        let class_id = self.push_op(graph_id, Op::Flip { x: x_class, axes });
-                        class_id
+
+                        self.push_op(graph_id, Op::Flip { x: x_class, axes })
                     }
                     _ => unreachable!(),
                 };
@@ -2282,7 +2300,7 @@ impl Runtime {
             };
             values.insert(id, v);
         }
-        values[&cid].clone()
+        values[&cid]
     }
 
     pub fn autotune_jit_kernels(&mut self, graph_id: GraphId) -> Result<(), ZyxError> {
@@ -2359,8 +2377,39 @@ impl Runtime {
                 debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut params");
             }
 
+            // GlobalMut store targets that alias a Global read param: the fused
+            // in-place self-update (`p = p - lr*g`) reads and writes one buffer.
+            // Timing buffers must alias too, or the measured kernel differs from
+            // the real launch (distinct pointers vs one pointer twice).
+            let mut mut_alias: Map<usize, usize> = Map::default();
+            {
+                let mut ro_classes: Vec<OpId> = Vec::new();
+                let (mut load_idx, mut store_idx) = (0usize, 0usize);
+                let mut p = ek.kernel.head;
+                while !p.is_null() {
+                    match ek.kernel.ops[p].op {
+                        Op::Param { kind: ParamKind::Global, .. } => {
+                            ro_classes.push(ek.loads[load_idx]);
+                            load_idx += 1;
+                        }
+                        Op::Param { kind: ParamKind::Variable, .. } => load_idx += 1,
+                        Op::Param { kind: ParamKind::GlobalMut, .. } => {
+                            let class = ek.stores[store_idx];
+                            if let Some(r) = ro_classes.iter().position(|&c| c == class) {
+                                mut_alias.insert(store_idx, r);
+                            }
+                            store_idx += 1;
+                        }
+                        _ => {}
+                    }
+                    p = ek.kernel.next_op(p);
+                }
+                debug_assert_eq!(load_idx, ek.loads.len(), "loads must parallel Global|Variable params");
+                debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut params");
+            }
+
             for &dev_id in device_ids.iter() {
-                // AOT-only devices (e.g. cblas) never compile generic zyx kernels
+                // AOT-only devices never compile generic zyx kernels
                 if dev_id.aot_only() {
                     continue;
                 }
@@ -2373,12 +2422,19 @@ impl Runtime {
                 let pool_id = dev_id.pool();
                 let mut full_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
                 let mut full_mut: Vec<LaunchArg> = Vec::with_capacity(mut_lens.len());
+                // Read-buffer arg by Global-param ordinal: a GlobalMut store
+                // target that aliases one of these (fused in-place self-update)
+                // must reuse the same allocation, so autotune measures the real
+                // read-write-aliasing access pattern.
+                let mut ro_args: Vec<Option<LaunchArg>> = vec![None; ro_lens.len()];
                 let mut fresh: Vec<Arc<Placement>> = Vec::new();
                 {
                     let (mut vi, mut rli, mut mli) = (0usize, 0usize, 0usize);
                     let mut p = kernel.head;
                     while !p.is_null() {
                         if let Op::Param { kind, dtype, .. } = kernel.ops[p].op {
+                            let ro_slot = rli;
+                            let mut_slot = mli;
                             match kind {
                                 ParamKind::Variable => {
                                     full_args.push(args[vi].clone());
@@ -2395,7 +2451,16 @@ impl Runtime {
                                         (len, false)
                                     };
                                     let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
-                                    if !is_mut {
+                                    let reuse = if is_mut {
+                                        mut_alias.get(&mut_slot).and_then(|&r| ro_args[r].clone())
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(arg) = reuse {
+                                        // Same buffer read and written: one
+                                        // allocation, two args.
+                                        full_mut.push(arg);
+                                    } else if !is_mut {
                                         // Fill with dtype ONE, element by
                                         // element, directly into a HOST-POOL
                                         // staging buffer — never a Vec (tensors
@@ -2471,11 +2536,9 @@ impl Runtime {
                                         let [shard] = &placed.shards[..] else {
                                             todo!("multi-shard staging upload in graph launch")
                                         };
-                                        full_args.push(LaunchArg::Buffer {
-                                            chunk: shard.chunk,
-                                            offset: shard.offset,
-                                            len: shard.len,
-                                        });
+                                        let arg = LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len };
+                                        ro_args[ro_slot] = Some(arg.clone());
+                                        full_args.push(arg);
                                     } else {
                                         // Mut timing buffers are written by the
                                         // kernel: allocate directly, no upload.
@@ -2592,8 +2655,8 @@ impl Runtime {
             }
         }
 
-        // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
-        // compete with the fused zyx kernels in extraction.
+        // Pattern match specialized AOT kernels (e.g. a cuDNN matmul) so they
+        // can compete with the fused zyx kernels in extraction.
         // SAFETY: graphs borrow ends before the match call, rust is stupid
         let dev_ids: Vec<Dev> = Dev::all();
         let graph_ptr: *mut Graph = &mut self.graphs[graph_id];
@@ -2641,6 +2704,31 @@ impl Runtime {
         let buffer_map: Map<TensorId, Arc<Placement>> =
             self.graphs[graph_id].leaf_map.values().filter_map(|&tid| self.leaf_buffer(tid).map(|buf| (tid, buf))).collect();
         let nodes = self.graphs[graph_id].add_memory_ops(&buffer_map, &nodes);
+
+        // Inputs extraction had to move: a one-shot tape cannot know the caller
+        // will reuse this tensor, so it pays the copy on every execution. Tell
+        // the caller once (per source placement/pool pair) to move it outside
+        // the graph instead — that is the only place the reuse is visible.
+        // Realized leaves only: kernel outputs were planned here, not supplied.
+        let mut moved_inputs: Vec<(usize, TensorId, Pool, Pool)> = Vec::new();
+        for &nid in &nodes {
+            let Op::ToDevice { x, device, .. } = &self.graphs[graph_id].ops[nid].op else {
+                continue;
+            };
+            let Some(&tid) = self.graphs[graph_id].leaf_map.get(x) else {
+                continue;
+            };
+            let Some(buf) = self.leaf_buffer(tid) else {
+                continue;
+            };
+            let [Shard { pool: src, .. }] = &buf.shards[..] else {
+                continue;
+            };
+            moved_inputs.push((Arc::as_ptr(&buf) as usize, tid, *src, device.pool()));
+        }
+        for (placement, tid, src, dst) in moved_inputs {
+            self.warn_input_copy(placement, tid, src, dst);
+        }
 
         // Leaf pools at compile time — cross-pool aliases copy through the
         // kernel pool, so leaves must stay put across replays.
@@ -2828,7 +2916,7 @@ impl Runtime {
     /// Pushes a constant node into the graph and returns its class.
     ///
     /// Consts hashcons by value: pushing an equal constant twice returns the
-    /// same class (see [`Node::Const`] for why that is sound).
+    /// same class (see [`Op::Const`] for why that is sound).
     pub fn push_const(&mut self, graph_id: GraphId, value: Constant) -> OpId {
         self.push_op(graph_id, Op::Const(value))
     }

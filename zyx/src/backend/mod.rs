@@ -40,7 +40,6 @@ use std::sync::Mutex;
 use std::{collections::BTreeSet, hash::BuildHasherDefault, sync::Arc};
 
 mod c;
-mod cblas;
 mod cuda;
 mod disk;
 mod host;
@@ -220,7 +219,7 @@ impl CmdQueue {
             match cmd {
                 Cmd::Copy { src, dst, dst_pool, dst_dtype, dst_dims } => {
                     // Pending came textually first: run it before the copy.
-                    run.extend(pending.drain(..));
+                    run.append(&mut pending);
                     Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
                     let dst_dev = match dst_pool {
                         Pool::Host => Dev::Host,
@@ -239,11 +238,20 @@ impl CmdQueue {
                     });
                 }
                 Cmd::Launch { program, args, outputs: specs } => {
+                    // Aliases bind slots, not buffers: resolve them in a
+                    // deviceless run at their position instead of inside the
+                    // device run. A device replay reports only fresh chunks, so
+                    // an alias merged into the run would vanish from the slot
+                    // map (the aliased class is pre-bound to the target, which
+                    // also skips the launch's output allocation).
+                    if !pending.is_empty() {
+                        Self::flush_run(&mut partitions, &mut run_dev, &mut pending, idx, outputs, &suffix);
+                    }
                     if run_dev != Dev::Auto && run_dev != program.dev {
                         Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
                     }
                     run_dev = program.dev;
-                    run.extend(pending.drain(..));
+                    run.append(&mut pending);
                     run.push(Cmd::Launch { program, args, outputs: specs });
                 }
                 cmd => pending.push(cmd),
@@ -252,7 +260,7 @@ impl CmdQueue {
         }
         // Trailing pending with no run left: a queue of only aliases.
         if !pending.is_empty() {
-            run.extend(pending.drain(..));
+            run.append(&mut pending);
         }
         Self::flush_run(&mut partitions, &mut run_dev, &mut run, n, outputs, &suffix);
         Plan { partitions }
@@ -276,9 +284,6 @@ impl CmdQueue {
         let live_out = suffix[end].clone();
         match *run_dev {
             Dev::C => partitions.push(PlanPartition::C(c::CDevice::schedule(std::mem::take(run), outputs, live_out))),
-            Dev::Cblas => {
-                partitions.push(PlanPartition::Cblas(cblas::CblasDevice::schedule(std::mem::take(run), outputs, live_out)))
-            }
             Dev::Cuda(id) => {
                 partitions.push(PlanPartition::Cuda(cuda::CUDADevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
@@ -333,7 +338,6 @@ impl Plan {
         for partition in &self.partitions {
             match partition {
                 PlanPartition::C(p) => push(&mut out, &p.cmds, None),
-                PlanPartition::Cblas(p) => push(&mut out, &p.cmds, None),
                 PlanPartition::Cuda(p) => push(&mut out, &p.cmds, Some(&p.queues)),
                 PlanPartition::OpenCL(p) => push(&mut out, &p.cmds, Some(&p.queues)),
                 PlanPartition::Vulkan(p) => push(&mut out, &p.cmds, None),
@@ -360,7 +364,7 @@ impl Plan {
             match partition {
                 PlanPartition::C(cpu) => {
                     let device = c::device()?;
-                    let mut dev = dlock(Dev::C, &device);
+                    let mut dev = dlock(Dev::C, device);
                     cpu.replay(&mut dev, &mut resolved, vars)?;
                 }
                 PlanPartition::Alias { cmds, deaths } => {
@@ -386,29 +390,24 @@ impl Plan {
                         }
                     }
                 }
-                PlanPartition::Cblas(cblas) => {
-                    let device = cblas::device()?;
-                    let mut dev = dlock(Dev::Cblas, &device);
-                    cblas.replay(&mut dev, &mut resolved, vars)?;
-                }
                 PlanPartition::Cuda(cuda_part) => {
                     let device = cuda::device(cuda_part.dev)?;
-                    let mut dev = dlock(Dev::Cuda(cuda_part.dev), &device);
+                    let mut dev = dlock(Dev::Cuda(cuda_part.dev), device);
                     cuda_part.replay(&mut dev, &mut resolved, vars)?;
                 }
                 PlanPartition::OpenCL(ocl_part) => {
                     let device = opencl::device(ocl_part.dev)?;
-                    let mut dev = dlock(Dev::OpenCL(ocl_part.dev), &device);
+                    let mut dev = dlock(Dev::OpenCL(ocl_part.dev), device);
                     ocl_part.replay(&mut dev, &mut resolved, vars)?;
                 }
                 PlanPartition::Vulkan(vk_part) => {
                     let device = vulkan::device(vk_part.dev)?;
-                    let mut dev = dlock(Dev::Vulkan(vk_part.dev), &device);
+                    let mut dev = dlock(Dev::Vulkan(vk_part.dev), device);
                     vk_part.replay(&mut dev, &mut resolved, vars)?;
                 }
                 PlanPartition::TT(tt_part) => {
                     let device = tenstorrent::device(tt_part.dev)?;
-                    let mut dev = dlock(Dev::TT(tt_part.dev), &device);
+                    let mut dev = dlock(Dev::TT(tt_part.dev), device);
                     tt_part.replay(&mut dev, &mut resolved, vars)?;
                 }
                 PlanPartition::Copy { dst, ops } => {
@@ -433,7 +432,7 @@ impl Plan {
                         match dst {
                             Dev::C => {
                                 let device = c::device()?;
-                                let dev = dlock(Dev::C, &device);
+                                let dev = dlock(Dev::C, device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             Dev::Host => {
@@ -443,26 +442,23 @@ impl Plan {
                             }
                             Dev::Cuda(id) => {
                                 let device = cuda::device(*id)?;
-                                let dev = dlock(Dev::Cuda(*id), &device);
+                                let dev = dlock(Dev::Cuda(*id), device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             Dev::OpenCL(id) => {
                                 let device = opencl::device(*id)?;
-                                let dev = dlock(Dev::OpenCL(*id), &device);
+                                let dev = dlock(Dev::OpenCL(*id), device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             Dev::Vulkan(id) => {
                                 let device = vulkan::device(*id)?;
-                                let dev = dlock(Dev::Vulkan(*id), &device);
+                                let dev = dlock(Dev::Vulkan(*id), device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
                             Dev::TT(id) => {
                                 let device = tenstorrent::device(*id)?;
-                                let dev = dlock(Dev::TT(*id), &device);
+                                let dev = dlock(Dev::TT(*id), device);
                                 dev.copy(&src_placed, &placed, bytes)?;
-                            }
-                            Dev::Cblas => {
-                                unreachable!("replay copy into CBLAS: it owns no pool, schedule never emits it")
                             }
                             Dev::Auto => {
                                 unreachable!("replay copy into Auto: copies always name a concrete pool")
@@ -511,8 +507,6 @@ pub(crate) enum AllocPlan {
 pub(crate) enum PlanPartition {
     /// Ordered CPU commands with death lists, executed by the C device.
     C(c::CPartition),
-    /// Ordered BLAS commands with death lists, executed by the CBLAS device.
-    Cblas(cblas::CblasPartition),
     /// Ordered CUDA commands with death lists, executed by a CUDA device
     /// through its worker (captured graphs, one roundtrip per replay).
     Cuda(cuda::CudaPartition),
@@ -550,7 +544,7 @@ pub struct ChunkId(u64);
 /// (alloc/free/copy/compile/launch); the per-op tensor path never touches them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pool {
-    /// Host RAM. Shared by the C, CBLAS, and Host devices, which own no pool.
+    /// Host RAM. Shared by the C and Host devices, which own no pool.
     Host,
     /// Disk-backed tensors (paths, not bytes).
     Disk,
@@ -579,8 +573,6 @@ pub enum Dev {
     Auto,
     /// CPU backend (runs on the host pool).
     C,
-    /// CBLAS backend for AOT matmuls (runs on the host pool).
-    Cblas,
     /// Transfer-only pseudo-device (runs on the host pool). Always
     /// available, never enumerated by [`Dev::all`]: it implements copies
     /// into host memory, never compiles or launches.
@@ -603,9 +595,9 @@ impl std::str::FromStr for Dev {
 
     /// Parse a device selector: case-insensitive `name` or `name:index`
     /// (tinygrad's device syntax), index defaulting to 0. Names: `auto`,
-    /// `c`/`cpu`, `cblas`/`blas`, `host`, `cuda`, `tt`/`tenstorrent`,
+    /// `c`/`cpu`, `host`, `cuda`, `tt`/`tenstorrent`,
     /// `vulkan`/`vk`, `opencl`/`cl`, `wgpu`. An index on an indexless device
-    /// (`c`, `cblas`, `host`, `auto`) is an error, not silently dropped.
+    /// (`c`, `host`, `auto`) is an error, not silently dropped.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (name, index) = match s.split_once(':') {
             Some((name, index)) => {
@@ -617,7 +609,6 @@ impl std::str::FromStr for Dev {
         let dev = match name.to_ascii_uppercase().as_str() {
             "AUTO" => Dev::Auto,
             "C" | "CPU" => Dev::C,
-            "CBLAS" | "BLAS" => Dev::Cblas,
             "HOST" => Dev::Host,
             "CUDA" => Dev::Cuda(index),
             "TT" | "TENSTORRENT" => Dev::TT(index),
@@ -626,12 +617,12 @@ impl std::str::FromStr for Dev {
             #[cfg(feature = "wgpu")]
             "WGPU" => Dev::WGPU(index),
             _ => {
-                return Err(format!("unknown device `{name}` (expected auto, c, cblas, host, cuda, tt, vulkan, opencl or wgpu)"));
+                return Err(format!("unknown device `{name}` (expected auto, c, host, cuda, tt, vulkan, opencl or wgpu)"));
             }
         };
         // Devices without an ordinal reject an explicit one: `c:1` must not
         // silently mean `c`.
-        if s.contains(':') && matches!(dev, Dev::Auto | Dev::C | Dev::Cblas | Dev::Host) {
+        if s.contains(':') && matches!(dev, Dev::Auto | Dev::C | Dev::Host) {
             return Err(format!("device `{name}` has no index, got `{s}`"));
         }
         Ok(dev)
@@ -660,9 +651,6 @@ impl Dev {
             if c::device().is_ok() {
                 out.push(Dev::C);
             }
-            if cblas::device().is_ok() {
-                out.push(Dev::Cblas);
-            }
             for i in 0..cuda::device_count() {
                 out.push(Dev::Cuda(i));
             }
@@ -690,7 +678,7 @@ impl Dev {
     pub fn pool(self) -> Pool {
         match self {
             Dev::Auto => panic!("Dev::Auto has no pool; resolve it with Dev::auto() first"),
-            Dev::C | Dev::Cblas | Dev::Host => Pool::Host,
+            Dev::C | Dev::Host => Pool::Host,
             Dev::Cuda(i) => Pool::Cuda(i),
             Dev::TT(i) => Pool::TT(i),
             Dev::Vulkan(i) => Pool::Vulkan(i),
@@ -709,7 +697,6 @@ impl Dev {
         match self {
             Dev::Auto => panic!("Dev::Auto has no info; resolve it with Dev::auto() first"),
             Dev::C => Ok(c::device()?.lock().unwrap().info()),
-            Dev::Cblas => Ok(cblas::device()?.lock().unwrap().info()),
             Dev::Host => panic!("Dev::Host has no device info; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).info()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).info()),
@@ -729,7 +716,6 @@ impl Dev {
         match self {
             Dev::Auto => panic!("Dev::Auto has no compute; resolve it with Dev::auto() first"),
             Dev::C => Ok(c::device()?.lock().unwrap().free_compute()),
-            Dev::Cblas => Ok(cblas::device()?.lock().unwrap().free_compute()),
             Dev::Host => panic!("Dev::Host has no compute; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).free_compute()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).free_compute()),
@@ -740,14 +726,46 @@ impl Dev {
         }
     }
 
+    /// Blocks until every piece of work previously submitted to this device
+    /// has completed. The barrier a caller needs before trusting a wall-clock
+    /// measurement, or before reusing host memory a device may still write.
+    ///
+    /// Host backends execute synchronously and return immediately. This does
+    /// not take the runtime lock: the backend worker owns the device context,
+    /// so all that is needed is to wait on its reply.
+    ///
+    /// # Errors
+    ///
+    /// If the device is unavailable (backend disabled or init failed), or the
+    /// backend reports a failure while draining.
+    pub fn synchronize(self) -> Result<(), ZyxError> {
+        match self {
+            Dev::Auto => panic!("Dev::Auto has no device to synchronize; resolve it with Dev::auto() first"),
+            Dev::C | Dev::Host => {
+                // Host execution is synchronous: `Plan::replay` returns only
+                // after every launch for these devices has already run.
+                Ok(())
+            }
+            Dev::Cuda(id) => {
+                let mut device = dlock(self, cuda::device(id)?);
+                Ok(device.synchronize()?)
+            }
+            Dev::OpenCL(_) => todo!("Dev::synchronize for OpenCL"),
+            Dev::TT(_) => todo!("Dev::synchronize for Tenstorrent"),
+            Dev::Vulkan(_) => todo!("Dev::synchronize for Vulkan"),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(_) => todo!("Dev::synchronize for WGPU"),
+        }
+    }
+
     // TODO remove this somehow perhaps
     /// Whether this device only runs AOT (precompiled) kernels and cannot
-    /// compile generic zyx kernels (e.g. the cblas backend). Such devices
-    /// must be skipped by generic kernel autotuning. Transfer-only devices
-    /// (e.g. Host, which compiles nothing at all) also report true.
+    /// compile generic zyx kernels. Such devices must be skipped by generic
+    /// kernel autotuning. Transfer-only devices (e.g. Host, which compiles
+    /// nothing at all) also report true.
     #[must_use]
     pub const fn aot_only(self) -> bool {
-        matches!(self, Self::Cblas | Self::Host)
+        matches!(self, Self::Host)
     }
 
     /// Whether buffers on this device use the Tenstorrent tile layout:
@@ -755,10 +773,7 @@ impl Dev {
     /// backend and the metalium backend consume the same layout.
     #[must_use]
     pub const fn is_tt_layout(self) -> bool {
-        match self {
-            Dev::TT(_) => true,
-            _ => false,
-        }
+        matches!(self, Dev::TT(_))
     }
 
     /// Host-staged logical -> physical tile layout transfer. Dispatches to
@@ -790,7 +805,6 @@ impl Dev {
         match self {
             Dev::Auto => "Auto",
             Dev::C => "C",
-            Dev::Cblas => "CBLAS",
             Dev::Host => "Host",
             Dev::Cuda(_) => "CUDA",
             Dev::OpenCL(_) => "OpenCL",
@@ -808,12 +822,11 @@ impl Dev {
         let result = match self {
             Dev::Auto => panic!("Dev::Auto cannot compile; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().compile(kernel, debug_asm),
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Host => panic!("Dev::Host cannot compile; it is transfer-only"),
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
-            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm),
-            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).compile(kernel, debug_asm),
-            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).compile(kernel, debug_asm),
+            Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
+            Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm),
+            Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).compile(kernel, debug_asm),
+            Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).compile(kernel, debug_asm),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).compile(kernel, debug_asm),
         };
@@ -828,12 +841,11 @@ impl Dev {
         match self {
             Dev::Auto => panic!("Dev::Auto cannot release; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().release(program_id),
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().release(program_id),
             Dev::Host => panic!("Dev::Host cannot release; it holds no programs"),
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).release(program_id),
-            Dev::OpenCL(id) => dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).release(program_id),
-            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).release(program_id),
-            Dev::Vulkan(id) => dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).release(program_id),
+            Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).release(program_id),
+            Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).release(program_id),
+            Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).release(program_id),
+            Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).release(program_id),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).release(program_id),
         }
@@ -846,9 +858,8 @@ impl Dev {
         match self {
             Dev::Auto => {}
             Dev::C => {}
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().match_graph(graph, outputs),
             Dev::Host => {}
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),
+            Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),
             Dev::OpenCL(_) => {}
             Dev::Vulkan(_) => {}
             Dev::TT(_) => {}
@@ -876,20 +887,15 @@ impl Dev {
         }
         match self {
             Dev::Auto => panic!("Dev::Auto cannot launch; resolve it with Dev::auto() first"),
-            Dev::Cuda(id) => dlock(self, &cuda::device(id).expect("CUDA device unavailable")).launch_timed(program_id, args),
-            Dev::OpenCL(id) => {
-                dlock(self, &opencl::device(id).expect("OpenCL device unavailable")).launch_timed(program_id, args)
-            }
+            Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).launch_timed(program_id, args),
+            Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).launch_timed(program_id, args),
             Dev::C => {
                 let pool = self.pool();
                 c::device().expect("C device unavailable").lock().unwrap().launch_timed(program_id, pool, args)
             }
-            Dev::Cblas => todo!("launch_timed not yet ported to the CBLAS device"),
             Dev::Host => panic!("Dev::Host cannot launch; it is transfer-only"),
-            Dev::Vulkan(id) => {
-                dlock(self, &vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args)
-            }
-            Dev::TT(id) => dlock(self, &tenstorrent::device(id).expect("TT device unavailable")).launch_timed(program_id, args),
+            Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args),
+            Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).launch_timed(program_id, args),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).launch_timed(program_id, args),
         }
@@ -910,31 +916,6 @@ impl Pool {
             Pool::TT(id) => Some(Dev::TT(id)),
             _ => None,
         }
-    }
-
-    /// All currently available pools. Ensures (and skips on failure) every
-    /// backend table, so this triggers lazy init of all present hardware.
-    /// Used for capacity queries like free-memory max.
-    #[must_use]
-    pub fn all() -> Vec<Pool> {
-        let mut out = vec![Pool::Host, Pool::Disk];
-        for i in 0..cuda::pool_count() {
-            out.push(Pool::Cuda(i));
-        }
-        for i in 0..opencl::pool_count() {
-            out.push(Pool::OpenCL(i));
-        }
-        for i in 0..vulkan::pool_count() {
-            out.push(Pool::Vulkan(i));
-        }
-        for i in 0..tenstorrent::pool_count() {
-            out.push(Pool::TT(i));
-        }
-        #[cfg(feature = "wgpu")]
-        for i in 0..wgpu::pool_count() {
-            out.push(Pool::WGPU(i));
-        }
-        out
     }
 
     /// Allocate a buffer. Lazily initializes the pool (and its device worker, if any).
@@ -988,24 +969,24 @@ impl Pool {
         match self {
             Pool::Cuda(id) => {
                 if let Ok(pool) = cuda::pool(id) {
-                    lock(self, &pool).release(buffer_id);
+                    lock(self, pool).release(buffer_id);
                 }
             }
             Pool::Host => lock(self, host::pool()).release(buffer_id),
             Pool::Disk => lock(self, disk::pool()).release(buffer_id),
             Pool::OpenCL(id) => {
                 if let Ok(pool) = opencl::pool(id) {
-                    lock(self, &pool).release(buffer_id);
+                    lock(self, pool).release(buffer_id);
                 }
             }
             Pool::Vulkan(id) => {
                 if let Ok(pool) = vulkan::pool(id) {
-                    lock(self, &pool).release(buffer_id);
+                    lock(self, pool).release(buffer_id);
                 }
             }
             Pool::TT(id) => {
                 if let Ok(pool) = tenstorrent::pool(id) {
-                    lock(self, &pool).release(buffer_id);
+                    lock(self, pool).release(buffer_id);
                 }
             }
             #[cfg(feature = "wgpu")]
@@ -1028,10 +1009,10 @@ impl Pool {
         match self {
             Pool::Host => lock(self, host::pool()).try_reuse_allocations(buffer_ids),
             Pool::Disk => false,
-            Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
-            Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
-            Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
-            Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => wgpu::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
         }
@@ -1045,22 +1026,22 @@ impl Pool {
             Pool::Disk => {}
             Pool::Cuda(id) => {
                 if let Ok(pool) = cuda::pool(id) {
-                    lock(self, &pool).dispose();
+                    lock(self, pool).dispose();
                 }
             }
             Pool::OpenCL(id) => {
                 if let Ok(pool) = opencl::pool(id) {
-                    lock(self, &pool).dispose();
+                    lock(self, pool).dispose();
                 }
             }
             Pool::Vulkan(id) => {
                 if let Ok(pool) = vulkan::pool(id) {
-                    lock(self, &pool).dispose();
+                    lock(self, pool).dispose();
                 }
             }
             Pool::TT(id) => {
                 if let Ok(pool) = tenstorrent::pool(id) {
-                    lock(self, &pool).dispose();
+                    lock(self, pool).dispose();
                 }
             }
             #[cfg(feature = "wgpu")]
@@ -1076,10 +1057,10 @@ impl Pool {
         match self {
             Pool::Host => lock(self, host::pool()).free_bytes(),
             Pool::Disk => lock(self, disk::pool()).free_bytes(),
-            Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
-            Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
-            Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
-            Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
+            Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
+            Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
+            Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
+            Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => wgpu::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
         }
@@ -1134,7 +1115,6 @@ impl Config {
     /// This is the `ZYX_DEV` override, applied on top of the config file.
     fn select_only(&mut self, dev: Dev) {
         self.c.enabled = false;
-        self.cblas.enabled = false;
         self.cuda.device_ids = Some(Vec::new());
         self.opencl.platform_ids = Some(Vec::new());
         self.vulkan.device_ids = Some(Vec::new());
@@ -1148,7 +1128,6 @@ impl Config {
             // available"), so it cannot arrive here.
             Dev::Auto => unreachable!("select_only: `auto` narrows nothing"),
             Dev::C => self.c.enabled = true,
-            Dev::Cblas => self.cblas.enabled = true,
             // Always available, never enumerated: nothing to enable.
             Dev::Host => {}
             Dev::Cuda(i) => self.cuda.device_ids = Some(vec![i32::from(i)]),
@@ -1439,8 +1418,6 @@ pub struct Config {
     pub autotune: crate::kernel::autotune::BeamSearch,
     /// C/Clang backend configuration
     pub c: c::CConfig,
-    /// CBLAS backend configuration
-    pub cblas: cblas::CblasConfig,
     /// CUDA configuration
     pub cuda: cuda::CUDAConfig,
     /// `OpenCL` configuration
@@ -1456,15 +1433,16 @@ pub struct Config {
 
 /// Per-dtype capability bitmask — one bit per unary/binary operation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
-pub struct DTypeCapability(u32);
+pub struct DTypeCapability(u64);
 
 impl DTypeCapability {
+    /// No operations supported.
     pub const ZERO: Self = Self(0);
 }
 
 macro_rules! op_cap {
     ($name:ident, $bit:expr, $method:ident) => {
-        pub const $name: Self = Self(1 << $bit);
+        pub const $name: Self = Self(1u64 << $bit);
         pub fn $method(&self) -> bool {
             self.0 & Self::$name.0 != 0
         }
@@ -1478,6 +1456,7 @@ impl std::ops::BitOr for DTypeCapability {
     }
 }
 
+#[allow(missing_docs)]
 impl DTypeCapability {
     op_cap!(NEG, 0, neg);
     op_cap!(BITNOT, 1, bitnot);
@@ -1510,10 +1489,15 @@ impl DTypeCapability {
     op_cap!(BITSHIFTRIGHT, 28, bitshiftright);
     op_cap!(NOTEQ, 29, noteq);
     op_cap!(EQ, 30, eq);
+    // Value conversion (`Op::Cast`, `Op::Bitcast`) in either direction.
+    op_cap!(CAST, 31, cast);
+    // Load/store/constant/parameter/composite movement: the dtype can be
+    // materialized in memory, but not necessarily computed on.
+    op_cap!(STORAGE, 32, storage);
 
     #[must_use]
     pub const fn all() -> Self {
-        Self(u32::MAX)
+        Self(u64::MAX)
     }
 
     #[must_use]
@@ -1539,6 +1523,12 @@ impl DTypeCapability {
     #[must_use]
     pub fn include(&self, capability: DTypeCapability) -> Self {
         Self(self.0 | capability.0)
+    }
+
+    /// Whether every bit in `required` is present.
+    #[must_use]
+    pub const fn contains(&self, required: Self) -> bool {
+        self.0 & required.0 == required.0
     }
 }
 
@@ -1694,7 +1684,6 @@ mod tests {
         assert_eq!("cuda".parse::<Dev>().unwrap(), Dev::Cuda(0));
         assert_eq!("CUDA:2".parse::<Dev>().unwrap(), Dev::Cuda(2));
         assert_eq!("cpu".parse::<Dev>().unwrap(), Dev::C);
-        assert_eq!("cblas".parse::<Dev>().unwrap(), Dev::Cblas);
         assert_eq!("tt:1".parse::<Dev>().unwrap(), Dev::TT(1));
         assert_eq!("vk".parse::<Dev>().unwrap(), Dev::Vulkan(0));
         assert_eq!("auto".parse::<Dev>().unwrap(), Dev::Auto);

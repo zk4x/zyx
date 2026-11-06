@@ -937,11 +937,12 @@ fn main() -> Result<(), ZyxError> {
         args.repeat_penalty,
         args.repeat_last_n
     );
-    let tokenizer = Tokenizer::from_file("phi1_5-tokenizer.json").unwrap();
+    let models = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../models/phi-1.5");
+    let tokenizer = Tokenizer::from_file(models.join("tokenizer.json")).unwrap();
 
     let model = {
         //let vb = unsafe { VarBuilder::from_mmaped_safetensors(filename, dtype)? };
-        let mut vb: HashMap<String, Tensor> = Tensor::load("phi1_5-model.safetensors").unwrap();
+        let mut vb: HashMap<String, Tensor> = Tensor::load(models.join("model.safetensors")).unwrap();
         //let mut keys: Vec<String> = vb.keys().cloned().collect();
         //keys.sort();
         //println!("{:?}", keys);

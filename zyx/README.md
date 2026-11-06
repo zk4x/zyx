@@ -45,18 +45,18 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone();
 No config file needed — all backends try to initialize by default.
 Run `ZYX_DEBUG=1` to see which ones found hardware.
 
-See [CONFIG.md](CONFIG.md) for device selection, autotune, and advanced options.
-See [ENV_VARS.md](ENV_VARS.md) for debugging with `ZYX_DEBUG`.
+See [CONFIG.md](https://github.com/zk4x/zyx/blob/main/CONFIG.md) for device selection, autotune, and advanced options.
+See [ENV_VARS.md](https://github.com/zk4x/zyx/blob/main/ENV_VARS.md) for debugging with `ZYX_DEBUG`.
 
 
 ## Backends
 
 - [x] `C` — CPU backend via C codegen (clang/gcc)
-- [x] `CUDA` — NVIDIA GPU acceleration, via PTX codegen
+- [x] `CUDA` — NVIDIA GPU acceleration, via CUDA C or PTX codegen
 - [x] `OpenCL`
 - [x] `Vulkan` — via SPIR-V codegen
 - [x] `WGPU` - via SPIR-V codegen, feature: `wgpu`
-- [ ] `tenstorrent` - Preliminary support, does not pass full test suite yet, feature `tenstorrent`
+- [ ] `Tenstorrent` — preliminary, always built, runs through the bundled simulator (`TT_TTSIM_LIB`)
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)
@@ -79,7 +79,7 @@ when the backend does not natively support the narrower type — correctness is 
 ## Rust version
 
 Minimum supported rust version is 1.88, works with any newer stable version too. Zyx also requires std,
-as it accesses files (like cuda, hip and opencl runtimes), env vars (for debugging) and also some other
+as it accesses files (like the cuda and opencl runtimes), env vars (for debugging) and also some other
 stuff that requires filesystem and threads (loading files, multithreaded execution, worker threads, etc.).
 
 
@@ -93,33 +93,37 @@ proper paths to backend runtimes (e.g. libcuda.so).
 
 ## Features
 
-- **wgpu** - enables wgpu backend
-- **tenstorrent** - enables tenstorrent backend
+- **wgpu** — enables the WGPU backend
+- **py** — Python bindings (`zyx-py`)
+- **viz** — graph visualization
+- **time** — timing instrumentation for passes and launches
+
+Tenstorrent is always compiled in; it needs the bundled simulator (`TT_TTSIM_LIB`).
 
 
 ## Dependencies
 
-Zyx tries to use 0 dependencies, but we are not reinventing the wheel, so we use nanoserde for config
-parsing and libloading to dynamically load backend dynamic library files.
-All dependencies are carefully considered and are used only if deemed absolutely necessary.
+Zyx uses a small, deliberately chosen set of dependencies: `nanoserde` for config parsing,
+`libloading` for dynamically loading backend drivers, and `libc`/`libm` for the Tenstorrent
+simulator. The Tenstorrent path also uses the firmware-images and ISA crates.
 
-Currently zyx is below 30k LOC. Runtimes are needed for respective backends (e.g. libcuda.so)
-and also hardware drivers.
+zyx is about 100k lines of Rust. Runtimes are needed for their respective backends (e.g. libcuda.so)
+and hardware drivers.
 
-Optional dependencies do not have size limits. This is currently only WGPU, which has millions
-of lines of code with it's dependencies.
+Optional dependencies do not have a size limit. This is currently only WGPU, whose dependency
+tree is much larger than zyx itself.
 
 For more architecture details, there is a [book](https://zk4x.github.io/zyx).
 
 
 ## Code of conduct
 
-Zyx has [code of conduct](CODE_OF_CONDUCT.md) that we humbly borrowed from sqlite.
+Zyx has [code of conduct](https://github.com/zk4x/zyx/blob/main/CODE_OF_CONDUCT.md) that we humbly borrowed from sqlite.
 
 
 ## Contributing
 
-Please check out [CONTRIBUTING.md](CONTRIBUTING.md)
+Please check out [CONTRIBUTING.md](https://github.com/zk4x/zyx/blob/main/CONTRIBUTING.md)
 
 
 ## Thank you
@@ -130,4 +134,4 @@ For contributing to Zyx, finding bugs and using it in your ML models.
 ## License
 
 Zyx is free software licensed under the GNU Lesser General Public License v3.0 (`LGPLv3`)
-See the LICENSE file for details.
+See the [LICENSE.md](https://github.com/zk4x/zyx/blob/main/LICENSE.md) file for details.

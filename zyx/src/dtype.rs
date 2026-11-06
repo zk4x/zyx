@@ -924,7 +924,7 @@ impl Debug for Constant {
 // Variant names mirror `ggml.h` (`Q4_0`, `Q4_K`, ...) instead of UpperCamelCase
 // so they stay grep-compatible with the ggml docs and error messages.
 #[allow(non_camel_case_types)]
-#[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int))]
+#[cfg_attr(feature = "py", pyo3::pyclass(eq, eq_int, from_py_object))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum QDType {
     /// 4-bit, 32 elements in 18 bytes (`block_q4_0`).

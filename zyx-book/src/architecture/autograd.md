@@ -46,12 +46,17 @@ This is more flexible — you don't need to decide at tensor creation time which
 
 Autograd is an **append-only transform on the tape**: `gradient()` doesn't consume or rewrite anything — it appends backward ops to the same graph, and the gradients it produces are ordinary tensors on the tape. Higher-order derivatives are just another append: differentiate the gradient like any other tensor.
 
-```rust,ignore
+```rust
+# extern crate zyx;
+# use zyx::{DType, Tape, Tensor, ZyxError};
+# fn main() -> Result<(), ZyxError> {
 let x = Tensor::randn([2, 3], DType::F32)?;
 let tape = Tape::new([&x])?;
 let z = x.relu();
 let g = tape.gradient(&z, vec![&x]);
 let h = tape.gradient(&g[0], vec![&x]);  // second derivative
+# Ok(())
+# }
 ```
 
 Many properties of the autograd system fall out of this fact:

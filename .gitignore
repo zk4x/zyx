@@ -9,16 +9,10 @@ model.safetensors
 tokenizer.json
 examples/data/*
 examples/models/*
-zyx-examples/phi1_5-model.safetensors
-zyx-examples/phi1_5-tokenizer.json
-zyx-examples/data
-zyx-examples/models
-zyx-examples/venv
 generated/
 
 zyx/Cargo.lock
 zyx/tests/__temp_test.rs
 __pycache__/
-zyx-bench/bench_output.txt
-zyx-bench/bench_data.csv
+zyx-bench/bench.db*
 .cache/
