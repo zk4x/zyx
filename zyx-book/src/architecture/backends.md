@@ -12,8 +12,6 @@ pub enum Dev {
     Auto,
     /// CPU backend (runs on Pool::Host).
     C,
-    /// CBLAS backend for AOT matmuls (runs on Pool::Host).
-    Cblas,
     /// Transfer-only pseudo-device (runs on Pool::Host); never enumerated.
     Host,
     /// CUDA GPU with the given driver ordinal.
@@ -37,7 +35,7 @@ Memory belongs to pools, and pools are process-wide: they outlive any `Runtime` 
 
 ```rust,ignore
 pub enum Pool {
-    /// Host RAM. Shared by the C, CBLAS and Host devices, which own no pool.
+    /// Host RAM. Shared by the C and Host devices, which own no pool.
     Host,
     /// Disk-backed tensors (paths, not bytes).
     Disk,
@@ -58,7 +56,7 @@ There is no upfront backend-initialization phase. `Dev::all()` triggers lazy ini
 ```rust,ignore
 impl Dev {
     pub fn all() -> Vec<Dev> {
-        // C, CBLAS: single devices, included if init succeeds.
+        // C: single device, included if init succeeds.
         // CUDA / TT / Vulkan / OpenCL / WGPU: one entry per detected device.
     }
 }
@@ -88,7 +86,6 @@ What is left for a backend is exactly the **non-searchable, non-SSA residue**: r
 | Backend | Source | Target | Runtime |
 |---------|--------|--------|---------|
 | C | `c.rs` | C99 (compiled to .so) | Clang/GCC |
-| CBLAS | `cblas.rs` | AOT matmul calls | Host BLAS (shares `Pool::Host`) |
 | CUDA | `cuda.rs` | CUDA C → SASS, cuDNN for AOT matmul | CUDA driver via `libloading` |
 | OpenCL | `opencl.rs` | OpenCL C | OpenCL runtime via `libloading` |
 | Vulkan | `vulkan.rs` | SPIR-V | Vulkan via `ash` crate |
@@ -96,10 +93,6 @@ What is left for a backend is exactly the **non-searchable, non-SSA residue**: r
 | Tenstorrent | `tenstorrent/` | Tensix RISC-V programs | Bundled tt-sim simulator |
 
 Every backend except WGPU is compiled in unconditionally.
-
-### CBLAS
-
-The CBLAS device runs **only AOT (precompiled) matmul kernels** and cannot compile generic zyx kernels. `Dev::aot_only()` marks it, and generic kernel autotuning skips it — it competes only where a precompiled BLAS call is an option.
 
 ### CUDA: micro-batched submission
 

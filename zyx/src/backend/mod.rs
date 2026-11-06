@@ -40,7 +40,6 @@ use std::sync::Mutex;
 use std::{collections::BTreeSet, hash::BuildHasherDefault, sync::Arc};
 
 mod c;
-mod cblas;
 mod cuda;
 mod disk;
 mod host;
@@ -276,9 +275,6 @@ impl CmdQueue {
         let live_out = suffix[end].clone();
         match *run_dev {
             Dev::C => partitions.push(PlanPartition::C(c::CDevice::schedule(std::mem::take(run), outputs, live_out))),
-            Dev::Cblas => {
-                partitions.push(PlanPartition::Cblas(cblas::CblasDevice::schedule(std::mem::take(run), outputs, live_out)))
-            }
             Dev::Cuda(id) => {
                 partitions.push(PlanPartition::Cuda(cuda::CUDADevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
@@ -333,7 +329,6 @@ impl Plan {
         for partition in &self.partitions {
             match partition {
                 PlanPartition::C(p) => push(&mut out, &p.cmds, None),
-                PlanPartition::Cblas(p) => push(&mut out, &p.cmds, None),
                 PlanPartition::Cuda(p) => push(&mut out, &p.cmds, Some(&p.queues)),
                 PlanPartition::OpenCL(p) => push(&mut out, &p.cmds, Some(&p.queues)),
                 PlanPartition::Vulkan(p) => push(&mut out, &p.cmds, None),
@@ -385,11 +380,6 @@ impl Plan {
                             resolved.remove(dead);
                         }
                     }
-                }
-                PlanPartition::Cblas(cblas) => {
-                    let device = cblas::device()?;
-                    let mut dev = dlock(Dev::Cblas, device);
-                    cblas.replay(&mut dev, &mut resolved, vars)?;
                 }
                 PlanPartition::Cuda(cuda_part) => {
                     let device = cuda::device(cuda_part.dev)?;
@@ -461,9 +451,6 @@ impl Plan {
                                 let dev = dlock(Dev::TT(*id), device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
-                            Dev::Cblas => {
-                                unreachable!("replay copy into CBLAS: it owns no pool, schedule never emits it")
-                            }
                             Dev::Auto => {
                                 unreachable!("replay copy into Auto: copies always name a concrete pool")
                             }
@@ -511,8 +498,6 @@ pub(crate) enum AllocPlan {
 pub(crate) enum PlanPartition {
     /// Ordered CPU commands with death lists, executed by the C device.
     C(c::CPartition),
-    /// Ordered BLAS commands with death lists, executed by the CBLAS device.
-    Cblas(cblas::CblasPartition),
     /// Ordered CUDA commands with death lists, executed by a CUDA device
     /// through its worker (captured graphs, one roundtrip per replay).
     Cuda(cuda::CudaPartition),
@@ -550,7 +535,7 @@ pub struct ChunkId(u64);
 /// (alloc/free/copy/compile/launch); the per-op tensor path never touches them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Pool {
-    /// Host RAM. Shared by the C, CBLAS, and Host devices, which own no pool.
+    /// Host RAM. Shared by the C and Host devices, which own no pool.
     Host,
     /// Disk-backed tensors (paths, not bytes).
     Disk,
@@ -579,8 +564,6 @@ pub enum Dev {
     Auto,
     /// CPU backend (runs on the host pool).
     C,
-    /// CBLAS backend for AOT matmuls (runs on the host pool).
-    Cblas,
     /// Transfer-only pseudo-device (runs on the host pool). Always
     /// available, never enumerated by [`Dev::all`]: it implements copies
     /// into host memory, never compiles or launches.
@@ -603,9 +586,9 @@ impl std::str::FromStr for Dev {
 
     /// Parse a device selector: case-insensitive `name` or `name:index`
     /// (tinygrad's device syntax), index defaulting to 0. Names: `auto`,
-    /// `c`/`cpu`, `cblas`/`blas`, `host`, `cuda`, `tt`/`tenstorrent`,
+    /// `c`/`cpu`, `host`, `cuda`, `tt`/`tenstorrent`,
     /// `vulkan`/`vk`, `opencl`/`cl`, `wgpu`. An index on an indexless device
-    /// (`c`, `cblas`, `host`, `auto`) is an error, not silently dropped.
+    /// (`c`, `host`, `auto`) is an error, not silently dropped.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (name, index) = match s.split_once(':') {
             Some((name, index)) => {
@@ -617,7 +600,6 @@ impl std::str::FromStr for Dev {
         let dev = match name.to_ascii_uppercase().as_str() {
             "AUTO" => Dev::Auto,
             "C" | "CPU" => Dev::C,
-            "CBLAS" | "BLAS" => Dev::Cblas,
             "HOST" => Dev::Host,
             "CUDA" => Dev::Cuda(index),
             "TT" | "TENSTORRENT" => Dev::TT(index),
@@ -626,12 +608,12 @@ impl std::str::FromStr for Dev {
             #[cfg(feature = "wgpu")]
             "WGPU" => Dev::WGPU(index),
             _ => {
-                return Err(format!("unknown device `{name}` (expected auto, c, cblas, host, cuda, tt, vulkan, opencl or wgpu)"));
+                return Err(format!("unknown device `{name}` (expected auto, c, host, cuda, tt, vulkan, opencl or wgpu)"));
             }
         };
         // Devices without an ordinal reject an explicit one: `c:1` must not
         // silently mean `c`.
-        if s.contains(':') && matches!(dev, Dev::Auto | Dev::C | Dev::Cblas | Dev::Host) {
+        if s.contains(':') && matches!(dev, Dev::Auto | Dev::C | Dev::Host) {
             return Err(format!("device `{name}` has no index, got `{s}`"));
         }
         Ok(dev)
@@ -660,9 +642,6 @@ impl Dev {
             if c::device().is_ok() {
                 out.push(Dev::C);
             }
-            if cblas::device().is_ok() {
-                out.push(Dev::Cblas);
-            }
             for i in 0..cuda::device_count() {
                 out.push(Dev::Cuda(i));
             }
@@ -690,7 +669,7 @@ impl Dev {
     pub fn pool(self) -> Pool {
         match self {
             Dev::Auto => panic!("Dev::Auto has no pool; resolve it with Dev::auto() first"),
-            Dev::C | Dev::Cblas | Dev::Host => Pool::Host,
+            Dev::C | Dev::Host => Pool::Host,
             Dev::Cuda(i) => Pool::Cuda(i),
             Dev::TT(i) => Pool::TT(i),
             Dev::Vulkan(i) => Pool::Vulkan(i),
@@ -709,7 +688,6 @@ impl Dev {
         match self {
             Dev::Auto => panic!("Dev::Auto has no info; resolve it with Dev::auto() first"),
             Dev::C => Ok(c::device()?.lock().unwrap().info()),
-            Dev::Cblas => Ok(cblas::device()?.lock().unwrap().info()),
             Dev::Host => panic!("Dev::Host has no device info; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).info()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).info()),
@@ -729,7 +707,6 @@ impl Dev {
         match self {
             Dev::Auto => panic!("Dev::Auto has no compute; resolve it with Dev::auto() first"),
             Dev::C => Ok(c::device()?.lock().unwrap().free_compute()),
-            Dev::Cblas => Ok(cblas::device()?.lock().unwrap().free_compute()),
             Dev::Host => panic!("Dev::Host has no compute; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).free_compute()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).free_compute()),
@@ -742,12 +719,12 @@ impl Dev {
 
     // TODO remove this somehow perhaps
     /// Whether this device only runs AOT (precompiled) kernels and cannot
-    /// compile generic zyx kernels (e.g. the cblas backend). Such devices
-    /// must be skipped by generic kernel autotuning. Transfer-only devices
-    /// (e.g. Host, which compiles nothing at all) also report true.
+    /// compile generic zyx kernels. Such devices must be skipped by generic
+    /// kernel autotuning. Transfer-only devices (e.g. Host, which compiles
+    /// nothing at all) also report true.
     #[must_use]
     pub const fn aot_only(self) -> bool {
-        matches!(self, Self::Cblas | Self::Host)
+        matches!(self, Self::Host)
     }
 
     /// Whether buffers on this device use the Tenstorrent tile layout:
@@ -787,7 +764,6 @@ impl Dev {
         match self {
             Dev::Auto => "Auto",
             Dev::C => "C",
-            Dev::Cblas => "CBLAS",
             Dev::Host => "Host",
             Dev::Cuda(_) => "CUDA",
             Dev::OpenCL(_) => "OpenCL",
@@ -805,7 +781,6 @@ impl Dev {
         let result = match self {
             Dev::Auto => panic!("Dev::Auto cannot compile; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().compile(kernel, debug_asm),
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().compile(kernel, debug_asm),
             Dev::Host => panic!("Dev::Host cannot compile; it is transfer-only"),
             Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
             Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm),
@@ -825,7 +800,6 @@ impl Dev {
         match self {
             Dev::Auto => panic!("Dev::Auto cannot release; resolve it with Dev::auto() first"),
             Dev::C => c::device().expect("C device unavailable").lock().unwrap().release(program_id),
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().release(program_id),
             Dev::Host => panic!("Dev::Host cannot release; it holds no programs"),
             Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).release(program_id),
             Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).release(program_id),
@@ -843,7 +817,6 @@ impl Dev {
         match self {
             Dev::Auto => {}
             Dev::C => {}
-            Dev::Cblas => cblas::device().expect("CBLAS device unavailable").lock().unwrap().match_graph(graph, outputs),
             Dev::Host => {}
             Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),
             Dev::OpenCL(_) => {}
@@ -879,7 +852,6 @@ impl Dev {
                 let pool = self.pool();
                 c::device().expect("C device unavailable").lock().unwrap().launch_timed(program_id, pool, args)
             }
-            Dev::Cblas => todo!("launch_timed not yet ported to the CBLAS device"),
             Dev::Host => panic!("Dev::Host cannot launch; it is transfer-only"),
             Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args),
             Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).launch_timed(program_id, args),
@@ -1102,7 +1074,6 @@ impl Config {
     /// This is the `ZYX_DEV` override, applied on top of the config file.
     fn select_only(&mut self, dev: Dev) {
         self.c.enabled = false;
-        self.cblas.enabled = false;
         self.cuda.device_ids = Some(Vec::new());
         self.opencl.platform_ids = Some(Vec::new());
         self.vulkan.device_ids = Some(Vec::new());
@@ -1116,7 +1087,6 @@ impl Config {
             // available"), so it cannot arrive here.
             Dev::Auto => unreachable!("select_only: `auto` narrows nothing"),
             Dev::C => self.c.enabled = true,
-            Dev::Cblas => self.cblas.enabled = true,
             // Always available, never enumerated: nothing to enable.
             Dev::Host => {}
             Dev::Cuda(i) => self.cuda.device_ids = Some(vec![i32::from(i)]),
@@ -1407,8 +1377,6 @@ pub struct Config {
     pub autotune: crate::kernel::autotune::BeamSearch,
     /// C/Clang backend configuration
     pub c: c::CConfig,
-    /// CBLAS backend configuration
-    pub cblas: cblas::CblasConfig,
     /// CUDA configuration
     pub cuda: cuda::CUDAConfig,
     /// `OpenCL` configuration
@@ -1675,7 +1643,6 @@ mod tests {
         assert_eq!("cuda".parse::<Dev>().unwrap(), Dev::Cuda(0));
         assert_eq!("CUDA:2".parse::<Dev>().unwrap(), Dev::Cuda(2));
         assert_eq!("cpu".parse::<Dev>().unwrap(), Dev::C);
-        assert_eq!("cblas".parse::<Dev>().unwrap(), Dev::Cblas);
         assert_eq!("tt:1".parse::<Dev>().unwrap(), Dev::TT(1));
         assert_eq!("vk".parse::<Dev>().unwrap(), Dev::Vulkan(0));
         assert_eq!("auto".parse::<Dev>().unwrap(), Dev::Auto);

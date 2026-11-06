@@ -5,7 +5,7 @@
 
 **zyx** is a machine learning library that runs on your hardware: a lazy tensor
 library with automatic kernel fusion and autotuning, written in Rust, with
-backends for CUDA, Vulkan, OpenCL, CPU (C and CBLAS), WGPU, and Tenstorrent.
+backends for CUDA, Vulkan, OpenCL, CPU (C), WGPU, and Tenstorrent.
 
 The whole install is **2 MB and has no required dependencies** — there is no
 bundled CUDA runtime, no BLAS to link, no toolchain to install. Backends are
@@ -206,7 +206,7 @@ print(pinned.device())                   # Dev::Cuda(0)
 pinned.numpy()                           # [4, 4] float array
 ```
 
-Available selectors: `Dev.cpu()`, `Dev.cblas()`, `Dev.cuda(id)`,
+Available selectors: `Dev.cpu()`, `Dev.cuda(id)`,
 `Dev.opencl(id)`, `Dev.vulkan(id)`, `Dev.dummy()`. `Dev.auto()` resolves the
 pending choice.
 

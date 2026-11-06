@@ -40,7 +40,7 @@ fn compute_device() -> Dev {
     }
     Dev::all()
         .into_iter()
-        .find(|d| !matches!(d, Dev::C | Dev::Cblas))
+        .find(|d| !matches!(d, Dev::C))
         .unwrap_or(Dev::C)
 }
 

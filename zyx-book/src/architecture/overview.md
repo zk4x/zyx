@@ -96,7 +96,7 @@ fused into the kernel of its consumer when the surrounding ops allow it, and a
 value with several consumers is produced once with one output copy per consumer.
 Storing a value and reloading it for later consumers creates a load kernel at
 that boundary. `fill_gaps` runs the same machinery per connected region so that
-AOT kernels (e.g. a CBLAS matmul) and custom kernels can compete with fused
+AOT kernels (e.g. a cuDNN matmul) and custom kernels can compete with fused
 kernels inside the same graph.
 
 Movement ops are not materialized just to be read back. Their index arithmetic
@@ -165,7 +165,6 @@ Backends are dispatched by enum, with no `dyn Backend`:
 pub enum Dev {
     Auto,
     C,
-    Cblas,
     Host,
     Cuda(u16),
     TT(u16),

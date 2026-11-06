@@ -23,7 +23,6 @@ A complete example (every section is optional):
         "n_total_opts": 1000
     },
     "c": { "enabled": true },
-    "cblas": { "enabled": true },
     "cuda": { "device_ids": [0], "cudnn": true, "queues": 8 },
     "opencl": { "platform_ids": [0], "queues": 8 },
     "vulkan": { "device_ids": [0] },
@@ -39,7 +38,6 @@ the `wgpu` feature.
 | Section | Keys | Default | Disable with |
 |---------|------|---------|--------------|
 | `c` | `enabled` | `true` | `"enabled": false` |
-| `cblas` | `enabled` | `true` | `"enabled": false` |
 | `cuda` | `device_ids`, `cudnn`, `queues` | all GPUs, cuDNN off, 8 queues | `"device_ids": []` |
 | `opencl` | `platform_ids`, `queues` | all platforms, 8 queues | `"platform_ids": []` |
 | `vulkan` | `device_ids` | all devices | `"device_ids": []` |
@@ -84,7 +82,7 @@ ZYX_DEV=vulkan        # Vulkan device 0
 ZYX_DEV=opencl:1      # OpenCL platform 1
 ```
 
-Names are case-insensitive: `auto`, `c`/`cpu`, `cblas`/`blas`, `host`, `cuda`,
+Names are case-insensitive: `auto`, `c`/`cpu`, `host`, `cuda`,
 `tt`/`tenstorrent`, `vulkan`/`vk`, `opencl`/`cl`, `wgpu`. An index on an
 indexless device (`c:1`) is an error. A bad value panics — silently falling back
 would run on the wrong hardware — and `ZYX_DEV=auto` is a no-op (no narrowing).

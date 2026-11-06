@@ -43,7 +43,7 @@ to backends is an almost 1:1 mapping. If your hardware can provide this translat
 As good as the automatic optimizations can be, writing manual kernels will usually be faster, which is why
 it is the dominant approach as of now. Zyx acknowledges this and its e-graph system pattern matching
 of any subgraph structure into a custom kernel written in a language of your choosing
-(or raw binary blobs, cublas, cblas, etc.), as well as writing custom kernels in zyx IR and taking advantage
+(or raw binary blobs, cublas, etc.), as well as writing custom kernels in zyx IR and taking advantage
 of optimization passes zyx provides. The e-graph measures their timings, compares them with auto-generated zyx kernels
 and picks the fastest path through this graph.
 
@@ -247,7 +247,6 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 ## Backends
 
 - [x] **C** - C codegen (clang/gcc)
-- [x] **CBLAS** - AOT matmul via OpenBLAS
 - [x] **CUDA**
 - [x] **OpenCL**
 - [x] **Vulkan** - SPIR-V codegen

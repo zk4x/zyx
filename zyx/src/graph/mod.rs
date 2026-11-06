@@ -2363,7 +2363,7 @@ impl Runtime {
             }
 
             for &dev_id in device_ids.iter() {
-                // AOT-only devices (e.g. cblas) never compile generic zyx kernels
+                // AOT-only devices never compile generic zyx kernels
                 if dev_id.aot_only() {
                     continue;
                 }
@@ -2595,8 +2595,8 @@ impl Runtime {
             }
         }
 
-        // Pattern match specialized AOT kernels (e.g. matmul -> cblas) so they can
-        // compete with the fused zyx kernels in extraction.
+        // Pattern match specialized AOT kernels (e.g. a cuDNN matmul) so they
+        // can compete with the fused zyx kernels in extraction.
         // SAFETY: graphs borrow ends before the match call, rust is stupid
         let dev_ids: Vec<Dev> = Dev::all();
         let graph_ptr: *mut Graph = &mut self.graphs[graph_id];

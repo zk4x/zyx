@@ -26,7 +26,6 @@ Every section is optional:
     "n_total_opts": 1000
   },
   "c": { "enabled": true },
-  "cblas": { "enabled": true },
   "cuda": { "device_ids": null, "cudnn": false, "queues": 8 },
   "opencl": { "platform_ids": null, "queues": 8 },
   "vulkan": { "device_ids": null },
@@ -60,15 +59,6 @@ object. Uses the host memory pool.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | `bool` | `true` | Enable the C backend |
-
-### `cblas` — CBLAS backend
-
-Runs AOT matmul kernels through OpenBLAS. It shares the host pool and is
-AOT-only: generic kernels skip it.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `enabled` | `bool` | `true` | Enable the CBLAS backend |
 
 ### `cuda` — CUDA backend
 
@@ -119,7 +109,6 @@ Requires `--features wgpu`. Supports Vulkan, Metal, DX12, and OpenGL ES.
 | Backend | Enabled by default | Disable with |
 |---------|--------------------|--------------|
 | `c` | yes | `"enabled": false` |
-| `cblas` | yes | `"enabled": false` |
 | `cuda` | yes | `"device_ids": []` |
 | `opencl` | yes | `"platform_ids": []` |
 | `vulkan` | yes | `"device_ids": []` |
@@ -129,7 +118,7 @@ Requires `--features wgpu`. Supports Vulkan, Metal, DX12, and OpenGL ES.
 `null`/absent means “every device the backend finds”; a list selects exactly
 those ordinals.
 
-C, CBLAS, CUDA, OpenCL, Vulkan, and Tenstorrent are compiled in
+C, CUDA, OpenCL, Vulkan, and Tenstorrent are compiled in
 unconditionally (they locate their runtimes at load time); only WGPU is behind a
 cargo feature. There is no global “initialize all backends” step: `Dev::all()`
 probes each compiled-in backend lazily, and backends whose driver, device, or
@@ -147,7 +136,7 @@ ZYX_DEV=tt            # Tenstorrent, device 0
 ZYX_DEV=vulkan        # Vulkan device 0
 ```
 
-Names are case-insensitive: `auto`, `c`/`cpu`, `cblas`/`blas`, `host`, `cuda`,
+Names are case-insensitive: `auto`, `c`/`cpu`, `host`, `cuda`,
 `tt`/`tenstorrent`, `vulkan`/`vk`, `opencl`/`cl`, `wgpu`. An index on an
 indexless device (`c:1`) is an error, and a bad value panics — silently falling
 back would run on the wrong hardware. `ZYX_DEV=auto` narrows nothing.

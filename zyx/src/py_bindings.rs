@@ -1966,11 +1966,6 @@ impl PyDev {
     fn cpu() -> Self {
         Self(Dev::C)
     }
-    /// CBLAS backend for AOT matmuls.
-    #[staticmethod]
-    fn cblas() -> Self {
-        Self(Dev::Cblas)
-    }
     /// CUDA GPU with the given driver ordinal.
     #[staticmethod]
     fn cuda(id: u16) -> Self {

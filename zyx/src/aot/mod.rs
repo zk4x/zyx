@@ -8,7 +8,7 @@
 //! expression collapses into this fixed set, which means any computation —
 //! however it was written by the user — decomposes into a handful of canonical
 //! subgraphs. This module matches those subgraphs so they can be replaced by
-//! specialized AOT kernels (cblas, cublas, ...) instead of being fused into
+//! specialized AOT kernels (cudnn, cublas, ...) instead of being fused into
 //! generic zyx kernels. The graph measures both alternatives and picks the
 //! fastest path through extraction.
 

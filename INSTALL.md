@@ -33,7 +33,6 @@ skipped.
 | Backend | Needs | Debian/Ubuntu | Notes |
 |---------|-------|---------------|-------|
 | C | a C compiler: `clang-11`, `clang`, `gcc`, or `cc` (first found) | `sudo apt install clang` or `sudo apt install build-essential` | always available if one exists |
-| CBLAS | `libopenblas.so` | `sudo apt install libopenblas-dev` | AOT matmul only; the path is currently hardcoded to `/usr/lib/x86_64-linux-gnu/libopenblas.so` |
 | CUDA | NVIDIA driver (`libcuda.so.1`) and NVRTC (`libnvrtc.so`) | driver from NVIDIA; `sudo apt install nvidia-cuda-toolkit` (or NVIDIA's toolkit) | `ZYX_PTX=1` emits PTX directly and skips NVRTC; cuDNN is optional (`"cuda": { "cudnn": true }`) |
 | OpenCL | ICD loader (`libOpenCL.so`) plus a vendor ICD | `sudo apt install ocl-icd-libopencl1`; CPU-only: `sudo apt install pocl-opencl-icd` | |
 | Vulkan | `libvulkan.so.1` plus a Vulkan driver | `sudo apt install libvulkan1 mesa-vulkan-drivers vulkan-tools` | |

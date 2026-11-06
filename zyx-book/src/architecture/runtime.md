@@ -67,7 +67,7 @@ Pools are process-wide and never deinitialized:
 
 ```rust,ignore
 pub enum Pool {
-    Host,          // RAM, shared by C, CBLAS and Host
+    Host,          // RAM, shared by C and Host
     Disk,          // file-backed chunks (paths, not bytes)
     Cuda(u16),
     OpenCL(u16),
@@ -105,7 +105,7 @@ pool from the device, never the reverse.
 1. start from `Dev::all()` — lazy init of every compiled-in backend, cached in a
    `OnceLock`; backends that are configured out or whose hardware/driver is
    missing contribute nothing;
-2. drop AOT-only devices (`Dev::aot_only()`, e.g. CBLAS) for generic kernels;
+2. drop AOT-only devices (`Dev::aot_only()`) for generic kernels;
 3. keep devices whose pool has at least `bytes` free;
 4. sort by `free_compute()` descending and take the first.
 

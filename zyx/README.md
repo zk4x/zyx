@@ -52,7 +52,6 @@ See [ENV_VARS.md](https://github.com/zk4x/zyx/blob/main/ENV_VARS.md) for debuggi
 ## Backends
 
 - [x] `C` — CPU backend via C codegen (clang/gcc)
-- [x] `CBLAS` — AOT matmul via OpenBLAS
 - [x] `CUDA` — NVIDIA GPU acceleration, via CUDA C or PTX codegen
 - [x] `OpenCL`
 - [x] `Vulkan` — via SPIR-V codegen
