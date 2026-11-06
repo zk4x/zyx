@@ -1347,11 +1347,38 @@ impl Kernel {
         }
         order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
 
+        // A param's shape is an IR value and has to be declared before the
+        // param that names it (every program-order walk requires def before
+        // use). Params are hoisted to the front for argument order, so hoist
+        // their shape cones ahead of them, in the Kahn order so the cone keeps
+        // its own dependency order. Only a tiled device keeps param shapes, so
+        // this prefix is empty everywhere else.
+        let mut shape_cone: Set<OpId> = Set::default();
+        {
+            let mut stack: Vec<OpId> = Vec::new();
+            for &p in ro_params.iter().chain(rw_params.iter()) {
+                if let Op::Param { shape, .. } = self.ops[p].op {
+                    if !shape.is_null() {
+                        stack.push(shape);
+                    }
+                }
+            }
+            while let Some(id) = stack.pop() {
+                if id.is_null() || !shape_cone.insert(id) {
+                    continue;
+                }
+                stack.extend(self.ops[id].op.parameters());
+            }
+        }
+        let shape_order: Vec<OpId> = order.iter().copied().filter(|op| shape_cone.contains(op)).collect();
+        order.retain(|op| !shape_cone.contains(op));
+
         // Move the params to the front: read-only (Variable + Global) first,
         // then writable (GlobalMut), each in linked-list order. Unused
         // params never enter the Kahn order at all; used ones are dropped
         // here and reinserted.
-        let mut final_order = Vec::with_capacity(order.len() + ro_params.len() + rw_params.len());
+        let mut final_order = Vec::with_capacity(order.len() + shape_order.len() + ro_params.len() + rw_params.len());
+        final_order.extend(shape_order);
         final_order.extend(ro_params.iter().copied());
         final_order.extend(rw_params.iter().copied());
         final_order.extend(order);

@@ -147,8 +147,29 @@ impl Kernel {
                 Done,
             }
             let mut phase = Phase::GlobalRo;
+            // A tiled device keeps its params' shapes past linearize, and a
+            // shape is an operand of its param: it must be declared before it,
+            // which puts the shape cone ahead of the params. That prefix is
+            // metadata, not kernel preamble, so it does not close the RO-param
+            // phase.
+            let mut shape_cone: Set<OpId> = Set::default();
+            for (_op_id, node) in self.iter_unordered() {
+                if let Op::Param { shape, .. } = node {
+                    let mut stack = vec![*shape];
+                    while let Some(id) = stack.pop() {
+                        if id.is_null() || !shape_cone.insert(id) {
+                            continue;
+                        }
+                        stack.extend(self.ops[id].op.parameters());
+                    }
+                }
+            }
             let mut scan = self.head;
             while !scan.is_null() {
+                if shape_cone.contains(&scan) {
+                    scan = self.next_op(scan);
+                    continue;
+                }
                 match self.at(scan) {
                     Op::Param { kind, .. } => match kind {
                         ParamKind::Variable | ParamKind::Global => {

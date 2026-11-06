@@ -1301,138 +1301,137 @@ impl Kernel {
         if ssrc != root && !drains_acc {
             return;
         }
-        // Rank-3 cube to a rank-2 result (axis drop), or a
-        // logical-pitch rank-2 tile to a row (pitch substitution).
-        // Anything else (matmul cubes, scalars) is not this template.
-        let drop3 = self.shape(load) == vec![32, 32, 32] && self.shape(root) == vec![32, 32];
-        let row2 = self.shape(load) == vec![32, 32] && self.shape(root) == vec![32];
-        if !drop3 && !row2 {
-            return;
-        }
-        let lidx = match self.ops[load].op {
-            Op::Load { src_idx, .. } => src_idx,
-            _ => unreachable!("tt_reindex: load lost its index"),
-        };
-        // Stride anatomy of the load index: the reduce lane at stride
-        // 1, one row axis at stride W, and (cube only) dropped axes at
-        // multiples of W. A const offset must be zero (a nonzero
-        // logical offset is not a physical one); anything else bails.
-        let Some(strides) = self.get_strides(lidx) else {
-            return;
-        };
         if !matches!(self.ops[k].op, Op::Unroll { len: 32, .. }) {
             return;
         }
-        match strides.get(&k) {
-            Some((32, 1)) => {}
-            _ => return,
-        }
-        // Classify every variable besides the reduce lane: a 32-lane Unroll
-        // is the output row axis, a Group is a grid (tile) axis, and a Loop
-        // is the reduce's tile loop. Anything else is not this template.
-        let mut rows: Vec<(OpId, Dim)> = Vec::new();
-        let mut grids: Vec<(OpId, u32, Dim)> = Vec::new();
-        let mut loops: Vec<OpId> = Vec::new();
-        for (var, (len, stride)) in strides.iter() {
-            if *var == OpId::NULL {
-                if *stride != 0 {
-                    return;
-                }
-                continue;
+        // The tiled buffer's geometry is a function of the value's shape: the
+        // last two dims are the plane the upload tilize laid out (rank-1 is a
+        // single column, `tilize_transfer`'s one rule), the rest is the outer
+        // batch. That shape is the datum `linearize` keeps for TT: the access
+        // alone cannot tell a `[1, N]` row from an `[N]` column, because both
+        // are the same flat index.
+        let geom = |shape: &[Dim]| -> Option<(Dim, Dim)> {
+            let (rows, cols) = match shape {
+                [.., r, c] => (*r, *c),
+                [c] => (*c, 1),
+                [] => (1, 1),
+            };
+            if rows <= 0 || cols <= 0 {
+                return None;
             }
-            if *var == k {
-                continue;
-            }
-            match self.ops[*var].op {
-                Op::Unroll { len: 32, .. } => {
-                    if *len != 32 || *stride <= 0 {
-                        return;
-                    }
-                    rows.push((*var, *stride));
-                }
-                Op::Range { axis, kind: RangeKind::Group(_) } => {
-                    // A grid axis is a whole number of tiles in the logical
-                    // index; the rewritten index carries its tile stride.
-                    if *stride <= 0 || *stride % 1024 != 0 {
-                        return;
-                    }
-                    grids.push((*var, axis, *stride / 1024));
-                }
-                Op::Loop { .. } => {
-                    // The reduce's tile loop advances one 32-lane chunk, which
-                    // is one physical tile.
-                    if *stride != 32 {
-                        return;
-                    }
-                    loops.push(*var);
-                }
-                _ => return,
-            }
-        }
-        // One row axis; one reduce loop at most (a second would be a nested
-        // tile walk, not this template).
-        if loops.len() > 1 {
-            return;
-        }
-        rows.sort_by_key(|&(_, s)| s);
-        let row = match rows.as_slice() {
-            [(r, w)] if row2 && *w != 32 && *w > 1 => *r,
-            [(r, w), (_d, dw)] if drop3 && loops.is_empty() && grids.is_empty() && *w > 1 && *dw > *w && *dw % *w == 0 => *r,
-            _ => return,
+            Some((rows, cols))
         };
-        // The input's tile is `Σ grid * tile_stride + loop`; the store's is
-        // the output tile `Σ grid * out_tile_stride`. A tile is 1024 elements,
-        // and the 32-lane row and reduce axes stay as the shape carrier (the
-        // movers zero them; they only give the access its `[32,32]`/`[32]`
-        // shape).
         let mul = |k: &mut Kernel, at: OpId, x: OpId, c: Dim| -> OpId {
             let cc = k.insert_const_idx_before(at, c);
             k.insert_before(at, Op::Binary { x, y: cc, bop: BOp::Mul })
         };
         let add =
             |k: &mut Kernel, at: OpId, x: OpId, y: OpId| -> OpId { k.insert_before(at, Op::Binary { x, y, bop: BOp::Add }) };
-        let mut in_tile = self.insert_const_idx_before(load, 0i64);
-        for &(g, _, tile_stride) in grids.iter() {
-            let t = mul(self, load, g, tile_stride);
-            in_tile = add(self, load, in_tile, t);
-        }
-        if let Some(&i) = loops.first() {
-            in_tile = add(self, load, in_tile, i);
-        }
-        let lane = mul(self, load, row, 32);
-        let carrier = add(self, load, lane, k);
-        let base = mul(self, load, in_tile, 1024);
-        let new_idx = add(self, load, base, carrier);
-        match &mut self.ops[load].op {
-            Op::Load { src_idx, .. } => *src_idx = new_idx,
-            _ => unreachable!("tt_reindex: load lost its index"),
-        }
-        // Output tile strides: the innermost grid axis advances one tile, the
-        // next its inner extent, and so on (row-major tiles).
-        let mut gaxes: Vec<(OpId, u32, Dim)> = Vec::new();
-        for &(g, axis, _) in grids.iter() {
-            let Op::Range { kind: RangeKind::Group(len), .. } = self.ops[g].op else {
-                unreachable!("tt_reindex: a grid entry is not a group range")
+
+        // Rewrite each side's flat logical index into the tiled layout:
+        //
+        //   physical = tile * 1024 + row_in_tile * 32 + col_in_tile
+        //   tile     = outer * tiles_per_outer + row_hi * tiles_across + col_hi
+        //
+        // Every term is classified by its stride against the plane, never by
+        // a shape verdict: a multiple of the plane size is an outer slice, a
+        // multiple of 32 rows is a tile row, a multiple of the row width is a
+        // row, a multiple of 32 columns is a tile column, and the rest is a
+        // lane. Whatever does not divide cleanly bails (loudly, in `tt_slice`
+        // if the boundary then cannot be placed) rather than guessing.
+        for side in [load, store] {
+            let (base, idx) = match self.ops[side].op {
+                Op::Load { src, src_idx } => (src, src_idx),
+                Op::Store { dst, dst_idx, .. } => (dst, dst_idx),
+                _ => return,
             };
-            let Some(extent) = self.resolve_const(len).and_then(Constant::as_dim) else {
+            if idx.is_null() {
+                return;
+            }
+            let Some((rows, cols)) = geom(&self.shape(base)) else {
                 return;
             };
-            gaxes.push((g, axis, extent));
-        }
-        gaxes.sort_by_key(|&(_, axis, _)| axis);
-        let mut out_stride = 1i64;
-        let mut out_tile = self.insert_const_idx_before(store, 0i64);
-        for &(g, _, extent) in gaxes.iter().rev() {
-            let t = mul(self, store, g, out_stride);
-            out_tile = add(self, store, out_tile, t);
-            out_stride *= extent;
-        }
-        let out_base = mul(self, store, out_tile, 1024);
-        let out_lane = mul(self, store, row, 32);
-        let new_dst = add(self, store, out_base, out_lane);
-        match &mut self.ops[store].op {
-            Op::Store { dst_idx, .. } => *dst_idx = new_dst,
-            _ => unreachable!("tt_reindex: store lost its index"),
+            let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
+            let plane = rows * cols;
+            let Some(strides) = self.get_strides(idx) else {
+                return;
+            };
+            let mut outer_t: Vec<(OpId, Dim)> = Vec::new();
+            let mut row_hi_t: Vec<(OpId, Dim)> = Vec::new();
+            let mut row_lo_t: Vec<(OpId, Dim)> = Vec::new();
+            let mut col_hi_t: Vec<(OpId, Dim)> = Vec::new();
+            let mut col_lo_t: Vec<(OpId, Dim)> = Vec::new();
+            for (var, (len, stride)) in strides.iter() {
+                let (var, s) = (*var, *stride);
+                if var == OpId::NULL || s == 0 {
+                    continue;
+                }
+                if s % plane == 0 && s >= plane {
+                    outer_t.push((var, s / plane));
+                } else if s % (32 * cols) == 0 && s >= 32 * cols {
+                    row_hi_t.push((var, s / (32 * cols)));
+                } else if s % cols == 0 {
+                    // A row: it must stay inside one tile row.
+                    let coeff = s / cols;
+                    if (*len - 1) * coeff >= 32 {
+                        return;
+                    }
+                    row_lo_t.push((var, coeff));
+                } else if s < 32 {
+                    if (*len - 1) * s >= 32 {
+                        return;
+                    }
+                    col_lo_t.push((var, s));
+                } else if s % 32 == 0 {
+                    col_hi_t.push((var, s / 32));
+                } else {
+                    return;
+                }
+            }
+            // A concrete offset splits the same way; nothing is assumed zero.
+            let cst = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+            let row_c = (cst / cols) % rows;
+            let col_c = cst % cols;
+            let tile_c = (cst / plane) * ntr * ntc + (row_c / 32) * ntc + col_c / 32;
+            let pos_c = (row_c % 32) * 32 + col_c % 32;
+
+            let mut tile = self.insert_const_idx_before(side, 0i64);
+            let mut pos = self.insert_const_idx_before(side, 0i64);
+            for &(v, c) in outer_t.iter() {
+                let t = mul(self, side, v, c * ntr * ntc);
+                tile = add(self, side, tile, t);
+            }
+            for &(v, c) in row_hi_t.iter() {
+                let t = mul(self, side, v, c * ntc);
+                tile = add(self, side, tile, t);
+            }
+            for &(v, c) in col_hi_t.iter() {
+                let t = mul(self, side, v, c);
+                tile = add(self, side, tile, t);
+            }
+            if tile_c != 0 {
+                let cc = self.insert_const_idx_before(side, tile_c);
+                tile = add(self, side, tile, cc);
+            }
+            for &(v, c) in row_lo_t.iter() {
+                let t = mul(self, side, v, c * 32);
+                pos = add(self, side, pos, t);
+            }
+            for &(v, c) in col_lo_t.iter() {
+                let t = mul(self, side, v, c);
+                pos = add(self, side, pos, t);
+            }
+            if pos_c != 0 {
+                let cc = self.insert_const_idx_before(side, pos_c);
+                pos = add(self, side, pos, cc);
+            }
+            let base_t = mul(self, side, tile, 1024);
+            let new_idx = add(self, side, base_t, pos);
+            match &mut self.ops[side].op {
+                Op::Load { src_idx, .. } => *src_idx = new_idx,
+                Op::Store { dst_idx, .. } => *dst_idx = new_idx,
+                _ => unreachable!("tt_reindex: side lost its index"),
+            }
         }
         self.verify();
     }
@@ -1899,6 +1898,12 @@ impl Kernel {
                         }) {
                             return None;
                         }
+                        // An index `tt_reindex` rewrote is already in tile
+                        // units: every step there is a whole tile. This unit is
+                        // only for the flat logical indices it left alone.
+                        if strides.iter().all(|(&var, &(_, s))| var == OpId::NULL || s == 0 || s % 1024 == 0) {
+                            return None;
+                        }
                         if strides
                             .iter()
                             .any(|(&var, &(_, s))| var != OpId::NULL && s != 0 && s % unit != 0)
@@ -1953,6 +1958,12 @@ impl Kernel {
                             var != OpId::NULL
                                 && matches!(self.ops[var].op, Op::Range { kind: RangeKind::Group(_), .. })
                         }) {
+                            return None;
+                        }
+                        // An index `tt_reindex` rewrote is already in tile
+                        // units: every step there is a whole tile. This unit is
+                        // only for the flat logical indices it left alone.
+                        if strides.iter().all(|(&var, &(_, s))| var == OpId::NULL || s == 0 || s % 1024 == 0) {
                             return None;
                         }
                         if strides
@@ -4044,25 +4055,19 @@ impl Kernel {
                 let Op::Reduce { rop, x: reduced, reduce_axis } = self.ops[id].op else {
                     return None;
                 };
-                // The pattern table keys `[32,32] -> [32]` on shape, so it
-                // always asks for `Row`; the axis is what decides. `Row` folds
-                // the tile's lane axis, `Col` its row axis (`reduce.rs`'s
-                // `Axis::Cols`/`Axis::Rows`). The reduce variable's stride in
-                // the feeder access is the tell: 1 is the lane axis, the row
-                // pitch is the row axis. (A `[32] -> []` vector is already
-                // `Col` in the table and a whole-tile `Scalar` is two passes;
-                // only the rank-2 single-fold arm is overridden.)
-                let dim = if table_dim == TileDim::Row && self.shape(reduced).len() == 2 {
-                    match self.ops[reduced].op {
-                        Op::Load { src_idx, .. } => self
-                            .get_strides(src_idx)
-                            .and_then(|s| s.get(&reduce_axis).copied())
-                            .map(|(_, stride)| if stride == 1 { TileDim::Row } else { TileDim::Col })
-                            .unwrap_or(table_dim),
-                        _ => table_dim,
-                    }
-                } else {
-                    table_dim
+                // The fold runs along the tile axis the feeder access names.
+                // After `tt_reindex` the index is in tile units, so the reduce
+                // variable's stride is the tell: 1 = the lanes are tile
+                // columns (`Row` folds the lane axis), 32 = they are tile rows
+                // (`Col` folds the row axis). The pattern table only supplies
+                // the fallback when the feeder is not a typed access.
+                let dim = match self.ops[reduced].op {
+                    Op::Load { src_idx, .. } => self
+                        .get_strides(src_idx)
+                        .and_then(|s| s.get(&reduce_axis).copied())
+                        .map(|(_, stride)| if stride == 1 { TileDim::Row } else { TileDim::Col })
+                        .unwrap_or(table_dim),
+                    _ => table_dim,
                 };
                 let (dtype, input) = self.tt_resolve_dst(m.op('t'), id, lower)?;
                 let slot = self.tt_new_dst(dtype, lower.prologue);
@@ -7899,6 +7904,21 @@ mod reindex_tests {
         let mut k = tt_kernel();
         let src = k.param(DType::F32);
         let dst = k.param_mut(DType::F32);
+        // The tiled buffer's geometry comes from the param's shape, which
+        // `linearize` keeps on a tiled device: `[256, 256]` in, `[256]` out.
+        {
+            let r = k.const_idx(256u32);
+            let c = k.const_idx(256u32);
+            let s = k.push_back(Op::Stack { ops: vec![r, c].into_boxed_slice() });
+            let Op::Param { shape, .. } = &mut k.ops[src].op else { unreachable!() };
+            *shape = s;
+        }
+        {
+            let r = k.const_idx(256u32);
+            let s = k.push_back(Op::Stack { ops: vec![r].into_boxed_slice() });
+            let Op::Param { shape, .. } = &mut k.ops[dst].op else { unreachable!() };
+            *shape = s;
+        }
         let row_len = k.const_idx(256u32);
         let eight = k.const_idx(8u32);
         let thirty_two = k.const_idx(32u32);
@@ -7948,13 +7968,26 @@ mod reindex_tests {
         assert_eq!(s[&row_lane].1, 32);
     }
 
-    /// The single-tile reduce keeps its old rewrite: no grid, no loop, so the
-    /// base is 0 and only the shape carrier remains.
+    /// The single-tile reduce: no grid, no loop, so the base is 0 and only the
+    /// shape carriers remain. The plane is `[32, 20]` in, `[32]` out.
     #[test]
     fn a_single_tile_reduce_keeps_the_row_carrier() {
         let mut k = tt_kernel();
         let src = k.param(DType::F32);
         let dst = k.param_mut(DType::F32);
+        {
+            let r = k.const_idx(32u32);
+            let c = k.const_idx(20u32);
+            let s = k.push_back(Op::Stack { ops: vec![r, c].into_boxed_slice() });
+            let Op::Param { shape, .. } = &mut k.ops[src].op else { unreachable!() };
+            *shape = s;
+        }
+        {
+            let r = k.const_idx(32u32);
+            let s = k.push_back(Op::Stack { ops: vec![r].into_boxed_slice() });
+            let Op::Param { shape, .. } = &mut k.ops[dst].op else { unreachable!() };
+            *shape = s;
+        }
         let row_len = k.const_idx(20u32);
         let k_lane = k.push_back(Op::Unroll { axis: 0, len: 32u16 });
         let row_lane = k.push_back(Op::Unroll { axis: 1, len: 32u16 });
