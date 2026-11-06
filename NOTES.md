@@ -1,12 +1,49 @@
 ## HANDOFF (2026-11-06, session 16) — start here: shapes kept, index rewritten
 
-**Snapshot.** `main` at `85a16a6d`, tree clean. `cargo build` green, `cargo
+**Snapshot.** `main` at `85a16a6d` (code) plus this notes commit, tree clean.
+`cargo build` green, `cargo
 test --lib` **116 green**, `23_tt_lowering` **29 of 30** (red: `sum_drop_col`
 only), `softmax` green (~35 s). `24_tt` **3 of 11** (green:
 `llama_causal_mask_compare`, `llama_feedforward_glu`, `llama_lm_head_projection`;
 the rest now fail loudly at the real gap — see below). Goal unchanged: one
 `examples/llama` forward step on `Dev::TT(0)` (ttsim), `seq_len = 1`, checked
 against the CPU.
+
+### How the green gates work for us (read this before quoting progress)
+
+The gates are **regression nets, not a progress meter.** Concretely:
+
+- `23_tt_lowering` (29/30) is one *op group per test* on a single kernel
+  invocation, small constant shapes, mostly f32, compared word-for-word against
+  a host reference on ttsim. Green means: for this op, on this shape, the tile
+  access (`tt_reindex`/`tt_cb_lower`), the pattern choice, the movers and the
+  SFPU program are right. It is the pass-level contract: a pass that breaks one
+  of these paths is caught here in seconds instead of surfacing as a wrong
+  number inside a model.
+- `24_tt` (3/11) is the same for *llama's* op groups, with the graph path and
+  the shapes that group uses. Green means the op group lowers and matches the
+  CPU on that shape — nothing more.
+- Neither suite proves anything about an assembled model. **The assembled llama
+  model has never been run on TT, at any size.** What the gates cannot see:
+  - **launch scale.** Every green gate fits one grid. `lm_head` is 128256 wide
+    (4008 tile columns), `ffn` 8192 (256 tile columns), against ~120 cores: the
+    grid cap and the remainder loop are untested and are a *hard block* — no
+    gate depends on them.
+  - **streaming.** No gate reads more tiles through one CB than its depth. The
+    credit ring (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`) does not exist yet.
+  - **f16 end to end.** The gates are f32; llama is f16 through every op.
+  - **multi-layer.** 28 layers of weight residency, buffer reuse, fusion across
+    kernels and leaks — one kernel per gate, so none of it is exercised.
+  - **the graph/autotune path at model size.** Most gates are eager.
+- Consequence, stated plainly: each green gate removes a *proof obligation about
+  one op*, not a step toward a running model. The remaining distance is set by
+  the structural items above, and it is not measurable by counting gates.
+  Treat the count as "these paths still work", and read progress only from a
+  first assembled run.
+- The estimates produced from "gates remaining × time per gate" were therefore
+  wrong, every time, and should not be repeated. A forecast is only meaningful
+  after the assembled model has been tried once and the failures are concrete
+  (which op, which shape, which limit).
 
 ### What landed
 
