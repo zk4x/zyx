@@ -1,4 +1,140 @@
-## HANDOFF (2026-11-06, session 14) — start here: TT gates recovered, llama step next
+## HANDOFF (2026-11-06, session 15) — start here: indexing, TT conforms
+
+**Snapshot.** `main` at `b3af2a84` (notes) / `89da01b4` (code), tree clean.
+`cargo build` green, `cargo test --lib` **116 green**, `23_tt_lowering`
+**28 of 30 green + `softmax`** (red: `sum_drop_col`, `sum_one_row`), `24_tt`
+**3 of 11**. Goal unchanged: one `examples/llama` forward step on `Dev::TT(0)`
+(ttsim), `seq_len = 1`, checked against the CPU. Out of scope: perf, `tt_gemm`,
+qwen, kmd, GGUF quantization, decode loop, kv-cache growth.
+
+### The indexing rule (user-directed — read this before touching TT)
+
+- **`tt_reindex` must be one universal walk, not templates.** For **every**
+  load and store, take its index and rewrite *that index* from logical
+  element offsets to tile/face layout. Delete the `drop3`/`row2` shape arms.
+- **Correctness floor: a general aligned gather.** 64-byte-aligned DRAM loads,
+  in any order, single items included; L1 fixup places the words. Slow but
+  universal. Whole-tile `READ`, `DmReadTransposed`, `READ_BROADCAST_COL`,
+  contiguous runs are **optimizations** proven over that enumeration. If no
+  pattern is proven, the gather runs — that is correct, not an error.
+- **No row/column classification.** Reason only in terms of *where the loop is
+  and what the stride is* (`get_strides`, `Pat`, plus new decoders). The
+  orientation is the reduce variable's stride against the output lane's, not a
+  tensor-shape verdict.
+- **No metadata, ever.** Rejected: a `linearize` marker (explicitly forbidden);
+  a layout field / first-class layout value; a side table keyed by tensor id;
+  an orientation field on `Op::Reduce`; `Shard`/`Placement` carrying a layout.
+  Luminal's marker history is the evidence (`325e2e3c` derive loop-marker
+  dtypes in the e-graph and delete Rust-side inference, `88bcd12a`/
+  `8f3f2a30` FusionStart/End marker leakage, cuBLASLt marker election).
+- **`linearize` is shared and stays semantically as it is.** Tenstorrent
+  conforms to the IR, then optimizes. Do not make TT a graph-level pattern
+  matcher (no "match matmul and launch cuBLAS"-style shortcut).
+
+### The shape: deleted by `linearize`, not absent
+
+User's explanation (session 15): **`linearize` sets `Op::Param.shape = NULL`
+on purpose** — no other backend needs the shape after lowering, so it drops it
+to keep the IR clean. TT *does* need it, because TT DRAM is tiled at upload and
+the flat index must be inverted through that tilize.
+
+Confirmed: every TT kernel prints `param global shape=NULL`; a temporary print
+showed both params with `shape_op = OpId(NULL)`. So the shape is not lost in a
+TT pass — the shared pass deletes it.
+
+The datum is sufficient and needs no physical-layout field:
+
+```
+physical layout = f(Op::Param.shape, dtype, device constants, tilize rule)
+  device constants: tile 32x32, TILE_SLOT, TILE_DATA, face order, STRIPE
+  tilize rule:      last two dims, rank-1 = N x 1, padding = ceil to 32
+```
+
+`[1,256]` and `[256]` emit the *identical* index (`lane + 32*i`,
+`get_strides = {lane:1, i:32}`); they differ only by **shape**, which is why
+the shape must survive for TT. The shard needs no layout field.
+
+Fix options (user owns the call):
+1. keep `Op::Param.shape` through `linearize` (it is an existing IR field; the
+   cost is a shape OpId per param, i.e. slightly less "clean" IR);
+2. or capture the shape onto the TT kernel before the shared `linearize` runs,
+   replayed into the param's `shape` OpId (no linearize change).
+
+Prefer 1 if the "clean IR" argument was only cosmetic; 2 if `linearize` must
+stay byte-for-byte.
+
+### The evidence (why the rule, and where `tt_reindex` stops)
+
+Same `[10,20]`, `ZYX_DEBUG=256 ZYX_TT_IR=1`, before `tt_tile`:
+
+```
+sum([1])  (one value per row)             sum([0])  (one value per column)
+r27 = r14*20 + r15                        r27 = r40 + 20*r16
+r13 = reduce sum r35 over r15             r15 = reduce sum r35 over r16
+      reduce var stride = 1                     reduce var stride = 20
+```
+
+`tt_reindex` rewrites the stride-1 form to tile pitch
+(`reduce_lane + tile*32`, then `*1024`) and **bails on the stride-20 form**.
+That is the concrete gap: the universal walk must rewrite both from the
+variable and its stride; the shape-keyed `[32] -> []` fold table then goes.
+
+`sum_one_row` (`[1,256].sum_all()`) and the wide rank-1 `[256].sum_all()`
+produce the same index (`lane + 32*i`); the fold must come from
+`(index, shape)`, not from the `[32] -> []` shape table. `sum_drop_col`'s
+row-0/column-0 result is the same class (access/fold keyed on shape).
+
+### What landed this session (session 15)
+
+- `89da01b4` boundary tile unit from the access footprint (`tt_cb_lower`):
+  a `[32]` access spans 32 elements per tile, a scalar 1, not 1024; the affine
+  base is rebuilt in 1024-element units. Group-rebased indices are left alone;
+  a non-affine/non-dividing map keeps the old index (loud in `tt_slice`, never
+  a silent bail). Scalar loads accepted; scalar (`[]`) SFPU patterns added
+  (the loop accumulator of a reduce over a >32 axis is a scalar `Add`).
+  `sum_one_row` now compiles and runs (3.84 vs 125.9) instead of failing at
+  `boundary offset 32`.
+- `69274a8c`, `2980eb40`, `b3af2a84` (notes): the indexing rule, the
+  buffer-layout question, the shard conclusion.
+
+### Next, in order
+
+1. **Keep/replay `Op::Param.shape` for TT** (the one thing the whole index
+   transform needs). Verify with `ZYX_TT_IR=1` that the params print
+   `shape=rN` and `get_strides`-style decode can read the row pitch.
+2. **`tt_reindex` universal walk**: every load/store, element offset ->
+   tile/face layout, both stride-1 and stride-`C` reduce forms; delete `drop3`/
+   `row2`. Then the reduce fold reads the transformed index, and the
+   `[32] -> []`/`[32,32] -> [32]` shape table goes.
+3. **The general aligned gather** as the correctness floor (reader):
+   64-byte-aligned loads in any order, single items, L1 fixup. Wire the
+   `DmCopyWords`/`DmIndexPick` emitters (variants exist, no producer);
+   whole-tile/`DmReadTransposed`/`BROADCAST_COL`/runs become optimizations.
+4. Then `sum_one_row`, `sum_drop_col`, transposed-B (`q @ k^T`), embedding row
+   select, rope rotate-half all ride the same path.
+5. CB ring with credits (session 13 detail: `CbDeclare`/`Reserve`/`Push`/
+   `Wait`/`Pop`, per-iteration when `t > depth`, overfill guard, grid capped at
+   the core count with the remainder looped; ffn 8192 = 256 tile columns,
+   lm_head 128256 = 4008, ~120 cores; unbounded streaming prohibited).
+6. `examples/llama`, `seq_len = 1`, on ttsim, checked against CPU.
+
+### Traps
+
+- `ttsim`'s owner thread dies with a failed test: run gates **one per
+  process**; a later failure in the same process is a cascade.
+- 10 s per individual run; `softmax` needs ~50 s, run it alone.
+- IR dumps: `ZYX_TT_IR=1` (before/after `tt_tile`/`tt_reindex`/`tt_cb_lower`),
+  `ZYX_DEBUG=8` winner IR, `ZYX_DEBUG=256` NoSearch seed.
+- `--tests` does not fit 900 s on this box; an earlier "all green" came from
+  that truncation.
+- `24_tt` must not use `Tape`.
+- The examples workspace still asks for `features = ["tenstorrent"]`.
+- `24_tt::llama_attention_softmax` is a real op-group failure: transposed B
+  (`pat_b` binds the reduced lane on the multiplier; `q @ k^T` gives it as the
+  addend). Under the rule it is a case of the universal index transform, not a
+  new matmul arm.
+
+## HANDOFF (2026-11-06, session 14) — detail: TT gates recovered
 
 **Snapshot.** `main` at `3b871f64` plus the matmul and softmax fixes below.
 `cargo build` green, `cargo test --lib` **116 green**, `23_tt_lowering`
