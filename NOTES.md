@@ -67,29 +67,36 @@ the loop was fully split into lanes. Softmax's reduce kernels now lower:
 reader CBs + `end_reader` + the compute loop + writer drains (`kernel.debug`
 after `tt_cb_lower`, `ZYX_TT_IR=1`).
 
-### The bug that is left: the per-row horizontal reduce loses the row
+### The bug that is left: a per-row reduce's output layout
 
-`reduce sum r51 over r33` on a `[32,32]` tile must produce one value per tile
-**row**, but every row gets row 0's value. Minimal reproducer (`tests/tmp_loop.rs`,
-`[ROWS, 256]` with row `r` holding `r`, so the answer is `256*r`):
+**The reduce itself is correct.** `ZYX_DST_DUMP=1` (dumped after `runtime::run`
+from `Kernel::dump_rows`) on `[32,256]` summed over axis 1 shows the accumulator
+tile with row `r` holding `256*r` replicated across the row — `accumulate` +
+`finish_cols` are right, and the traffic/CB plan is right. What is wrong is the
+tile -> tensor boundary: the writer drains the whole `[32,32]` tile linearly
+(`tt_copy ... 4096B`), and a `[32]` logical tensor reads the **first 32 floats
+= row 0**, so every lane gets row 0's value.
 
-```
-ROWS=8   -> [0,0,0,0,0,0,0,0]
-ROWS=32  -> 32 copies of 0
-ROWS=64  -> [0 x32, 32 x32]
-```
+Reproducer (`[ROWS,256]` summed over axis 1, row `r` holding `r`, answer
+`256*r`): `ROWS=4/10/32/64` all return row 0's value replicated; `ROWS=64`
+returns `[0 x32, 32 x32]` (per 32-row block, block 0's first row = 0 and block
+1's = 32). `tt-metal` is fine here because its reduce output tile (row `r` = the
+answer in every column, `reduce::finish(Axis::Cols)`) is consumed by its layout
+bridge; zyx's writer has no such bridge.
 
-i.e. each 32-row block returns its **first** row, and the grid axis is right.
-The traffic and CB plan are right (the reader copies the 32x256 block, the
-unpack is a `[32,32]` tile per iteration); the loss is in the T1 row-op reduce
-program: `TtEmit::Reduce` → `accumulate` + `finish_cols` (`kernel/tenstorrent.rs`
-~3941-4052), whose row loop is a `TTOp::Replay` of 32 with `AddrMod 7` patched
-onto the store only. `[4,96]` could not see this: every row of that matrix held
-the same values.
+`TtEmit::Reduce` picks `TileDim::Row` for a `[32,32]` tile -> `[32]`
+(`finish_cols`, per-row broadcast) and `TileDim::Col` for a `[32]` vector ->
+scalar (`accumulate_in_order`, result in **row 0**, which is what the linear
+writer wants). So only the `TileDim::Row` output needs a compaction (row `r`'s
+value into lane `r` of row 0), and that is the next fix; softmax's `sum` feeds
+on it (row 4's output is the right softmax scaled by 0.73, i.e. its row sum is
+wrong).
 
-So a reduce test with a real loop (`[256,256]` over axis 1 = 8 tile iterations)
-does **not** pass yet. `sum`/`max` on `[10,20]` pass because their reduce fits
-one tile / has no 32-row tile.
+**What passes now:** `sum`, `max`, `sum_all`, `sum_scalar`, `max_scalar`, and
+the new **`sum_loop`** gate (`[32,256]` summed over everything: 8 tile
+iterations, with the full take/post ring) — that one is the "reduce test with a
+real loop" proof. `[256,256].sum(None)` also works; `[1,256].sum(None)` fails
+with `boundary offset 32 is not a whole tile` (separate, in the tiling).
 
 ### The reference the user pointed at
 
@@ -118,8 +125,9 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so ZYX_DEBUG=256 \
 
 ### Next, in order
 
-1. Fix the row-lane reduce against tt-metal's generated machine code (reproducer
-   above; run it with `ROWS=32,64`).
+1. Compact a `TileDim::Row` reduce's output (row `r` -> lane `r` of row 0) so a
+   `[32]` logical tensor reads the right values — the reproducer above. The
+   reduce DST is already correct, so this is a layout step, not a fold step.
 2. Then softmax's value gate (it is uniform-per-row wrong now: row 4's values
    are correct scaled by 0.73, i.e. the `sum` of that row is wrong).
 3. Then `tt_cb_lower` must return an error instead of bailing silently

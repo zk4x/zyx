@@ -542,6 +542,10 @@ fn execute(
         Schedule::Concurrent(&run.sems)
     };
     let mut kernel = runtime::Kernel { schedule, stage: &stage, read_back: &run.read_back, ..runtime::Kernel::new(schedule) };
+    if std::env::var_os("ZYX_DST_DUMP").is_some() {
+        kernel.dump_rows = tt_isa::mailbox::DUMP_MAX_ROWS;
+        kernel.clear_dst = false;
+    }
     for thread in 0..3 {
         if let Some(program) = &run.programs[thread] {
             kernel.programs[thread] = Some(program.len);
@@ -583,6 +587,14 @@ fn execute(
                     eprintln!("CODE0 {i:03}: {w:08x}");
                 }
             }
+        }
+    }
+    if std::env::var_os("ZYX_DST_DUMP").is_some()
+        && let Ok(o) = &out
+    {
+        for row in 0..tt_isa::mailbox::DUMP_MAX_ROWS as usize {
+            let vals: Vec<u32> = (0..tt_isa::mailbox::DUMP_ROW_WORDS as usize).map(|c| o.dst[row * 16 + c]).collect();
+            eprintln!("DST row {row}: {vals:08x?}");
         }
     }
     let out = out.map_err(|e| e.to_string())?;

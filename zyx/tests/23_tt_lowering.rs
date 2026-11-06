@@ -523,6 +523,32 @@ fn sum_all() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// A reduce whose kernel really has a loop: `[32, 256]` summed over
+/// everything is 8 tile iterations, so the accumulator, the per-iteration
+/// tile hand-off and the loop's reuse ring all run. (The `[10, 20]` reduces
+/// above fit one tile and never enter a loop.)
+#[test]
+fn sum_loop() -> Result<(), ZyxError> {
+    let x = Tensor::rand([32, 256], DType::F32)?;
+    let z = x.to(Dev::TT(0))?.sum_all().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 32 * 256);
+    assert_eq!(zv.len(), 1);
+    let mut acc = 0f32;
+    for v in &xv {
+        acc += *v;
+    }
+    let err = (zv[0] - acc).abs();
+    println!("sum_loop: {} vs {} (err {err})", zv[0], acc);
+    // 8192 fp32 additions in the device's own order: the bound is
+    // `n * u * sum |x|`, well under a relative 1e-4 here.
+    assert!(err <= 1e-4 * acc.abs() + 1e-3, "err {err}");
+
+    Ok(())
+}
+
 #[test]
 fn matmul_sigmoid() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::F32)?;
