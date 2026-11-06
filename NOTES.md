@@ -1,8 +1,10 @@
 ## HANDOFF (2026-11-06, session 16) — start here: shapes kept, index rewritten
 
-**Snapshot.** `main` at `1deedec2`, tree clean. `cargo build` green, `cargo
+**Snapshot.** `main` at `85a16a6d`, tree clean. `cargo build` green, `cargo
 test --lib` **116 green**, `23_tt_lowering` **29 of 30** (red: `sum_drop_col`
-only), `softmax` green (~35 s). `24_tt` unchanged at 3/11. Goal unchanged: one
+only), `softmax` green (~35 s). `24_tt` **3 of 11** (green:
+`llama_causal_mask_compare`, `llama_feedforward_glu`, `llama_lm_head_projection`;
+the rest now fail loudly at the real gap — see below). Goal unchanged: one
 `examples/llama` forward step on `Dev::TT(0)` (ttsim), `seq_len = 1`, checked
 against the CPU.
 
@@ -44,27 +46,45 @@ against the CPU.
 - `tt_cb_lower` no longer re-scales an index already in tile units (every step a
   whole tile) with its access-footprint heuristic — that was turning `i*1024`
   into `i*32768`.
+- `tt_dataflow_select` no longer removes every compute-side circular load; only
+  the ones no other op names. An unlowered consumer keeps its operand and
+  `tt_verify` reports it.
 - The two `reindex_tests` unit gates now give their params real shapes, because
   the transform reads them; their expected strides are unchanged.
 
-### The one red gate, and why it is the next work item
+### The red gates, and why they are the next work item
 
-`sum_drop_col` (`[10,20].sum([0])`): the value is written one *scalar per
-column*, so the writer drains a single element per grid core. Its byte offset
-in the tile image is **not affine in the element index**: element `(r, 0)` sits
-at `face*256 + (r%16)*16` datums, i.e. `64r` bytes for `r < 16` and then jumps
-to face 2. `tt_slice`/`tt_move_offset` only express `base + gidx*stride`, so a
-per-element scatter needs the face-aware address computed where the words are
-placed — exactly the **general gather** (indexing rule, item 3): 64-byte-aligned
-DRAM loads, single items, L1 fixup, with whole-tile/transposed/broadcast/runs as
-optimizations over it. `DmCopyWords`/`DmIndexPick` exist as variants with no
-producer.
+`23_tt_lowering::sum_drop_col` (`[10,20].sum([0])`): the value is written one
+*scalar per column*, so the writer drains a single element per grid core. Its
+byte offset in the tile image is **not affine in the element index**: element
+`(r, 0)` sits at `face*256 + (r%16)*16` datums, i.e. `64r` bytes for `r < 16`
+and then jumps to face 2. `tt_slice`/`tt_move_offset` only express
+`base + gidx*stride`, so a per-element scatter needs the face-aware address
+computed where the words are placed — exactly the **general gather** (indexing
+rule, item 3): 64-byte-aligned DRAM loads, single items, L1 fixup, with
+whole-tile/transposed/broadcast/runs as optimizations over it.
+`DmCopyWords`/`DmIndexPick` exist as variants with no producer.
+
+`24_tt::llama_rope` is the same gap, and now says so:
+`tenstorrent: boundary offset 2 is not a whole tile`.
+
+`24_tt::llama_attention_softmax` and `llama_promote_realized_eager_load` now
+fail at `tt_verify: OpId(N) is not fully lowered (SSA compute remains)`. They
+used to panic later and elsewhere: `tt_dataflow_select` removed *every*
+compute-side circular load on the assumption that compute had resolved them, so
+a consumer that was not lowered kept a dangling operand and the next DCE
+panicked on a dead slab key. It now removes only loads no other op names, so the
+real gap reports itself. (Softmax's remaining work is a real lowering gap, not
+the transposed-B index case, which the shape-derived rewrite covers.)
 
 ### Next, in order
 
 1. **The general gather** (reader and writer): element-wise moves with a
    face-aware address, wired through `DmCopyWords`/`DmIndexPick` and the L1
-   fixup; keep the whole-tile fast paths. It closes `sum_drop_col`.
+   fixup; keep the whole-tile fast paths. It closes `sum_drop_col` and
+   `llama_rope`, and unblocks the partial-tile stores in the KV-cache tests
+   (`boundary index ... is not affine` — a non-affine index reaching `tt_slice`
+   after lower-to-native, which the gather must consume instead of rejecting).
 2. The rest of the universal walk: `tt_reindex` still bails when the kernel is
    not exactly one reduce + one load + one store. Lift that, so every param
    load/store is rewritten (matmul operands, embedding row select, rope
