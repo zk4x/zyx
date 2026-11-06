@@ -437,7 +437,12 @@ impl Kernel {
                             op_id = self.prev_op(op_id);
                         }
 
-                        // Find the store to acc.
+                        // Find the store to acc. The backward scan only
+                        // proves a register storage precedes this loop, not
+                        // that the loop writes it: a tensorized kernel keeps
+                        // its accumulator in fragment slots written by a
+                        // nested update. No store before the axis simply means
+                        // this loop is not a reduce, so refuse the split.
                         let mut op_id = acc_id;
                         let _acc_init;
                         loop {
@@ -449,7 +454,7 @@ impl Kernel {
                             }
                             op_id = self.next_op(op_id);
                             if op_id == axis_id {
-                                unreachable!();
+                                return OpId::NULL;
                             }
                         }
 

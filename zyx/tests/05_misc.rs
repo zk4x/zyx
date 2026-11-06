@@ -881,6 +881,40 @@ fn matmul_f16() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// NT tensor-core matmul: the operand layout `x @ W.t()` produces, where B is
+/// stored `[n,k]` and is K-contiguous exactly like A. Tensorization used to
+/// reject this — it required exactly one operand with unit k stride — so no
+/// tensorized candidate existed for any llama projection. Same exact-integer
+/// f16 trick as `matmul_f16`, so the comparison is value-for-value.
+#[test]
+fn matmul_f16_nt() -> Result<(), ZyxError> {
+    const M: usize = 64;
+    const K: usize = 64;
+    const N: usize = 64;
+    let x_data: Vec<Vec<f16>> = (0..M).map(|i| (0..K).map(|j| f16::from_f32(((i + j) % 3) as f32)).collect()).collect();
+    // B is [N, K]: its fast axis is K, not N.
+    let y_data: Vec<Vec<f16>> = (0..N).map(|i| (0..K).map(|j| f16::from_f32(((j + i) % 3) as f32 - 1.0)).collect()).collect();
+
+    if !Dev::all().contains(&Dev::Cuda(0)) {
+        return Ok(());
+    }
+    let dev = Dev::Cuda(0);
+    let x = Tensor::from(x_data.clone()).to(dev)?;
+    let y = Tensor::from(y_data.clone()).to(dev)?;
+    let z = x.dot_dtype(y.t(), DType::F32)?.to(Dev::C)?.cast(DType::F32);
+    let z_data: Vec<f32> = z.try_into()?;
+    let mut expected = vec![0f32; M * N];
+    for i in 0..M {
+        for kk in 0..K {
+            for j in 0..N {
+                expected[i * N + j] += x_data[i][kk].to_f32() * y_data[j][kk].to_f32();
+            }
+        }
+    }
+    assert_eq!(z_data, expected);
+    Ok(())
+}
+
 #[test]
 fn matmul_f16_large() -> Result<(), ZyxError> {
     // 512 x 1024 x 4096: 32 x 128 tiles of m16n8k8 with 512 K rounds each, so

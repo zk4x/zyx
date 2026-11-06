@@ -2030,10 +2030,9 @@ impl CUDADevice {
         // PTX-direct descriptor (ZYX_PTX render): assembled bytes ride
         // the descriptor and skip NVRTC entirely.
         if let Op::PTX(ptx) = fourth {
-            // Single-variant enum: irrefutable today, and adding a
-            // variant breaks this `let` at compile time, forcing
-            // decode handling.
-            let PTXOp::Bytes(bytes) = ptx.as_ref();
+            let PTXOp::Bytes(bytes) = ptx.as_ref() else {
+                unreachable!("rendered PTX payload is never an ldmatrix instruction");
+            };
             let ptx_vec: Vec<u8> = bytes.to_vec();
             // PTX bytes carry no nul terminator (unlike the C-string
             // path below), so dump lossily instead of via CString.

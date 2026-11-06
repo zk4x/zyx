@@ -207,16 +207,65 @@ impl Optimization for Tensorize {
             }
         });
 
-        // Scatter the accumulator: each lane writes its own fragment slots.
-        for i in 0..c_slots {
-            let at = kernel.const_idx(i as u32);
-            let elem = kernel.load(acc, at);
-            let idx = frag_index(kernel, &v.c, (m_base, n_base), (r.c_m, r.c_n), v.c.slots[i]);
-            kernel.store(r.c_src, elem, idx);
+        // Every store after the loop whose value traces back to the
+        // accumulator is a C output: the matched final store plus any
+        // duplicate of the same value (e.g. `f32(f16(acc))`, a cast copy that
+        // is still live elsewhere). Each is scattered per fragment slot with
+        // its own cast chain. The update store inside the loop never matches:
+        // its source is the `add`, not a cast of an accumulator load.
+        // The seed's accumulator: the init store's destination. `acc` below is
+        // the fresh fragment storage `apply` just built.
+        let old_acc = match kernel.at(r.init_store) {
+            Op::Store { dst, .. } => *dst,
+            _ => unreachable!("tensorize: init store is not a store"),
+        };
+        let mut epilogue: Vec<(OpId, Vec<crate::DType>)> = Vec::new();
+        let mut extra_stores: Vec<OpId> = Vec::new();
+        {
+            let mut op_id = kernel.head;
+            while !op_id.is_null() {
+                if let Op::Store { dst, src, .. } = kernel.at(op_id) {
+                    let mut chain: Vec<crate::DType> = Vec::new();
+                    let mut value = *src;
+                    loop {
+                        match kernel.at(value) {
+                            Op::Cast { x, dtype } | Op::Bitcast { x, dtype } => {
+                                chain.push(*dtype);
+                                value = *x;
+                            }
+                            Op::Load { src: s, .. } if *s == old_acc => {
+                                if op_id != r.final_store {
+                                    extra_stores.push(op_id);
+                                }
+                                epilogue.push((*dst, chain));
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                }
+                op_id = kernel.next_op(op_id);
+            }
+        }
+        // Scatter the accumulator: each lane writes its own fragment slots,
+        // once per C output.
+        for (dst, chain) in &epilogue {
+            for i in 0..c_slots {
+                let at = kernel.const_idx(i as u32);
+                let mut elem = kernel.load(acc, at);
+                // `chain` runs outermost-first; rebuild the value inside-out.
+                for dtype in chain.iter().rev() {
+                    elem = kernel.cast(elem, *dtype);
+                }
+                let idx = frag_index(kernel, &v.c, (m_base, n_base), (r.c_m, r.c_n), v.c.slots[i]);
+                kernel.store(*dst, elem, idx);
+            }
         }
 
         // Drop the scalar region: `Store` and `Loop` are DCE roots, so the
-        // old accumulation never dies on its own.
+        // old accumulation never dies on its own. `final_store` is inside the
+        // span; any duplicate epilogue store sits after it and is removed on
+        // its own.
         let mut doomed: Vec<OpId> = Vec::new();
         let mut op_id = r.init_store;
         while !op_id.is_null() {
@@ -227,6 +276,9 @@ impl Optimization for Tensorize {
             op_id = kernel.next_op(op_id);
         }
         for op_id in doomed.into_iter().rev() {
+            kernel.remove_op(op_id);
+        }
+        for op_id in extra_stores.into_iter().rev() {
             kernel.remove_op(op_id);
         }
         kernel.verify();
@@ -389,15 +441,27 @@ impl Kernel {
             else {
                 continue;
             };
-            let la_k1 = map_la.get(&k_loop).map(|(_, s)| *s == 1).unwrap_or(false);
-            let lb_k1 = map_lb.get(&k_loop).map(|(_, s)| *s == 1).unwrap_or(false);
-            if la_k1 == lb_k1 {
+            // Orient by the OUTPUT map, not by which operand happens to have
+            // unit k stride. C names the two output ranges {m,n}; the operand
+            // view that indexes M is A, the one that indexes N is B, and both
+            // contract over `k`. This is what admits the NT layout that
+            // `x @ W.t()` produces, where A and B are *both* K-contiguous; the
+            // old "exactly one operand has unit k stride" rule rejected it
+            // before any fragment was built.
+            let mut c_keys = c_map.iter().filter(|(v, _)| !v.is_null());
+            let Some((&cr0, &(_, cs0))) = c_keys.next() else { continue };
+            let Some((&cr1, &(_, cs1))) = c_keys.next() else { continue };
+            // Row-major C: the row (M) range carries the larger stride.
+            let (m_range, n_range) = if cs0 >= cs1 { (cr0, cr1) } else { (cr1, cr0) };
+            if m_range == n_range {
                 continue;
             }
-            let (a_map, a_src, b_map, b_src) = if la_k1 {
-                (map_la, a_src, map_lb, b_src)
+            let (a_map, b_map, a_src, b_src) = if map_la.contains_key(&m_range) && map_lb.contains_key(&n_range) {
+                (map_la, map_lb, a_src, b_src)
+            } else if map_la.contains_key(&n_range) && map_lb.contains_key(&m_range) {
+                (map_lb, map_la, b_src, a_src)
             } else {
-                (map_lb, b_src, map_la, a_src)
+                continue;
             };
 
             // Operand and accumulator dtypes, as the views are oriented.
@@ -417,12 +481,7 @@ impl Kernel {
             };
 
             // Both views name exactly {m,k} / {k,n}; C names {m,n}.
-            let m_range = a_map.keys().copied().find(|v| !v.is_null() && *v != k_loop).unwrap_or(OpId::NULL);
-            let n_range = b_map.keys().copied().find(|v| !v.is_null() && *v != k_loop).unwrap_or(OpId::NULL);
-            if m_range.is_null()
-                || n_range.is_null()
-                || m_range == n_range
-                || a_map.iter().filter(|(v, _)| !v.is_null()).count() != 2
+            if a_map.iter().filter(|(v, _)| !v.is_null()).count() != 2
                 || b_map.iter().filter(|(v, _)| !v.is_null()).count() != 2
                 || c_map.iter().filter(|(v, _)| !v.is_null()).count() != 2
                 || !a_map.contains_key(&k_loop)
@@ -612,6 +671,233 @@ mod tests {
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
         assert_eq!(wmmas, 1, "one wmma update");
+    }
+
+    /// NT is the layout `x @ W.t()` produces: B is `[n,k]`, so *both* operands
+    /// are K-contiguous. The matcher must orient by the output ranges instead
+    /// of by which operand has unit k stride, or no tensorized candidate is
+    /// generated for any llama projection.
+    #[test]
+    fn matches_scalar_matmul_loop_nt() {
+        const M: i64 = 16;
+        const N: i64 = 8;
+        const K: i64 = 8;
+
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cuda()));
+        let a = k.param(DType::F16);
+        let b = k.param(DType::F16);
+        let c = k.param_mut(DType::F32);
+        let m = k.group_range(0, M);
+        let n = k.group_range(1, N);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zero = k.const_val(0.0f32);
+        k.store(acc, zero, 0i64);
+        k.loop_over(K, |k, lv| {
+            let a_idx = k.mad(m, K, lv);
+            let a_load = k.load(a, a_idx);
+            // B is [n, k]: k is the fast axis here too.
+            let b_idx = k.mad(n, K, lv);
+            let b_load = k.load(b, b_idx);
+            let prod = k.mul(a_load, b_load);
+            let prod = k.cast(prod, DType::F32);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prod, prev);
+            k.store(acc, sum, 0i64);
+        });
+        let res = k.load(acc, 0i64);
+        let c_idx = k.mad(m, N, n);
+        k.store(c, res, c_idx);
+
+        let opt = k.opt_tensorize();
+        assert_eq!(opt.nconfigs(), 1, "one NT scalar matmul region");
+        opt.apply(&mut k, 0);
+        k.verify();
+        let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
+        assert_eq!(wmmas, 1, "one wmma update");
+    }
+
+    /// The exact seed IR a llama prefill projection linearizes to, transcribed
+    /// from a `ZYX_DEBUG=264` dump (`llama matmul q_proj [128x3072]x[3072x3072]`):
+    ///
+    /// ```text
+    /// param f16 a  (activation [m,k])   param f16 b  (weight [n,k])
+    /// param mut f16 c16                 param mut f32 c32
+    /// g0 = group_range(0) over 128      g1 = group_range(1) over 3072
+    /// store acc = 0
+    /// for k in 0..3072:
+    ///     a = load a[g0*3072 + k]     b = load b[g1*3072 + k]
+    ///     acc = f32(a*b) + load acc
+    /// store c16[g0*3072 + g1] = f16(acc)
+    /// store c32[g0*3072 + g1] = f32(f16(acc))
+    /// ```
+    ///
+    /// Both operands are K-contiguous (NT: `x @ W.t()`), and there are **two**
+    /// final stores — the f16 graph output and an f32 copy — which no other
+    /// matcher test has.
+    #[test]
+    fn matches_llama_prefill_seed_ir() {
+        const M: i64 = 128;
+        const N: i64 = 3072;
+        const K: i64 = 3072;
+
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cuda()));
+        let a = k.param(DType::F16);
+        let b = k.param(DType::F16);
+        let c16 = k.param_mut(DType::F16);
+        let c32 = k.param_mut(DType::F32);
+        let m = k.group_range(0, M);
+        let n = k.group_range(1, N);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zero = k.const_val(0.0f32);
+        k.store(acc, zero, 0i64);
+        k.loop_over(K, |k, lv| {
+            let a_idx = k.mad(m, K, lv);
+            let a_load = k.load(a, a_idx);
+            let b_idx = k.mad(n, K, lv);
+            let b_load = k.load(b, b_idx);
+            let prod = k.mul(a_load, b_load);
+            let prod = k.cast(prod, DType::F32);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prod, prev);
+            k.store(acc, sum, 0i64);
+        });
+        let res = k.load(acc, 0i64);
+        let res16 = k.cast(res, DType::F16);
+        let res32 = k.cast(res16, DType::F32);
+        let c_idx = k.mad(m, N, n);
+        k.store(c16, res16, c_idx);
+        k.store(c32, res32, c_idx);
+
+        // The real seed reaches the search already linearized; match it in the
+        // same form the autotuner sees.
+        k.linearize();
+        let opt = k.opt_tensorize();
+        assert_eq!(opt.nconfigs(), 1, "the llama prefill seed must select one region");
+        opt.apply(&mut k, 0);
+        k.verify();
+        let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
+        assert_eq!(wmmas, 1, "one wmma update");
+    }
+
+    /// Peephole target check: what does `opt_local_staging` see on an already
+    /// tensorized kernel? Run both by hand and dump the IR.
+    #[test]
+    fn staging_on_tensorized_matmul() {
+        const M: i64 = 16;
+        const N: i64 = 8;
+        const K: i64 = 64;
+
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cuda()));
+        let a = k.param(DType::F16);
+        let b = k.param(DType::F16);
+        let c = k.param_mut(DType::F32);
+        let m = k.group_range(0, M);
+        let n = k.group_range(1, N);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zero = k.const_val(0.0f32);
+        k.store(acc, zero, 0i64);
+        k.loop_over(K, |k, lv| {
+            let a_idx = k.mad(m, K, lv);
+            let a_load = k.load(a, a_idx);
+            let b_idx = k.mad(n, K, lv);
+            let b_load = k.load(b, b_idx);
+            let prod = k.mul(a_load, b_load);
+            let prod = k.cast(prod, DType::F32);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prod, prev);
+            k.store(acc, sum, 0i64);
+        });
+        let res = k.load(acc, 0i64);
+        let c_idx = k.mad(m, N, n);
+        k.store(c, res, c_idx);
+        k.linearize();
+
+        let t = k.opt_tensorize();
+        println!("tensorize nconfigs = {}", t.nconfigs());
+        assert_eq!(t.nconfigs(), 1, "tensorize must match the seed");
+        t.apply(&mut k, 0);
+        k.verify();
+        println!("--- after tensorize ---");
+        k.debug();
+
+        let s = k.opt_local_staging();
+        println!("staging nconfigs = {}", s.nconfigs());
+        if s.nconfigs() > 0 {
+            s.apply(&mut k, 0);
+            k.verify();
+            println!("--- after staging ---");
+            k.debug();
+        }
+    }
+
+    /// The fragment-slot pattern, matched against a tensorized kernel's A
+    /// slots. Bindings: `l` lane range, `mb` tile row base (`m*16`), `kb`
+    /// k base (`k*8`), `K` the row stride, `s` the slot offset.
+    #[test]
+    #[ignore = "the epilogue-simplified slot index is context-dependent; the structural FragMap matcher replaces this"]
+    fn mma_fragment_slot_pattern_matches() {
+        use crate::kernel::pat::Pat;
+
+        const M: i64 = 16;
+        const N: i64 = 8;
+        const K: i64 = 64;
+
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cuda()));
+        let a = k.param(DType::F16);
+        let b = k.param(DType::F16);
+        let c = k.param_mut(DType::F32);
+        let m = k.group_range(0, M);
+        let n = k.group_range(1, N);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zero = k.const_val(0.0f32);
+        k.store(acc, zero, 0i64);
+        k.loop_over(K, |k, lv| {
+            let a_idx = k.mad(m, K, lv);
+            let a_load = k.load(a, a_idx);
+            let b_idx = k.mad(n, K, lv);
+            let b_load = k.load(b, b_idx);
+            let prod = k.mul(a_load, b_load);
+            let prod = k.cast(prod, DType::F32);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prod, prev);
+            k.store(acc, sum, 0i64);
+        });
+        let res = k.load(acc, 0i64);
+        let c_idx = k.mad(m, N, n);
+        k.store(c, res, c_idx);
+        k.linearize();
+        k.opt_tensorize().apply(&mut k, 0);
+        k.default_epilogue();
+        k.verify();
+        println!("--- after epilogue ---");
+        k.debug();
+
+        // `index = (mb + lane/4 % 8) * K + (kb + lane%4 * 2 + s)`
+        let l = Pat::bind('l');
+        let row = (l.clone() / 4) % 8;
+        let col = (l.clone() % 4) * 2;
+        let idx = (Pat::bind('m') + row) * Pat::bind_const('K')
+            + (Pat::bind('k') + col + Pat::bind_const('s'));
+        let slot = Pat::load(Pat::bind('a'), idx);
+
+        let wmma = k
+            .iter_unordered()
+            .find_map(|(id, op)| matches!(op, Op::Wmma { .. }).then_some(id))
+            .expect("tensorize emitted a wmma");
+        let Op::Wmma { a: a_frag, .. } = *k.at(wmma) else { unreachable!() };
+        let Op::Stack { ref ops } = *k.at(a_frag) else { panic!("A operand is not a stack") };
+        let mut matched = 0;
+        for &slot_op in ops.iter() {
+            if let Some(b) = k.match_pat(slot_op, &slot) {
+                matched += 1;
+                println!("slot {slot_op}: s={} K={}", b.int('s'), b.int('K'));
+            }
+        }
+        assert_eq!(matched, ops.len(), "every A slot must match the fragment pattern");
     }
 
     /// Tiling is the split's job, not the pass's: splitting the M and N tile

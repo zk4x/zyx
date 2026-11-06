@@ -464,6 +464,20 @@ pub enum PTXOp {
     /// Assembled PTX assembly bytes, as handed to the driver (same shape
     /// as NVRTC output). Boxed to keep `Op` in budget.
     Bytes(Box<[u8]>),
+    /// Warp-level `ldmatrix.sync.aligned.m8n8` load: `frags` 8x8 b16 tiles
+    /// from shared memory into the fragment registers, i.e. `frags` 32-bit
+    /// words (2 f16 each) per lane. Non-portable by construction: it is a
+    /// PTX instruction family, like the tensor-core op it feeds.
+    LdMatrix {
+        /// Number of 8x8 tiles: 1, 2 or 4 (`.x1`, `.x2`, `.x4`).
+        frags: u8,
+        /// Shared-memory storage the tile is read from.
+        src: OpId,
+        /// Element index of the tile base inside `src`.
+        addr: OpId,
+        /// Load the transposed element order (`.trans`).
+        trans: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -1637,7 +1651,11 @@ impl Op {
             Op::Source(_) | Op::Program { .. } | Op::Kernel(_) | Op::GPU(_) => {
                 vec![]
             }
-            Op::Spirv(_) | Op::PTX(_) => vec![],
+            Op::Spirv(_) => vec![],
+            Op::PTX(p) => match p.as_ref() {
+                PTXOp::Bytes(_) => vec![],
+                PTXOp::LdMatrix { src, addr, .. } => vec![*src, *addr],
+            },
         }
         .into_iter()
     }
@@ -1655,7 +1673,11 @@ impl Op {
             | Op::Barrier => vec![],
             Op::Contiguous { x, .. } => vec![x],
             Op::Detach { x, .. } => vec![x],
-            Op::Spirv(_) | Op::PTX(_) => vec![],
+            Op::Spirv(_) => vec![],
+            Op::PTX(p) => match p.as_mut() {
+                PTXOp::Bytes(_) => vec![],
+                PTXOp::LdMatrix { src, addr, .. } => vec![src, addr],
+            },
             Op::ToDevice { x, .. } => vec![x],
             Op::After { x, dep } => vec![x, dep],
             Op::Param { shape, .. } => {

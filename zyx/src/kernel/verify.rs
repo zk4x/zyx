@@ -6,7 +6,7 @@ use std::ops::RangeInclusive;
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, TTOp},
     shape::Dim,
 };
 
@@ -108,16 +108,22 @@ impl Kernel {
                     // Graph-only and post-render ops must never reach
                     // kernel IR at this (pre-render) stage.
                     Op::Source(_)
-                    | Op::GPU(_)
-                    | Op::Spirv(_)
-                    | Op::PTX(_)
-                    | Op::After { .. }
-                    | Op::ToDevice { .. }
-                    | Op::Contiguous { .. }
-                    | Op::Program { .. }
-                    | Op::Kernel(_) => {
-                        todo!()
-                    }
+                | Op::GPU(_)
+                | Op::Spirv(_)
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Program { .. }
+                | Op::Kernel(_) => {
+                    todo!()
+                }
+                // PTX-level instructions are IR here (they are not portable
+                // enough for the portable op set, but they are still ops the
+                // passes see); assembled payloads never reach this stage.
+                Op::PTX(p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!("assembled PTX payload in kernel IR"),
+                    PTXOp::LdMatrix { .. } => {}
+                },
                     // Graph-only marker, erased at kernelization: never present.
                     Op::Detach { .. } => {
                         todo!()
@@ -654,17 +660,25 @@ impl Kernel {
                     stack.pop();
                 }
                 Op::Barrier => {}
-                Op::Source(_)
-                | Op::GPU(_)
-                | Op::Spirv(_)
-                | Op::PTX(_)
-                | Op::After { .. }
-                | Op::ToDevice { .. }
-                | Op::Contiguous { .. }
-                | Op::Program { .. }
-                | Op::Kernel(_) => {
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
+                // PTX-level instruction: `ldmatrix` reads a shared storage at
+                // an index and yields `frags` 32-bit fragment registers.
+                Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!(),
+                    PTXOp::LdMatrix { frags, src, addr, .. } => {
+                        if !matches!(self.at(*src), Op::Storage { scope: MemScope::Local, .. }) {
+                            println!("ldmatrix={op_id} source is not local storage");
+                            self.debug();
+                            panic!();
+                        }
+                        check(op_id, *src, &stack);
+                        check(op_id, *addr, &stack);
+                        dtypes.insert(op_id, DType::F16);
+                        let _ = frags;
+                    }
+                },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {
                     todo!()

@@ -676,6 +676,10 @@ impl Kernel {
                     PTXOp::Bytes(bytes) => {
                         writeln!(f, "{indent}ptx_bytes={}", bytes.len()).unwrap();
                     }
+                    PTXOp::LdMatrix { frags, src, addr, trans } => {
+                        writeln!(f, "{indent}ldmatrix x{frags} trans={trans} from OpId({}) at OpId({})", src.0, addr.0)
+                            .unwrap();
+                    }
                 },
             }
             op_id = self.ops[op_id].next;

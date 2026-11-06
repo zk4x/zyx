@@ -440,7 +440,6 @@ impl Kernel {
                 Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
-                | Op::PTX(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
@@ -463,6 +462,18 @@ impl Kernel {
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
                 | Op::TT(TTOp::Pack(_)) => {}
+                // PTX-level instruction: `ldmatrix` yields a per-lane
+                // fragment vector of `frags` 32-bit words (2 f16 each) and
+                // reads both the staging storage and its index.
+                Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => {}
+                    PTXOp::LdMatrix { frags, src, addr, .. } => {
+                        let n = Dim::from(i64::from(*frags) * 2);
+                        dtypes.insert(op_id, (DType::F16, vec![n]));
+                        *rcs.entry(*src).or_insert(0) += 1;
+                        *rcs.entry(*addr).or_insert(0) += 1;
+                    }
+                },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => todo!("Detach in ordered kernel"),
                 // Movement ops carry their output shape in their
@@ -816,7 +827,10 @@ impl Kernel {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
-                Op::PTX(_) => todo!(),
+                Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!("assembled PTX payload has no dtype"),
+                    PTXOp::LdMatrix { .. } => return DType::F16,
+                },
                 Op::Const(c) => return c.dtype(),
                 Op::Param { dtype, .. } => return dtype,
                 Op::Storage { dtype, .. } => return dtype,

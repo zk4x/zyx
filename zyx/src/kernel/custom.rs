@@ -24,8 +24,8 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::{
-    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, UOp,
-    ops::TileDim,
+    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, SourceBlock,
+    UOp, ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
@@ -1056,6 +1056,15 @@ impl Kernel {
     /// Warp matrix multiply-accumulate.
     pub fn wmma(&mut self, dims: MMADims, layout: MMALayout, dtype: MMADType, a: OpId, b: OpId, c: OpId) -> OpId {
         self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
+    }
+
+    /// Warp-level `ldmatrix`: load `frags` 8x8 b16 tiles from local storage
+    /// `src` at element index `addr` into the fragment layout `mma.sync`
+    /// expects. `frags` is 1, 2 or 4; `trans` selects `.trans`. A PTX
+    /// instruction, so it is CUDA-only by construction.
+    pub fn ldmatrix(&mut self, frags: u8, src: OpId, addr: impl IntoOp, trans: bool) -> OpId {
+        let addr = addr.into_op(self);
+        self.push_back(Op::PTX(Box::new(PTXOp::LdMatrix { frags, src, addr, trans })))
     }
 
     /// Hardware tile matmul: `x @ y` over 32x32 tiles, result in a DST

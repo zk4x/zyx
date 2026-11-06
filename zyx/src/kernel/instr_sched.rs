@@ -17,7 +17,7 @@ use std::collections::BinaryHeap;
 
 use crate::{
     Map,
-    kernel::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
+    kernel::{Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, TTOp},
 };
 
 impl Kernel {
@@ -245,17 +245,18 @@ impl Kernel {
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
                 | Op::TT(TTOp::Pack(_)) => {}
-                Op::Source(_)
-                | Op::GPU(_)
-                | Op::Spirv(_)
-                | Op::PTX(_)
-                | Op::After { .. }
-                | Op::ToDevice { .. }
-                | Op::Contiguous { .. }
-                | Op::Program { .. }
-                | Op::Kernel(_) => {
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
+                // PTX-level instruction: schedule it after the storage and
+                // index it reads.
+                Op::PTX(p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!(),
+                    PTXOp::LdMatrix { src, addr, .. } => {
+                        add_param!(src);
+                        add_param!(addr);
+                    }
+                },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {
                     todo!()

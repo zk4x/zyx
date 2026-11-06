@@ -19,7 +19,7 @@
 use super::predict_cost::predict_time_us;
 use crate::{
     DType, Map, Set,
-    kernel::{IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp},
+    kernel::{IDX_T, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, TTOp},
     shape::Dim,
 };
 
@@ -229,7 +229,17 @@ impl Kernel {
                         }
                         _ => {}
                     },
-                    Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
+                    Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
+                    Op::PTX(ref p) => match p.as_ref() {
+                        PTXOp::Bytes(_) => todo!(),
+                        // A shared-memory fragment load: both operands stay
+                        // live; the traffic is already counted on the staging
+                        // storage itself.
+                        PTXOp::LdMatrix { src, addr, .. } => {
+                            *rcs.entry(*src).or_insert(0) += 1;
+                            *rcs.entry(*addr).or_insert(0) += 1;
+                        }
+                    },
                     Op::Barrier | Op::EndLoop => {}
                 }
                 op_id = self.next_op(op_id);
@@ -311,7 +321,11 @@ impl Kernel {
                 | Op::Reshape { .. }
                 | Op::Pad { .. } => todo!(),
                 Op::Reduce { .. } => true,
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
+                Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!(),
+                    PTXOp::LdMatrix { .. } => true,
+                },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }
@@ -686,7 +700,15 @@ impl Kernel {
                 Op::Barrier => {
                     wi_barriers += loop_mult;
                 }
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => todo!(),
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
+                Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!(),
+                    // One shared-memory instruction per fragment bundle.
+                    PTXOp::LdMatrix { .. } => {
+                        wi_ops += loop_mult;
+                        wi_compute_ops += loop_mult;
+                    }
+                },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }

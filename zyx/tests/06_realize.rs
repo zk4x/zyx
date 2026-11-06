@@ -1,8 +1,8 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope};
-use zyx::{DType, DTypeCapability, Reduction, Scalar, Tensor, ZyxError};
+use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope, OpId};
+use zyx::{DType, DTypeCapability, Reduction, Scalar, Tensor, ZyxError, f16};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
 ///
@@ -521,5 +521,103 @@ fn ctc_loss_2() -> Result<(), ZyxError> {
     let loss_val = loss.item::<f32>();
     assert!(loss_val.is_finite());
     assert!(loss_val > 0.0);
+    Ok(())
+}
+
+/// 16x8x8 NT matmul through `ldmatrix`: A `[m,k]` and B `[n,k]` are staged in
+/// shared memory as 16-byte rows, pulled into fragments by the PTX instruction
+/// instead of per-element loads, then fed to one `m16n8k8` mma.
+#[test]
+fn ldmatrix_matmul() -> Result<(), ZyxError> {
+    let m: i64 = 16;
+    let n: i64 = 8;
+    let k: i64 = 8;
+    if !Dev::all().contains(&Dev::Cuda(0)) {
+        return Ok(());
+    }
+    let dev = Dev::Cuda(0);
+    let mut kernel = Kernel::new(dev);
+    let a = kernel.param(DType::F16);
+    let b = kernel.param(DType::F16);
+    let c = kernel.param_mut(DType::F32);
+    let tid = kernel.local_range(0, 32);
+    let c32 = kernel.const_idx(32u32);
+    let c8 = kernel.const_idx(8u32);
+    let c4 = kernel.const_idx(4u32);
+    let c2 = kernel.const_idx(2u32);
+    let c1 = kernel.const_idx(1u32);
+    let c0 = kernel.const_idx(0u32);
+
+    // Shared tiles, 8 f16 = 16 B per row (ldmatrix alignment).
+    // One shared buffer: A tile then B tile (A at 0, B at 128 halves).
+    let sa = kernel.storage(DType::F16, MemScope::Local, (m * k + n * k) as i32);
+    let c128 = kernel.const_idx(128u32);
+    // 128 A elements / 64 B elements over 32 lanes.
+    kernel.loop_over(4, |k, it| {
+        let i = k.mad(it, c32, tid);
+        let v = k.load(a, i);
+        k.store(sa, v, i);
+    });
+    kernel.loop_over(2, |k, it| {
+        let i = k.mad(it, c32, tid);
+        let v = k.load(b, i);
+        let at = k.add(i, c128);
+        k.store(sa, v, at);
+    });
+    kernel.barrier();
+
+    // A: 16 rows, lane i supplies row i's address (.x2 = two 8x8 tiles).
+    let c16 = kernel.const_idx(16u32);
+    let row_a = kernel.mod_(tid, c16);
+    let a_addr = kernel.mad(row_a, c8, c0);
+    let a_frag = kernel.ldmatrix(2, sa, a_addr, false);
+    // B: 8 rows of the [n,k] view (.x1 = one 8x8 tile).
+    let row_b = kernel.mod_(tid, c8);
+    let b_off = kernel.mad(row_b, c8, c128);
+    let b_frag = kernel.ldmatrix(1, sa, b_off, false);
+
+    let acc = kernel.zeros(DType::F32, 4);
+    let c_elems: Vec<OpId> = (0..4)
+        .map(|i| {
+            let at = kernel.const_idx(i as u32);
+            kernel.load(acc, at)
+        })
+        .collect();
+    let c_frag = kernel.stack(&c_elems);
+    let d = kernel.wmma(MMADims::m16n8k8, MMALayout::row_col, MMADType::f16_f16_f16_f32, a_frag, b_frag, c_frag);
+    let [d0, d1, d2, d3] = kernel.unstack::<4>(d);
+
+    // C fragment layout: lane -> (row = lane/4, col = 2*(lane%4)), rows +8.
+    let row = kernel.div(tid, c4);
+    let sub = kernel.mod_(tid, c4);
+    let col = kernel.mul(sub, c2);
+    let base = kernel.mad(row, c8, col);
+    kernel.store(c, d0, base);
+    let base_p1 = kernel.add(base, c1);
+    kernel.store(c, d1, base_p1);
+    let c64 = kernel.const_idx(64u32);
+    let base2 = kernel.add(base, c64);
+    kernel.store(c, d2, base2);
+    let base2_p1 = kernel.add(base2, c1);
+    kernel.store(c, d3, base2_p1);
+
+    let compiled = kernel.compile()?;
+
+    let x_data: Vec<Vec<f16>> = (0..m).map(|i| (0..k).map(|j| f16::from_f32((i * 8 + j) as f32)).collect()).collect();
+    let y_data: Vec<Vec<f16>> = (0..n).map(|i| (0..k).map(|j| f16::from_f32((100 + i * 8 + j) as f32)).collect()).collect();
+    let x = Tensor::from(x_data.clone()).to(dev)?;
+    let y = Tensor::from(y_data.clone()).to(dev)?;
+    let z = compiled.forward1(&[&x, &y], [m, n])?.to(Dev::C)?.cast(DType::F32);
+    let z_data: Vec<f32> = z.try_into()?;
+
+    let mut expected = vec![0f32; (m * n) as usize];
+    for i in 0..m as usize {
+        for j in 0..n as usize {
+            for kk in 0..k as usize {
+                expected[i * n as usize + j] += x_data[i][kk].to_f32() * y_data[j][kk].to_f32();
+            }
+        }
+    }
+    assert_eq!(z_data, expected, "ldmatrix matmul wrong");
     Ok(())
 }

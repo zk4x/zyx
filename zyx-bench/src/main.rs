@@ -3,281 +3,24 @@
 
 //! Benchmarks for zyx tensor library.
 //!
-//! Run with: `cargo run --release`
+//! Every benchmark lives in its own module under `bench/` and is runnable on
+//! its own by name:
+//!
+//! ```text
+//! cargo run --release --bin zyx-bench -- --list
+//! cargo run --release --bin zyx-bench -- llama-matmul
+//! ```
+//!
+//! No argument keeps the historical default (the large-matmul sweep). Measured
+//! autotune candidates are appended to `bench.db`; set `ZYX_BENCH_TAG` to label
+//! a run.
 
 #![allow(unused)]
 
+mod bench;
+
 use std::io::BufRead;
-use std::ops::{Add, Div, Mul, Sub};
-use zyx::{DType, Module, Tensor, ZyxError};
-
-fn matmul_bench() -> Result<(), ZyxError> {
-    //println!("=== MatMul ===");
-    for &(m, n, k) in &[
-        (256, 256, 256),
-        (512, 512, 512),
-        (1024, 1024, 1024),
-        (128, 128, 128),
-        (128, 256, 64),
-        (256, 128, 512),
-        (512, 256, 128),
-        (1024, 512, 256),
-        (256, 1024, 512),
-        (512, 1024, 128),
-        (128, 512, 1024),
-        (2048, 2048, 2048),
-    ] {
-        let a = Tensor::rand([m, k], DType::F32)?;
-        let b = Tensor::rand([n, k], DType::F32)?;
-        a.matmul(b.t())?;
-    }
-    //println!();
-    Ok(())
-}
-
-fn reduce_bench() -> Result<(), ZyxError> {
-    //println!("=== Reduce ===");
-    for dims in [
-        &[4096i64][..],
-        &[16384],
-        &[65536],
-        &[4096, 4096],
-        &[256, 1024, 512],
-        &[64, 64, 64],
-    ] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        x.sum_all();
-        x.mean_all();
-        x.max_all();
-        x.min_all();
-        x.prod_all();
-        x.var_all();
-        x.std_all();
-    }
-    //println!();
-    Ok(())
-}
-
-fn softmax_bench() -> Result<(), ZyxError> {
-    //println!("=== Softmax ===");
-    for &(dims, axes) in &[
-        (&[4096i64][..], &[0i32][..]),
-        (&[128, 4096], &[0i32][..]),
-        (&[512, 1024], &[1i32][..]),
-        (&[16, 768, 1024], &[1i32][..]),
-        (&[64, 64, 64, 64], &[3i32][..]),
-        (&[64, 128, 4096], &[2i32][..]),
-        (&[16384i64], &[0i32][..]),
-        (&[256, 2048], &[1i32][..]),
-        (&[32, 4096], &[0i32][..]),
-        (&[8, 512, 2048], &[2i32][..]),
-    ] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        x.softmax(axes.iter().copied())?;
-    }
-    //println!();
-    Ok(())
-}
-
-fn embedding_bench() -> Result<(), ZyxError> {
-    //println!("=== Embedding (index_select) ===");
-    for &(vocab_size, embed_dim, seq_len) in
-        &[(10000, 768, 64), (50000, 1024, 256), (100000, 768, 128)]
-    {
-        let embedding = Tensor::rand([vocab_size, embed_dim], DType::F32)?;
-        let idx: Vec<i32> = (0..seq_len).map(|i| (i % vocab_size)).collect();
-        let indices = Tensor::from(idx);
-        embedding.index_select(0, indices)?;
-    }
-    //println!();
-    Ok(())
-}
-
-fn gelu_bench() -> Result<(), ZyxError> {
-    //println!("=== GELU Activation ===");
-    for dims in [&[4096i64][..], &[16384], &[1024, 4096], &[256, 1024, 512]] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        x.gelu();
-    }
-    //println!();
-    Ok(())
-}
-
-fn activation_bench() -> Result<(), ZyxError> {
-    //println!("=== Other Activations ===");
-    for dims in [
-        &[16384i64][..],
-        &[32768i64],
-        &[65536i64],
-        &[131072i64],
-        &[524288i64],
-        &[4096i64, 4096i64],
-        &[512i64, 2048i64],
-        &[128i64, 16384i64],
-    ] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        x.relu();
-        x.sigmoid();
-        x.tanh();
-        x.exp();
-        x.log(Tensor::from(2.0));
-    }
-    //println!();
-    Ok(())
-}
-
-fn ln_softmax_bench() -> Result<(), ZyxError> {
-    //println!("=== Ln Softmax ===");
-    for &(dims, axes) in &[
-        (&[4096i64][..], &[0i32][..]),
-        (&[256, 4096], &[0i32][..]),
-        (&[512, 1024], &[1i32][..]),
-        (&[32, 768, 1024], &[1i32][..]),
-        (&[64, 512], &[0i32][..]),
-    ] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        x.ln_softmax(axes.iter().copied())?;
-    }
-    //println!();
-    Ok(())
-}
-
-fn reduce_axis_bench() -> Result<(), ZyxError> {
-    //println!("=== Reduce Axis ===");
-    for dims in [
-        &[512i64, 512][..],
-        &[256, 1024],
-        &[128, 2048],
-        &[64, 4096],
-        &[32, 128, 256],
-        &[16, 512, 512],
-        &[8, 1024, 1024],
-        &[1024, 256],
-        &[4096, 128],
-        &[64, 16384],
-        &[32, 32768],
-        &[16, 65536],
-        &[8, 128, 512],
-        &[4, 256, 256, 256],
-        &[1024, 1024],
-        &[2048, 64],
-        &[128, 128, 256],
-        &[256, 128, 128],
-        &[16, 256, 256],
-        &[8, 64, 64, 64],
-    ] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        let last = dims.len() as i32 - 1;
-        x.sum([last])?;
-        x.max([last])?;
-        x.min([last])?;
-        x.mean([last])?;
-        x.var([last])?;
-        // Reduce along axis 0 as well
-        if dims.len() > 1 {
-            x.sum([0])?;
-            x.max([0])?;
-            x.mean([0])?;
-        }
-    }
-    //println!();
-    Ok(())
-}
-
-fn silu_like_bench() -> Result<(), ZyxError> {
-    //println!("=== SiLU-like (x * sigmoid(x)) ===");
-    for dims in [
-        &[4096i64][..],
-        &[16384],
-        &[1024, 4096],
-        &[512, 1024],
-        &[256, 1024, 512],
-        &[16, 768, 2048],
-    ] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        x.sigmoid().mul(&x);
-    }
-    //println!();
-    Ok(())
-}
-
-fn layer_norm_like_bench() -> Result<(), ZyxError> {
-    //println!("=== Layer Norm-like (mean+var+normalize) ===");
-    for dims in [&[128i64, 768][..], &[64, 1024], &[32, 2048], &[16, 768, 1024]] {
-        let last = *dims.last().unwrap();
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        let gamma = Tensor::rand([last], DType::F32)?;
-        let beta = Tensor::rand([last], DType::F32)?;
-        let mean = x.mean([-1])?.unsqueeze(-1)?;
-        let centered = x.sub(&mean);
-        let var = centered.var([-1])?.unsqueeze(-1)?;
-        let std = var.add(Tensor::from(1e-5)).sqrt();
-        let norm = centered.div(&std);
-        norm.mul(&gamma).add(&beta);
-    }
-    //println!();
-    Ok(())
-}
-
-fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
-    //println!("=== Reduce Multi Axis ===");
-    for dims in [
-        &[64i64, 64, 64][..],
-        &[32, 128, 256],
-        &[16, 256, 128],
-        &[8, 512, 64],
-    ] {
-        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
-        x.sum([0, 1])?;
-        x.max([0, 1])?;
-        x.mean([1, 2])?;
-        x.var([0, 2])?;
-    }
-    //println!();
-    Ok(())
-}
-
-/// Force `t` to execute — and therefore to compile, autotune and measure its
-/// kernel — by reading one element back. Eager ops are lazy until a value is
-/// read; dropping a result does not launch anything.
-fn force(t: Tensor) -> Result<(), ZyxError> {
-    let _ = t.item::<f32>();
-    Ok(())
-}
-
-fn large_matmul_bench() -> Result<(), ZyxError> {
-    //println!("=== Large MatMul ===");
-    let dims: &[u64] = &[
-        256, 320, 384, 448, 512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1792, 2048, 2304,
-        2560, 3072, 3584, 4096, 4608, 5120, 6144,
-    ];
-    // Square
-    for &n in dims {
-        let a = Tensor::rand([n, n], DType::F32)?;
-        let b = Tensor::rand([n, n], DType::F32)?;
-        force(a.matmul(b.t())?)?;
-    }
-    // Vary M (tall matrices)
-    for &m in dims.iter().filter(|&&m| m != 1024) {
-        let a = Tensor::rand([m, 1024], DType::F32)?;
-        let b = Tensor::rand([1024, 1024], DType::F32)?;
-        force(a.matmul(b.t())?)?;
-    }
-    // Vary N (wide matrices)
-    for &n in dims.iter().filter(|&&n| n != 1024) {
-        let a = Tensor::rand([1024, 1024], DType::F32)?;
-        let b = Tensor::rand([n, 1024], DType::F32)?;
-        force(a.matmul(b.t())?)?;
-    }
-    // Vary K (inner dimension)
-    for &k in dims.iter().filter(|&&k| k != 1024) {
-        let a = Tensor::rand([1024, k], DType::F32)?;
-        let b = Tensor::rand([1024, k], DType::F32)?;
-        force(a.matmul(b.t())?)?;
-    }
-    //println!();
-    Ok(())
-}
+use zyx::ZyxError;
 
 // ---- measurement database ----
 
@@ -390,18 +133,66 @@ fn main() -> Result<(), ZyxError> {
     result
 }
 
+/// Every benchmark, runnable on its own by name; no argument keeps the
+/// historical default (the large-matmul sweep).
+const BENCHES: &[&str] = &[
+    "large-matmul",
+    "matmul",
+    "reduce",
+    "softmax",
+    "embedding",
+    "gelu",
+    "activation",
+    "ln-softmax",
+    "reduce-axis",
+    "silu-like",
+    "layer-norm-like",
+    "reduce-multi-axis",
+    "llama-matmul",
+    "llama-rmsnorm",
+    "llama-rope",
+    "llama-softmax",
+    "llama-swiglu",
+    "llama-embedding",
+    "llama-kv-assign",
+    "llama-attention",
+    "mma-nt",
+];
+
 fn run_benches() -> Result<(), ZyxError> {
-    //matmul_bench()?;
-    //reduce_bench()?;
-    //softmax_bench()?;
-    //embedding_bench()?;
-    //gelu_bench()?;
-    //activation_bench()?;
-    //ln_softmax_bench()?;
-    //reduce_axis_bench()?;
-    //silu_like_bench()?;
-    //layer_norm_like_bench()?;
-    //reduce_multi_axis_bench()?;
-    large_matmul_bench()?;
-    Ok(())
+    let arg = std::env::args().nth(1);
+    let name = match arg.as_deref() {
+        None => return bench::large_matmul::bench(),
+        Some("--list") => {
+            for b in BENCHES {
+                println!("{b}");
+            }
+            return Ok(());
+        }
+        Some(name) => name,
+    };
+    match name {
+        "large-matmul" => bench::large_matmul::bench(),
+        "matmul" => bench::matmul::bench(),
+        "reduce" => bench::reduce::bench(),
+        "softmax" => bench::softmax::bench(),
+        "embedding" => bench::embedding::bench(),
+        "gelu" => bench::gelu::bench(),
+        "activation" => bench::activation::bench(),
+        "ln-softmax" => bench::ln_softmax::bench(),
+        "reduce-axis" => bench::reduce_axis::bench(),
+        "silu-like" => bench::silu_like::bench(),
+        "layer-norm-like" => bench::layer_norm_like::bench(),
+        "reduce-multi-axis" => bench::reduce_multi_axis::bench(),
+        "llama-matmul" => bench::llama::matmul::bench(),
+        "llama-rmsnorm" => bench::llama::rmsnorm::bench(),
+        "llama-rope" => bench::llama::rope::bench(),
+        "llama-softmax" => bench::llama::softmax::bench(),
+        "llama-swiglu" => bench::llama::swiglu::bench(),
+        "llama-embedding" => bench::llama::embedding::bench(),
+        "llama-kv-assign" => bench::llama::kv_assign::bench(),
+        "llama-attention" => bench::llama::attention::bench(),
+        "mma-nt" => bench::mma_nt::bench(),
+        _ => panic!("unknown bench `{name}`; `--list` prints every name"),
+    }
 }

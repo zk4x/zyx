@@ -67,6 +67,19 @@
 - NO design decisions, EVER. `todo!()` beats a guessed fix.
 - Never go beyond the ask. Failure? Report, don't fix untold.
 - NEVER chain fixes. One fix per question. Never commit unless asked.
+- DO THE ASK. An explicit instruction names a method AND a target
+  ("measure each llama block individually with ZYX_DEBUG=1/8"). Execute
+  exactly that. Substituting a broader, easier or adjacent task (e.g.
+  benching the whole model instead of one block) is a failed turn even
+  if the substitute produces data. If the asked-for artifact is
+  underspecified (where a new harness lives, which block, which shape),
+  ASK FIRST and do nothing else: a guess at the shape of the work is
+  worse than one question, and running the wrong measurement is not
+  "progress".
+- A missing prerequisite (no harness, no database, no tool) is reported
+  the moment it is found, together with the ONE decision needed to
+  unblock it. Never spend the turn on unasked-for work and report the
+  prerequisite afterwards.
 - NEVER disable, revert, remove, or neuter user-ordered functionality
   to get green (no silent unregistrations, no refusal-gates that neuter,
   no reordering user registries). Red tests from ordered features are

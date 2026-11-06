@@ -222,7 +222,29 @@ impl Kernel {
                 Op::Source(_) => todo!(),
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
-                Op::PTX(_) => todo!(),
+                Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::LdMatrix { frags, src, addr, trans } => {
+                        let dtype = dtypes[&op_id].clone();
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                        let idx = get_var_addr(*addr, &constants, &indices, &reg_map, loop_id, &var_params)?;
+                        // `ldmatrix` takes per-lane shared-memory addresses.
+                        // The generic pointer is passed as-is (`"l"`): NVRTC
+                        // faults on the `__cvta_generic_to_shared` + `"r"`
+                        // form, and the instruction accepts the generic
+                        // shared address directly (llama.cpp does the same).
+                        let t = if *trans { ".trans" } else { "" };
+                        let pattern = (0..*frags).map(|i| format!("%{i}")).collect::<Vec<_>>().join(",");
+                        let outs = (0..*frags)
+                            .map(|i| format!("\"=r\"(((unsigned*)&r{reg})[{i}])"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        _ = writeln!(
+                            source,
+                            "{indent}asm volatile(\"ldmatrix.sync.aligned.m8n8.x{frags}{t}.b16 {{{pattern}}}, [%{frags}];\" : {outs} : \"l\"(&p{src}[{idx}]));"
+                        );
+                    }
+                    PTXOp::Bytes(_) => todo!("CUDA codegen: assembled PTX payload in kernel IR"),
+                },
                 Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before CUDA codegen"),
                 // Branchless select via the ternary (see the C backend):
                 // per-component copy, so ±inf on the dead side stays dead.
@@ -303,7 +325,9 @@ impl Kernel {
                 }
                 Op::Param { .. } => {}
                 Op::Storage { dtype, scope, len, .. } => match scope {
-                    MemScope::Local => _ = writeln!(source, "{indent}__shared__ {} p{op_id}[{len}];", dtype.cu()),
+                    // 16-byte aligned: `ldmatrix` requires it for every row,
+                    // and a plain shared array is only element-aligned.
+                    MemScope::Local => _ = writeln!(source, "{indent}__shared__ __align__(16) {} p{op_id}[{len}];", dtype.cu()),
                     MemScope::Register => _ = writeln!(source, "{indent}{} p{op_id}[{len}];", dtype.cu()),
                     _ => unreachable!("cuda supports only local and register scopes"),
                 },
