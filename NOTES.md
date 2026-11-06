@@ -1,3 +1,88 @@
+## HANDOFF (2026-11-06, session 11) — axis-drop reduces fixed except the column form
+
+**Snapshot.** Base `709d44d1`, six commits on top; latest `252ecd8a`
+(rank-1 = tile column). **116 lib tests green; 30 of the 32 `23_tt_lowering`
+gates pass with the search on.** Green: everything from session 10 plus the
+new `sum_drop`, `max_drop`, `sum_drop_loop`. Red, both new and both with
+diagnoses below: `sum_drop_col`, `sum_one_row`.
+
+### The rank-1 layout bug (fixed, `252ecd8a`)
+
+The host transfers packed a rank-1 `[N]` as a `1 x N` **row**, while
+`tt_reindex` emits a reduce result with element `i` at **row `i`, lane 0**
+(`out_lane = row * 32`), and a `[N, 1]` keepdim value uses that same column
+layout. The two only agreed for the keepdim form, so:
+
+- `sum([1])` / `max([1])` (axis drop) returned row 0's value replicated in
+  every lane;
+- a reduce result fed into an elementwise op was read as a row (`sum0 + i`
+  in the probe) — the on-device half of the same mismatch.
+
+Fix: `tilize_transfer` and `untilize_transfer` both take a rank-1 `[N]` as
+`N` rows x 1 lane. Keepdim `[N,1]` is unchanged, and the reduce emitter is
+unchanged. Verify with `sum_drop`, `max_drop`, `sum_drop_loop` (all green),
+plus the old `sum`, `max`, `sum_loop`, `softmax` gates. A rank-1 elementwise
+`mul`/add/round-trip is exact at `[10]`, `[32]`, `[64]` on asymmetric data
+(only `sum`-all of `[64]` hits the tiling bug below, not the layout).
+
+### `sum_drop_col` (red): a permuted-axis reduce is lowered as the other axis
+
+`[10,20].sum([0])` returns the **row** sums (`sum([1])`'s answer), not the
+column sums. The IR before `tt_tile`, for `x.sum([0])`:
+
+```
+r16 = unroll axis0 lanes 32          # the reduce axis, stride 20
+r40 = unroll axis1 lanes 32          # the kept axis, stride 1
+r27 = r40 + 20*r16                   # load index: the *unpermuted* pitch
+r35 = load tile 32x32 r32[r27]
+r15 = reduce sum r35 over r16        # sums original rows
+store vec32 r6[r40] = r15
+```
+
+`reduce_axes` permutes kept axes first, then reduces the last axis, but the
+permute is *not materialized*: the load index still uses the original pitch
+(`20`), and the reduce lane `r16` is the **outer** (row) tile axis.
+`tt_reindex` bails on it (its invariant is that the reduce lane has stride 1),
+and `tt_dataflow_select`'s pattern table keys the `[32,32] -> [32]` fold on
+**shape**, so it emits `TtEmit::Reduce(TileDim::Row)` (fold lanes) — the wrong
+tile axis. `sum_all`/`sum_scalar` avoid this because they reduce the identity
+permutation's last axis first.
+
+Two repairs, both a design call:
+
+1. **Materialize the permute** after `reduce_axes`' `permute` (e.g.
+   `contiguous()` in `reduce_axes` for TT), so the reduce's lane really is
+   the innermost axis and `Row` is right. General, but adds a transpose copy
+   kernel to every non-last-axis reduce.
+2. **Carry the axis into the emitter** (`Pat::Reduce` would need to bind
+   `reduce_axis`, or `tt_tile` could rewrite the tab) and teach the store
+   that a column reduce's result is one value per lane. But the rank-1
+   convention is now column (row `i`, lane 0), while `TileDim::Col` leaves
+   its values in **row 0 lanes** — so this also needs a transpose of the
+   result (or a third rank-1 layout at the boundary).
+
+Do not pick one without the user: option 1 changes `reduce_axes` for every
+backend, option 2 adds a result layout that `untilize_transfer` cannot infer
+from the logical shape (the same ambiguity this session just removed).
+
+### `sum_one_row` (red): `[1, 256].sum_all()` -> `boundary offset 32 is not a whole tile`
+
+A single row wider than one tile: the reduce sees rows `= 1`, so there is no
+row axis in `tt_reindex`'s `row2` sense, and a boundary move ends up at a
+byte offset of 32 (not a whole tile). This is the tiling/boundary-move
+family, not the rank-1 layout (the same `[1, 256]` limit is noted in session
+10 for `sum(None)`).
+
+### Still ordered, not done
+
+- `tt_cb_lower` must error instead of bailing silently (the argument is the
+  `sum_drop_col` case: a wrong-axis reduce falls through to a plausible but
+  wrong kernel).
+- Delete the env-gated temporary dumps (`ZYX_SYNC_DUMP`, `ZYX_WORD_DUMP`,
+  `ZYX_DST_DUMP`, `ZYX_CODE_DUMP`, `ZYX_MOVE_DUMP`, the `tt_verify` dump).
+- `softmax` is 17.8 s with the search (over the 10 s per-run cap; simulator
+  time is not a concern).
+
 ## HANDOFF (2026-11-06, session 10) — start here
 
 **Snapshot.** Base `709d44d1`, five commits on top (`36f30a7f`, `72f675ef`,
