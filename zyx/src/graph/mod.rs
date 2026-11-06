@@ -1442,30 +1442,42 @@ impl Graph {
     /// Tries to resolve the value of a scalar class by walking its const
     /// expression: `Const` leaves evaluated through `Cast`, `Unary` and
     /// `Binary` nodes (iteratively, no recursion). Returns `None` if the
-    /// class is not a scalar, the walk exceeds 10 000 steps, or any leaf
+    /// class is not a scalar, the walk exceeds its step budget, or any leaf
     /// is not a `Const`.
     pub(crate) fn resolve_const(&self, class: OpId) -> Option<Constant> {
-        // Preorder of the const-expression subgraph reachable through
-        // `Cast`, `Unary` and `Binary`; non-const leaves abort.
+        // Postorder of the const-expression subgraph reachable through
+        // `Cast`, `Unary` and `Binary`; non-const leaves abort. A node joins
+        // `order` only after every operand it reads is already there, so
+        // evaluating `order` forward never reaches a missing operand — even
+        // when a node is shared between operands visited at different times
+        // (`add(d, mul(d, c))`), which a reversed preorder gets wrong.
         let mut visited: Set<OpId> = Set::default();
         let mut order: Vec<OpId> = Vec::new();
-        let mut stack = vec![class];
-        for _ in 0..10_000 {
-            let Some(id) = stack.pop() else { break };
-            let node_id = id;
+        // `(node, expanded)`: a not-yet-expanded node pushes its operands
+        // plus its own marker; the marker appends the node after them.
+        let mut stack = vec![(class, false)];
+        // Two stack entries per node (operand visit + marker), so keep the
+        // node budget the same as the single-entry walk had.
+        for _ in 0..20_000 {
+            let Some((node_id, expanded)) = stack.pop() else { break };
+            if expanded {
+                order.push(node_id);
+                continue;
+            }
             if !visited.insert(node_id) {
                 continue;
             }
+            stack.push((node_id, true));
             match &self.ops[node_id].op {
-                Op::Cast { x, .. } => stack.push(*x),
-                Op::Bitcast { x, .. } => stack.push(*x),
-                Op::Unary { x, .. } => stack.push(*x),
+                Op::Cast { x, .. } => stack.push((*x, false)),
+                Op::Bitcast { x, .. } => stack.push((*x, false)),
+                Op::Unary { x, .. } => stack.push((*x, false)),
                 Op::Binary { x, y, .. } => {
-                    stack.push(*y);
-                    stack.push(*x);
+                    stack.push((*y, false));
+                    stack.push((*x, false));
                 }
                 Op::Index { vec, idx } => match &self.ops[*vec].op {
-                    Op::Stack { ops } => stack.push(ops[*idx]),
+                    Op::Stack { ops } => stack.push((ops[*idx], false)),
                     _ => return None,
                 },
                 Op::Const(_) => {}
@@ -1505,16 +1517,13 @@ impl Graph {
                 // Detach is value identity, not const-foldable.
                 Op::Detach { .. } => return None,
             }
-            order.push(node_id);
         }
         if !stack.is_empty() {
-            panic!("resolve_const did not finish in 10000 steps");
+            panic!("resolve_const did not finish in its step budget");
         }
-        // Evaluate bottom-up: `order` is a preorder (parents before their
-        // operands), so reversing it evaluates every operand before its
-        // consumer.
+        // `order` is a postorder: every operand precedes its consumer.
         let mut values: Map<OpId, Constant> = Map::default();
-        for &node_id in order.iter().rev() {
+        for &node_id in order.iter() {
             let value = match &self.ops[node_id].op {
                 Op::Const(value) => *value,
                 Op::Cast { x, dtype } => values[x].cast(*dtype),

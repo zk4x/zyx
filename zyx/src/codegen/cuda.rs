@@ -661,7 +661,8 @@ impl Kernel {
             helper_funcs += &mma_helper(combo.0, combo.1, combo.2);
         }
 
-        let source = format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0");
+        let source =
+            format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0");
         // ZYX_PTX: emit PTX assembly directly at render (bypasses NVRTC at
         // compile); otherwise the CUDA C++ above is the source. The decision
         // lives here so compile only decodes positions: a `Source` fourth op

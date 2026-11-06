@@ -582,8 +582,9 @@ impl Graph {
 
                         // Value op standing in for the assign's own class for
                         // later consumers: the stored value in the fused path,
-                        // the last replayed dst op otherwise (unchanged).
-                        let mut value_op = OpId::NULL;
+                        // the last replayed dst op otherwise (unchanged). Both
+                        // branches below assign it before either read.
+                        let value_op;
                         if kid == dst_kid {
                             assert!(
                                 self.jit_kernels[kid].stores.is_empty(),

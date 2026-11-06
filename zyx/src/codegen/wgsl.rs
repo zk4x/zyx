@@ -81,8 +81,8 @@ fn wgsl_literal(c: Constant) -> Result<String, BackendError> {
         Constant::I32(v) => format!("{v}i"),
         Constant::I64(b) => {
             let v = i64::from_le_bytes(b);
-            let narrowed = i32::try_from(v)
-                .map_err(|_| wgsl_err(format!("WGSL: i64 constant {v} does not fit the 32-bit index type")))?;
+            let narrowed =
+                i32::try_from(v).map_err(|_| wgsl_err(format!("WGSL: i64 constant {v} does not fit the 32-bit index type")))?;
             format!("{narrowed}i")
         }
         Constant::U8(v) => format!("{v}u"),
@@ -124,7 +124,11 @@ fn typed_one(ty: &str, is_float: bool, one: bool) -> String {
         (false, false) => "0",
         (false, true) => "1",
     };
-    if ty.starts_with("vec") { format!("{ty}({lit})") } else { lit.to_string() }
+    if ty.starts_with("vec") {
+        format!("{ty}({lit})")
+    } else {
+        lit.to_string()
+    }
 }
 
 /// WGSL conversion expression from one scalar/vector type to another.
@@ -333,7 +337,11 @@ impl Kernel {
                     let ty = wgsl_type(dt, &shape)?;
                     let lit = wgsl_literal(c)?;
                     // Lane vectors and tiles broadcast through the constructor.
-                    let expr = if shape.len() == 1 && shape[0] > 1 { format!("{ty}({lit})") } else { lit };
+                    let expr = if shape.len() == 1 && shape[0] > 1 {
+                        format!("{ty}({lit})")
+                    } else {
+                        lit
+                    };
                     let _ = writeln!(shader, "{ind}let v{op_id}: {ty} = {expr};");
                 }
                 Op::Param { kind, .. } => {
@@ -539,8 +547,13 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        let mut rendered =
-            Kernel { ops: crate::slab::Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        let mut rendered = Kernel {
+            ops: crate::slab::Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            dev: self.dev,
+            dev_info: self.dev_info.clone(),
+        };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
