@@ -1908,10 +1908,10 @@ impl Tensor {
     }
 
     #[pyo3(name = "rope")]
-    pub fn rope_py(&self, sine: &Bound<'_, PyAny>, cosine: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
-        let s = extract_tensor_or_scalar(sine).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+    pub fn rope_py(&self, cosine: &Bound<'_, PyAny>, sine: &Bound<'_, PyAny>) -> Result<Tensor, ZyxError> {
         let c = extract_tensor_or_scalar(cosine).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        self.rope(s, c)
+        let s = extract_tensor_or_scalar(sine).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        self.rope(c, s)
     }
 
     #[pyo3(name = "to")]

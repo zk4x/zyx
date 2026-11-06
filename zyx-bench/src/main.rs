@@ -38,7 +38,7 @@ fn matmul_bench() -> Result<(), ZyxError> {
 fn reduce_bench() -> Result<(), ZyxError> {
     //println!("=== Reduce ===");
     for dims in [
-        &[4096u64][..],
+        &[4096i64][..],
         &[16384],
         &[65536],
         &[4096, 4096],
@@ -61,13 +61,13 @@ fn reduce_bench() -> Result<(), ZyxError> {
 fn softmax_bench() -> Result<(), ZyxError> {
     //println!("=== Softmax ===");
     for &(dims, axes) in &[
-        (&[4096u64][..], &[0i32][..]),
+        (&[4096i64][..], &[0i32][..]),
         (&[128, 4096], &[0i32][..]),
         (&[512, 1024], &[1i32][..]),
         (&[16, 768, 1024], &[1i32][..]),
         (&[64, 64, 64, 64], &[3i32][..]),
         (&[64, 128, 4096], &[2i32][..]),
-        (&[16384u64], &[0i32][..]),
+        (&[16384i64], &[0i32][..]),
         (&[256, 2048], &[1i32][..]),
         (&[32, 4096], &[0i32][..]),
         (&[8, 512, 2048], &[2i32][..]),
@@ -95,7 +95,7 @@ fn embedding_bench() -> Result<(), ZyxError> {
 
 fn gelu_bench() -> Result<(), ZyxError> {
     //println!("=== GELU Activation ===");
-    for dims in [&[4096u64][..], &[16384], &[1024, 4096], &[256, 1024, 512]] {
+    for dims in [&[4096i64][..], &[16384], &[1024, 4096], &[256, 1024, 512]] {
         let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.gelu();
     }
@@ -106,14 +106,14 @@ fn gelu_bench() -> Result<(), ZyxError> {
 fn activation_bench() -> Result<(), ZyxError> {
     //println!("=== Other Activations ===");
     for dims in [
-        &[16384u64][..],
-        &[32768u64],
-        &[65536u64],
-        &[131072u64],
-        &[524288u64],
-        &[4096u64, 4096u64],
-        &[512u64, 2048u64],
-        &[128u64, 16384u64],
+        &[16384i64][..],
+        &[32768i64],
+        &[65536i64],
+        &[131072i64],
+        &[524288i64],
+        &[4096i64, 4096i64],
+        &[512i64, 2048i64],
+        &[128i64, 16384i64],
     ] {
         let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.relu();
@@ -129,7 +129,7 @@ fn activation_bench() -> Result<(), ZyxError> {
 fn ln_softmax_bench() -> Result<(), ZyxError> {
     //println!("=== Ln Softmax ===");
     for &(dims, axes) in &[
-        (&[4096u64][..], &[0i32][..]),
+        (&[4096i64][..], &[0i32][..]),
         (&[256, 4096], &[0i32][..]),
         (&[512, 1024], &[1i32][..]),
         (&[32, 768, 1024], &[1i32][..]),
@@ -145,7 +145,7 @@ fn ln_softmax_bench() -> Result<(), ZyxError> {
 fn reduce_axis_bench() -> Result<(), ZyxError> {
     //println!("=== Reduce Axis ===");
     for dims in [
-        &[512, 512][..],
+        &[512i64, 512][..],
         &[256, 1024],
         &[128, 2048],
         &[64, 4096],
@@ -187,7 +187,7 @@ fn reduce_axis_bench() -> Result<(), ZyxError> {
 fn silu_like_bench() -> Result<(), ZyxError> {
     //println!("=== SiLU-like (x * sigmoid(x)) ===");
     for dims in [
-        &[4096u64][..],
+        &[4096i64][..],
         &[16384],
         &[1024, 4096],
         &[512, 1024],
@@ -203,7 +203,7 @@ fn silu_like_bench() -> Result<(), ZyxError> {
 
 fn layer_norm_like_bench() -> Result<(), ZyxError> {
     //println!("=== Layer Norm-like (mean+var+normalize) ===");
-    for dims in [&[128, 768][..], &[64, 1024], &[32, 2048], &[16, 768, 1024]] {
+    for dims in [&[128i64, 768][..], &[64, 1024], &[32, 2048], &[16, 768, 1024]] {
         let last = *dims.last().unwrap();
         let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         let gamma = Tensor::rand([last], DType::F32)?;
@@ -222,7 +222,7 @@ fn layer_norm_like_bench() -> Result<(), ZyxError> {
 fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
     //println!("=== Reduce Multi Axis ===");
     for dims in [
-        &[64, 64, 64][..],
+        &[64i64, 64, 64][..],
         &[32, 128, 256],
         &[16, 256, 128],
         &[8, 512, 64],

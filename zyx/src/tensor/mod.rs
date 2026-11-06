@@ -3471,26 +3471,33 @@ impl Tensor {
         Ok(x)
     }
 
-    /// Apply Rotary Positional Encoding (`RoPE`) using the provided sine and
-    /// cosine frequency tensors.
+    /// Apply Rotary Positional Encoding (`RoPE`) using the provided cosine and
+    /// sine frequency tensors.
+    ///
+    /// Rotates by halves: for `x = [x1, x2]` and frequencies `(c, s)` it
+    /// returns `[x1*c - x2*s, x1*s + x2*c]`. Note the argument order: the
+    /// **cosine** table comes first.
     ///
     /// # Example
     ///
     /// ```rust
     /// # use zyx::{Tensor, DType};
     /// let x = Tensor::ones([2, 8], DType::F32);
-    /// let s = Tensor::zeros([2, 4], DType::F32);
-    /// let c = Tensor::zeros([2, 4], DType::F32);
-    /// let r = x.rope(s, c).unwrap();
+    /// // Identity rotation: cos = 1, sin = 0.
+    /// let cos = Tensor::ones([2, 4], DType::F32);
+    /// let sin = Tensor::zeros([2, 4], DType::F32);
+    /// let r = x.rope(cos, sin).unwrap();
     /// assert_eq!(r.shape(), [1, 1, 2, 8]);
+    /// let v: Vec<f32> = r.try_into().unwrap();
+    /// assert_eq!(v, vec![1.0f32; 16]);
     /// ```
     ///
     /// # Errors
     ///
     /// Returns a shape or dtype error if the tensors are incompatible.
-    pub fn rope(&self, sine_frequencies: impl Into<Tensor>, cosine_frequencies: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let sin_freqs: Tensor = sine_frequencies.into();
+    pub fn rope(&self, cosine_frequencies: impl Into<Tensor>, sine_frequencies: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let cos_freqs: Tensor = cosine_frequencies.into();
+        let sin_freqs: Tensor = sine_frequencies.into();
         if !RT.lock().implicit_casts {
             let dtype = self.dtype();
             let sdtype = sin_freqs.dtype();
@@ -3547,8 +3554,8 @@ impl Tensor {
 
         let a = self.narrow(-1, Tensor::from(0i64), half_t.clone())?;
         let b = -self.narrow(-1, half_t.clone(), half_t)?;
-        let ro = a.clone() * cos_freqs.clone() - b.clone() * sin_freqs.clone();
-        let co = a * sin_freqs + b * cos_freqs;
+        let ro = a.clone() * sin_freqs.clone() - b.clone() * cos_freqs.clone();
+        let co = a * cos_freqs + b * sin_freqs;
         let r = Tensor::cat([&co, &ro], -1).unwrap(); // Concatenate along the last dimension
 
         Ok(r)

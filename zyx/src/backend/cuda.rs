@@ -391,6 +391,13 @@ enum CUDACommand {
         bytes: Dim,
         reply: Sender<Result<(), BackendError>>,
     },
+    /// Blocking barrier: the reply is sent after every stream has drained,
+    /// i.e. every command submitted before this one has completed. Unlike
+    /// the opening drain in `Replay` (which is a scheduling primitive and
+    /// cannot report), a failure here is returned to the caller.
+    Synchronize {
+        reply: Sender<Result<(), BackendError>>,
+    },
     /// Export the device pointer, context and in-flight barrier events of a
     /// buffer so another device's worker can copy from it (peer-copy source side).
     Compile {
@@ -987,6 +994,19 @@ fn spawn_worker(
                     if let Err(err) = unsafe { (cuStreamSynchronize)(streams[0].stream) }.check(ErrorStatus::MemoryCopyP2H) {
                         let _ = reply.send(Err(err));
                         continue;
+                    }
+                    let _ = reply.send(Ok(()));
+                }
+                CUDACommand::Synchronize { reply } => {
+                    // Public barrier: drain every stream so the reply means
+                    // "everything submitted before this command is done".
+                    // Same drain as the opening drain in `Replay`, but the
+                    // failure is reported instead of swallowed.
+                    for st in &streams {
+                        if let Err(err) = unsafe { (cuStreamSynchronize)(st.stream) }.check(ErrorStatus::KernelSync) {
+                            let _ = reply.send(Err(err));
+                            continue 'work_thread_loop;
+                        }
                     }
                     let _ = reply.send(Ok(()));
                 }
@@ -1974,6 +1994,16 @@ impl CUDADevice {
 
     pub fn free_compute(&self) -> u128 {
         self.dev_info.compute
+    }
+
+    /// Blocking barrier: returns once every stream has drained, so all work
+    /// submitted to this device before the call has completed. Does not
+    /// allocate, copy, or otherwise disturb the pool.
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub fn synchronize(&mut self) -> Result<(), BackendError> {
+        let (reply, reply_rx) = channel();
+        self.tx.send(CUDACommand::Synchronize { reply }).unwrap();
+        reply_rx.recv().unwrap()
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]

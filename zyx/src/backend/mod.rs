@@ -726,6 +726,38 @@ impl Dev {
         }
     }
 
+    /// Blocks until every piece of work previously submitted to this device
+    /// has completed. The barrier a caller needs before trusting a wall-clock
+    /// measurement, or before reusing host memory a device may still write.
+    ///
+    /// Host backends execute synchronously and return immediately. This does
+    /// not take the runtime lock: the backend worker owns the device context,
+    /// so all that is needed is to wait on its reply.
+    ///
+    /// # Errors
+    ///
+    /// If the device is unavailable (backend disabled or init failed), or the
+    /// backend reports a failure while draining.
+    pub fn synchronize(self) -> Result<(), ZyxError> {
+        match self {
+            Dev::Auto => panic!("Dev::Auto has no device to synchronize; resolve it with Dev::auto() first"),
+            Dev::C | Dev::Host => {
+                // Host execution is synchronous: `Plan::replay` returns only
+                // after every launch for these devices has already run.
+                Ok(())
+            }
+            Dev::Cuda(id) => {
+                let mut device = dlock(self, cuda::device(id)?);
+                Ok(device.synchronize()?)
+            }
+            Dev::OpenCL(_) => todo!("Dev::synchronize for OpenCL"),
+            Dev::TT(_) => todo!("Dev::synchronize for Tenstorrent"),
+            Dev::Vulkan(_) => todo!("Dev::synchronize for Vulkan"),
+            #[cfg(feature = "wgpu")]
+            Dev::WGPU(_) => todo!("Dev::synchronize for WGPU"),
+        }
+    }
+
     // TODO remove this somehow perhaps
     /// Whether this device only runs AOT (precompiled) kernels and cannot
     /// compile generic zyx kernels. Such devices must be skipped by generic

@@ -74,6 +74,17 @@ pub use transformer_encoder_layer::TransformerEncoderLayer;
 mod transformer_decoder_layer;
 pub use transformer_decoder_layer::TransformerDecoderLayer;
 
+// LLM blocks (llama-family): grouped-query attention with rotary embeddings,
+// a SwiGLU feed-forward, and the pre-norm decoder block that chains them.
+mod gqa_attention;
+pub use gqa_attention::{GqaAttention, RopeConfig, RopeScaling};
+
+mod swiglu;
+pub use swiglu::SwiGlu;
+
+mod decoder_block;
+pub use decoder_block::DecoderBlock;
+
 // I don't like this, use fn(&Tensor) -> Tensor or something like that instead
 // fn(impl Into<Tensor>) -> Tensor
 //mod activation;
