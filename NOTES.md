@@ -1,16 +1,19 @@
 ## HANDOFF (2026-11-06, session 9) — the reduce is found; the row lane is next
 
-**Tree state:** base `709d44d1`. Uncommitted when this was written:
-`firmware/tt-firmware/src/ttinsn.rs` and `zyx/src/codegen/tenstorrent/datapath.rs`
-(the stepped unpack base, below), `zyx/src/kernel/tenstorrent.rs` (the pacing
-ring and the `tt_tile` rank budget), `zyx/tests/23_tt_lowering.rs` (softmax
-asserts values), and temporary dumps in `kernel/tenstorrent.rs`,
-`backend/tenstorrent/ttsim.rs`, `codegen/tenstorrent/mod.rs` (`ZYX_SYNC_DUMP`,
-`ZYX_WORD_DUMP`, `ZYX_CODE_DUMP`, `ZYX_MOVE_DUMP`, a `tt_verify` op dump) plus
-`tests/tmp_loop.rs` — all of those must be removed before the handoff is clean.
-**116 lib tests green.** Reduce gates: `sum`, `max`, `sum_all`, `sum_scalar`,
-`max_scalar` pass with `ZYX_DEBUG=256`. **`softmax` still fails**, now for one
-specific reason (the row lane, below), not the traffic.
+**Commits this session:** `36f30a7f` (ordered stepped base, reduce rank budget,
+pacing tokens), `72f675ef` (`sum_loop` gate + the output-layout finding).
+Base `709d44d1`.
+
+**State:** 116 lib tests green. With `ZYX_DEBUG=256` (NoSearch) every gate
+passes except `softmax`, including the new **`sum_loop`** (`[32,256]` sum-all,
+8 tile iterations) — that is the "reduce test with a proper loop" proof, and it
+also passes with the search on. `softmax` still fails, now for one specific
+reason (the per-row output layout, below), not the traffic.
+
+Still in the tree and to remove before this is clean: env-gated dumps
+`ZYX_SYNC_DUMP` and a `tt_verify` op dump in `kernel/tenstorrent.rs`,
+`ZYX_WORD_DUMP` in `codegen/tenstorrent/mod.rs`, `ZYX_DST_DUMP`,
+`ZYX_CODE_DUMP`, `ZYX_MOVE_DUMP` in `backend/tenstorrent/ttsim.rs`.
 
 ### The reduce bug from session 8: found and fixed
 
