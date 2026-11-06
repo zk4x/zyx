@@ -25,45 +25,45 @@ plus the old `sum`, `max`, `sum_loop`, `softmax` gates. A rank-1 elementwise
 `mul`/add/round-trip is exact at `[10]`, `[32]`, `[64]` on asymmetric data
 (only `sum`-all of `[64]` hits the tiling bug below, not the layout).
 
-### `sum_drop_col` (red): a permuted-axis reduce is lowered as the other axis
+### `sum_drop_col` (red): the fold is axis-aware now; the result orientation is not
 
-`[10,20].sum([0])` returns the **row** sums (`sum([1])`'s answer), not the
-column sums. The IR before `tt_tile`, for `x.sum([0])`:
+`[10,20].sum([0])` used to return the **row** sums (`sum([1])`'s answer),
+because `tt_reindex` bails on the non-inner reduce axis and
+`tt_dataflow_select`'s pattern table keys `[32,32] -> [32]` on **shape**,
+always emitting `TtEmit::Reduce(TileDim::Row)` (fold lanes). The reduce
+variable's stride in the feeder access is the missing bit: `1` is the lane
+axis (`Row`), the row pitch (`20` here) is the row axis (`Col`). The
+`TtEmit::Reduce` arm now overrides the table's `Row` with `Col` when the
+reduce variable is not the stride-1 one (rank-2 single-fold case only;
+`[32] -> []` stays `Col` and `[32,32] -> []` stays `Scalar`).
 
-```
-r16 = unroll axis0 lanes 32          # the reduce axis, stride 20
-r40 = unroll axis1 lanes 32          # the kept axis, stride 1
-r27 = r40 + 20*r16                   # load index: the *unpermuted* pitch
-r35 = load tile 32x32 r32[r27]
-r15 = reduce sum r35 over r16        # sums original rows
-store vec32 r6[r40] = r15
-```
+That makes the **fold** right (`max` and `sum` both), but `sum_drop_col`
+still fails: `TileDim::Col` leaves the answer in **row 0 lanes** (one value
+per column), while the rank-1 boundary is a **column** (element `i` = row
+`i`, lane 0 — the session-11 fix). The store then copies that row-0 tile
+and `untilize_transfer` reads column 0, so only element 0 survives
+(`z[0]` right, `z[1..]` zero). This is an orientation, not a fold, bug.
 
-`reduce_axes` permutes kept axes first, then reduces the last axis, but the
-permute is *not materialized*: the load index still uses the original pitch
-(`20`), and the reduce lane `r16` is the **outer** (row) tile axis.
-`tt_reindex` bails on it (its invariant is that the reduce lane has stride 1),
-and `tt_dataflow_select`'s pattern table keys the `[32,32] -> [32]` fold on
-**shape**, so it emits `TtEmit::Reduce(TileDim::Row)` (fold lanes) — the wrong
-tile axis. `sum_all`/`sum_scalar` avoid this because they reduce the identity
-permutation's last axis first.
+The remaining choice is where to transpose, and it must stay in the TT
+lowering:
 
-Two repairs, both a design call:
+1. **Transpose the operand on read.** The vocabulary already exists:
+   `TtEmit`/`TTOp::DmReadTransposed` is the mover's `READ_TRANSPOSED`
+   (scratch + `transpose_from_scratch`), and the unpacker has a
+   transpose-into-`SrcA` mode (`unpack_src_transposed_config`; ttsim refuses
+   transpose with `UnpackToDst`). With the operand transposed, the reduce is
+   an inner-axis `Row` fold and the existing column output is already right.
+   Needs `tt_reindex`/`tt_cb_lower` to emit the transposed read and to
+   generalize the tile-loop stride (a row-tile advance is `32 * cols`, not
+   `32`), so it is the general form.
+2. **Transpose the result tile** after the `Col` fold (row 0 -> column 0)
+   in the SFPU. `SFPTRANSP` (`transpose4`) is a 4x4/lane-group transpose,
+   not a whole-tile one, so this needs the block-level sequence; it is a
+   real but sizeable new emit path.
 
-1. **Materialize the permute** after `reduce_axes`' `permute` (e.g.
-   `contiguous()` in `reduce_axes` for TT), so the reduce's lane really is
-   the innermost axis and `Row` is right. General, but adds a transpose copy
-   kernel to every non-last-axis reduce.
-2. **Carry the axis into the emitter** (`Pat::Reduce` would need to bind
-   `reduce_axis`, or `tt_tile` could rewrite the tab) and teach the store
-   that a column reduce's result is one value per lane. But the rank-1
-   convention is now column (row `i`, lane 0), while `TileDim::Col` leaves
-   its values in **row 0 lanes** — so this also needs a transpose of the
-   result (or a third rank-1 layout at the boundary).
-
-Do not pick one without the user: option 1 changes `reduce_axes` for every
-backend, option 2 adds a result layout that `untilize_transfer` cannot infer
-from the logical shape (the same ambiguity this session just removed).
+Nothing else regressed: `sum`, `max`, `sum_all`, `sum_scalar`, `max_scalar`,
+`sum_drop`, `max_drop`, `sum_loop`, `sum_drop_loop`, and `softmax` are green
+with the axis-aware emitter, and the 116 lib tests pass.
 
 ### `sum_one_row` (red): `[1, 256].sum_all()` -> `boundary offset 32 is not a whole tile`
 

@@ -2035,6 +2035,9 @@ impl Kernel {
         let mut pats: Vec<(Pat, TtEmit)> = vec![
             (mmul, TtEmit::Matmul),
             (mmul_swap, TtEmit::Matmul),
+            // `[32,32] -> [32]`: `Row` or `Col` is decided by the reduce
+            // axis in the emitter (the reduce variable's stride); the shape
+            // alone cannot tell the two apart. See `TtEmit::Reduce` there.
             (Pat::sum(tile.clone()).shape([32i64]), TtEmit::Reduce(TileDim::Row)),
             (Pat::reduce(tile.clone(), BOp::Max).shape([32i64]), TtEmit::Reduce(TileDim::Row)),
             (Pat::sum(tile.clone()).shape([] as [i64; 0]), TtEmit::Reduce(TileDim::Scalar)),
@@ -3868,9 +3871,29 @@ impl Kernel {
                 }
                 self.tt_materialize(id, dtype, slot, lower)
             }
-            TtEmit::Reduce(dim) => {
-                let Op::Reduce { rop, .. } = self.ops[id].op else {
+            TtEmit::Reduce(table_dim) => {
+                let Op::Reduce { rop, x: reduced, reduce_axis } = self.ops[id].op else {
                     return None;
+                };
+                // The pattern table keys `[32,32] -> [32]` on shape, so it
+                // always asks for `Row`; the axis is what decides. `Row` folds
+                // the tile's lane axis, `Col` its row axis (`reduce.rs`'s
+                // `Axis::Cols`/`Axis::Rows`). The reduce variable's stride in
+                // the feeder access is the tell: 1 is the lane axis, the row
+                // pitch is the row axis. (A `[32] -> []` vector is already
+                // `Col` in the table and a whole-tile `Scalar` is two passes;
+                // only the rank-2 single-fold arm is overridden.)
+                let dim = if table_dim == TileDim::Row && self.shape(reduced).len() == 2 {
+                    match self.ops[reduced].op {
+                        Op::Load { src_idx, .. } => self
+                            .get_strides(src_idx)
+                            .and_then(|s| s.get(&reduce_axis).copied())
+                            .map(|(_, stride)| if stride == 1 { TileDim::Row } else { TileDim::Col })
+                            .unwrap_or(table_dim),
+                        _ => table_dim,
+                    }
+                } else {
+                    table_dim
                 };
                 let (dtype, input) = self.tt_resolve_dst(m.op('t'), id, lower)?;
                 let slot = self.tt_new_dst(dtype, lower.prologue);
