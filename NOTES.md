@@ -1,4 +1,164 @@
-## HANDOFF (2026-11-06, session 12) — start here: general indexing is the plan
+## HANDOFF (2026-11-06, session 13) — start here: one llama forward step on TT
+
+**Goal, stated by the user.** `examples/llama` with the real f16 weights
+(`examples/models/llama-3.2-3b/Llama-3.2-3B-Instruct-f16.gguf`) running on
+`Dev::TT(0)` — ttsim — doing **one forward step end to end**, all 28 layers,
+embedding through lm_head, values matching the CPU reference. `seq_len = 1`,
+one token. **Runtime is irrelevant: 100 s is fine.** No timing assertion
+anywhere.
+
+**Explicitly out of scope** (user's words, not mine): perf work of any kind,
+`tt_gemm`, `qwen`, the kmd/silicon transport, GGUF quantization, the decode
+loop, kv-cache growth, symbolic dims. At `seq_len = 1` the causal mask and
+the kv cache are unnecessary by construction (attention over one key *is*
+`v`), so they are absent, not cut.
+
+### Tree state
+
+- `b898b983` merges `~/Dev/rust/zyx` main (`976178c4`, 8 commits, 176 files,
+  base `9564adc9`): llama bench, `Dev::synchronize`, rope arg order, zyx-nn
+  blocks, wgsl codegen, cblas removal, codegen name cleanup.
+- One conflict, `zyx/src/codegen/tenstorrent/mod.rs` (renamed here from
+  `tenstorrent.rs`): the other side had removed `render_tt`'s body and
+  `generate_tenstorrent`; resolved to this branch. Nothing of the TT lowering
+  was lost (`kernel/tenstorrent.rs` 7963 -> 7960 lines, all three unused
+  imports/locals).
+- **Root `rust-toolchain.toml` deleted.** The merge added it (channel 1.88.0);
+  under 1.88.0 the firmware role images overflow their 10 KiB L1 slots
+  (`.rodata`/`.bss` by 1204/920/1256 bytes for t0/t1/t2) and nothing builds.
+  With the default `stable` toolchain the firmware links (3.3 s) and the tree
+  builds (6.7 s). Do not re-add a root pin without re-fitting the firmware.
+- **`generate_tenstorrent` folded into `render_tt`.** It had one caller plus
+  one unit test; `TTProgram` is now a local. `render_tt` runs the TT passes,
+  builds the program, renders it into ops, returns the kernel.
+- `zyx/tests/24_tt.rs` is new (see below).
+- Green: `cargo build`; `cargo test --lib` (116); `cargo test --lib --tests
+  -- --skip mnist` (0 failed across all suites).
+- Still broken, unrelated to this path: `examples/tt_gemm` and
+  `examples/qwen3.8-27b` ask for `features = ["tenstorrent"]`, which no longer
+  exists, so the examples workspace does not resolve.
+
+### The failure list: `24_tt.rs`, 0 of 11 pass
+
+`24_tt.rs` ports every op group of `12_llama_ops` onto `Dev::TT(0)` (F32, not
+the example's F16: the question is whether the lowering exists, and BF16 adds
+packer narrowing as a second confound). Run one test per process:
+
+```bash
+cd zyx && AGENT=1 cargo test --test 24_tt --no-run
+BIN=$(ls -t target/debug/deps/24_tt-* | grep -v '\.d$' | head -1)
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
+  AGENT=1 timeout 10 $BIN <test> --exact --nocapture
+```
+
+| gate | exact failure |
+|---|---|
+| `llama_embedding_one_hot` | `not yet implemented: cast U32 -> F32 has no native row-op program (tile U32)` — `kernel/tenstorrent.rs:2635` |
+| `llama_rms_norm` | `to_device: host-staged tensor has no buffer` — `runtime.rs:2080` |
+| `llama_rope` | `tenstorrent: boundary offset 2 is not a whole tile` (KernelCompilation) |
+| `llama_attention_softmax` | `Key OpId(222) has been deleted from the slab` — `kernel/fold_constants.rs:640` |
+| `llama_kv_cache_assign_symbolic` | `post-linearize kernel must not contain Move/graph-shape ops` — `kernel/verify.rs:139` |
+| `llama_kv_cache_assign_repeated` | `reader move of param 0: DRAM access 16..4112 of chunk ... exceeds its 140 bytes` |
+| `llama_kv_cache_assign_generations` | same as repeated (140 bytes) |
+| `llama_promote_realized_eager_load` | same shape, 28 bytes |
+| `llama_causal_mask_compare` | same shape, param 1, 76 bytes |
+| `llama_feedforward_glu` | `post-linearize kernel must not contain Move/graph-shape ops` |
+| `llama_lm_head_projection` | `post-linearize kernel must not contain Move/graph-shape ops` |
+
+**The one pattern worth naming: every tensor smaller than one tile fails at
+launch.** The reader emits a whole `TILE_SLOT` read (`DRAM access 16..4112`)
+whatever the param's size, so a 4x4 mask, a 4-element vector, an 8x4 kv block
+all read past their chunk. That is `tt_slice`/`tt_pages` sizing the move from
+the tile, not from the tensor. It is the same family as the `boundary offset 2`
+error (`rope`): the boundary path still assumes whole tiles in both directions.
+
+The other three are distinct and each needs its own look:
+- `cast U32 -> F32` has no SFPU row program (embedding's `arange`/`equal`/`cast`).
+- `fold_constants` deletes an op and then reads it by key (attention).
+- `linearize` leaves `Move`/graph-shape ops in the kernel (glu, lm_head,
+  kv assign) — the TT lowering requires them gone.
+
+### The CB ring (required for llama's widths, and the old implementation)
+
+This is not perf. `ffn = 8192` is 256 tile columns and `lm_head = 128256` is
+4008; the grid is ~120 cores and `backend/tenstorrent/mod.rs:1032` rejects a
+larger grid. So the grid must be **capped and the remainder looped inside the
+kernel**, with per-tile CB credits. The user's rule: **unbounded streaming is
+prohibited** — the CB is never sized from the loop.
+
+What the old implementation did (`588110a9:zyx/src/codegen/tenstorrent.rs`;
+`reader.cpp` in `06732c79` was a sample, never the implementation):
+
+- `TTOp::CbDeclare { cb, n_tiles, format }` declares the ring depth.
+- `TTOp::ReserveBack/PushBack/WaitFront/PopFront { cb, n }` per iteration.
+- `CBEmitter::new` validates the depth against L1 (`bytes > 32768` is a
+  compile error), and every traffic op starts as a **single-tile
+  transaction** (`reserve(1)` at the op).
+- At `EndLoop`, the transaction is upgraded to a hoisted block **only if the
+  block fits the CB** (`:1336`):
+
+```rust
+if t > config[cb].2 {
+    // The CB cannot hold the whole block: streaming. Keep the
+    // per-iteration single-tile transaction (reserve(1) per loop
+    // pass), which is always correct.
+    continue;
+}
+```
+
+- The state machine asserts the protocol (`push_back` needs `filled == n`,
+  `wait_front` needs `m <= avail`, a section ends settled), and
+  `verify_rejects_producer_run_past_cb_depth` made an overfill a **compile
+  error** (`producer pushes 4 tiles` on a depth-2 CB), not a hang.
+- That path measured **14.444 TFLOPS, bad 0, M5120 N11264 K1024** (device-side
+  nanos) in `a8fa78b9`, which is why double buffering matters at all. Perf is
+  out of scope now, but the mechanism is the same one llama needs.
+
+What exists today vs what is missing:
+
+- `CbState`/`CbTransactions` are ported (`kernel/tenstorrent.rs`) with 16 unit
+  tests and **zero callers**; `tt_cb_plan` computes the batching but nothing
+  emits it.
+- `tt_cb_lower` sizes the CB from the loop instead: `tiles.checked_mul(1024)`
+  at `:1831` and `:1854`, so `t <= capacity` always holds and the whole block
+  is always hoisted. That is the unbounded streaming the user prohibited.
+- `TTOp` has **no** CB credit variant (the port deleted `ReserveBack`,
+  `PushBack`, `WaitFront`, `PopFront`, `CbDeclare` and the
+  `tt_sync_cbs`/`tt_place_pops` passes: `NOTES.md:4388`), and the backend emits
+  only `DmRead`/`DmWrite`/`DmReadBroadcastCol`.
+- The firmware side already exists: `op::CB` = 0x42 (`Stream::{Input,Output,
+  Transfer}`, `Action::{Reserve,Wait,Push,Pop}`), implemented in
+  `firmware/tt-firmware/src/dataflow.rs` and dispatched at `mover.rs:555`.
+  `tt-isa` is the shared metalium-rs crate, so `record::*` is available too.
+- `tt_tile` has no notion of the core grid: a 256-tile group becomes a
+  256-wide grid and the launch rejects it (`backend/tenstorrent/mod.rs:1032`).
+
+### Order of work
+
+1. Fix the boundary moves so a param smaller than a tile works (the
+   `16..4112` reads): size the move from the tensor, and let the residual be
+   an L1 fixup. This alone unblocks 5 of the 11 gates.
+2. `Move`/graph-shape elimination before lowering (`glu`, `lm_head`, kv
+   assign), and the two pass bugs (`fold_constants` slab key, `U32 -> F32`
+   cast).
+3. The CB ring + credits: `CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop` in the
+   IR, per-iteration transactions when `t > depth`, the overfill guard, and
+   the grid capped at the core count with the remainder looped.
+4. The index path (aligned envelope + L1 fixup) for the embedding row select,
+   rope's rotate-half and the transposes.
+5. Then `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
+
+### Traps
+
+- `ttsim`'s owner thread dies with a failed test: run gates **one per
+  process**, or later tests fail as a cascade.
+- 10 s per individual test run is the cap; a passing `softmax` took ~17 s
+  historically, so `24_tt` uses small shapes on purpose.
+- `ZYX_DEBUG=256` (NoSearch), `ZYX_TT_IR=1` (IR after `tt_tile`/`tt_cb_lower`).
+- The examples workspace does not resolve (`features = ["tenstorrent"]` in
+  `tt_gemm`/`qwen`); `zyx/tests` is unaffected.
+
+## HANDOFF (2026-11-06, session 12) — detail: general indexing is the plan
 
 **Snapshot.** Base `709d44d1`, seven commits on top; latest `1341758c`
 (axis-aware reduce fold). **116 lib tests green; 30 of 32 `23_tt_lowering`
