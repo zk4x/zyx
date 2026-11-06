@@ -1081,24 +1081,30 @@ impl Kernel {
         // into a `Loop` with a scalar accumulator, and a `Reduce` only exists
         // here once `split` has unrolled such a loop into lanes. That case
         // keeps its extra axes — the rank-3 cube is deliberate, and
-        // `tt_reindex` rewrites it for the movers — so it splits every group.
-        let rank = if elementwise {
-            self.iter_unordered().fold(0, |rank, (_, op)| {
-                let idx = match *op {
-                    Op::Load { src_idx, .. } => src_idx,
-                    Op::Store { dst_idx, .. } => dst_idx,
-                    Op::Copy { src_idx, .. } => src_idx,
-                    _ => return rank,
-                };
-                if idx.is_null() {
-                    rank
-                } else {
-                    rank.max(self.shape(idx).len())
-                }
-            })
-        } else {
-            0
-        };
+        // `tt_reindex` rewrites it for the movers — but only when the reduce
+        // loop is gone. With a reduce loop still present the template
+        // downstream is `tt_reindex`'s `row2`: one tile per iteration, i.e. the
+        // reduce lane plus one row axis. Splitting a group on top of that
+        // makes a rank-3 access whose split group is a *grid* axis padded into
+        // lanes; `drop3` refuses grids, and the padded lanes read past the
+        // tensor (measured on softmax's `max`: `r27` up to 261888 for a 65536
+        // element input, and the load bails in both `tt_reindex` and
+        // `tt_cb_lower`). So the group split gets the same rank budget as the
+        // elementwise case: `axes` lanes while a loop remains, `axes + 1` when
+        // the loop was fully split into lanes.
+        let rank = self.iter_unordered().fold(0, |rank, (_, op)| {
+            let idx = match *op {
+                Op::Load { src_idx, .. } => src_idx,
+                Op::Store { dst_idx, .. } => dst_idx,
+                Op::Copy { src_idx, .. } => src_idx,
+                _ => return rank,
+            };
+            if idx.is_null() {
+                rank
+            } else {
+                rank.max(self.shape(idx).len())
+            }
+        });
         let mut pad_groups: Vec<OpId> = Vec::new();
         for (op, x) in self.iter_unordered() {
             if matches!(x, Op::Range { kind: RangeKind::Group(_), .. }) {
@@ -1145,8 +1151,10 @@ impl Kernel {
         });
         let mut need = if elementwise {
             axes.saturating_sub(rank)
+        } else if self.iter_unordered().any(|(_, op)| matches!(op, Op::Loop { .. })) {
+            axes.saturating_sub(rank)
         } else {
-            pad_groups.len()
+            (axes + 1).saturating_sub(rank)
         };
         for g in pad_groups {
             if need == 0 {
@@ -2502,6 +2510,29 @@ impl Kernel {
         }
     }
 
+    /// The loop-carried accumulator slot this value is the back edge of, if it
+    /// is one: a `Store` inside a loop into a `Register` storage whose slot was
+    /// reserved up front (`TtLowering::reg_slot`). The producer must write
+    /// *that* slot, not a fresh tile: the loop's next iteration reads the
+    /// storage in place, so a fresh destination would leave it untouched and
+    /// every iteration would start from the pre-loop value.
+    fn tt_accumulator_dst(&self, value: OpId, lower: &TtLowering) -> Option<OpId> {
+        let mut id = self.head;
+        for _ in 0..250_000 {
+            if id.is_null() {
+                return None;
+            }
+            if let Op::Store { dst, src, .. } = self.ops[id].op
+                && src == value
+                && let Some(&slot) = lower.reg_slot.get(&dst)
+            {
+                return Some(slot);
+            }
+            id = self.next_op(id);
+        }
+        None
+    }
+
     /// Rewrite every reference to DST storage `from` to `to`.
     fn tt_redirect_slot(&mut self, from: OpId, to: OpId) {
         let mut id = self.head;
@@ -3810,7 +3841,10 @@ impl Kernel {
                 } else {
                     OpId::NULL
                 };
-                let slot = self.tt_new_dst(dtype, lower.prologue);
+                let slot = match self.tt_accumulator_dst(id, lower) {
+                    Some(slot) => slot,
+                    None => self.tt_new_dst(dtype, lower.prologue),
+                };
                 if !self.tt_sfp_sequence(id, kind, a, b, slot) {
                     self.ops[id].op = Op::TT(TTOp::Sfpu { kind, a, b, slot });
                 }
@@ -5615,6 +5649,7 @@ impl Kernel {
         // marker and `Post`s after the body's last op. Map a member op index
         // to the body's bounds.
         let mut replay_of: Map<usize, (usize, usize)> = Map::default();
+        let mut loop_of: Map<usize, (usize, usize)> = Map::default();
         {
             let mut i = 0;
             while i < ops.len() {
@@ -5634,8 +5669,52 @@ impl Kernel {
                 }
             }
         }
+        // An `Op::Loop` runs its body `trip` times, so an access inside it is
+        // one hand-off per iteration, and a consumer *after* the loop must
+        // wait for the last iteration, not the first: map a member op to the
+        // loop's bounds exactly as a `Replay` body is mapped. Without this the
+        // consumer's `Wait` came before the loop and the reader raced it.
+        {
+            let mut open: Vec<(usize, usize)> = Vec::new(); // (loop index, body start)
+            for i in 0..ops.len() {
+                match self.at(ops[i]) {
+                    Op::Loop { .. } => open.push((i, i + 1)),
+                    Op::EndLoop => {
+                        if let Some((start, body)) = open.pop() {
+                            for k in body..i {
+                                loop_of.insert(k, (start, i));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let before_replay = |i: usize| replay_of.get(&i).map(|(start, _)| *start).unwrap_or(i);
         let after_replay = |i: usize| replay_of.get(&i).map(|(_, end)| end - 1).unwrap_or(i);
+        // A hand-off between two accesses of the *same* loop body is one per
+        // iteration and stays where it is. A hand-off whose other end is
+        // outside the loop happens once for the whole loop, so it belongs
+        // outside: the post after `EndLoop`, the take before the `Loop`. (The
+        // final accumulator->pack edge is the one that needs this; a
+        // per-iteration tile hand-off must not be hoisted, or the reader sees
+        // only the last iteration's tile.)
+        let loop_end = |writer: usize, reader: usize| -> usize {
+            let w = after_replay(writer);
+            match (loop_of.get(&w), loop_of.get(&after_replay(reader))) {
+                (Some(&(ws, _)), Some(&(rs, _))) if ws == rs => w,
+                (Some(&(_, we)), _) => we,
+                _ => w,
+            }
+        };
+        let loop_begin = |writer: usize, reader: usize| -> usize {
+            let r = before_replay(reader);
+            match (loop_of.get(&r), loop_of.get(&before_replay(writer))) {
+                (Some(&(rs, _)), Some(&(ws, _))) if ws == rs => r,
+                (Some(&(rs, _)), _) => rs,
+                _ => r,
+            }
+        };
         let before = |role: u8| match role {
             0 => TT_BEFORE_UNPACKER,
             2 => TT_BEFORE_PACKER,
@@ -5644,6 +5723,16 @@ impl Kernel {
         // A seam names the ordered `(producer, consumer)` edge it carries; the
         // semaphore index is assigned once all edges are known.
         let mut posts: Vec<(usize, (u8, u8))> = Vec::new();
+        // Edges whose writer waits for the reader (a loop reuse), counted per
+        // loop so the semaphore starts with one token per hand-off the body
+        // performs. One token per *edge* is only enough when the body hands
+        // off one tile: with two, the writer's second take waits for a post
+        // that the reader can only make after its own second wait, which the
+        // writer's second post gates (measured as a three-role timeout on
+        // softmax, whose loop re-unpacks the loop-invariant max vector next to
+        // the input tile).
+        let mut reuse: Map<((u8, u8), usize), u8> = Map::default();
+
         let mut takes: Vec<(usize, (u8, u8))> = Vec::new();
         for events in touches.values() {
             // One epoch per write: the data an epoch publishes is what the
@@ -5663,8 +5752,8 @@ impl Kernel {
             }
             for (n, ((writer, write_idx), readers)) in epochs.iter().enumerate() {
                 for &(reader, first, _) in readers {
-                    posts.push((after_replay(*write_idx), (*writer, reader)));
-                    takes.push((before_replay(first), (*writer, reader)));
+                    posts.push((loop_end(*write_idx, first), (*writer, reader)));
+                    takes.push((loop_begin(*write_idx, first), (*writer, reader)));
                 }
                 // The reuse edge: a tile written again in the next epoch must
                 // not be overwritten while a reader of this epoch still needs
@@ -5679,6 +5768,28 @@ impl Kernel {
                             posts.push((after_replay(last), (reader, *next_writer)));
                             takes.push((before_replay(*next_write), (reader, *next_writer)));
                         }
+                    }
+                }
+                // A loop's per-iteration pacing: one write in the IR is `trip`
+                // writes at run time, and the writer must not overwrite the
+                // tile until the reader has taken the previous iteration's.
+                // Only when both ends are in the *same* loop body: a reader
+                // after the loop reads the last iteration once and the writer
+                // never rewrites, so its edge is the hoisted one above (a take
+                // for it inside the loop waits on a post that only comes after
+                // the loop, which deadlocks).
+                let same_loop = |a: usize, b: usize| {
+                    matches!(
+                        (loop_of.get(&a), loop_of.get(&b)),
+                        (Some(&(x, _)), Some(&(y, _))) if x == y
+                    )
+                };
+                for &(reader, _, last) in readers {
+                    if reader != *writer && same_loop(*write_idx, last) {
+                        posts.push((after_replay(last), (reader, *writer)));
+                        takes.push((before_replay(*write_idx), (reader, *writer)));
+                        let body = loop_of.get(&after_replay(*write_idx)).map(|(start, _)| *start).unwrap_or(usize::MAX);
+                        *reuse.entry(((reader, *writer), body)).or_default() += 1;
                     }
                 }
             }
@@ -5718,7 +5829,23 @@ impl Kernel {
         }
         let end_reader = end_reader.expect("tt_reg_sync: no EndReader in a lowered TT kernel");
         for &sem in &used {
-            self.insert_after(end_reader, Op::TT(TTOp::Semset { sem, value: 0 }));
+            // A reuse edge starts with one token per hand-off its loop body
+            // performs: the first iteration's writes have nothing to wait for.
+            // An edge used by two different loops is sized by the busier one;
+            // tokens are only ever returned by a post that follows a read.
+            let value = reuse
+                .iter()
+                .filter(|((edge, _), _)| *edge == edges[sem as usize])
+                .map(|(_, count)| *count)
+                .max()
+                .unwrap_or(0);
+            assert!(
+                value <= tt_isa::sync::MAX_VALUE,
+                "tt_reg_sync: edge {edge:?} performs {value} loop hand-offs per iteration, more than the {} a semaphore can start with",
+                tt_isa::sync::MAX_VALUE,
+                edge = edges[sem as usize]
+            );
+            self.insert_after(end_reader, Op::TT(TTOp::Semset { sem, value }));
         }
         for (idx, edge) in takes {
             let (_, consumer) = edge;
@@ -5730,6 +5857,19 @@ impl Kernel {
             // not get more than fifteen ahead of the consumer.
             let post = self.insert_after(ops[idx], Op::TT(TTOp::Post { sem: sem(edge), role: producer }));
             self.insert_before(post, Op::TT(TTOp::WaitBelowMax { sem: sem(edge), before: before(producer), role: producer }));
+        }
+        if std::env::var_os("ZYX_SYNC_DUMP").is_some() {
+            let mut id = self.head;
+            let mut n = 0;
+            while !id.is_null() && n < 4000 {
+                match self.at(id) {
+                    Op::Loop { .. } | Op::EndLoop | Op::TT(TTOp::Post { .. }) | Op::TT(TTOp::Wait { .. }) | Op::TT(TTOp::WaitBelowMax { .. })
+                    | Op::TT(TTOp::Semset { .. }) => eprintln!("S{n} {id:?}: {:?}", self.at(id)),
+                    _ => {}
+                }
+                id = self.next_op(id);
+                n += 1;
+            }
         }
     }
 
@@ -6187,7 +6327,7 @@ impl Kernel {
                         "tt_verify: store->load of the same DRAM param at {id:?}"
                     );
                 }
-                Op::TT(TTOp::Replay { len, count }) => {
+                Op::TT(TTOp::Replay { len, count, .. }) => {
                     assert!(section == 1, "tt_verify: replay outside the compute section at {id:?}");
                     assert!(replay_left.is_none(), "tt_verify: nested replay at {id:?}");
                     // A body that fits the replay buffer is a hardware `REPLAY`;
@@ -6225,6 +6365,20 @@ impl Kernel {
             id = self.next_op(id);
         }
         assert!(replay_left.is_none(), "tt_verify: a replay body is not complete at the kernel end");
+        if !seen_reader {
+            eprintln!("UNORDERED ({} ops):", self.iter_unordered().count());
+            for (id, op) in self.iter_unordered() {
+                eprintln!("OP {id:?}: {op:?}");
+            }
+            eprintln!("CHAIN:");
+            let mut d = self.head;
+            let mut n = 0;
+            while !d.is_null() && n < 400 {
+                eprintln!("C{n} {d:?}: {:?}", self.at(d));
+                d = self.next_op(d);
+                n += 1;
+            }
+        }
         assert!(seen_reader, "tt_verify: missing EndReader");
         assert!(seen_compute, "tt_verify: missing EndCompute");
         // A wait on an uninitialised semaphore reads whatever the previous

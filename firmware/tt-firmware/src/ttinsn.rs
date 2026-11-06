@@ -42,23 +42,34 @@ const fn opcode_bitmap() -> [u32; OPCODE_WORDS] {
 const ZERO: u32 = 0;
 const T0: u32 = 5;
 const T1: u32 = 6;
-/// The value register of a stepped address (the unpacker's base), and the
-/// register holding that config word's address. The loop counters never use
-/// them, and `.ttinsn` pushes do not touch a register.
-const T2: u32 = 7;
-const T3: u32 = 28;
+/// The Tensix GPRs a stepped address lives in: its value and its per-iteration
+/// advance. Tensix GPRs, not RISC-V ones: the config write (`WRCFG`) and the
+/// advance (`ADDDMAREG`) are coprocessor instructions, so they stay in the
+/// instruction FIFO and are ordered with the unpack that reads the base. A
+/// RISC-V `sw` into the same config word is not (measured: the base lagged a
+/// whole iteration, tiles 0, 0, 2, 3, ...).
+const BASE_GPR: u32 = 24;
+const STRIDE_GPR: u32 = 26;
+/// The config word a stepped address writes: the unpacker's
+/// `REG3_Base_address`, in 16-byte units.
+const BASE_ADDRESS_CFG: u32 = tt_isa::cfg::generated::thcon::THCON_SEC0_REG3_Base_address.addr32() as u32;
 const A0: u32 = 10;
 /// `jalr x0, 0(ra)`.
 const RET: u32 = 0x0000_8067;
 /// Loop counts that fit `addi`'s signed 12-bit immediate.
 const MAX_COUNT: u32 = 2047;
 
-/// A staged word the translator turns into `sw t2, 0(t3)`: the store of the
-/// address register into the config word it names. The low 20 bits are the
-/// register's first value, in the field's own units (the unpacker's base is in
-/// 16-byte units, so an L1 address below 1 MiB fits). The body of a loop is one
-/// copy: this is how an address that moves per iteration is expressed without
-/// writing the body out.
+/// A staged word the translator turns into `WRCFG t2`: the write of the
+/// address register into the unpacker's base config word. The low 20 bits are
+/// the register's first value, in the field's own units (the unpacker's base is
+/// in 16-byte units, so an L1 address below 1 MiB fits). The body of a loop is
+/// one copy: this is how an address that moves per iteration is expressed
+/// without writing the body out.
+///
+/// It is `WRCFG` and not `sw` to the same config word on purpose: `WRCFG` is a
+/// coprocessor instruction, so it is ordered in the instruction FIFO with the
+/// `UNPACR` that reads the word. A RISC-V store is not, and the unpacker read a
+/// stale base one iteration in (measured: tiles 0, 0, 2, 3, ...).
 pub const STEP_STORE: u32 = 0x7F50_0000;
 /// A staged word the translator turns into `addi t2, t2, step`: the advance of
 /// that register for the next iteration, low 12 bits, in the same units.
@@ -149,13 +160,19 @@ fn emit(
         if depth >= 2 || count == 0 || count > MAX_COUNT {
             return None;
         }
-        // A body that steps an address needs that register loaded before the
-        // loop: the config word's address into `t3`, its first value into `t2`.
+        // A body that steps an address needs its Tensix GPRs loaded before the
+        // loop: the base with the first value, and the stride with the advance
+        // (`set_gpr` is `SETDMAREG_Immediate` twice, a coprocessor write of a
+        // literal -- there is no RISC-V register involved, so the value has to
+        // be known here, which the staged step words carry).
         if let Some(base) = step_base(code, start, start + len) {
-            let cfg = tt_isa::cfg::generated::thcon::THCON_SEC0_REG3_Base_address
-                .riscv_address(tt_isa::cfg::ConfigBank::Bank0) as u32;
-            for word in load_const(T3, cfg).into_iter().chain(load_const(T2, base)) {
-                out.push(word)?;
+            for word in tt_isa::backend::set_gpr(BASE_GPR, base).ok()? {
+                out.push(word.word().rotate_left(2))?;
+            }
+            if let Some(step) = step_advance(code, start, start + len) {
+                for word in tt_isa::backend::set_gpr(STRIDE_GPR, step).ok()? {
+                    out.push(word.word().rotate_left(2))?;
+                }
             }
         }
         let reg = [T0, T1][depth];
@@ -188,11 +205,13 @@ fn words(
         // A step word is the translator's own: the address register's store and
         // advance, never an instruction of the machine.
         if w & STEP_MASK == STEP_STORE {
-            out.push(sw(T2, T3, 0))?;
+            let write = tt_isa::isa::generated::encode::wrcfg(BASE_GPR, 0, BASE_ADDRESS_CFG).ok()?;
+            out.push(write.word().rotate_left(2))?;
             continue;
         }
         if w & STEP_MASK == STEP_ADVANCE {
-            out.push(addi(T2, T2, (w & 0xfff) as i32))?;
+            let add = tt_isa::isa::generated::encode::adddmareg(BASE_GPR, STRIDE_GPR, BASE_GPR).ok()?;
+            out.push(add.word().rotate_left(2))?;
             continue;
         }
         // `.ttinsn` is only valid below 0xC000_0000: the rotated word's low two
@@ -218,6 +237,19 @@ fn step_base(code: u64, lo: u32, hi: u32) -> Option<u32> {
         let w = unsafe { core::ptr::read_volatile((code + 4 * i as u64) as *const u32) };
         if w & STEP_MASK == STEP_STORE {
             return Some(w & 0xf_ffff);
+        }
+    }
+    None
+}
+
+/// The advance of a body's stepping address: the low 12 bits of its
+/// [`STEP_ADVANCE`] word.
+fn step_advance(code: u64, lo: u32, hi: u32) -> Option<u32> {
+    for i in lo..hi {
+        // SAFETY: inside the staged program, whose extent the runner checked.
+        let w = unsafe { core::ptr::read_volatile((code + 4 * i as u64) as *const u32) };
+        if w & STEP_MASK == STEP_ADVANCE {
+            return Some(w & 0xfff);
         }
     }
     None

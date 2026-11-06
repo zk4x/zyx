@@ -633,6 +633,31 @@ fn softmax() -> Result<(), ZyxError> {
     assert_eq!(xv.len(), 256 * 256);
     assert_eq!(zv.len(), 256 * 256);
 
+    // Every row is a distribution: compare it against the host's softmax,
+    // peaked enough that a wrong reduction (one tile only, a lost
+    // accumulator) cannot pass by accident.
+    let mut bad = 0;
+    let mut worst = 0.0f32;
+    for r in 0..256 {
+        let row = &xv[r * 256..(r + 1) * 256];
+        let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let e: Vec<f32> = row.iter().map(|v| (v - max).exp()).collect();
+        let sum: f32 = e.iter().sum();
+        for c in 0..256 {
+            let want = e[c] / sum;
+            let got = zv[r * 256 + c];
+            let err = (got - want).abs();
+            worst = worst.max(err);
+            if err > 1e-3 {
+                if bad < 5 {
+                    println!("softmax[{r},{c}] = {got}, expected {want}");
+                }
+                bad += 1;
+            }
+        }
+    }
+    assert_eq!(bad, 0, "{bad} of {} values wrong (worst error {worst})", 256 * 256);
+
     Ok(())
 }
 

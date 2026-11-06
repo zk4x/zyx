@@ -566,6 +566,25 @@ fn execute(
             *ledger = [None; 5];
         }
     }
+    if std::env::var_os("ZYX_MOVE_DUMP").is_some() {
+        for (r, at) in run.reads.iter() {
+            eprintln!("READ dst_l1=0x{at:x} src={r:?}");
+        }
+        for (r, at) in run.writes.iter() {
+            eprintln!("WRITE dst_l1=0x{at:x} src={r:?}");
+        }
+    }
+    if std::env::var_os("ZYX_CODE_DUMP").is_some() {
+        let mut buf = vec![0u8; 0x0A00];
+        if dev.l1_read(&window, tile, 0x1_2010, &mut buf).is_ok() {
+            for i in 0..0x0A00 / 4 {
+                let w = u32::from_le_bytes([buf[4 * i], buf[4 * i + 1], buf[4 * i + 2], buf[4 * i + 3]]);
+                if w != 0 {
+                    eprintln!("CODE0 {i:03}: {w:08x}");
+                }
+            }
+        }
+    }
     let out = out.map_err(|e| e.to_string())?;
     if !run.writes.is_empty() {
         mover_list(dev, window, tile, state, NC, &run.writes, false)?;

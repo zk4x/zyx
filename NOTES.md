@@ -1,3 +1,260 @@
+## HANDOFF (2026-11-06, session 9) — the reduce is found; the row lane is next
+
+**Tree state:** base `709d44d1`. Uncommitted when this was written:
+`firmware/tt-firmware/src/ttinsn.rs` and `zyx/src/codegen/tenstorrent/datapath.rs`
+(the stepped unpack base, below), `zyx/src/kernel/tenstorrent.rs` (the pacing
+ring and the `tt_tile` rank budget), `zyx/tests/23_tt_lowering.rs` (softmax
+asserts values), and temporary dumps in `kernel/tenstorrent.rs`,
+`backend/tenstorrent/ttsim.rs`, `codegen/tenstorrent/mod.rs` (`ZYX_SYNC_DUMP`,
+`ZYX_WORD_DUMP`, `ZYX_CODE_DUMP`, `ZYX_MOVE_DUMP`, a `tt_verify` op dump) plus
+`tests/tmp_loop.rs` — all of those must be removed before the handoff is clean.
+**116 lib tests green.** Reduce gates: `sum`, `max`, `sum_all`, `sum_scalar`,
+`max_scalar` pass with `ZYX_DEBUG=256`. **`softmax` still fails**, now for one
+specific reason (the row lane, below), not the traffic.
+
+### The reduce bug from session 8: found and fixed
+
+The stepped unpack base was written with a RISC-V `sw` into the unpacker's
+`REG3_Base_address`, and a RISC-V store is **not ordered** with the `UNPACR`
+sitting in the coprocessor instruction FIFO. The base therefore lagged the
+unpacker by an iteration: it unpacked tiles `0, 0, 2, 3, …` (tile 0 twice,
+tile 1 never) — exactly the `a,b,c` matrix, and the "accumulator reads its
+initial value" symptom. Measured with a lone tile set to 1: reads were
+`n0 = 2, n1 = 0, n2.. = 1` for T = 3, 4, 5.
+
+Fix (tt-metal's own path, `tt-kernels/src/matmul.rs` `gpr_step`/`write_bases`):
+keep the base in a **Tensix GPR** (`BASE_GPR`), write it with **`WRCFG`**
+(a coprocessor instruction, FIFO-ordered with the unpack), advance it with
+**`ADDDMAREG`**, and seed base and stride before the loop with
+**`SETDMAREG_Immediate`**. `STEP_STORE`/`STEP_ADVANCE` now translate to
+`WRCFG`/`ADDDMAREG` (`firmware/tt-firmware/src/ttinsn.rs`); the staged body is
+`[STEP_STORE][nop][stallwait(UNPACKER|CONFIG, CONFIG_BUSY)][UNPACR][STEP_ADVANCE]`
+(`codegen/tenstorrent/datapath.rs`, `unpack_tile_stepped`). After the fix every
+tile is read exactly once (T = 3, 4, 5 checked).
+
+**Ruled out for this bug** (all measured): the `sw` is not ordered by
+`stallwait(CONFIG_BUSY)`, `SCALAR_OUTSTANDING` or `RISCV_REQUEST_PENDING`
+either — only the coprocessor-instruction path works. `SETRWC`/`DstVal`, slot
+aliasing, SFPU drains, init placement and `REPLAY`/`AddrMod` were already ruled
+out in session 8.
+
+### Pacing: the loop reuse ring needs one token per hand-off
+
+`tt_reg_sync` gives a loop that rewrites a tile a reuse edge (post after the
+reader's last access, take before the writer's next write). That edge must
+start with **one token per hand-off the loop body performs**, not one per
+`(producer, consumer)` edge. Softmax's sum loop hands off two tiles per
+iteration (the input tile and the loop-invariant max-vector re-unpack), so one
+token deadlocked all three roles: the writer's second take waited for a post
+the reader could only make after its own second wait, which the writer's second
+post gated. `reuse` is now `Map<((u8, u8), loop_start), u8>` and the semaphore
+value is the max per loop; it asserts against `sync::MAX_VALUE` (15).
+
+### `tt_tile`: a reduce kernel's group split needs a rank budget
+
+Softmax's `max`/`sum` reduce arrived at `tt_cb_lower` as a `[32,32,32]` load
+plus a loop: the group (grid) axis had been padded into a **third lane axis**.
+Neither downstream template has that shape — `tt_reindex`'s `drop3` requires no
+loop and no grid, `row2` requires a `[32,32]` load — so both bailed, the kernel
+reached `tt_dataflow_select` unlowered, its epilogue folded the loop body away,
+and `tt_verify` panicked with `missing EndReader`. (That fold is a legitimate
+optimization; the bug was producing an access no template has.)
+
+`tt_tile`'s elementwise case already budgets lane axes with
+`axes.saturating_sub(rank)`; the reduce case used `pad_groups.len()`. It now
+uses the same rank budget: `axes` while a reduce loop remains, `axes + 1` when
+the loop was fully split into lanes. Softmax's reduce kernels now lower:
+reader CBs + `end_reader` + the compute loop + writer drains (`kernel.debug`
+after `tt_cb_lower`, `ZYX_TT_IR=1`).
+
+### The bug that is left: the per-row horizontal reduce loses the row
+
+`reduce sum r51 over r33` on a `[32,32]` tile must produce one value per tile
+**row**, but every row gets row 0's value. Minimal reproducer (`tests/tmp_loop.rs`,
+`[ROWS, 256]` with row `r` holding `r`, so the answer is `256*r`):
+
+```
+ROWS=8   -> [0,0,0,0,0,0,0,0]
+ROWS=32  -> 32 copies of 0
+ROWS=64  -> [0 x32, 32 x32]
+```
+
+i.e. each 32-row block returns its **first** row, and the grid axis is right.
+The traffic and CB plan are right (the reader copies the 32x256 block, the
+unpack is a `[32,32]` tile per iteration); the loss is in the T1 row-op reduce
+program: `TtEmit::Reduce` → `accumulate` + `finish_cols` (`kernel/tenstorrent.rs`
+~3941-4052), whose row loop is a `TTOp::Replay` of 32 with `AddrMod 7` patched
+onto the store only. `[4,96]` could not see this: every row of that matrix held
+the same values.
+
+So a reduce test with a real loop (`[256,256]` over axis 1 = 8 tile iterations)
+does **not** pass yet. `sum`/`max` on `[10,20]` pass because their reduce fits
+one tile / has no 32-row tile.
+
+### The reference the user pointed at
+
+`tests/14_tennstorrent_*`, `tests/15_tennstorrent_*` and
+`tests/18_tennstorrent_*` used to pass with tt-metal. The instruction is: run a
+reduce through tt-metal, dump the **machine code** it produces, and make ours
+match. `tt-kernels/src/sfpu/reduce.rs` has the reference `accumulate`/`finish`
+shape; the `Code`/`Instruction` words are what to diff against `ZYX_DEBUG=16`
+(or `ZYX_WORD_DUMP=1`). The `tenstorrent` feature does not exist in
+`zyx/Cargo.toml`, so those three test files never compile today.
+
+### How to run things
+
+```bash
+cd zyx && cargo build
+cd zyx && AGENT=1 cargo test --lib                        # 116
+cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
+BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
+# One gate per process, and use NoSearch while the search still explores
+# kernels that cannot be lowered:
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so ZYX_DEBUG=256 \
+  AGENT=1 timeout 60 $BIN softmax --exact --nocapture
+# IR at the two structure points: after tt_tile and after tt_cb_lower (right
+# before tt_dataflow_select):  ZYX_TT_IR=1
+```
+
+### Next, in order
+
+1. Fix the row-lane reduce against tt-metal's generated machine code (reproducer
+   above; run it with `ROWS=32,64`).
+2. Then softmax's value gate (it is uniform-per-row wrong now: row 4's values
+   are correct scaled by 0.73, i.e. the `sum` of that row is wrong).
+3. Then `tt_cb_lower` must return an error instead of bailing silently
+   (ordered), and the temporary dumps above must go.
+4. Then the search path: it still compiles kernels that cannot be lowered
+   (`Move`/empty-loop shapes) and panics in `verify`; run with `ZYX_DEBUG=256`
+   until that is a loud error too.
+
+## HANDOFF (2026-11-05, session 8) — loops are code now; the reduce/pacing bug
+
+**Tree state:** uncommitted (the user commits): `kernel/tenstorrent.rs`
+(`tt_accumulator_dst`, loop-aware `tt_reg_sync`) and `tests/23_tt_lowering.rs`
+(softmax asserts values). Base: `709d44d1` ("loop handling in tt").
+**116 lib tests green**, 23 of 24 gates green; **`softmax` fails on purpose** —
+its gate now checks values and reports `65536 of 65536 values wrong`.
+
+### How to run things
+
+```bash
+cd zyx && cargo build
+cd zyx && AGENT=1 cargo test --lib                        # 116
+cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
+BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
+# One gate per process (a failed ttsim thread poisons later ones):
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so AGENT=1 timeout 40 $BIN <gate> --exact --nocapture
+# IR: ZYX_TT_IR=1 (per stage, incl. after tt_dataflow_select), ZYX_DEBUG=8
+# (winner post-opt IR), ZYX_DEBUG=16 (C++ sections + role word counts),
+# ZYX_DRY_RUN=1 (no launches), ZYX_DEBUG=32 (launches).
+```
+`tests/14|15|18_tenstorrent_*` still never compile (feature `tenstorrent` does
+not exist) and `18` calls deleted APIs.
+
+### What changed since session 7
+
+1. **The firmware is in the tree.** `firmware/tt-firmware` +
+   `firmware/tt-firmware-images` were copied from metalium-rs (`c2a514a5`);
+   `zyx/Cargo.toml` points at them. `tt-isa` stays the shared read-only crate
+   (`../../../metalium-rs/crates/tt-isa`). Rule from the user: **anything we
+   change must live in zyx** — do not edit metalium-rs.
+2. **Role loops are translated to branches.** `ttinsn::translate` is no longer
+   behind `ttinsn-experiment`; `corpus::translate` calls it per role when the
+   expansion pays (`expanded*2.1 > stored*22+330`, or whenever the program holds
+   a step word, which must never be pushed raw). Code window per role:
+   `0x1_2010 / 0x1_2A10 / 0x1_3410` (2.5 KiB), above NC's stub — the role slots
+   themselves are full (images 8.2–8.6 KiB of 10 KiB). `OPCODES` is built in
+   firmware from `isa::generated::ALL`.
+3. **Firmware builds at `opt-level = "z"`** (`firmware/tt-firmware/Cargo.toml`)
+   to fit those slots; it costs simulator time only (softmax 8.4 s → 13.3 s).
+   The user does not care about simulator speed.
+4. **`unpack_tile_stepped` + `STEP_STORE`/`STEP_ADVANCE`**: a tile loop's unpack
+   base is a register the translator stores/advances per iteration, so the body
+   is one copy for the whole loop (tt-metal's `copy_tile(cb, i, dst)` shape).
+5. **`render_section` emits `Op::Loop` bodies once**, as a block repeat per role
+   (`TTOp::Unpack`/`Pack` now carry `{ words, loops }` like `TTOp::Math`;
+   `compile` forwards each role's own table; each role's entries shift by that
+   role's preamble in `render`).
+6. **`mover_list` bug fixed**: a role program whose length is exactly one
+   tile-slot was loaded with `READ_BROADCAST_COL` (the shaped *data* read) and
+   came back as garbage (`opcode=0x0`). Program loads now pass `broadcast:
+   false`.
+7. **`tt_accumulator_dst`**: the loop-carried accumulator's back-edge producer
+   writes the accumulator's reserved DST slot. Before this, a multi-use value
+   was packed to a CB and the hand-off silently skipped it.
+8. **`tt_reg_sync` understands `Op::Loop`**: a hand-off with one end outside the
+   loop is hoisted (post after `EndLoop`, take before `Loop`); one with both ends
+   inside stays per-iteration.
+
+### The bug that is left: loop pacing of the tile hand-off
+
+Per-tile DST hand-off (T0 unpacks into one DST tile, T1 reads it) inside a loop.
+Measured with three tiles (`sum([1])` on `[4, 96]`, values ×32):
+
+| a, b, c | measured | correct | reading |
+|---|---|---|---|
+| 0, 0, 1 | 32 | 32 | ✓ |
+| 1, 1, 1 | 96 | 96 | ✓ |
+| 1, 0, 0 | 64 | 32 | tile 0 consumed twice |
+| 0, 1, 0 | 0 | 32 | tile 1 never read |
+| 1, 2, 0 | 2 | 3 | same pattern |
+| 1, 2, 4 | 384 | 224 | tile 0 twice, tile 1 dropped |
+
+With the loop hoisted but no reverse edge the producer runs to the back-pressure
+limit first and T1 reads only the last tile (`3 × last tile`). The reverse
+(reuse) edge — post after the reader's last access, take before the writer's
+write, one token to start — fixes the run-ahead (`1,2,4` → 192, `0,0,1` → 32)
+but **deadlocks**: T1's post follows a read that itself waits for T0's write.
+That protocol is the next thing to design (a two-token ring, or an initial token
+on the forward edge with the reverse take hoisted, are the two shapes to try).
+The deadlock experiment is reverted; the hoisting alone is what ships now.
+
+### Ruled out (do not redo)
+
+- **`SETRWC`/`DstVal` as a per-loop base**: `DstVal` adds in *rows* (`DstVal=1`
+  with `at=64` addresses row 65), and `at` is absolute, so the base stays 0 and
+  the existing `setrwc_clear()` is right. Option-2 (Replay carrying its slot +
+  per-slot base) was implemented and reverted for this reason.
+- **The accumulator's store not landing**: a single pass stores correctly.
+- **A stale read**: the discriminator (`max` over `-1, -2, -3` → `-3`) shows the
+  accumulator is *re-initialised* each iteration, i.e. it reads the pre-loop
+  value, not garbage.
+- **Slot aliasing**: acc → slot 0 (`OpId(7)`), unpack dst → slot 1 (`OpId(3)`),
+  reduce working → slot 2 (`OpId(45)`).
+- **The row-loop `REPLAY`/`AddrMod`**: expanding the 32 row groups explicitly
+  changes nothing; the accumulate body is a correct max-combine row loop
+  (`SFPLOAD SFPLOAD SFPMOV SFPPUSHC SFPSETCC SFPMOV SFPPOPC SFPSTORE`), store
+  patched with `AddrMod 7`.
+- **SFPU pipeline drains**: `wait_for_sfpu(EVERYTHING)` at the start *or* the end
+  of the loop body changes nothing.
+- **The init being inside the loop**: loop entry `[35, 562]` ×3, init at words
+  2–34 (`sfp_const` + 32 stores), verified by word index.
+- **Pushing instead of translating**: disabling the translator for T1 gives a
+  *different* wrong answer (`64`, the middle tile) — the two loop mechanisms are
+  not equivalent, which is its own bug to check later.
+
+### Instruments that worked (rebuild them as needed)
+
+- `ZYX_DST_DUMP=1` in `ttsim.rs`: set `kernel.dump_rows = 16` and print
+  `outcome.dst` (rows 0–15); `ZYX_DST_AT=<row>` in `runtime.rs`'s `stage_role`
+  sets `dump_row_first`. What it showed: one tile → acc slot holds `32`; two
+  tiles → `0`; the tile slot holds the unpacked tile.
+- `ZYX_STORE_AT=1` in `render_section`: word index + slot + row of every
+  `SfpStore`, and `finish_replay` prints each replay's `(start, len, count)` and
+  the word it patches.
+- `[slot] <storage> -> <id>` in `reg_slot` gives storage → DST slot.
+
+### Next, in order
+
+1. **Design the loop pacing** (the table above is the gate): a per-iteration
+   producer/consumer pair on the tile hand-off that neither runs ahead nor
+   deadlocks. `sync::take` is wait+get, `Semaphore` values are 4 bits, edges are
+   assigned by `tt_reg_sync`.
+2. Re-check the translate-vs-push divergence (same words, different results).
+3. Then `tt_cb_plan`/`CbTransactions` on SSA `Op::Copy`; revive 14/15/18.
+4. Softmax's gate is the end-to-end proof: it should go from 8.8× off to exact.
+
 ## HANDOFF (2026-11-04, session 7) — CB streaming in loops; the reduce bug
 
 **Tree state:** uncommitted (the user commits): `kernel/tenstorrent.rs`,

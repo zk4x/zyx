@@ -857,6 +857,14 @@ impl<'a> TtSection<'a> {
     /// Push a word into a named role stream (a semaphore op names the role it
     /// belongs to instead of inheriting the previous op's).
     fn push_role_word_for(&mut self, role: u8, word: u32) {
+        if std::env::var_os("ZYX_WORD_DUMP").is_some() {
+            let at = match role {
+                0 => self.native_t0.len(),
+                1 => self.native.len(),
+                _ => self.native_t2.len(),
+            };
+            eprintln!("WORD role {role} at {at}: {word:08x}");
+        }
         match role {
             0 => self.native_t0.push(word),
             1 => self.native.push(word),
@@ -2333,6 +2341,14 @@ fn render(
             roles = [unpack, math, pack];
             *sems = std::mem::take(&mut sec.sems);
             loops = std::mem::take(&mut sec.loops);
+            if std::env::var_os("ZYX_WORD_DUMP").is_some() {
+                eprintln!(
+                    "RAW loops={loops:?} preambles t0={unpack_preamble} t1={preamble} t2={pack_preamble} lens t0={} t1={} t2={}",
+                    roles[0].len(),
+                    roles[1].len(),
+                    roles[2].len()
+                );
+            }
             // Each role's program leads with its own preamble (a thread config
             // on T0, a state id on T1/T2), and a block repeat indexes the words
             // as pushed, so every entry moves by its role's preamble.
@@ -2347,6 +2363,25 @@ fn render(
             debug_assert!(section_t2.is_empty(), "native pack words outside the compute section");
         }
         srcs[s] = sec.out;
+    }
+    if std::env::var_os("ZYX_WORD_DUMP").is_some() {
+        eprintln!(
+            "ROLES len t0={} t1={} t2={} loops={loops:?}",
+            roles[0].len(),
+            roles[1].len(),
+            roles[2].len()
+        );
+        for (r, role) in roles.iter().enumerate() {
+            let words: Vec<String> = role
+                .iter()
+                .enumerate()
+                .map(|(i, w)| {
+                    let tag = if w & 0x8000_0000 != 0 { "?!" } else { "" };
+                    format!("{i}:{w:08x}{tag}")
+                })
+                .collect();
+            eprintln!("PROG{r} {}", words.join(" "));
+        }
     }
 
     Ok((srcs[0].clone(), srcs[1].clone(), srcs[2].clone(), roles, loops))
