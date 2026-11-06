@@ -85,40 +85,35 @@ Left: four distinct failures —
 - the index/`Expand` problem below (glu, lm_head, and 13 of the TT gates);
 - `to_device` is handed a host tensor with no buffer (rmsnorm).
 
-### Regression from the merge: 15 of 30 `23_tt_lowering` gates are red
+### Regression from the merge: mostly fixed, 2 gates still red with it
 
 Before the merge `b898b983`: 30/32 green (only `sum_drop_col`, `sum_one_row`).
-Now **15 of 30 red**, every reduce/matmul one: `matmul`, `matmul_sigmoid`,
-`max`, `max_drop`, `max_scalar`, `softmax`, `sum`, `sum_all`, `sum_drop`,
-`sum_drop_col`, `sum_drop_loop`, `sum_loop`, `sum_one_row`, `sum_scalar`,
-`sum_sigmoid`. The other 15 (elementwise, `add`, `tiling`,
-`transfer_roundtrip`, ...) still pass.
+The merge took it to **15 of 30 red**, every reduce/matmul gate.
 
-Cause: an `Op::Expand` now sits **inside the access index cone**, and the
-post-linearize `verify` rejects graph-shape ops (`has_move_or_reduce`).
-`sum`'s IR at the panic:
+Cause: **`opt_register_tiling` had no device gate.** It offers `FACTORS =
+[16, 8, 4, 2]` lane splits to every kernel, and for a TT kernel that is not a
+shape the tiling can lower. `opt_split` already gated its factors (`if tt {
+&[32] }`), and `opt_recipe` / `opt_tile_and_stage` / `opt_local_staging` are
+gated by `local_mem_size <= 0`; `opt_register_tiling` was the one that was
+not. The new cost model (merged `predict_cost.rs`, +628) then started picking
+those variants, which is why the breakage appeared only after the merge.
 
-```
-r20: i64[32]    = r4 * r1                // row lane * cols
-r39: i64[2x32]  = expand r20 -> [2, 32]  // <-- shape op inside the index
-r27: i64[2x32]  = r39 + r15
-r35: f32[2x32]  = load tile 2x32 r32[r27]
-```
+Symptom, `sum`'s IR: the 20-element row became `load vec2` inside a 10-loop;
+`tt_tile` laned the loop into 32, so the load became a `[2,32,32]` cube with
+**two** reduces, `tt_reindex` (which requires exactly one reduce and a 32-wide
+tile) bailed, `tt_dataflow_select` did the tile extraction with `Op::Expand`,
+and `verify` rejected the shape op.
 
-Pre-merge that cone was plain arithmetic. The rewrite came in with the merge
-(`tensor/index_ops.rs` +188, `graph/kernelizer.rs` +455, `tensor/mod.rs` +154,
-`kernel/linearize.rs` +146). `linearize` has no arm folding an `Expand` used as
-an index, so it survives to `verify`.
+Fixed by gating `opt_register_tiling` on `info.tenstorrent` (same device gate
+as the other recipes). Result: **26 of 30 green**, red are `matmul`
+(`tt_verify: SSA memory op OpId(31) survived register allocation`), `softmax`
+(value assertion at `23_tt_lowering.rs:829`, runs 52 s), and the two
+pre-existing `sum_drop_col` / `sum_one_row`.
 
-Do not "fix" it by dropping `Expand` from `has_move_or_reduce`; that assert is
-what caught this. The two real options:
-- fold an `Expand` in an index cone during `linearize` (broadcast the row index
-  across the lane axis) — fixes every backend, not just TT;
-- teach `tt_slice`/`tt_reindex` the `Expand` index form — smaller, TT-only.
-
-Second divergence to check while there: `runtime.rs:4787` (`materialize`) sizes
-a TT buffer with `[c] => (1, *c)` — a rank-1 **row** — while `tilize_transfer`
-uses `(*c, 1)`, a column (commit `252ecd8a`). Untouched.
+Tried and reverted: exempting index-only shape ops from `verify`'s
+`has_move_or_reduce`. It moved `sum`/`max` from the assert to
+`tt_verify: missing EndReader`, i.e. to a different real bug, and `matmul`
+still had a value-position shape op. Not a fix; do not re-add.
 
 ### The CB ring (required for llama's widths, and the old implementation)
 
