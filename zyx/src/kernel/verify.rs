@@ -166,7 +166,9 @@ impl Kernel {
             }
             let mut scan = self.head;
             while !scan.is_null() {
-                if shape_cone.contains(&scan) {
+                // A pure scalar constant is not a buffer argument: it may sit
+                // in front of the params (the shape cone is one such prefix).
+                if shape_cone.contains(&scan) || matches!(self.at(scan), Op::Const(_)) {
                     scan = self.next_op(scan);
                     continue;
                 }

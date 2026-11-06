@@ -2606,7 +2606,9 @@ impl Kernel {
         // A CB `Load` is a value read now, not a FIFO pop: the `Op::Copy` is the
         // traffic. DCE keeps it (a circular load used to be the pop side
         // effect), so the ones compute resolved are dropped here; the value
-        // lives in its DST tile.
+        // lives in its DST tile. A load a remaining op still names was *not*
+        // resolved — dropping it would leave a dangling operand, so it stays
+        // and the backend's verifier reports the unlowered consumer.
         let mut resolved: Vec<OpId> = Vec::new();
         for (id, op) in self.iter_unordered() {
             if let Op::Load { src, .. } = *op
@@ -2616,7 +2618,10 @@ impl Kernel {
             }
         }
         for id in resolved {
-            self.remove_op(id);
+            let live = self.iter_unordered().any(|(other, op)| other != id && op.parameters().any(|p| p == id));
+            if !live {
+                self.remove_op(id);
+            }
         }
         // The drains are moves now, so the high-level value chains they
         // replaced (an accumulator load, its index math) are dead. This DCE
