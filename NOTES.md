@@ -130,7 +130,60 @@ Still open, separate: the TT search offers split shapes that overshoot the
 axis (group over 16/32 on a 256-row axis); no failing gate now, but it is
 the same legality hole as `opt_register_tiling`.
 
-### General index path, first step: the boundary tile unit
+### The indexing rule (user-directed, session 14)
+
+- **One transform, no templates.** `tt_reindex` must walk **every** load and
+  store, take its index, and rewrite *that index* from element offsets to
+  tile/face layout. No `drop3`/`row2` arms, no per-shape recognition. The
+  traffic rewrite and the access rewrite are the same walk.
+- **Correctness floor: a general aligned gather.** 64-byte-aligned DRAM loads,
+  in any order, down to single items; the L1 fixup places the words. Slow but
+  universal. Whole-tile `READ`, `DmReadTransposed`, `READ_BROADCAST_COL` and
+  contiguous runs are **optimizations** over that enumeration, each a proven
+  special case. If no pattern is proven, the gather runs — that is correct, not
+  an error.
+- **Do not reason in row/column.** The pass needs only *where the loop is and
+  what the stride is*: the index's variables and strides (`get_strides`,
+  `Pat`, and more decoders as needed). "Is this a row or a column?" is torch
+  thinking; the TT IR is an index map, and a fold is expressed through the
+  transformed index, not by classifying a tensor shape.
+- **No metadata, ever.** Rejected, with reasons:
+  - a `linearize` marker (explicitly forbidden by the user);
+  - a layout field or a first-class layout value (Luminal's marker history:
+    `325e2e3c` derive loop-marker dtypes inside the e-graph and delete the
+    Rust-side inference, `88bcd12a`/`8f3f2a30` FusionStart/End marker leakage
+    into runtime walks and codegen, cuBLASLt markers/election needing constant
+    revalidation — a parallel datum drifts, doubles maintenance, desyncs);
+  - `Op::Param::shape` (or any shape) as a *correctness* input;
+  - an orientation field on `Op::Reduce`.
+- **The failing pair proves the rule.** `[1,256].sum_all()` and
+  `[256].sum_all()` emit the identical index `lane + 32*i`
+  (`get_strides` = `{lane:1, i:32}`). Both are unambiguous under a universal
+  transform; what is wrong today is that `tt_dataflow_select` picks the fold
+  from a **shape table** (`[32] -> []` is always `Col`) instead of from the
+  transformed index. That table is the torch-shaped shortcut to delete, not a
+  missing datum.
+- `linearize` stays exactly as it is: it is the shared contract for every
+  backend. Tenstorrent conforms to it, then optimizes.
+
+**Evidence for the rule (same `[10,20]`, `ZYX_DEBUG=256 ZYX_TT_IR=1`, before
+`tt_tile`).** The two reduces differ *only* in the reduce variable's stride:
+
+```
+sum([1])  (one value per row)             sum([0])  (one value per column)
+r27 = r14*20 + r15                        r27 = r40 + 20*r16
+r13 = reduce sum r35 over r15             r15 = reduce sum r35 over r16
+      reduce var stride = 1                     reduce var stride = 20
+```
+
+`tt_reindex` rewrites the stride-1 form to tile pitch
+(`reduce_lane + tile*32`, then `*1024`) and **bails on the stride-20 form**,
+leaving `r40 + 20*r16` logical. So the orientation is in the index math (the
+reduce variable's stride against the output lane's) — no shape needed, and no
+new datum. The universal walk must rewrite **both** forms from the variable and
+its stride; the shape-keyed `[32] -> []` table is then redundant.
+
+### General index path, first landed slice: the boundary tile unit
 
 Started the session-12 plan (aligned envelope + L1 fixup) with the piece every
 boundary move needs: **how many logical elements one tile image spans is the
@@ -148,15 +201,12 @@ pattern it silently never lowered (the output stayed zero).
 
 `sum_one_row` now compiles, runs and reaches the right boundary (it used to
 fail at `boundary offset 32 is not a whole tile`), but its value is wrong
-(3.84 vs 125.9). The remaining cause is the **reduce orientation**: a
-`[32] -> []` reduce is `TileDim::Col` by shape, which is right for a rank-1
-tile-column vector but wrong when the 32 values are the columns of a row (a
-`[1,256]` reduce). The stride is 1 in both cases; the discriminator is the
-**source tensor's layout (rank / last-dim extent)**, which `linearize` knows and
-the tile IR has already lost. The same missing datum decides `sum_drop_col`'s
-output orientation (row 0 vs column 0). So the next step is to carry the
-access's layout into the map (an op field or a linearize marker) rather than
-guessing from shape/stride — a data-model decision.
+(3.84 vs 125.9). The remaining cause is **not a missing datum**: the reduce
+emitter still picks the fold from the shape table instead of the transformed
+index (see "The indexing rule" above). `sum_drop_col`'s row-0/column-0 result
+is the same class: an access/fold decision keyed on shape rather than on the
+index rewrite. Both go away with the universal `tt_reindex` walk, not with a
+layout field.
 
 ### `24_tt::llama_attention_softmax`: transposed B has no lowering
 
@@ -178,18 +228,28 @@ There is no transpose path to fall back on: `TTOp::DmReadTransposed` has a
 verifier/debug arm but **no producer** (same scaffolding state as `CbPlan`).
 the compute codegen's include list has `transpose_wh.h`, but nothing emits it.
 
-So llama's attention needs one of: a transposed-B matmul emitter (hardware
-unpack transpose / `DmReadTransposed`), or a standalone transpose op/kernel.
-That is a design decision; nothing was changed. `llama_attention_softmax`
-stays red until then.
+This is the same class as the reduce fold: a shape/orientation pattern
+(`pat_b`) deciding what the index already says. Under the indexing rule it is
+not a separate feature: the universal index transform + the general aligned
+gather make the transposed access expressible by construction, and
+`DmReadTransposed` is the *optimization* once the transform recognizes that
+map. No special matmul arm, no standalone transpose kernel. That is why the
+earlier "transposed-B design decision" was the wrong framing.
 
 ### Next, in order
 
-1. Transposed-B matmul (or a transpose op/kernel): `q @ k^T` is what blocks
-   `llama_attention_softmax` and llama's attention, and it is the only
-   remaining TT op-group failure with a known cause. Decide the design first
-   (`DmReadTransposed` has no producer, no transpose lowering exists).
-2. The CB ring with credits (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`, per
+1. **`tt_reindex` as the universal walk** (the indexing rule): for every load
+   and store, rewrite its index from element offsets to tile/face layout; drop
+   the `drop3`/`row2` template arms. The reduce fold then reads the transformed
+   index instead of the `[32] -> []`/`[32,32] -> [32]` shape table. This is the
+   change that should turn `sum_one_row` and give one path for transposed B,
+   embedding row select and rope rotate-half.
+2. **The general aligned gather as the correctness floor** (reader):
+   64-byte-aligned loads in any order, single items included, L1 fixup into the
+   CB; whole-tile/`DmReadTransposed`/`BROADCAST_COL`/runs become optimizations
+   proven over the same enumeration. Needs the `DmCopyWords`/`DmIndexPick`
+   emitters wired (variants exist, no producer yet).
+3. The CB ring with credits (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`, per
    iteration when `t > depth`, the overfill guard, the grid capped at the core
    count with the remainder looped). Required for llama's widths: ffn 8192 is
    256 tile columns, lm_head 128256 is 4008, the grid is ~120 cores and
@@ -197,8 +257,6 @@ stays red until then.
    streaming is prohibited — the CB is never sized from the loop. Session 13
    below has the old implementation (`588110a9`), the `t > config[cb].2`
    streaming rule, and the 14.444 TFLOPS origin.
-3. The index path (aligned envelope + L1 fixup) for embedding's row select,
-   rope's rotate-half and the transposes.
 4. Then `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
 
 ### Traps
