@@ -165,6 +165,26 @@ the same legality hole as `opt_register_tiling`.
   missing datum.
 - `linearize` stays exactly as it is: it is the shared contract for every
   backend. Tenstorrent conforms to it, then optimizes.
+- **Physical layout lives on the buffer/chunk** (user-approved, session 14).
+  Upload-time tilize stays — the movers and the unpacker work on tile images
+  and there is no `TILIZE` for the data mover; making DRAM row-major and
+  tilizing on read would put a software face/row shuffle on every access.
+  But the tilize is a parameterized permutation: its inverse needs the
+  buffer's `(rows, cols)`. That datum belongs to the **allocation**, written
+  once by `tilize_transfer` where the permutation is applied, not to an op and
+  not to a pass-invented marker. It cannot drift because nothing updates it
+  per operation.
+  - `Shard`/`Placement` gains the tilize layout (logical rows/cols, or the
+    full logical shape); `tilize_transfer`/`untilize_transfer` record it.
+  - The runtime copies `param -> buffer layout` onto the kernel before compile
+    (the kernel already carries `dev_info`; the params name the tensors), so
+    no pass signature has to thread it through.
+  - `tt_reindex`'s universal walk then inverts the tilize from
+    `(index variables + strides + loop position + buffer layout)`; this is what
+    settles the degenerate `[1,256]` vs `[256]` pair (row vs column buffer)
+    without op-level metadata.
+  - The 64-byte gather remains the correctness fallback; whole-tile,
+    transposed, broadcast and contiguous runs stay optimizations.
 
 **Evidence for the rule (same `[10,20]`, `ZYX_DEBUG=256 ZYX_TT_IR=1`, before
 `tt_tile`).** The two reduces differ *only* in the reduce variable's stride:
