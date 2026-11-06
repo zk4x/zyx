@@ -32,13 +32,15 @@ the kv cache are unnecessary by construction (attention over one key *is*
   one unit test; `TTProgram` is now a local. `render_tt` runs the TT passes,
   builds the program, renders it into ops, returns the kernel.
 - `zyx/tests/24_tt.rs` is new (see below).
-- Green: `cargo build`; `cargo test --lib` (116); `cargo test --lib --tests
-  -- --skip mnist` (0 failed across all suites).
+- Green: `cargo build`; `cargo test --lib` (116).
+- **A earlier "`--lib --tests` green" claim was wrong**: that run was cut by its
+  900 s timeout after 8 of 25 binaries, and `23_tt_lowering` never ran. Use
+  the per-test recipe below, or a longer timeout.
 - Still broken, unrelated to this path: `examples/tt_gemm` and
   `examples/qwen3.8-27b` ask for `features = ["tenstorrent"]`, which no longer
   exists, so the examples workspace does not resolve.
 
-### The failure list: `24_tt.rs`, 0 of 11 pass
+### The failure list: `24_tt.rs`, 1 of 11 pass
 
 `24_tt.rs` ports every op group of `12_llama_ops` onto `Dev::TT(0)` (F32, not
 the example's F16: the question is whether the lowering exists, and BF16 adds
@@ -51,32 +53,72 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   AGENT=1 timeout 10 $BIN <test> --exact --nocapture
 ```
 
+**No `Tape` in these tests.** The tape plans device assignments of its own and
+will copy a TT result to CUDA (`not yet implemented: CUDA copy from TT(0)`,
+`backend/cuda.rs:2437`), which is not what is under test. Tensors are placed
+explicitly and read back with `.to(Dev::C)`, as the `23_tt_lowering` gates do.
+
 | gate | exact failure |
 |---|---|
+| `llama_causal_mask_compare` | **passes** |
 | `llama_embedding_one_hot` | `not yet implemented: cast U32 -> F32 has no native row-op program (tile U32)` — `kernel/tenstorrent.rs:2635` |
 | `llama_rms_norm` | `to_device: host-staged tensor has no buffer` — `runtime.rs:2080` |
-| `llama_rope` | `tenstorrent: boundary offset 2 is not a whole tile` (KernelCompilation) |
+| `llama_rope` | `tenstorrent: boundary offset 2 is not a whole tile`, unwrapped at `tensor/binary_ops.rs:53` |
 | `llama_attention_softmax` | `Key OpId(222) has been deleted from the slab` — `kernel/fold_constants.rs:640` |
-| `llama_kv_cache_assign_symbolic` | `post-linearize kernel must not contain Move/graph-shape ops` — `kernel/verify.rs:139` |
-| `llama_kv_cache_assign_repeated` | `reader move of param 0: DRAM access 16..4112 of chunk ... exceeds its 140 bytes` |
-| `llama_kv_cache_assign_generations` | same as repeated (140 bytes) |
-| `llama_promote_realized_eager_load` | same shape, 28 bytes |
-| `llama_causal_mask_compare` | same shape, param 1, 76 bytes |
+| `llama_kv_cache_assign_symbolic` | `tenstorrent: boundary index OpId(10) is not affine` |
+| `llama_kv_cache_assign_repeated` | `tenstorrent: boundary index OpId(36) is not affine` |
+| `llama_kv_cache_assign_generations` | same, `OpId(36)` |
+| `llama_promote_realized_eager_load` | `tt_verify: missing EndReader` — `kernel/tenstorrent.rs:6438` |
 | `llama_feedforward_glu` | `post-linearize kernel must not contain Move/graph-shape ops` |
-| `llama_lm_head_projection` | `post-linearize kernel must not contain Move/graph-shape ops` |
+| `llama_lm_head_projection` | same |
 
-**The one pattern worth naming: every tensor smaller than one tile fails at
-launch.** The reader emits a whole `TILE_SLOT` read (`DRAM access 16..4112`)
-whatever the param's size, so a 4x4 mask, a 4-element vector, an 8x4 kv block
-all read past their chunk. That is `tt_slice`/`tt_pages` sizing the move from
-the tile, not from the tensor. It is the same family as the `boundary offset 2`
-error (`rope`): the boundary path still assumes whole tiles in both directions.
+Fixed this session: TT autotune timing buffers were **logical**-sized
+(`graph/mod.rs`), so the reader's whole-tile move ran past the chunk
+(`reader move of param 0: DRAM access 16..4112 ... exceeds its N bytes`). They
+are physical for a TT pool now (`tiles * TILE_SLOT`, rank-1 as a tile column),
+with the fill and copy sizes following. That turned `causal_mask_compare`
+green and moved the three kv gates past launch into codegen.
 
-The other three are distinct and each needs its own look:
-- `cast U32 -> F32` has no SFPU row program (embedding's `arange`/`equal`/`cast`).
-- `fold_constants` deletes an op and then reads it by key (attention).
-- `linearize` leaves `Move`/graph-shape ops in the kernel (glu, lm_head,
-  kv assign) — the TT lowering requires them gone.
+Left: four distinct failures —
+- `cast U32 -> F32` has no SFPU row program (embedding's `arange`/`equal`/`cast`);
+- `fold_constants` deletes an op and then reads it by key (attention);
+- the index/`Expand` problem below (glu, lm_head, and 13 of the TT gates);
+- `to_device` is handed a host tensor with no buffer (rmsnorm).
+
+### Regression from the merge: 15 of 30 `23_tt_lowering` gates are red
+
+Before the merge `b898b983`: 30/32 green (only `sum_drop_col`, `sum_one_row`).
+Now **15 of 30 red**, every reduce/matmul one: `matmul`, `matmul_sigmoid`,
+`max`, `max_drop`, `max_scalar`, `softmax`, `sum`, `sum_all`, `sum_drop`,
+`sum_drop_col`, `sum_drop_loop`, `sum_loop`, `sum_one_row`, `sum_scalar`,
+`sum_sigmoid`. The other 15 (elementwise, `add`, `tiling`,
+`transfer_roundtrip`, ...) still pass.
+
+Cause: an `Op::Expand` now sits **inside the access index cone**, and the
+post-linearize `verify` rejects graph-shape ops (`has_move_or_reduce`).
+`sum`'s IR at the panic:
+
+```
+r20: i64[32]    = r4 * r1                // row lane * cols
+r39: i64[2x32]  = expand r20 -> [2, 32]  // <-- shape op inside the index
+r27: i64[2x32]  = r39 + r15
+r35: f32[2x32]  = load tile 2x32 r32[r27]
+```
+
+Pre-merge that cone was plain arithmetic. The rewrite came in with the merge
+(`tensor/index_ops.rs` +188, `graph/kernelizer.rs` +455, `tensor/mod.rs` +154,
+`kernel/linearize.rs` +146). `linearize` has no arm folding an `Expand` used as
+an index, so it survives to `verify`.
+
+Do not "fix" it by dropping `Expand` from `has_move_or_reduce`; that assert is
+what caught this. The two real options:
+- fold an `Expand` in an index cone during `linearize` (broadcast the row index
+  across the lane axis) — fixes every backend, not just TT;
+- teach `tt_slice`/`tt_reindex` the `Expand` index form — smaller, TT-only.
+
+Second divergence to check while there: `runtime.rs:4787` (`materialize`) sizes
+a TT buffer with `[c] => (1, *c)` — a rank-1 **row** — while `tilize_transfer`
+uses `(*c, 1)`, a column (commit `252ecd8a`). Untouched.
 
 ### The CB ring (required for llama's widths, and the old implementation)
 
@@ -135,18 +177,20 @@ What exists today vs what is missing:
 
 ### Order of work
 
-1. Fix the boundary moves so a param smaller than a tile works (the
-   `16..4112` reads): size the move from the tensor, and let the residual be
-   an L1 fixup. This alone unblocks 5 of the 11 gates.
-2. `Move`/graph-shape elimination before lowering (`glu`, `lm_head`, kv
-   assign), and the two pass bugs (`fold_constants` slab key, `U32 -> F32`
-   cast).
-3. The CB ring + credits: `CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop` in the
+1. **Fix the merge regression first** — 15 of 30 TT gates are red because an
+   `Expand` sits in the index cone (see above). Nothing else can be measured
+   on TT until reduce/matmul lower again.
+2. `Move`/graph-shape elimination before lowering (`glu`, `lm_head`), and the
+   two pass bugs (`fold_constants` slab key, `U32 -> F32` cast).
+3. The remaining boundary work: `rope`'s `boundary offset 2`, and the kv
+   gates' `boundary index ... is not affine` (both are the access map inside
+   a loop/slice).
+4. The CB ring + credits: `CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop` in the
    IR, per-iteration transactions when `t > depth`, the overfill guard, and
    the grid capped at the core count with the remainder looped.
-4. The index path (aligned envelope + L1 fixup) for the embedding row select,
+5. The index path (aligned envelope + L1 fixup) for the embedding row select,
    rope's rotate-half and the transposes.
-5. Then `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
+6. Then `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
 
 ### Traps
 

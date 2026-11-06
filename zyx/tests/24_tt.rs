@@ -9,6 +9,12 @@
 //! passes (that group lowers and computes), or reports the exact op and error
 //! that stops it.
 //!
+//! No `Tape`: the tape path plans device assignments of its own and will copy
+//! a TT result to CUDA (`CUDA copy from TT(0)`, `cuda.rs:2437`), which is not
+//! what is under test here. The tensors are placed on TT explicitly and each
+//! result is read back with `.to(Dev::C)`, exactly as the `23_tt_lowering`
+//! gates do.
+//!
 //! F32 throughout, not the example's F16: the question here is whether the
 //! lowering exists, and F16/BF16 add the packer-narrowing path as a second
 //! confound. F16 is a separate axis once the ops lower.
@@ -24,7 +30,7 @@
 //! ```
 
 use std::result::Result;
-use zyx::{DType, Dev, Tape, Tensor, ZyxError};
+use zyx::{DType, Dev, Tensor, ZyxError};
 
 /// The Tenstorrent device, if one initialized. A test returns `Ok(())` when it
 /// did not, so the file is runnable on machines without the simulator.
@@ -57,8 +63,6 @@ fn llama_embedding_one_hot() -> Result<(), ZyxError> {
     let weight = Tensor::from(weight_f32).reshape([8, 8])?.to(dev)?;
     let idx = Tensor::from(vec![0u32, 3, 7, 1]).reshape([2, 2])?.to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&weight)?;
     // Same op mix as llama's embedding_forward: dims() decomposition, stack of
     // dim tensors in reshapes, arange, equal, cast, broadcast mul, sum.
     let [vocab, embed] = weight.dims::<2>()?;
@@ -71,7 +75,6 @@ fn llama_embedding_one_hot() -> Result<(), ZyxError> {
     let w = weight.reshape([1i64.into(), 1i64.into(), vocab.clone(), embed])?;
     let one_hot = arange.equal(idx4)?.cast(w.dtype());
     let out = (one_hot * w).sum([2])?;
-    tape.realize([&out])?;
 
     let got = to_f32(&out)?;
     let expected: Vec<f32> = [0usize, 3, 7, 1].iter().flat_map(|&r| vec![r as f32 + 1.0; 8]).collect();
@@ -90,13 +93,10 @@ fn llama_rms_norm() -> Result<(), ZyxError> {
     let scale = Tensor::from(vec![1.0f32; 4]).to(dev)?;
     let eps = Tensor::from(1e-6f32).to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&scale)?;
     // Same op mix as RMSNorm::forward: x * ((x*x).mean_keepdim(-1) + eps).rsqrt() * scale.
     let xx = x.clone() * x.clone();
     let mean = xx.mean_keepdim([-1])?;
     let normed = x.clone() * (mean + eps).rsqrt() * scale;
-    tape.realize([&normed])?;
 
     // f32 reference on the same inputs.
     let rows: [[f32; 4]; 2] = [[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 2.0, 1.0]];
@@ -134,11 +134,6 @@ fn llama_rope() -> Result<(), ZyxError> {
     .reshape([seq, head_dim])?
     .to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&x)?;
-    tape.add(&cos)?;
-    tape.add(&sin)?;
-
     // Same op mix as apply_rope: rdims decomposition, narrow by an offset
     // tensor, rope kernel.
     let [s_len, _hd] = x.rdims::<2>()?;
@@ -154,7 +149,6 @@ fn llama_rope() -> Result<(), ZyxError> {
     let c1 = ones.narrow(0, 0i64, &s_len)?;
     let s1 = zeros.narrow(0, 0i64, &s_len)?;
     let identity = x.rope(c1, s1)?;
-    tape.realize([&rotated, &identity])?;
 
     let ident = to_f32(&identity)?;
     let orig = to_f32(&x)?;
@@ -201,15 +195,12 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
     let mask: Vec<f32> = (0..seq).flat_map(|i| (0..seq).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 })).collect();
     let mask = Tensor::from(mask).reshape([seq, seq])?.to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&mask)?;
     // Same op mix as Attention::forward: matmul, transpose, scale mul,
     // broadcast add of mask, softmax(-1), matmul.
     let attn = q.matmul(k.transpose(2, 3)?)? * scale;
     let attn = attn + mask;
     let probs = attn.softmax([-1])?;
     let out = probs.matmul(&v)?;
-    tape.realize([&probs, &out])?;
 
     // v rows are all-identical, so out rows == v row regardless of weights.
     let got = to_f32(&out)?;
@@ -228,7 +219,7 @@ fn llama_attention_softmax() -> Result<(), ZyxError> {
 }
 
 // ============================================================================
-// KV cache: narrow by VARIABLE offset + assign (single write, symbolic read)
+// KV cache: narrow by a VARIABLE offset + assign (single write, symbolic read)
 // ============================================================================
 
 #[test]
@@ -245,8 +236,6 @@ fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
         .collect();
     let k_assign = Tensor::from(block.clone()).reshape([seq, n_kv, hd])?.to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&cache)?;
     // Symbolic position: the llama cache-update pattern (assign with a
     // variable offset). Shape inputs must be IDX_T (I64).
     let pos = Tensor::variable(2i64);
@@ -257,7 +246,6 @@ fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
     let cache_len = Tensor::variable(6i64);
     let read = cache.narrow(0, 0i64, cache_len)?.unsqueeze(0)?.transpose(1, 2)?;
     let out = read.sum([1])?;
-    tape.realize([&out])?;
 
     // out is [1, 6, 4]: position p (0..6), dim d — the sum over both kv heads
     // of cache[p][h][d]. Positions 0..2 are untouched zeros; positions 2..6
@@ -281,7 +269,7 @@ fn llama_kv_cache_assign_symbolic() -> Result<(), ZyxError> {
 }
 
 // ============================================================================
-// KV cache: REPEATED assign in one tape (After chain / in-place versioning)
+// KV cache: REPEATED assign into one cache (in-place versioning)
 // ============================================================================
 
 #[test]
@@ -296,16 +284,13 @@ fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
     let a = Tensor::from(block_a).reshape([2, n_kv, hd])?.to(dev)?;
     let b = Tensor::from(block_b).reshape([2, n_kv, hd])?.to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&cache)?;
-    // Two assigns to the same buffer in one tape: the second writes after the
-    // first (After chain of in-place versioned writes).
+    // Two assigns to the same buffer: the second writes after the first
+    // (After chain of in-place versioned writes).
     let pos0 = Tensor::variable(0i64);
     cache.narrow(0, &pos0, 2i64)?.assign(&a)?;
     let pos1 = Tensor::variable(2i64);
     cache.narrow(0, &pos1, 2i64)?.assign(&b)?;
     let out = cache.sum([1, 2])?;
-    tape.realize([&out])?;
 
     // Rows 0-1 = a (sum 10), rows 2-3 = b (sum 26), rows 4-7 untouched zeros.
     let got = to_f32(&out)?;
@@ -315,8 +300,8 @@ fn llama_kv_cache_assign_repeated() -> Result<(), ZyxError> {
 }
 
 // ============================================================================
-// Generation loop: one FRESH tape per step, each with freshly created
-// Tensor::variable scalars (mirrors llama's per-step forward).
+// Generation loop: two successive assigns with freshly created variable scalars
+// (the per-step forward pattern, one step after another).
 // ============================================================================
 
 #[test]
@@ -331,14 +316,12 @@ fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
     let a = Tensor::from(block_a).reshape([2, n_kv, hd])?.to(dev)?;
     let b = Tensor::from(block_b).reshape([2, n_kv, hd])?.to(dev)?;
 
-    // Step 0 and step 1: a new tape each, a new variable each.
+    // Step 0 and step 1: a new variable each, the same cache.
     for (step, block) in [(0i64, &a), (2, &b)] {
-        let tape = Tape::empty();
-        tape.add(&cache)?;
         let pos = Tensor::variable(step);
         cache.narrow(0, &pos, 2i64)?.assign(block)?;
         let out = cache.sum([1, 2])?;
-        tape.realize([&out])?;
+        let _ = to_f32(&out)?;
     }
 
     let got = to_f32(&cache)?;
@@ -352,8 +335,7 @@ fn llama_kv_cache_assign_generations() -> Result<(), ZyxError> {
 }
 
 // ============================================================================
-// Cross-step tensor reuse: a realized eager load consumed by a binary op with
-// a graph operand (mirrors llama's cross-step tensor reuse).
+// Cross-op tensor reuse: a realized eager value consumed by a binary op
 // ============================================================================
 
 #[test]
@@ -361,31 +343,18 @@ fn llama_promote_realized_eager_load() -> Result<(), ZyxError> {
     let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::ones([4], DType::F32).contiguous()?.to(dev)?;
 
-    // Tape 1: produce y, realize it. After the tape dies y is eager again.
-    let t1 = Tape::empty();
-    t1.add(&x)?;
+    // y is realized by its own read, then consumed by a binary op with x.
     let y = x.sum([0])?;
-    t1.realize([&y])?;
-
-    // Tape 2: x re-added as a graph leaf; y (eager, graph-produced) enters
-    // the binary as a load and must be promoted.
-    let t2 = Tape::empty();
-    t2.add(&x)?;
     let z = &y * &x;
-    t2.realize([&z])?;
 
     let got = to_f32(&z)?;
-    assert_close(&got, &[4.0; 4], 1e-6, "realized eager load across tapes");
+    assert_close(&got, &[4.0; 4], 1e-6, "realized eager load");
 
-    // Tape 3: a DISOWNED eager load — the eager tensor's handle is dropped
-    // after it entered the graph as a binary load.
-    let t3 = Tape::empty();
-    t3.add(&x)?;
+    // A DISOWNED eager load: the handle is dropped after it entered the graph.
     let z3 = {
         let w = Tensor::from(vec![1.0f32, 2.0, 3.0, 4.0]).to(dev)?;
         &w * &x
     };
-    t3.realize([&z3])?;
     let got3 = to_f32(&z3)?;
     assert_close(&got3, &[1.0, 2.0, 3.0, 4.0], 1e-6, "disowned eager load");
     Ok(())
@@ -407,10 +376,7 @@ fn llama_causal_mask_compare() -> Result<(), ZyxError> {
 
     let x = Tensor::from(vec![1.0f32; 16]).reshape([seq, seq])?.to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&x)?;
     let out = x.clone() + masked;
-    tape.realize([&out])?;
 
     let got = to_f32(&out)?;
     for i in 0..seq as usize {
@@ -435,12 +401,9 @@ fn llama_feedforward_glu() -> Result<(), ZyxError> {
     let up = Tensor::from(vec![2.0f32; (d * i) as usize]).reshape([d, i])?.to(dev)?;
     let down_w = Tensor::from(vec![0.25f32; (i * d) as usize]).reshape([i, d])?.to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&down_w)?;
     // Same op mix as MLP::forward: gate.swish() * up, then matmul with down.
     let hidden = gate.swish() * up;
     let out = hidden.matmul(&down_w)?;
-    tape.realize([&out])?;
 
     // swish(0.5) = 0.5 * sigmoid(0.5) ≈ 0.31123; per-element out =
     // 0.62246 * 0.25 * 16 = 2.48984; row sum over d=8 elements.
@@ -467,10 +430,7 @@ fn llama_lm_head_projection() -> Result<(), ZyxError> {
     let w_flat: Vec<f32> = (0..vocab).flat_map(|v| vec![(v % 4) as f32 + 1.0; d as usize]).collect();
     let lm_head = Tensor::from(w_flat.clone()).reshape([d, vocab])?.to(dev)?;
 
-    let tape = Tape::empty();
-    tape.add(&lm_head)?;
     let logits = xs.matmul(&lm_head)?;
-    tape.realize([&logits])?;
 
     // Host reference from the same weights: out[b][v] = Σ_d w[d][v].
     let got = to_f32(&logits)?;
