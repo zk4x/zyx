@@ -1,4 +1,75 @@
-## HANDOFF (2026-11-06, session 9) — the reduce is found; the row lane is next
+## HANDOFF (2026-11-06, session 10) — start here
+
+**Snapshot.** Base `709d44d1`, five commits on top (`36f30a7f`, `72f675ef`,
+`5add2028`, `4c6374eb`; this notes commit), tree clean. **116 lib tests green;
+all 27 `23_tt_lowering` gates pass with the search on**, including `softmax`
+(17.8 s) and `sum_loop`. Nothing is red.
+
+```bash
+cd zyx && cargo build
+cd zyx && AGENT=1 cargo test --lib                        # 116
+cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
+BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
+# one gate per process; a failed ttsim thread poisons the rest
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
+  AGENT=1 timeout 60 $BIN <gate> --exact --nocapture
+# add ZYX_DEBUG=256 (NoSearch) to test the seed kernel alone, and
+# ZYX_TT_IR=1 for the IR after tt_tile and after tt_cb_lower.
+```
+
+**What session 9 fixed** (details in the session-9 section below):
+
+1. The "haunting" reduce bug: the stepped unpack base was a RISC-V `sw` into
+   the unpacker's config word, unordered with the queued `UNPACR`, so it lagged
+   an iteration (tiles `0,0,2,3,…`). Now `WRCFG` + `ADDDMAREG` on a Tensix GPR
+   (`firmware/tt-firmware/src/ttinsn.rs`,
+   `codegen/tenstorrent/datapath.rs`).
+2. `tt_tile` split a looped reduce's grid into a third lane axis, producing a
+   `[32,32,32]` access no downstream template takes; it now gets the same rank
+   budget as the elementwise case (`kernel/tenstorrent.rs`).
+3. A loop's reuse semaphore starts with one token per hand-off in the body, not
+   one per role pair (softmax hands off two; one token deadlocked all roles).
+4. **The last one, and the model to remember:** `tt_dst_reuse` freed a DST row
+   at its linear last use, so a value defined before a loop and read inside it
+   was overwritten by a loop temporary and the next iteration read the
+   temporary. That was softmax's `sum(exp(x - max))` — the sum was 10–15% high,
+   *data-dependent*. Fix: keep such a row allocated to the loop's `EndLoop`.
+
+**The trap.** Bugs here look data-dependent because ramps where every row has
+the same value (all my early `[4,96]` matrices did) hide any per-row lane or
+slot mixup. Use random data with distinct rows for anything touching a row
+axis, and prefer `sum_keepdim`/`max_keepdim` (what softmax uses) over the
+axis-dropping `sum([1])`.
+
+**Next, in order.**
+
+1. **`sum([1])` (axis drop) is still wrong** — no gate covers it.
+   Reproducer: `[10,20]` with row `r` holding `r`, `x.sum([1])` → all 10 outputs
+   are row 0's value; `x.sum_keepdim([1])` on the same data is exact. So the
+   reduce is fine and the *drop/reshape/narrow* step is the bug. Start at
+   `Tensor::reduce_impl`/`reshape` and the writer's narrowed output
+   (`backend/tenstorrent/mod.rs`'s `narrows`), then the `tt_copy` the writer
+   emits (`ZYX_TT_IR=1`).
+2. **`tt_cb_lower` must error instead of bailing silently** (ordered, not
+   done): its early `return`s on a shape it cannot lower leave the kernel
+   unlowered and `tt_verify` panics with `missing EndReader`. The callers are
+   `device_epilogue`/`autotune`, so this is a signature change.
+3. **Delete the temporary dumps**: `ZYX_SYNC_DUMP` and the `tt_verify` op dump
+   in `kernel/tenstorrent.rs`; `ZYX_WORD_DUMP` in `codegen/tenstorrent/mod.rs`;
+   `ZYX_DST_DUMP`, `ZYX_CODE_DUMP`, `ZYX_MOVE_DUMP` in
+   `backend/tenstorrent/ttsim.rs`. (`ZYX_DST_DUMP` is the useful one: it sets
+   `Kernel::dump_rows` to 16 and prints `Outcome.dst` after the run — the tool
+   that proved the reduce tile right.)
+4. `[1,256].sum(None)` fails with `boundary offset 32 is not a whole tile`
+   (tiling).
+5. `softmax` is 17.8 s on ttsim with the search (12 s NoSearch) — over the 10 s
+   per-run cap; the user does not care about simulator time, so this is only a
+   note.
+6. `tests/14|15|18_tennstorrent_*` still never compile (`tenstorrent` feature is
+   not in `zyx/Cargo.toml`); the user's reference for machine code is tt-metal's
+   reduce (`crates/tt-kernels/src/sfpu/reduce.rs`, `tt-tests/step31_reduce.rs`).
+
+## HANDOFF (2026-11-06, session 9) — detail: stepped base, pacing, tt_tile, DST liveness
 
 **Commits this session:** `36f30a7f` (ordered stepped base, reduce rank budget,
 pacing tokens), `72f675ef` (`sum_loop` gate), `5add2028` (notes), plus the
