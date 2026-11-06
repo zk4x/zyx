@@ -165,24 +165,26 @@ the same legality hole as `opt_register_tiling`.
   missing datum.
 - `linearize` stays exactly as it is: it is the shared contract for every
   backend. Tenstorrent conforms to it, then optimizes.
-- **Physical layout lives on the buffer/chunk** (user-approved, session 14).
-  Upload-time tilize stays — the movers and the unpacker work on tile images
-  and there is no `TILIZE` for the data mover; making DRAM row-major and
-  tilizing on read would put a software face/row shuffle on every access.
-  But the tilize is a parameterized permutation: its inverse needs the
-  buffer's `(rows, cols)`. That datum belongs to the **allocation**, written
-  once by `tilize_transfer` where the permutation is applied, not to an op and
-  not to a pass-invented marker. It cannot drift because nothing updates it
-  per operation.
-  - `Shard`/`Placement` gains the tilize layout (logical rows/cols, or the
-    full logical shape); `tilize_transfer`/`untilize_transfer` record it.
-  - The runtime copies `param -> buffer layout` onto the kernel before compile
-    (the kernel already carries `dev_info`; the params name the tensors), so
-    no pass signature has to thread it through.
-  - `tt_reindex`'s universal walk then inverts the tilize from
-    `(index variables + strides + loop position + buffer layout)`; this is what
-    settles the degenerate `[1,256]` vs `[256]` pair (row vs column buffer)
-    without op-level metadata.
+- **The shard needs no physical-layout field** (settled, session 14). Upload
+  time tilize stays — the movers and the unpacker work on tile images and
+  there is no `TILIZE` for the data mover; making DRAM row-major and tilizing
+  on read would put a software face/row shuffle on every access. But the
+  physical layout is a **pure function** of:
+  - the value's **shape** (`Op::Param.shape`, an IR value; symbolic dims,
+    already the channel every backend uses),
+  - the **dtype** (element width, already on the param),
+  - the **device constants** (tile 32x32, `TILE_SLOT`, `TILE_DATA`, face order,
+    `STRIPE`),
+  - the one **tilize rule** (`tilize_transfer`: last two dims, rank-1 = `N x 1`,
+    padding = ceil to 32).
+  Nothing else is needed: `pr`, `pc`, tiles, tile grid, and the index ->
+  tile/in-tile face position all derive from that pair.
+  - The defect is only that `Op::Param.shape` is `NULL` on the TT kernels
+    (`shape=NULL` in every dump). The runtime knows the tensor's shape; it must
+    replay it as the param's `shape` `OpId`, exactly as the generic path does.
+  - With `(index, shape)` the universal `tt_reindex` walk inverts the tilize;
+    `[1,256]` vs `[256]` are distinguishable because their shapes differ
+    (`[1,256]` vs `[256]`), not because of any stored layout.
   - The 64-byte gather remains the correctness fallback; whole-tile,
     transposed, broadcast and contiguous runs stay optimizations.
 
