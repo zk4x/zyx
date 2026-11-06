@@ -1,4 +1,111 @@
-## HANDOFF (2026-11-06, session 13) — start here: one llama forward step on TT
+## HANDOFF (2026-11-06, session 14) — start here: TT gates recovered, llama step next
+
+**Snapshot.** `main` at `3b871f64`, tree clean. `cargo build` green,
+`cargo test --lib` **116 green**, `23_tt_lowering` **26 of 30 green**.
+`24_tt` (llama's op groups on TT): **1 of 11** (`causal_mask_compare`).
+
+```bash
+cd zyx && cargo build
+cd zyx && AGENT=1 ZYX_DEV=cpu cargo test --lib                 # 116
+cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
+BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
+# ONE gate per process; a failed ttsim thread poisons every later test.
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
+  AGENT=1 timeout 10 $BIN <gate> --exact --nocapture
+# ZYX_TT_IR=1 dumps the IR before/after tt_tile, tt_reindex, tt_cb_lower.
+# ZYX_DEBUG=8 dumps the post-epilogue IR (only on the compile path).
+```
+
+### What landed this session (5 commits)
+
+- `b898b983` **merge of `~/Dev/rust/zyx` main** (`976178c4`, 8 commits, 176
+  files, base `9564adc9`): llama bench, `Dev::synchronize`, rope arg order,
+  zyx-nn blocks, wgsl codegen, cblas removal, codegen name cleanup, and a new
+  cost model (`predict_cost.rs`, +628).
+  - One conflict, `zyx/src/codegen/tenstorrent/mod.rs` (renamed here from
+    `tenstorrent.rs`): the other side had removed `render_tt`'s body and
+    `generate_tenstorrent`; resolved to this branch. No TT lowering lost
+    (`kernel/tenstorrent.rs` 7963 -> 7960 lines, all unused imports/locals).
+  - **Root `rust-toolchain.toml` deleted.** The merge added it (channel
+    1.88.0); under it the firmware role images overflow their 10 KiB L1 slots
+    by 920-1256 bytes and nothing builds. Default `stable` links fine. Do not
+    re-add a root pin without re-fitting the firmware.
+  - `generate_tenstorrent` folded into `render_tt`: it had one caller plus one
+    unit test; `TTProgram` is now a local.
+- `832a1fde` **`zyx/tests/24_tt.rs`**: every `12_llama_ops` group on
+  `Dev::TT(0)`. No `Tape` (the tape plans device assignments and copies a TT
+  result to CUDA, `cuda.rs:2437`); tensors are placed explicitly and read back
+  with `.to(Dev::C)`, like the gates.
+- `7eb940d9` **autotune timing buffers are physical on TT** (`graph/mod.rs`):
+  they were sized from the logical element count, so a whole-tile read ran
+  past the chunk (`DRAM access 16..4112 ... exceeds its N bytes`). Now
+  `tiles * TILE_SLOT`, rank-1 as a tile column, exactly like `tilize_transfer`
+  and `materialize`. Turned `causal_mask_compare` green and moved the kv gates
+  past launch.
+- `3b871f64` **`opt_register_tiling` gated off TT**: it was the only recipe
+  optimization without a device gate, offering factors 2/4/8/16 to TT
+  kernels. `opt_split` gates with `if tt { &[32] }`; `opt_recipe`,
+  `opt_tile_and_stage`, `opt_local_staging` gate on `local_mem_size <= 0`.
+  The new cost model started preferring those variants, which produced a
+  `vec2` split -> `[2,32,32]` cube with **two** reduces -> `tt_reindex` bails
+  (it wants one reduce and a 32-wide tile) -> `tt_dataflow_select` extracts
+  with `Op::Expand` -> `verify` rejects a shape op. **15 red -> 4 red.**
+  Neither `tt_tile` nor `tt_reindex` was changed: the shapes came back.
+
+### What is still red, and where to look
+
+`23_tt_lowering`, one process each:
+
+| gate | failure | note |
+|---|---|---|
+| `matmul` | `tt_verify: SSA memory op OpId(31) survived register allocation` (`kernel/tenstorrent.rs:6500`) | new with the merge; the register allocator leaves an SSA memory op |
+| `softmax` | value assertion, `23_tt_lowering.rs:829` (`N of 65536 values wrong`) | compiles and runs, ~52 s; wrong numbers, not a shape |
+| `sum_drop_col` | `z[0]` right, `z[1..]` zero | pre-existing (session 11): `Col` fold leaves row 0, rank-1 boundary is a column |
+| `sum_one_row` | `boundary offset 32 is not a whole tile` | pre-existing: `tt_slice` divides logical offsets by a hard-coded 1024; a rank-1 `[N]` is `N` rows x 1 lane, so tile 1 starts at logical 32 |
+
+`24_tt` (llama op groups) red list is in session 13 below; unchanged except
+`causal_mask_compare` now passes.
+
+### Next, in order
+
+1. `matmul`'s "SSA memory op survived register allocation" — a regressed gate,
+   and matmul is on llama's critical path.
+2. `softmax`'s value assertion — it is the only composed (3-op) gate, so it is
+   the closest thing to llama's attention block.
+3. The CB ring with credits (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`, per
+   iteration when `t > depth`, the overfill guard, the grid capped at the core
+   count with the remainder looped). Required for llama's widths: ffn 8192 is
+   256 tile columns, lm_head 128256 is 4008, the grid is ~120 cores and
+   `backend/tenstorrent/mod.rs:1032` rejects a larger grid. Unbounded
+   streaming is prohibited — the CB is never sized from the loop. Session 13
+   below has the old implementation (`588110a9`), the `t > config[cb].2`
+   streaming rule, and the 14.444 TFLOPS origin.
+4. The index path (aligned envelope + L1 fixup) for embedding's row select,
+   rope's rotate-half and the transposes.
+5. Then `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
+
+### Traps
+
+- `ttsim`'s owner thread dies with a failed test: run gates **one per
+  process**. A later test failing in the same process is a cascade.
+- 10 s per individual test run is the cap; `softmax` needs ~52 s, so it must
+  be run alone with a longer timeout.
+- **A `--tests` run does not fit in 900 s** on this box (8 of 25 binaries).
+  An earlier "everything green" claim came from exactly that truncation. Run
+  the suite with a longer timeout, or per test.
+- The examples workspace does not resolve: `examples/tt_gemm` and
+  `examples/qwen3.8-27b` ask for `features = ["tenstorrent"]`, which no longer
+  exists (TT is always compiled in). `zyx/tests` is unaffected.
+- `24_tt` must not use `Tape` (see above).
+- Do not exempt shape ops from `verify`'s `has_move_or_reduce`: tried this
+  session, it only moved the failures to `tt_verify: missing EndReader` and
+  `matmul` still had a value-position shape op. Reverted.
+
+## HANDOFF (2026-11-06, session 13) — detail: one llama forward step on TT
+
+> **Superseded by session 14 for state.** The merge regression described here
+> is fixed (26 of 30 gates green); keep this section for the goal, the scope
+> exclusions, the CB-ring reference and the per-gate diagnoses.
 
 **Goal, stated by the user.** `examples/llama` with the real f16 weights
 (`examples/models/llama-3.2-3b/Llama-3.2-3B-Instruct-f16.gguf`) running on
