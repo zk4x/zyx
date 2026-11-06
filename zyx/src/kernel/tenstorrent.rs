@@ -4325,13 +4325,46 @@ impl Kernel {
             ops.push(id);
             id = self.next_op(id);
         }
-        // Last use of every logical Register storage over all operands.
+        // Last use of every logical Register storage over all operands. A
+        // value defined *outside* a loop and read inside it is read again on
+        // the next iteration, after the body's last write: its row must stay
+        // allocated to the loop's end, or a loop temporary takes it over and
+        // the second iteration reads the temporary (measured: softmax's
+        // `sum(exp(x - max))`, where `max` is loaded before the loop and used
+        // in every iteration -- the device sum was 15% high, data-dependent
+        // because the ramps we used before had identical maxima per row).
+        let mut pos: Map<OpId, usize> = Map::default();
+        for (i, &op) in ops.iter().enumerate() {
+            pos.insert(op, i);
+        }
+        let mut loops: Vec<(usize, usize)> = Vec::new();
+        let mut open: Vec<usize> = Vec::new();
+        for (i, &op) in ops.iter().enumerate() {
+            match self.ops[op].op {
+                Op::Loop { .. } => open.push(i),
+                Op::EndLoop => {
+                    if let Some(start) = open.pop() {
+                        loops.push((start, i));
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut last_use: Map<OpId, usize> = Map::default();
         for (i, &op) in ops.iter().enumerate() {
             for p in self.ops[op].op.parameters() {
-                if matches!(self.ops[p].op, Op::Storage { scope: MemScope::Register, .. }) {
-                    last_use.insert(p, i);
+                if !matches!(self.ops[p].op, Op::Storage { scope: MemScope::Register, .. }) {
+                    continue;
                 }
+                let mut last = i;
+                let def = pos.get(&p).copied().unwrap_or(usize::MAX);
+                for &(start, end) in &loops {
+                    if def < start && start < i && i < end {
+                        last = last.max(end);
+                    }
+                }
+                let slot = last_use.entry(p).or_insert(last);
+                *slot = (*slot).max(last);
             }
         }
         let mut physical: Map<OpId, OpId> = Map::default();

@@ -1,14 +1,12 @@
 ## HANDOFF (2026-11-06, session 9) — the reduce is found; the row lane is next
 
 **Commits this session:** `36f30a7f` (ordered stepped base, reduce rank budget,
-pacing tokens), `72f675ef` (`sum_loop` gate + the output-layout finding).
-Base `709d44d1`.
+pacing tokens), `72f675ef` (`sum_loop` gate), `5add2028` (notes), plus the
+DST-reuse liveness fix below. Base `709d44d1`.
 
-**State:** 116 lib tests green. With `ZYX_DEBUG=256` (NoSearch) every gate
-passes except `softmax`, including the new **`sum_loop`** (`[32,256]` sum-all,
-8 tile iterations) — that is the "reduce test with a proper loop" proof, and it
-also passes with the search on. `softmax` still fails, now for one specific
-reason (the per-row output layout, below), not the traffic.
+**State: all 27 gates pass with the search on, including `softmax` (17.8 s)
+and the new `sum_loop`; 116 lib tests green.** The last bug was DST-row
+liveness across a loop, not the reduce or the traffic (below).
 
 Still in the tree and to remove before this is clean: env-gated dumps
 `ZYX_SYNC_DUMP` and a `tt_verify` op dump in `kernel/tenstorrent.rs`,
@@ -70,42 +68,40 @@ the loop was fully split into lanes. Softmax's reduce kernels now lower:
 reader CBs + `end_reader` + the compute loop + writer drains (`kernel.debug`
 after `tt_cb_lower`, `ZYX_TT_IR=1`).
 
-### What is left, precisely: two separate bugs, neither in the reduce
+### The last bug: `tt_dst_reuse` ignored loop back edges
 
-The earlier "the reduce loses the row" reading was wrong: it came from
-`sum([1])`, which drops the reduced axis through a reshape. Measured on
-`[ROWS, COLS]` with row `r` holding `r`:
+`tt_dst_reuse` released a logical Register row at its **linear** last use. A
+value defined *before* a loop and read *inside* it therefore lost its row to a
+loop temporary right after the body's last read — and the next iteration read
+the temporary. Softmax's `sum(exp(x - max))` is exactly that shape: `max` is
+loaded before the 8-tile loop and used in every iteration. The device sum came
+out 10–15% high, **data-dependent**, which is why it hid for so long: every
+probe used ramps where all rows had the *same* max, so a clobbered row held the
+same value (my `[4,96]`/`[ROWS,256]` matrices were degenerate this way; the
+`[10,20]` gates fit one tile and never loop).
 
-- **`sum_keepdim([1])` and `max_keepdim([1])` are correct**, including
-  `[256,256]` (256 rows, 8-tile reduce loop): `sum bad 0, max bad 0`.
-  `ZYX_DST_DUMP=1` also shows the accumulator tile with row `r` holding
-  `256*r`. So `accumulate`/`finish_cols`, the CB plan, the loop and the pacing
-  are right.
-- **`sum([1])` (axis drop) is wrong**: `[10,20]` and `[32,256]` come back as
-  row 0's value replicated across every output lane. `sum_keepdim` on the same
-  data is right, so the drop/narrow step is the bug, not the reduce.
-- **`softmax([1])` fails in the fused graph, not in any single op.** Each step
-  is exact on its own on `[256,256]` random data: `max_keepdim` (`bad 0`),
-  `(x - max).exp()` (`bad 0`), `e.sum_keepdim` (`bad 0`), and
-  `e / e.sum_keepdim` when `e` is round-tripped through the host (`bad 0`,
-  worst 6e-9). Spelling out the same expression without a round-trip gives
-  `29861 of 65536` wrong, with each row uniformly scaled by 0.70–0.90 — i.e.
-  the sum used by the divide is not the sum of the numerator's row. The
-  softmax graph splits into three kernels (max, `sum(exp(x-max))`,
-  `exp(x-max)/sum`), and the chain is data-dependent: the same tests pass on a
-  smooth ramp and on one random draw, and fail on another. `release:
-  PendingLeaf 6 dies with a kept buffer — its store kernel never launched`
-  appears in the failing runs.
+Fix: in `tt_dst_reuse`, a Register row whose definition precedes a loop that
+reads it stays allocated through that loop's `EndLoop` (the `pos`/`loops`
+extension of `last_use`). Measured on the fused chain per 32-row grid block:
+`[31,30,30,32,31,31,31]` bad before → `[0, …]`-style correctness after, and
+`softmax` passes end to end (worst error under 1e-3, previously 0.05).
 
-So the next investigation is the **fused graph's on-device intermediate
-handling** (buffer materialization / scheduling between the three kernels), and
-separately the **`sum([1])` axis-drop narrow**. Neither is the loop code.
+Signals that pointed here, for the record: each step was exact on its own
+(`max_keepdim`, `(x-max).exp()`, `e.sum_keepdim` all `bad 0`), the division was
+exactly consistent with the device buffers, and only the fused `sum(exp(x-max))`
+was off. Round-tripping an intermediate through the host made it exact, because
+that turned the cross-loop value into a fresh kernel input.
 
-**What passes now:** `sum`, `max`, `sum_all`, `sum_scalar`, `max_scalar`, and
-the new **`sum_loop`** gate (`[32,256]` summed over everything: 8 tile
-iterations, with the full take/post ring) — that one is the "reduce test with a
-real loop" proof. `[256,256].sum(None)` also works; `[1,256].sum(None)` fails
-with `boundary offset 32 is not a whole tile` (separate, in the tiling).
+### Still open (not covered by any gate)
+
+- **`sum([1])` (axis drop) is wrong**: `[10,20]` and `[32,256]` return row 0's
+  value replicated in every lane; `sum_keepdim([1])` on the same data is
+  exact. So the drop/reshape/narrow step after a reduce is broken, independent
+  of the reduce. No gate covers the axis-dropping form.
+- `[1,256].sum(None)` fails with `boundary offset 32 is not a whole tile`
+  (tiling, separate).
+- `tt_cb_lower` still returns silently on shapes it cannot lower instead of
+  erroring (ordered, not done).
 
 ### The reference the user pointed at
 
@@ -134,10 +130,10 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so ZYX_DEBUG=256 \
 
 ### Next, in order
 
-1. The fused-graph intermediate handling (softmax): each step is exact alone,
-   the fused chain is not, and it is data-dependent. Start from the three
-   kernels' buffers and the `PendingLeaf ... kept buffer` warning.
-2. The `sum([1])` axis-drop narrow (keepdim is right, drop is not).
+1. The `sum([1])` axis-drop path (keepdim is right, drop is not).
+2. `tt_cb_lower` errors instead of bailing; remove the temporary dumps (see
+   the tree-state list above).
+3. The search path and `[1,256]` tiling (`boundary offset 32 …`).
 3. Then `tt_cb_lower` must return an error instead of bailing silently
    (ordered), and the temporary dumps above must go.
 4. Then the search path: it still compiles kernels that cannot be lowered
