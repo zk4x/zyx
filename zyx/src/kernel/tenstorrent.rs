@@ -939,6 +939,24 @@ impl Kernel {
                 ) else {
                     continue;
                 };
+                // The fold rewrites the composition's value to the flat loop
+                // variable, which enumerates `outer * il + inner`. The
+                // substitution is exact only when the accumulator side
+                // advances by exactly `il` per outer trip: in
+                // `acc + inner`, `acc` must have outer coefficient `il`.
+                // `depends_on` alone is not enough — a strip-mined index that
+                // also carries a base (`row * cols + outer * 32`, what a
+                // fused reduce over `exp(x - max)` produces) would lose that
+                // base. The invariant part of `acc` is kept below.
+                let Some(strides) = self.get_strides(acc) else {
+                    continue;
+                };
+                let Some(&(_, scale)) = strides.get(&outer) else {
+                    continue;
+                };
+                if scale != il {
+                    continue;
+                }
                 let inner_end = self.get_last_dim_op(inner);
                 let outer_end = self.get_last_dim_op(outer);
                 // The inner var belongs to the composition alone.
@@ -996,7 +1014,16 @@ impl Kernel {
                 }
                 let flat = self.insert_const_idx_before(outer, ol * il);
                 self.ops[outer].op = Op::Loop { len: flat };
-                self.remap(composed, outer);
+                // `composed` is `acc + inner`. With the outer var now
+                // enumerating `flat = outer*il + inner`, the same value is
+                // `(acc - flat*il) + flat`: `acc - outer*il` is the part of
+                // the index that does not advance with the outer trip (a row
+                // base, a zero), and `flat` replaces the strip-mined pair.
+                let il_c = self.insert_const_idx_before(composed, il);
+                let scaled = self.insert_before(composed, Op::Binary { x: outer, y: il_c, bop: BOp::Mul });
+                let base = self.insert_before(composed, Op::Binary { x: acc, y: scaled, bop: BOp::Sub });
+                let folded_idx = self.insert_before(composed, Op::Binary { x: base, y: outer, bop: BOp::Add });
+                self.remap(composed, folded_idx);
                 self.remove_op(composed);
                 self.remove_op(inner_end);
                 self.remove_op(inner);
