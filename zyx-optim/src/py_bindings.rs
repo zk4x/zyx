@@ -8,17 +8,19 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 use zyx::Tensor;
 
+/// Run one optimizer step over `params` from `grads` (parallel lists; `None`
+/// means "no gradient for this parameter").
+///
+/// Every optimizer writes its update with `Tensor::assign`, i.e. in place, so
+/// the caller's tensors keep their identity and nothing has to be written back.
 fn do_update(
-    model: &Bound<'_, PyAny>,
+    params_list: &Bound<'_, PyList>,
     grads_list: &Bound<'_, PyList>,
     update_fn: impl FnOnce(&mut Vec<Tensor>, Vec<Tensor>),
-    py: Python<'_>,
 ) -> PyResult<()> {
-    let params_obj = model.call_method0("get_params")?;
-    let params_list = params_obj.cast::<PyList>().unwrap();
-    let params: Vec<Tensor> = params_list
+    let mut params: Vec<Tensor> = params_list
         .iter()
-        .map(|t| t.extract::<Tensor>().expect("params must be list of Tensor"))
+        .map(|t| t.extract::<Tensor>().expect("params must be a list of Tensor"))
         .collect();
     let grads: Vec<Tensor> = grads_list
         .iter()
@@ -27,17 +29,11 @@ fn do_update(
             if t.is_none() {
                 Tensor::zeros_like(params[i].clone())
             } else {
-                t.extract::<Tensor>().expect("gradients must be list of Tensor or None")
+                t.extract::<Tensor>().expect("gradients must be a list of Tensor or None")
             }
         })
         .collect();
-    let mut params_mut = params;
-    update_fn(&mut params_mut, grads);
-    let new_list = PyList::empty(py);
-    for p in params_mut {
-        new_list.append(p)?;
-    }
-    model.call_method1("set_params", (new_list,))?;
+    update_fn(&mut params, grads);
     Ok(())
 }
 
@@ -66,11 +62,13 @@ impl SGD {
         }
     }
 
-    /// Update model parameters using computed gradients.
+    /// Update `params` in place from `gradients`.
+    ///
+    /// The two lists are parallel; a `None` gradient skips that parameter.
     #[pyo3(name = "update")]
-    fn update_py(&mut self, model: &Bound<'_, PyAny>, gradients: &Bound<'_, PyList>, py: Python<'_>) -> PyResult<()> {
+    fn update_py(&mut self, params: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) -> PyResult<()> {
         let s = self;
-        do_update(model, gradients, |p, g| SGD::update(s, p.iter_mut(), g.into_iter()), py)
+        do_update(params, gradients, |p, g| SGD::update(s, p.iter_mut(), g.into_iter()))
     }
 }
 
@@ -100,11 +98,13 @@ impl Adam {
         }
     }
 
-    /// Update model parameters using computed gradients.
+    /// Update `params` in place from `gradients`.
+    ///
+    /// The two lists are parallel; a `None` gradient skips that parameter.
     #[pyo3(name = "update")]
-    fn update_py<'py>(&mut self, model: &Bound<'py, PyAny>, gradients: &Bound<'py, PyList>, py: Python<'py>) -> PyResult<()> {
+    fn update_py(&mut self, params: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) -> PyResult<()> {
         let s = self;
-        do_update(model, gradients, |p, g| Adam::update(s, p.iter_mut(), g.into_iter()), py)
+        do_update(params, gradients, |p, g| Adam::update(s, p.iter_mut(), g.into_iter()))
     }
 }
 
@@ -134,11 +134,13 @@ impl AdamW {
         }
     }
 
-    /// Update model parameters using computed gradients.
+    /// Update `params` in place from `gradients`.
+    ///
+    /// The two lists are parallel; a `None` gradient skips that parameter.
     #[pyo3(name = "update")]
-    fn update_py<'py>(&mut self, model: &Bound<'py, PyAny>, gradients: &Bound<'py, PyList>, py: Python<'py>) -> PyResult<()> {
+    fn update_py(&mut self, params: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) -> PyResult<()> {
         let s = self;
-        do_update(model, gradients, |p, g| AdamW::update(s, p.iter_mut(), g.into_iter()), py)
+        do_update(params, gradients, |p, g| AdamW::update(s, p.iter_mut(), g.into_iter()))
     }
 }
 
@@ -166,11 +168,13 @@ impl RMSprop {
         opt
     }
 
-    /// Update model parameters using computed gradients.
+    /// Update `params` in place from `gradients`.
+    ///
+    /// The two lists are parallel; a `None` gradient skips that parameter.
     #[pyo3(name = "update")]
-    fn update_py<'py>(&mut self, model: &Bound<'py, PyAny>, gradients: &Bound<'py, PyList>, py: Python<'py>) -> PyResult<()> {
+    fn update_py(&mut self, params: &Bound<'_, PyList>, gradients: &Bound<'_, PyList>) -> PyResult<()> {
         let s = self;
-        do_update(model, gradients, |p, g| RMSprop::update(s, p.iter_mut(), g.into_iter()), py)
+        do_update(params, gradients, |p, g| RMSprop::update(s, p.iter_mut(), g.into_iter()))
     }
 }
 

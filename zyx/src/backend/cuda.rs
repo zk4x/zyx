@@ -1875,10 +1875,6 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 // never NONE; fp8 has no codegen yet at any compute capability.
                 capability[DType::F8E4M3 as usize] = DTypeCapability::none();
                 capability[DType::F8E5M2 as usize] = DTypeCapability::none();
-                capability[DType::F16 as usize] =
-                    capability[DType::F16 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
-                capability[DType::F64 as usize] =
-                    capability[DType::F64 as usize].exclude(DTypeCapability::LOG2 | DTypeCapability::SIN | DTypeCapability::SQRT);
                 capability
             },
             has_native_exp2: true,

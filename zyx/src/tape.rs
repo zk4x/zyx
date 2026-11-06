@@ -431,7 +431,6 @@ impl Drop for Tape {
         if rt.graphs[graph_id].ref_count == 0 {
             rt.remove_dead_graph(graph_id);
         }
-
     }
 }
 
@@ -505,8 +504,13 @@ impl Tape {
             .into_iter()
             .map(|t| {
                 let class_id = match rt.tensors[t.id] {
-                    TensorData::Graph { class_id, .. } | TensorData::Promoted { class_id, .. } => class_id,
-                    ref td => panic!("non-graph tensor in freeze: tid {t} data {td:?}"),
+                    TensorData::Graph { class_id, .. }
+                    | TensorData::GraphLeaf { class_id, .. }
+                    | TensorData::Promoted { class_id, .. } => class_id,
+                    // Never format the `Tensor` itself here: `Display` clones,
+                    // clones lock `RT`, and `freeze` holds the guard — the
+                    // panic would deadlock instead of reporting.
+                    ref td => panic!("non-graph tensor in freeze: tid {} data {td:?}", t.id),
                 };
                 // Keep the dims symbolic: a variable-backed dim must be
                 // re-evaluated after replay binds the variable.

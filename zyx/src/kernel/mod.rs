@@ -726,7 +726,12 @@ impl Kernel {
                 }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]].0;
-                    dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
+                    // Result is [len] ++ operand dims, like the tensor shape.
+                    // A shape descriptor (stack of scalar dims) has no tail.
+                    let mut dims = Vec::with_capacity(1 + dtypes[&ops[0]].1.len());
+                    dims.push(ops.len() as Dim);
+                    dims.extend_from_slice(&dtypes[&ops[0]].1);
+                    dtypes.insert(op_id, (dtype, dims));
                     for &x in ops.iter() {
                         *rcs.entry(x).or_insert(0) += 1;
                     }
@@ -1083,41 +1088,46 @@ impl Kernel {
     /// Generic over the load payload (`TensorId` in runtime kernels,
     /// `ClassId` in kernelizer jit kernels) — it is never inspected.
     pub(crate) fn remove_unused_chain<T: Copy>(&mut self, x: OpId, keep_alive: &[OpId], loads: &[T]) -> Vec<T> {
+        // Both dependency walks are iterative and keep a visited set: every op
+        // is expanded once, so they normally terminate when the stack drains.
+        // The step cap is a hard limit, not a bound to raise when hit: tripping
+        // it means the kernel is pathologically large, and a loud failure tells
+        // us that instead of turning into a long, unexplained walk.
+        const MAX_STEPS: usize = 250_000;
         let mut chain: Set<OpId> = Set::default();
         let mut stack = vec![x];
-        for _ in 0..30_000 {
-            let Some(op) = stack.pop() else { break };
+        let mut steps = 0;
+        while let Some(op) = stack.pop() {
+            steps += 1;
+            assert!(steps <= MAX_STEPS, "remove_unused_chain: chain walk exceeded {MAX_STEPS} steps");
             if chain.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
         }
-        if !stack.is_empty() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
-        }
 
+        // The linked list has exactly one node per live op; anything longer is
+        // a corrupted list, so bound the walks by the op count instead of a
+        // constant.
+        let n_ops = usize::from(self.ops.len());
         let mut live: Set<OpId> = Set::default();
         stack.extend_from_slice(keep_alive);
         let mut op_id = self.head;
-        for _ in 0..30_000 {
-            if op_id.is_null() {
-                break;
-            }
+        let mut steps = 0;
+        while !op_id.is_null() {
+            assert!(steps <= n_ops, "remove_unused_chain: op list longer than {n_ops} ops");
+            steps += 1;
             if matches!(self.ops[op_id].op, Op::Store { .. }) {
                 stack.push(op_id);
             }
             op_id = self.next_op(op_id);
         }
-        if !op_id.is_null() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
-        }
-        for _ in 0..30_000 {
-            let Some(op) = stack.pop() else { break };
+        let mut steps = 0;
+        while let Some(op) = stack.pop() {
+            steps += 1;
+            assert!(steps <= MAX_STEPS, "remove_unused_chain: live walk exceeded {MAX_STEPS} steps");
             if live.insert(op) {
                 stack.extend(self.ops[op].op.parameters().filter(|&p| !p.is_null()));
             }
-        }
-        if !stack.is_empty() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
         }
 
         // Collect input (ro) Param OpIds in op order (before removal). These are
@@ -1126,10 +1136,10 @@ impl Kernel {
         let param_ops: Vec<OpId> = {
             let mut ops = Vec::new();
             let mut id = self.head;
-            for _ in 0..30_000 {
-                if id.is_null() {
-                    break;
-                }
+            let mut steps = 0;
+            while !id.is_null() {
+                assert!(steps <= n_ops, "remove_unused_chain: op list longer than {n_ops} ops");
+                steps += 1;
                 if let Op::Param { kind, .. } = &self.ops[id].op
                     && *kind != ParamKind::GlobalMut
                 {
@@ -1137,26 +1147,20 @@ impl Kernel {
                 }
                 id = self.next_op(id);
             }
-            if !id.is_null() {
-                panic!("remove_unused_chain did not finish in 250000 steps");
-            }
             ops
         };
 
         let to_remove: Set<OpId> = chain.difference(&live).copied().collect();
         let mut op_id = self.head;
-        for _ in 0..30_000 {
-            if op_id.is_null() {
-                break;
-            }
+        let mut steps = 0;
+        while !op_id.is_null() {
+            assert!(steps <= n_ops, "remove_unused_chain: op list longer than {n_ops} ops");
+            steps += 1;
             let next = self.next_op(op_id);
             if to_remove.contains(&op_id) {
                 self.remove_op(op_id);
             }
             op_id = next;
-        }
-        if !op_id.is_null() {
-            panic!("remove_unused_chain did not finish in 250000 steps");
         }
 
         // Keep only loads whose corresponding input Param was not removed.
@@ -1847,9 +1851,20 @@ impl Kernel {
                         }
                         visited.insert(id, dims);
                     } else {
-                        let mut dims = [0; 8];
-                        dims[0] = ops.len() as i32;
-                        visited.insert(id, dims);
+                        // Value stack: slot 0 is the count, the tail is the
+                        // operand's own dims (same as the tensor shape).
+                        match visited.get(&ops[0]) {
+                            Some(&first) => {
+                                let mut dims = [0; 8];
+                                dims[0] = ops.len() as i32;
+                                dims[1..].copy_from_slice(&first[..7]);
+                                visited.insert(id, dims);
+                            }
+                            None => {
+                                stack.push(id);
+                                stack.push(ops[0]);
+                            }
+                        }
                     }
                 }
                 Op::Reshape { shape, .. } | Op::Expand { shape, .. } => {

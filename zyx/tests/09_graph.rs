@@ -1,7 +1,7 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::{DType, Scalar, Tape, Tensor, ZyxError};
+use zyx::{DType, Dev, Scalar, Tape, Tensor, ZyxError};
 
 #[test]
 fn sin() -> Result<(), ZyxError> {
@@ -166,6 +166,43 @@ fn assign_graph_computed_src() -> Result<(), ZyxError> {
     tape.realize([&x])?;
     let out: Vec<f32> = x.try_into()?;
     assert_eq!(out, vec![3.0, 5.0, 7.0, 9.0]);
+    Ok(())
+}
+
+/// An assign whose src reads the destination — the optimizer's
+/// `p = p - lr*g` — fuses into one kernel. With a device-resident
+/// destination that kernel reads and writes the *same* buffer, and the
+/// post-assign class aliases it (no copy, no extra launch).
+#[test]
+fn assign_self_update() -> Result<(), ZyxError> {
+    let Some(dev) = Dev::all().into_iter().find(|d| !matches!(d, Dev::Host)) else {
+        return Ok(());
+    };
+    let x = Tensor::from([1f32, 2.0, 3.0, 4.0]).to(dev)?;
+    let tape = Tape::new([&x])?;
+    let src = (&x * 0.5f32) + 1.0f32;
+    x.clone().assign(&src)?;
+    tape.realize([&x])?;
+    let out: Vec<f32> = x.try_into()?;
+    assert_eq!(out, vec![1.5, 2.0, 2.5, 3.0]);
+    Ok(())
+}
+
+/// Two successive self-updates in one tape: the second reads the `After`
+/// class the first produced, so it takes the `After` path on top of the
+/// fused store.
+#[test]
+fn assign_self_update_chained() -> Result<(), ZyxError> {
+    let Some(dev) = Dev::all().into_iter().find(|d| !matches!(d, Dev::Host)) else {
+        return Ok(());
+    };
+    let x = Tensor::from([1f32, 2.0, 3.0, 4.0]).to(dev)?;
+    let tape = Tape::new([&x])?;
+    x.clone().assign(&(&x * 0.5f32 + 1.0f32))?;
+    x.clone().assign(&(&x * 2.0f32))?;
+    tape.realize([&x])?;
+    let out: Vec<f32> = x.try_into()?;
+    assert_eq!(out, vec![3.0, 4.0, 5.0, 6.0]);
     Ok(())
 }
 

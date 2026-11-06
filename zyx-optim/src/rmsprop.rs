@@ -81,13 +81,16 @@ impl RMSprop {
 
             if self.momentum > 0.0 {
                 self.momentum_buf[i] = &self.momentum_buf[i] * self.momentum + &update;
-                *param = &*param - &self.momentum_buf[i];
+                let updated = &*param - &self.momentum_buf[i];
+                param.clone().assign(&updated).expect("RMSprop: failed to assign the updated parameter");
             } else {
-                *param = &*param - update;
+                let updated = &*param - update;
+                param.clone().assign(&updated).expect("RMSprop: failed to assign the updated parameter");
             }
 
             if self.weight_decay > 0.0 {
-                *param = &*param * (1.0 - self.learning_rate * self.weight_decay);
+                let decayed = &*param * (1.0 - self.learning_rate * self.weight_decay);
+                param.clone().assign(&decayed).expect("RMSprop: failed to assign the weight decay step");
             }
         }
 

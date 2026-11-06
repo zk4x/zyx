@@ -1592,6 +1592,44 @@ impl Tensor {
         Ok(x / y)
     }
 
+    /// Reflected addition: `other + x` for a Python scalar (or Tensor) on the
+    /// left, which Python only tries after `Tensor.__add__` returns NotImplemented.
+    fn __radd__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(lhs + self)
+    }
+
+    /// Reflected subtraction: `other - x`.
+    fn __rsub__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(lhs - self)
+    }
+
+    /// Reflected multiplication: `other * x`.
+    fn __rmul__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        Ok(lhs * self)
+    }
+
+    /// Reflected true division: `other / x`. Integer inputs are cast to float
+    /// first, same rule as `__truediv__`.
+    fn __rtruediv__(&self, other: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
+        let lhs = extract_tensor_or_scalar(other).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
+        let ld = lhs.dtype();
+        let l = if ld.is_int() || ld == DType::Bool {
+            lhs.cast(DType::F32)
+        } else {
+            lhs
+        };
+        let sd = self.dtype();
+        let y = if sd.is_int() || sd == DType::Bool {
+            self.cast(DType::F32)
+        } else {
+            self.clone()
+        };
+        Ok(l / y)
+    }
+
     /// Floor division: `x // y`, rounding toward negative infinity
     /// (torch/tinygrad semantics: `floordiv(a,b) = cdiv(a,b) - ((cmod(a,b) != 0) & ((a<0) != (b<0)))`).
     fn __floordiv__(&self, rhs: &Bound<PyAny>) -> Result<Tensor, ZyxError> {
@@ -1686,7 +1724,10 @@ impl Tensor {
     #[must_use]
     #[pyo3(name = "item")]
     pub fn item_py(&self) -> f64 {
-        self.item::<f64>()
+        // `Tensor::item::<T>` loads into a `T` buffer of the tensor's own dtype,
+        // so a plain `item::<f64>()` panics on every f32 tensor (the default
+        // dtype of `from_vec`). Cast to f64 first: Python has no f32 scalars.
+        self.cast(DType::F64).item::<f64>()
     }
 
     #[pyo3(name = "cross_entropy")]

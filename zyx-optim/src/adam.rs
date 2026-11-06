@@ -87,11 +87,12 @@ impl Adam {
                 } else {
                     self.vm.push(vh);
                 }
-                *param = (&*param - self.learning_rate * mh / (self.vm[i].sqrt() + self.eps))
-                    .cast(param.dtype());
+                let updated =
+                    (&*param - self.learning_rate * mh / (self.vm[i].sqrt() + self.eps)).cast(param.dtype());
+                param.clone().assign(&updated).expect("Adam: failed to assign the updated parameter");
             } else {
-                *param = (&*param - self.learning_rate * mh / (vh.sqrt() + self.eps))
-                    .cast(param.dtype());
+                let updated = (&*param - self.learning_rate * mh / (vh.sqrt() + self.eps)).cast(param.dtype());
+                param.clone().assign(&updated).expect("Adam: failed to assign the updated parameter");
             }
         }
     }

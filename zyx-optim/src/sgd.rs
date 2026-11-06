@@ -63,8 +63,11 @@ impl SGD {
             }
             if self.momentum != 0.0 {
                 if bias_idx < self.bias.len() {
-                    self.bias[bias_idx] = self.bias[bias_idx].clone() * self.momentum
-                        + grad.clone() * (1.0 - self.dampening);
+                    let updated = self.bias[bias_idx].clone() * self.momentum + grad.clone() * (1.0 - self.dampening);
+                    self.bias[bias_idx]
+                        .clone()
+                        .assign(&updated)
+                        .expect("SGD: failed to assign the updated momentum buffer");
                 } else {
                     self.bias.push(grad.clone());
                 }
@@ -75,11 +78,12 @@ impl SGD {
                 }
                 bias_idx += 1;
             }
-            if self.maximize {
-                *param = (param.clone() + grad * self.learning_rate).cast(param.dtype());
+            let updated = if self.maximize {
+                (param.clone() + grad * self.learning_rate).cast(param.dtype())
             } else {
-                *param = (param.clone() - grad * self.learning_rate).cast(param.dtype());
-            }
+                (param.clone() - grad * self.learning_rate).cast(param.dtype())
+            };
+            param.clone().assign(&updated).expect("SGD: failed to assign the updated parameter");
         }
     }
 }

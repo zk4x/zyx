@@ -7,6 +7,7 @@
 
 #![allow(unused)]
 
+use std::io::BufRead;
 use std::ops::{Add, Div, Mul, Sub};
 use zyx::{DType, Module, Tensor, ZyxError};
 
@@ -44,7 +45,7 @@ fn reduce_bench() -> Result<(), ZyxError> {
         &[256, 1024, 512],
         &[64, 64, 64],
     ] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.sum_all();
         x.mean_all();
         x.max_all();
@@ -71,7 +72,7 @@ fn softmax_bench() -> Result<(), ZyxError> {
         (&[32, 4096], &[0i32][..]),
         (&[8, 512, 2048], &[2i32][..]),
     ] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.softmax(axes.iter().copied())?;
     }
     //println!();
@@ -95,7 +96,7 @@ fn embedding_bench() -> Result<(), ZyxError> {
 fn gelu_bench() -> Result<(), ZyxError> {
     //println!("=== GELU Activation ===");
     for dims in [&[4096u64][..], &[16384], &[1024, 4096], &[256, 1024, 512]] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.gelu();
     }
     //println!();
@@ -114,7 +115,7 @@ fn activation_bench() -> Result<(), ZyxError> {
         &[512u64, 2048u64],
         &[128u64, 16384u64],
     ] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.relu();
         x.sigmoid();
         x.tanh();
@@ -134,7 +135,7 @@ fn ln_softmax_bench() -> Result<(), ZyxError> {
         (&[32, 768, 1024], &[1i32][..]),
         (&[64, 512], &[0i32][..]),
     ] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.ln_softmax(axes.iter().copied())?;
     }
     //println!();
@@ -165,7 +166,7 @@ fn reduce_axis_bench() -> Result<(), ZyxError> {
         &[16, 256, 256],
         &[8, 64, 64, 64],
     ] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         let last = dims.len() as i32 - 1;
         x.sum([last])?;
         x.max([last])?;
@@ -193,7 +194,7 @@ fn silu_like_bench() -> Result<(), ZyxError> {
         &[256, 1024, 512],
         &[16, 768, 2048],
     ] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.sigmoid().mul(&x);
     }
     //println!();
@@ -204,7 +205,7 @@ fn layer_norm_like_bench() -> Result<(), ZyxError> {
     //println!("=== Layer Norm-like (mean+var+normalize) ===");
     for dims in [&[128, 768][..], &[64, 1024], &[32, 2048], &[16, 768, 1024]] {
         let last = *dims.last().unwrap();
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         let gamma = Tensor::rand([last], DType::F32)?;
         let beta = Tensor::rand([last], DType::F32)?;
         let mean = x.mean([-1])?.unsqueeze(-1)?;
@@ -226,13 +227,21 @@ fn reduce_multi_axis_bench() -> Result<(), ZyxError> {
         &[16, 256, 128],
         &[8, 512, 64],
     ] {
-        let x = Tensor::rand(dims, DType::F32)?;
+        let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.sum([0, 1])?;
         x.max([0, 1])?;
         x.mean([1, 2])?;
         x.var([0, 2])?;
     }
     //println!();
+    Ok(())
+}
+
+/// Force `t` to execute — and therefore to compile, autotune and measure its
+/// kernel — by reading one element back. Eager ops are lazy until a value is
+/// read; dropping a result does not launch anything.
+fn force(t: Tensor) -> Result<(), ZyxError> {
+    let _ = t.item::<f32>();
     Ok(())
 }
 
@@ -246,31 +255,142 @@ fn large_matmul_bench() -> Result<(), ZyxError> {
     for &n in dims {
         let a = Tensor::rand([n, n], DType::F32)?;
         let b = Tensor::rand([n, n], DType::F32)?;
-        a.matmul(b.t())?;
+        force(a.matmul(b.t())?)?;
     }
     // Vary M (tall matrices)
     for &m in dims.iter().filter(|&&m| m != 1024) {
         let a = Tensor::rand([m, 1024], DType::F32)?;
         let b = Tensor::rand([1024, 1024], DType::F32)?;
-        a.matmul(b.t())?;
+        force(a.matmul(b.t())?)?;
     }
     // Vary N (wide matrices)
     for &n in dims.iter().filter(|&&n| n != 1024) {
         let a = Tensor::rand([1024, 1024], DType::F32)?;
         let b = Tensor::rand([n, 1024], DType::F32)?;
-        a.matmul(b.t())?;
+        force(a.matmul(b.t())?)?;
     }
     // Vary K (inner dimension)
     for &k in dims.iter().filter(|&&k| k != 1024) {
         let a = Tensor::rand([1024, k], DType::F32)?;
         let b = Tensor::rand([1024, k], DType::F32)?;
-        a.matmul(b.t())?;
+        force(a.matmul(b.t())?)?;
     }
     //println!();
     Ok(())
 }
 
+// ---- measurement database ----
+
+/// Append-only sqlite sink for autotune measurements.
+///
+/// `zyx` itself never touches a database: the autotuner writes one JSON object
+/// per measured candidate to `ZYX_BENCH_OUT` (see
+/// `Kernel::record_measurement`). The benchmark collects that stream for the
+/// duration of the run and appends every row to `zyx-bench/bench.db`, creating
+/// the table on first use. Rows are never updated or deleted — repeating a run
+/// appends duplicates on purpose (more samples per config).
+const DB_FILE: &str = "bench.db";
+
+/// One line of the `ZYX_BENCH_OUT` stream (`schema: 1`).
+#[derive(serde::Deserialize)]
+struct Measurement {
+    schema: i64,
+    tag: String,
+    dev: String,
+    cc: [i64; 2],
+    seed: String,
+    kernel: String,
+    seq: serde_json::Value,
+    nanos: Option<i64>,
+    status: String,
+    features: serde_json::Value,
+}
+
+fn open_db(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connection> {
+    let conn = rusqlite::Connection::open(path)?;
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE IF NOT EXISTS measurements (
+             id       INTEGER PRIMARY KEY AUTOINCREMENT,
+             ts       INTEGER NOT NULL,
+             schema   INTEGER NOT NULL,
+             tag      TEXT    NOT NULL,
+             dev      TEXT    NOT NULL,
+             cc0      INTEGER NOT NULL,
+             cc1      INTEGER NOT NULL,
+             seed     TEXT    NOT NULL,
+             kernel   TEXT    NOT NULL,
+             seq      TEXT    NOT NULL,
+             nanos    INTEGER,
+             status   TEXT    NOT NULL,
+             features TEXT    NOT NULL
+         );",
+    )?;
+    Ok(conn)
+}
+
+/// Append every measurement in `stream` to the database at `db`.
+fn ingest(db: &std::path::Path, stream: &std::path::Path) -> Result<usize, Box<dyn std::error::Error>> {
+    let file = std::fs::File::open(stream)?;
+    let mut conn = open_db(db)?;
+    let tx = conn.transaction()?;
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+    let mut inserted = 0usize;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO measurements
+                 (ts, schema, tag, dev, cc0, cc1, seed, kernel, seq, nanos, status, features)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )?;
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let m: Measurement = serde_json::from_str(&line)?;
+            stmt.execute(rusqlite::params![
+                ts,
+                m.schema,
+                m.tag,
+                m.dev,
+                m.cc[0],
+                m.cc[1],
+                m.seed,
+                m.kernel,
+                m.seq.to_string(),
+                m.nanos,
+                m.status,
+                m.features.to_string(),
+            ])?;
+            inserted += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
+fn bench_stream_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("zyx-bench-{}.jsonl", std::process::id()))
+}
+
 fn main() -> Result<(), ZyxError> {
+    let db = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(DB_FILE);
+    let stream = bench_stream_path();
+    // The autotuner appends one JSON object per measured candidate here; main
+    // drains it into sqlite once the benches are done. Nothing is updated.
+    std::env::set_var("ZYX_BENCH_OUT", &stream);
+
+    let result = run_benches();
+
+    match ingest(&db, &stream) {
+        Ok(n) => println!("appended {n} measurements to {}", db.display()),
+        Err(e) => eprintln!("failed to write {}: {e}", db.display()),
+    }
+    let _ = std::fs::remove_file(&stream);
+    result
+}
+
+fn run_benches() -> Result<(), ZyxError> {
     //matmul_bench()?;
     //reduce_bench()?;
     //softmax_bench()?;

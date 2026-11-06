@@ -14,8 +14,11 @@ pub struct LayerNorm {
     #[no_param]
     normalized_shape: Vec<Tensor>,
     eps: f64,
-    weight: Option<Tensor>,
-    bias_tensor: Option<Tensor>,
+    /// Learnable scale; `None` when `elementwise_affine` is off.
+    pub(crate) weight: Option<Tensor>,
+    /// Learnable bias; `None` when the layer was built without one. Exposed to
+    /// Python as `bias` (the field name avoids the constructor argument).
+    pub(crate) bias_tensor: Option<Tensor>,
 }
 
 impl LayerNorm {
@@ -114,9 +117,12 @@ impl LayerNorm {
             .map(|i| i as i32)
             .collect();
 
-        // Compute mean and variance along those axes (keep dims for broadcasting)
+        // Compute mean and variance along those axes (keep dims for broadcasting).
+        // `correction = 0` is the biased variance (divide by n), which is what
+        // torch's LayerNorm uses; `var_keepdim`'s default is unbiased (n - 1)
+        // and would scale the normalized values by sqrt((n - 1) / n).
         let mean = input.mean_keepdim(axes.clone())?;
-        let variance = input.var_keepdim(axes)?;
+        let variance = input.var_keepdim_correction(axes, 0)?;
 
         // Normalize: (x - mean) / sqrt(var + eps)
         let normalized = (input - &mean) / (variance + self.eps).sqrt();

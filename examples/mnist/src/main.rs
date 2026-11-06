@@ -78,32 +78,62 @@ fn main() -> Result<(), ZyxError> {
     );
 
     println!("Training...");
-    let mut total_ms = 0.0f64;
-    let mut count = 0u64;
-    for step in 0..200usize {
-        let now = Instant::now();
-        Tensor::set_training(true);
-        let tape = Tape::new(&net)?;
-        let samples = Tensor::randint([batch_size], 0..n_train)?;
-        let x = train_x.index_select(0, &samples)?;
-        let y = train_y.index_select(0, &samples)?;
+    Tensor::set_training(true);
 
+    // Warm-up step (step 0). SGD creates its momentum buffers on first use
+    // (`bias.push(grad)`); the frozen trace below must see the steady-state
+    // update (`bias.assign`, `param.assign`), not the initialization branch,
+    // so the buffers have to exist and be buffer-backed before tracing.
+    let samples0 = Tensor::randint([batch_size], 0..n_train)?.to(dev)?;
+    {
+        let tape = Tape::new(&net)?;
+        let x = train_x.index_select(0, &samples0)?;
+        let y = train_y.index_select(0, &samples0)?;
         let logits = net.forward(&x);
         let loss = logits.cross_entropy(y, Reduction::Mean)?;
         let grads: Vec<_> = tape.gradient(&loss, &net);
         optim.update(&mut net, grads);
+        tape.realize(net.iter().chain(optim.iter()).chain([&loss]))?;
+    }
 
+    // Trace one step and freeze it. `train_x`/`train_y` are promoted so
+    // `index_select` is traced into the graph instead of running eagerly: with
+    // both operands looking like plain leaves the data path stays an eager op
+    // chain, which is where most of the per-step host time went. `samples` is
+    // the replay input (its buffer is rebound every step); the dataset and the
+    // optimizer state are captured once, and `net ∪ optim ∪ loss` as outputs
+    // is what makes the plan keep the in-place `assign` stores.
+    let tape = Tape::new(&net)?;
+    tape.add(&train_x)?;
+    tape.add(&train_y)?;
+    // `freeze` only accepts tape leaves as declared inputs; promoting the
+    // sample buffer puts its leaf class in the plan so replay can rebind it.
+    tape.add(&samples0)?;
+    let x = train_x.index_select(0, &samples0)?;
+    let y = train_y.index_select(0, &samples0)?;
+    let logits = net.forward(&x);
+    let loss = logits.cross_entropy(y, Reduction::Mean)?;
+    let grads: Vec<_> = tape.gradient(&loss, &net);
+    optim.update(&mut net, grads);
+    let outputs: Vec<Tensor> = net.iter().chain(optim.iter()).chain([&loss]).cloned().collect();
+    let frozen = tape.freeze([&samples0], &outputs)?;
+
+    let mut total_ms = 0.0f64;
+    let mut count = 0u64;
+    for step in 1..=200usize {
+        let now = Instant::now();
+        let samples = Tensor::randint([batch_size], 0..n_train)?.to(dev)?;
+        let out = frozen.replay([&samples])?;
+        let loss = out.last().expect("frozen tape returns the loss last");
         let elapsed_ms = now.elapsed().as_secs_f64() * 1000.0;
         if step >= 100 {
             total_ms += elapsed_ms;
             count += 1;
         }
 
-        tape.realize(net.iter().chain(optim.iter()).chain([&loss]))?;
-
-        if step.is_multiple_of(5) && step > 0 {
+        if step.is_multiple_of(5) {
             println!(
-                "step {}, loss {:.6}, step_time {:.1}ms",
+                "step {}, loss {:.6}, step_time {:.3}ms",
                 step,
                 loss.item::<f32>(),
                 elapsed_ms
@@ -112,7 +142,7 @@ fn main() -> Result<(), ZyxError> {
     }
 
     let avg_ms = total_ms / count as f64;
-    println!("\nAverage step time (steps 100-7000): {:.1}ms", avg_ms);
+    println!("\nAverage step time (steps 100-7000): {:.3}ms", avg_ms);
 
     Ok(())
 }

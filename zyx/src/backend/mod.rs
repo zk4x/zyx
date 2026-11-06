@@ -238,6 +238,15 @@ impl CmdQueue {
                     });
                 }
                 Cmd::Launch { program, args, outputs: specs } => {
+                    // Aliases bind slots, not buffers: resolve them in a
+                    // deviceless run at their position instead of inside the
+                    // device run. A device replay reports only fresh chunks, so
+                    // an alias merged into the run would vanish from the slot
+                    // map (the aliased class is pre-bound to the target, which
+                    // also skips the launch's output allocation).
+                    if !pending.is_empty() {
+                        Self::flush_run(&mut partitions, &mut run_dev, &mut pending, idx, outputs, &suffix);
+                    }
                     if run_dev != Dev::Auto && run_dev != program.dev {
                         Self::flush_run(&mut partitions, &mut run_dev, &mut run, idx, outputs, &suffix);
                     }

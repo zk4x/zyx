@@ -511,13 +511,14 @@ impl Tensor {
     /// Assign the value of `src` to this tensor in-place via a StoreView.
     ///
     /// A StoreView is added to `src`'s kernel writing into this tensor's
-    /// buffer; materialization happens when `src`'s kernel is released.
+    /// buffer; materialization happens when `src`'s kernel is released. If
+    /// this tensor has no buffer yet (a lazily computed value), the assign is
+    /// initialization instead of a write: the tensor's value becomes `src`.
     ///
     /// # Errors
     ///
-    /// Returns a `DTypeError` if dtypes differ, a `ShapeError` if shapes
-    /// differ, or `GraphTensorNotRealized` if this is an unrealized graph
-    /// tensor.
+    /// Returns a `DTypeError` if dtypes differ or a `ShapeError` if shapes
+    /// differ.
     pub fn assign(self, src: impl Into<Tensor>) -> Result<(), ZyxError> {
         let src = src.into();
         RT.lock().assign(self.id, src.id)
@@ -2723,6 +2724,16 @@ impl Tensor {
                     return Err(ZyxError::shape_error("Cannot concatenate these tensors.".into()));
                 }
             }
+        }
+        // Fast path, matching tinygrad: when every input has the same width
+        // along `dim`, concatenation is a stack on a new axis followed by
+        // merging that axis with `dim`. One `Stack` node and one store instead
+        // of one full-width zero-padded tensor per input summed together, so
+        // the fused kernel stays proportional to the graph rather than to
+        // (inputs x output width).
+        if tensors.iter().all(|t| t.resolve_shape()[dim] == shape[dim]) {
+            let stacked = Tensor::stack_axis(tensors.iter().copied(), dim as Axis)?;
+            return stacked.flatten(dim as Axis..=dim as Axis + 1);
         }
         // Computation stays SYMBOLIC: the output cat-dim is the sum of the
         // inputs' dim tensors, and each input's offset is a prefix sum of the

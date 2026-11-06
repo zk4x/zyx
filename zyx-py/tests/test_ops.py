@@ -779,3 +779,65 @@ def test_mean_accumulator_dtype():
 @param(CONV_OPS)
 def test_conv(spec, dtype):
     run_spec(spec, dtype)
+
+
+# ------------------------------------------------------- bindings regressions
+#
+# Behaviour the Python bindings must provide regardless of dtype or graph size.
+# Some of these fail today; that is the point — they document what is broken.
+
+def test_item_dtypes():
+    """`item()` reads any dtype. It used to load f64 from an f32 buffer."""
+    for dt, value in [(zyx.DType.F32, 1.5), (zyx.DType.F64, 1.5), (zyx.DType.I64, 2.0), (zyx.DType.U32, 3.0)]:
+        t = zyx.Tensor.from_vec([value], (1,)).cast(dt)
+        assert t.item() == pytest.approx(value, rel=1e-6), dt
+
+
+def test_reverse_arithmetic():
+    """Python scalars on the left of a Tensor: `1 - t`, `2 * t`, `2 / t`."""
+    t = zyx.Tensor.from_vec([2.0, 4.0], (2,))
+    assert (1.0 - t).numpy().tolist() == [-1.0, -3.0]
+    assert (2.0 * t).numpy().tolist() == [4.0, 8.0]
+    assert (2.0 / t).numpy().tolist() == [1.0, 0.5]
+
+
+def test_cat_wide_columns():
+    """A wide eager graph: 164 chained columns concatenated in one `cat`.
+
+    Each eager op is O(kernel size); at this width the liveness walk gives up
+    (`remove_unused_chain did not finish in 250000 steps`) and the Rust panic
+    in the cleanup destructor aborts the process. Run in a subprocess so the
+    abort is a test failure instead of taking the suite with it.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "from zyx import Tensor\n"
+        "n = 32\n"
+        "cols = [((Tensor.from_vec([float(i + j % 7) for i in range(n)], (n,)) * 2.0) + 1.0).log()"
+        " for j in range(164)]\n"
+        "x = Tensor.cat([c.reshape((n, 1)) for c in cols], dim=1)\n"
+        "assert x.shape == [n, 164], x.shape\n"
+        "x.sum().item()\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, "cat of 164 chained columns aborted:\n" + r.stderr[-1500:]
+
+
+def test_narrow_gradient_outside_is_zero():
+    """A narrow's backward zero-pads; the padding must be zero, not `f(0)`.
+
+    The pad's validity mask is applied to the loads it reaches, so any
+    non-zero-preserving op on the way (`exp`, `x + 1`, a `0 / 0` division)
+    leaked its value into the padded region. The max-pool gradient is the
+    case that surfaced it: the reduce-backward divides by a tie count that
+    is itself zero in the padding, so the whole outside was NaN.
+    """
+    x = zyx.Tensor(np.arange(12, dtype=np.float32).reshape(3, 4), dtype=zyx.DType.F32)
+    tape = zyx.Tape()
+    tape.add(x)
+    g = tape.gradient(x.exp().narrow(1, 1, 2).sum(), [x])[0]
+    tape.realize([g])
+    out = np.array(g.numpy())
+    assert (out[:, [0, 3]] == 0).all(), f"padding leaked exp(0): {out}"

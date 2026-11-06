@@ -14,6 +14,5 @@ generated/
 zyx/Cargo.lock
 zyx/tests/__temp_test.rs
 __pycache__/
-zyx-bench/bench_output.txt
-zyx-bench/bench_data.csv
+zyx-bench/bench.db*
 .cache/

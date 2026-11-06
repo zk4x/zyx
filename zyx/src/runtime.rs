@@ -3287,14 +3287,18 @@ impl Runtime {
     /// `force_store` would otherwise trigger a second in-place store still finds `dst`
     /// waiting on a load, not buried inside the storing kernel.
     ///
+    /// `dst` with no buffer behind it is **initialization, not a write**:
+    /// like tinygrad's `assign`, the assign replaces `dst`'s value with
+    /// `src`'s (the tensor keeps its id, so every handle sees the new value)
+    /// instead of storing into a buffer that does not exist yet. This is what
+    /// makes a lazily initialized parameter (`uniform`, `rand`, ...) usable as
+    /// an assign target on the first update.
+    ///
     /// # Errors
     ///
     /// Returns [`ZyxError::DTypeError`] if the dtypes do not match.
     ///
     /// Returns [`ZyxError::ShapeError`] if the shapes do not match.
-    ///
-    /// Returns [`ZyxError::GraphTensorNotRealized`] if `dst` is a
-    /// graph tensor that has not been realized yet.
     pub fn assign(&mut self, dst: TensorId, src: TensorId) -> Result<(), ZyxError> {
         #[cfg(feature = "debug_tensor_op")]
         println!("runtime::assign(dst={dst}, src={src})");
@@ -3345,30 +3349,125 @@ impl Runtime {
                     }
                 }
                 let mut dst_leaf_cid = dst_cid;
-                // Walk graph to find the source of the lvalue
-                let graph = &self.graphs[graph_id];
-                loop {
-                    match graph.ops[dst_leaf_cid].op {
-                        Op::Reshape { x, .. }
-                        | Op::Permute { x, .. }
-                        | Op::Pad { x, .. }
-                        | Op::Expand { x, .. }
-                        | Op::Flip { x, .. }
-                        | Op::Narrow { x, .. } => dst_leaf_cid = x,
-                        Op::After { .. } | Op::Param { .. } => break,
-                        // `dst` is not backed by a realized leaf: its class is
-                        // the computation that produced it (e.g. a lazy `uniform`
-                        // parameter). Documented contract: assign needs a
-                        // realized destination, so report it instead of
-                        // panicking — callers can realize and retry.
-                        ref op => {
-                            return Err(ZyxError::graph_tensor_not_realized(dst));
+                // Walk graph to find the source of the lvalue. `has_base` is
+                // false when dst is a pure computation with nothing bufferable
+                // behind it yet (e.g. a lazily initialized `uniform`
+                // parameter).
+                let has_base = {
+                    let graph = &self.graphs[graph_id];
+                    loop {
+                        match graph.ops[dst_leaf_cid].op {
+                            Op::Reshape { x, .. }
+                            | Op::Permute { x, .. }
+                            | Op::Pad { x, .. }
+                            | Op::Expand { x, .. }
+                            | Op::Flip { x, .. }
+                            | Op::Narrow { x, .. } => dst_leaf_cid = x,
+                            Op::After { .. } | Op::Param { .. } => break true,
+                            _ => break false,
                         }
                     }
+                };
+                if !has_base {
+                    // Initialization, not a write: dst has no buffer to store
+                    // into, so the assign replaces dst's value with src's
+                    // (tinygrad's `assign`: "assigning to a pending value that
+                    // views no other live tensor is initialization"). dst keeps
+                    // its tensor id — and therefore every handle — and joins
+                    // src's class. Two tensors may share one class (CSE already
+                    // produces that for equal gradient classes); realize hands
+                    // each output its own `Arc` clone of the class buffer.
+                    let src_cid = match self.tensors[src] {
+                        TensorData::Graph { class_id, .. }
+                        | TensorData::GraphLeaf { class_id, .. }
+                        | TensorData::Promoted { class_id, .. } => class_id,
+                        TensorData::Eager { .. }
+                        | TensorData::Leaf { .. }
+                        | TensorData::PendingLeaf { .. }
+                        | TensorData::Symbolic { .. } => {
+                            unreachable!("assign init: src {src} was not promoted: {:?}", self.tensors[src])
+                        }
+                    };
+                    let (shape_id, dtype, rc) = match self.tensors[dst] {
+                        TensorData::Graph { shape_id, dtype, rc, .. } | TensorData::Promoted { shape_id, dtype, rc, .. } => {
+                            (shape_id, dtype, rc)
+                        }
+                        ref t => unreachable!("assign init: dst {dst} is not graph-backed: {t:?}"),
+                    };
+                    if let TensorData::Promoted { kernel_id, op_id, .. } = self.tensors[dst] {
+                        // Detach dst from its eager producer (inlined; the
+                        // former `detach_from_kernel` is duplicated per death
+                        // path by design). This is release's Promoted arm
+                        // minus the slab removal: the id survives with a new
+                        // graph class, so leaving the eager claim behind would
+                        // revert dst to the stale producer on tape teardown.
+                        if !kernel_id.is_null() {
+                            debug_assert!(!op_id.is_null());
+                            debug_assert!(!self.kernels[kernel_id].stores.contains(&dst));
+                            self.kernels[kernel_id].outputs.remove(&dst);
+                            if self.kernels[kernel_id].outputs.is_empty() && self.kernels[kernel_id].stores.is_empty() {
+                                // The kernel dies. Null out the kernel_ids of
+                                // its loads first (they point at this kernel):
+                                // their death paths, triggered by the load
+                                // releases below, must not dereference it.
+                                for &tid in &self.kernels[kernel_id].loads {
+                                    if let TensorData::Eager { kernel_id: k, .. } | TensorData::Promoted { kernel_id: k, .. } =
+                                        &mut self.tensors[tid]
+                                        && *k == kernel_id
+                                    {
+                                        *k = KernelId::NULL;
+                                    }
+                                }
+                                let mut loads = std::mem::take(&mut self.kernels[kernel_id].loads);
+                                self.kernels.remove(kernel_id);
+                                loads.retain(|&id| id != dst);
+                                for tid in loads {
+                                    self.release(tid);
+                                }
+                            } else {
+                                let (out_ops, loads) = {
+                                    let kd = &self.kernels[kernel_id];
+                                    let mut out_ops: Vec<OpId> = kd
+                                        .outputs
+                                        .iter()
+                                        .map(|&tid| match self.tensors[tid] {
+                                            TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } => op_id,
+                                            ref t => panic!("kernel output tid {tid} has unexpected tensor data {t:?}"),
+                                        })
+                                        .collect();
+                                    for &tid in &kd.loads {
+                                        if let TensorData::Eager { op_id, .. } | TensorData::Promoted { op_id, .. } =
+                                            self.tensors[tid]
+                                            && kd.kernel.ops.contains_id(op_id)
+                                        {
+                                            out_ops.push(op_id);
+                                        }
+                                    }
+                                    (out_ops, kd.loads.clone())
+                                };
+                                let new_loads = self.kernels[kernel_id].kernel.remove_unused_chain(op_id, &out_ops, &loads);
+                                let pruned = loads_dropped_by_prune(&loads, &new_loads);
+                                for load in pruned {
+                                    if load != dst {
+                                        self.release(load);
+                                    }
+                                }
+                                self.kernels[kernel_id].loads = new_loads;
+                                if self.kernels[kernel_id].outputs.is_empty() {
+                                    // Materialize, which removes the kernel
+                                    self.materialize_kernel(kernel_id)
+                                        .expect("materialization in assign-detach from kernel failed");
+                                }
+                            }
+                        }
+                    }
+                    self.tensors[dst] = TensorData::Graph { class_id: src_cid, graph_id, shape_id, dtype, rc };
+                    return Ok(());
                 }
                 // Resolve the base leaf through any After chain (a previous assign on
                 // the same buffer) to find the base tensor. The After for this assign
                 // threads onto the previous After, not the original buffer.
+                let graph = &self.graphs[graph_id];
                 let mut leaf_cid = dst_leaf_cid;
                 while let Op::After { x, .. } = &graph.ops[leaf_cid].op {
                     leaf_cid = *x;

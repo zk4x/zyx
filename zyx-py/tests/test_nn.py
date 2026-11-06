@@ -93,5 +93,62 @@ def test_linear():
     _cmp("linear_grad", gxz[0].numpy(), gx[0].detach().cpu().numpy(), 1e-4, 1e-4)
 
 
+def test_layernorm_parameters():
+    """LayerNorm must expose weight/bias, or no optimizer can update it."""
+    ln = zyx.nn.LayerNorm((6,), dtype=DT)
+    assert hasattr(ln, "weight"), "LayerNorm exposes no weight"
+    assert hasattr(ln, "bias"), "LayerNorm exposes no bias"
+    assert tuple(ln.weight.shape) == (6,), ln.weight.shape
+    assert tuple(ln.bias.shape) == (6,), ln.bias.shape
+
+
+def test_layernorm_matches_torch():
+    """LayerNorm must use torch's biased variance (divide by n), not n - 1."""
+    x = np.array([[1.0, 2.0, 3.0, 4.0, 5.0], [10.0, -3.0, 0.5, 7.0, 2.0]], dtype=np.float32)
+    zln = zyx.nn.LayerNorm((5,), dtype=DT)
+    tln = torch.nn.LayerNorm((5,))
+    with torch.no_grad():
+        tln.weight.copy_(torch.from_numpy(np.array(zln.weight.numpy())))
+        tln.bias.copy_(torch.from_numpy(np.array(zln.bias.numpy())))
+    out_z = np.array(zln(zyx.Tensor(x.copy(), dtype=DT)).numpy())
+    out_t = tln(torch.from_numpy(x.copy())).detach().numpy()
+    np.testing.assert_allclose(out_z, out_t, rtol=1e-5, atol=1e-5,
+                               err_msg="zyx LayerNorm differs from torch")
+
+
+def test_optimizer_update_in_place():
+    """Every optimizer assigns into the parameter: the caller's tensor changes.
+
+    The parameter is the same tensor object across the step (that is the
+    `assign` contract); a handle-replacing update would leave `p` untouched.
+    """
+    for opt_cls in (zyx.optim.SGD, zyx.optim.Adam, zyx.optim.AdamW, zyx.optim.RMSprop):
+        p = zyx.Tensor(np.ones((3,), dtype=np.float32), dtype=DT)
+        before = np.array(p.numpy())
+        tape = zyx.Tape()
+        tape.add(p)
+        loss = (p * p).sum()
+        (g,) = tape.gradient(loss, [p])
+        opt_cls().update([p], [g])
+        tape.realize([loss, p])
+        after = np.array(p.numpy())
+        assert not np.allclose(before, after), f"{opt_cls.__name__} did not update the parameter in place"
+
+
+def test_optimizer_eager_update():
+    """`update` outside a tape must work, not panic mid-materialize."""
+    import subprocess
+    import sys
+
+    code = (
+        "import zyx\n"
+        "p = zyx.Tensor.from_vec([1.0, 2.0], (2,))\n"
+        "zyx.optim.SGD(learning_rate=0.5).update([p], [zyx.Tensor.from_vec([1.0, 1.0], (2,))])\n"
+        "assert p.item() == 0.0, p.item()\n"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, "eager optimizer update aborted:\n" + r.stderr[-1500:]
+
+
 if __name__ == "__main__":
     test_linear()
