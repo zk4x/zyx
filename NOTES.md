@@ -70,30 +70,36 @@ the loop was fully split into lanes. Softmax's reduce kernels now lower:
 reader CBs + `end_reader` + the compute loop + writer drains (`kernel.debug`
 after `tt_cb_lower`, `ZYX_TT_IR=1`).
 
-### The bug that is left: a per-row reduce's output layout
+### What is left, precisely: two separate bugs, neither in the reduce
 
-**The reduce itself is correct.** `ZYX_DST_DUMP=1` (dumped after `runtime::run`
-from `Kernel::dump_rows`) on `[32,256]` summed over axis 1 shows the accumulator
-tile with row `r` holding `256*r` replicated across the row — `accumulate` +
-`finish_cols` are right, and the traffic/CB plan is right. What is wrong is the
-tile -> tensor boundary: the writer drains the whole `[32,32]` tile linearly
-(`tt_copy ... 4096B`), and a `[32]` logical tensor reads the **first 32 floats
-= row 0**, so every lane gets row 0's value.
+The earlier "the reduce loses the row" reading was wrong: it came from
+`sum([1])`, which drops the reduced axis through a reshape. Measured on
+`[ROWS, COLS]` with row `r` holding `r`:
 
-Reproducer (`[ROWS,256]` summed over axis 1, row `r` holding `r`, answer
-`256*r`): `ROWS=4/10/32/64` all return row 0's value replicated; `ROWS=64`
-returns `[0 x32, 32 x32]` (per 32-row block, block 0's first row = 0 and block
-1's = 32). `tt-metal` is fine here because its reduce output tile (row `r` = the
-answer in every column, `reduce::finish(Axis::Cols)`) is consumed by its layout
-bridge; zyx's writer has no such bridge.
+- **`sum_keepdim([1])` and `max_keepdim([1])` are correct**, including
+  `[256,256]` (256 rows, 8-tile reduce loop): `sum bad 0, max bad 0`.
+  `ZYX_DST_DUMP=1` also shows the accumulator tile with row `r` holding
+  `256*r`. So `accumulate`/`finish_cols`, the CB plan, the loop and the pacing
+  are right.
+- **`sum([1])` (axis drop) is wrong**: `[10,20]` and `[32,256]` come back as
+  row 0's value replicated across every output lane. `sum_keepdim` on the same
+  data is right, so the drop/narrow step is the bug, not the reduce.
+- **`softmax([1])` fails in the fused graph, not in any single op.** Each step
+  is exact on its own on `[256,256]` random data: `max_keepdim` (`bad 0`),
+  `(x - max).exp()` (`bad 0`), `e.sum_keepdim` (`bad 0`), and
+  `e / e.sum_keepdim` when `e` is round-tripped through the host (`bad 0`,
+  worst 6e-9). Spelling out the same expression without a round-trip gives
+  `29861 of 65536` wrong, with each row uniformly scaled by 0.70–0.90 — i.e.
+  the sum used by the divide is not the sum of the numerator's row. The
+  softmax graph splits into three kernels (max, `sum(exp(x-max))`,
+  `exp(x-max)/sum`), and the chain is data-dependent: the same tests pass on a
+  smooth ramp and on one random draw, and fail on another. `release:
+  PendingLeaf 6 dies with a kept buffer — its store kernel never launched`
+  appears in the failing runs.
 
-`TtEmit::Reduce` picks `TileDim::Row` for a `[32,32]` tile -> `[32]`
-(`finish_cols`, per-row broadcast) and `TileDim::Col` for a `[32]` vector ->
-scalar (`accumulate_in_order`, result in **row 0**, which is what the linear
-writer wants). So only the `TileDim::Row` output needs a compaction (row `r`'s
-value into lane `r` of row 0), and that is the next fix; softmax's `sum` feeds
-on it (row 4's output is the right softmax scaled by 0.73, i.e. its row sum is
-wrong).
+So the next investigation is the **fused graph's on-device intermediate
+handling** (buffer materialization / scheduling between the three kernels), and
+separately the **`sum([1])` axis-drop narrow**. Neither is the loop code.
 
 **What passes now:** `sum`, `max`, `sum_all`, `sum_scalar`, `max_scalar`, and
 the new **`sum_loop`** gate (`[32,256]` summed over everything: 8 tile
@@ -128,11 +134,10 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so ZYX_DEBUG=256 \
 
 ### Next, in order
 
-1. Compact a `TileDim::Row` reduce's output (row `r` -> lane `r` of row 0) so a
-   `[32]` logical tensor reads the right values — the reproducer above. The
-   reduce DST is already correct, so this is a layout step, not a fold step.
-2. Then softmax's value gate (it is uniform-per-row wrong now: row 4's values
-   are correct scaled by 0.73, i.e. the `sum` of that row is wrong).
+1. The fused-graph intermediate handling (softmax): each step is exact alone,
+   the fused chain is not, and it is data-dependent. Start from the three
+   kernels' buffers and the `PendingLeaf ... kept buffer` warning.
+2. The `sum([1])` axis-drop narrow (keepdim is right, drop is not).
 3. Then `tt_cb_lower` must return an error instead of bailing silently
    (ordered), and the temporary dumps above must go.
 4. Then the search path: it still compiles kernels that cannot be lowered
