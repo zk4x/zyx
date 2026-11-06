@@ -14,6 +14,8 @@ mod opencl;
 mod ptx;
 pub(crate) mod spirv;
 pub(crate) mod tenstorrent;
+#[cfg(feature = "wgpu")]
+pub(crate) mod wgsl;
 
 /// One codegen register slot: the value's `(dtype, lane shape)`, its live
 /// reference count, and the loop level it was assigned at.
@@ -40,7 +42,7 @@ impl Kernel {
             Dev::TT(_) => self.render_tt(),
             Dev::Vulkan(_) => self.render_spirv(),
             #[cfg(feature = "wgpu")]
-            Dev::WGPU(_) => self.render_spirv(),
+            Dev::WGPU(_) => self.render_wgsl(),
             dev => todo!("render: backend {dev:?} not yet implemented"),
         }
     }

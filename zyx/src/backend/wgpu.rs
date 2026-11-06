@@ -5,7 +5,7 @@ use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, P
 use crate::{
     DType, Set,
     backend::{DTypeCapability, DeviceProgramId},
-    kernel::{GPUOp, Kernel, Op, ParamKind, SpirvOp},
+    kernel::{GPUOp, Kernel, Op, ParamKind},
     shape::Dim,
     slab::Slab,
 };
@@ -416,19 +416,14 @@ impl WGPUDevice {
         let Some(GPUOp::LocalWorkSize(lws)) = order.next().and_then(Op::as_gpu) else {
             return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "third op is not LocalWorkSize".into() });
         };
-        let Some(Op::Spirv(spirv)) = order.next() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Spirv".into() });
-        };
-        let SpirvOp::WordBytes(words) = spirv.as_ref() else {
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not WordBytes".into() });
+        let Some(Op::Source(source)) = order.next() else {
+            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "fourth op is not Source".into() });
         };
         let lws: [u32; 3] = *lws;
 
-        let spirv_words = words.to_vec();
-
         let shader_module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
-            source: wgpu::ShaderSource::SpirV(std::borrow::Cow::Owned(spirv_words)),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(source.as_str())),
         });
 
         let name = format!("k_lws_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
