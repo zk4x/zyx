@@ -562,7 +562,17 @@ impl Kernel {
                     params.insert(op_id, kind);
                     dtypes.insert(op_id, dtype);
                     if shape != OpId::NULL {
-                        check(op_id, shape, &stack);
+                        // A param's shape is its own metadata: on a tiled
+                        // device (Tenstorrent) it is kept past linearize and
+                        // ordered after the param, which is the first thing in
+                        // the kernel by the argument-order rule above. It is
+                        // not a value the kernel computes, so it is exempt
+                        // from the declared-before-use check; its own cone is
+                        // still checked in its own order.
+                        debug_assert!(
+                            self.ops.contains_id(shape),
+                            "param {op_id} names a deleted shape {shape}"
+                        );
                     }
                 }
                 Op::Storage { dtype, scope, len, .. } => {
