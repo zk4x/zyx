@@ -2201,13 +2201,26 @@ impl Kernel {
             }
             scan = self.next_op(scan);
         }
-        // Loop-carried accumulators: a `Register` storage written inside a
-        // loop is read by the next iteration in place. Give it one DST slot up
-        // front, so its loads resolve there and its producer is redirected to
-        // it; the pre-loop initialiser fills the same slot.
-        let mut accumulators: Map<OpId, (OpId, OpId)> = Map::default(); // storage -> (slot, loop header)
+        // Writes to a `Register` storage are not data movement: the storage is
+        // a DST row, and a store/load pair through it is a hand-off of the
+        // value from the producer's tile to the storage's tile. Give the
+        // storage one DST slot up front, so its loads resolve there and its
+        // producer is redirected to it.
+        //
+        // A loop-carried accumulator is the common case: it is written inside
+        // a loop and read by the next iteration in place, so its pre-loop
+        // initialiser fills the same slot ahead of the loop header. But the
+        // same shape occurs straight-line after `tt_tile` unrolls a loop into
+        // lanes (matmul's K-loop: `reduce` then `acc = reduce + zero`, with
+        // the loop gone). There is no loop header then, so the write itself
+        // is the anchor.
+        let mut accumulators: Map<OpId, (OpId, OpId)> = Map::default(); // storage -> (slot, anchor)
         let mut loop_stack: Vec<OpId> = Vec::new();
-        let mut pending: Vec<(OpId, OpId)> = Vec::new();
+        // In-loop writes first: they anchor on their loop, so the pre-loop
+        // initialiser is filled ahead of that loop (which is already in the
+        // compute section). Straight-line writes anchor on themselves.
+        let mut pending_loop: Vec<(OpId, OpId)> = Vec::new();
+        let mut pending_linear: Vec<(OpId, OpId)> = Vec::new();
         let mut scan = self.head;
         for _ in 0..250_000 {
             if scan.is_null() {
@@ -2219,15 +2232,16 @@ impl Kernel {
                     loop_stack.pop();
                 }
                 Op::Store { dst, .. } if matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }) => {
-                    if let Some(&header) = loop_stack.last() {
-                        pending.push((dst, header));
+                    match loop_stack.last() {
+                        Some(&header) => pending_loop.push((dst, header)),
+                        None => pending_linear.push((dst, scan)),
                     }
                 }
                 _ => {}
             }
             scan = self.next_op(scan);
         }
-        for (storage, header) in pending {
+        for (storage, header) in pending_loop.into_iter().chain(pending_linear) {
             if accumulators.contains_key(&storage) {
                 continue;
             }

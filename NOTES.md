@@ -1,8 +1,10 @@
 ## HANDOFF (2026-11-06, session 14) — start here: TT gates recovered, llama step next
 
-**Snapshot.** `main` at `3b871f64`, tree clean. `cargo build` green,
-`cargo test --lib` **116 green**, `23_tt_lowering` **26 of 30 green**.
-`24_tt` (llama's op groups on TT): **1 of 11** (`causal_mask_compare`).
+**Snapshot.** `main` at `3b871f64` plus the matmul fix below. `cargo build`
+green, `cargo test --lib` **116 green**, `23_tt_lowering` **28 of 30 green**
+(red: `softmax`, `sum_drop_col`, `sum_one_row`). `24_tt` (llama's op groups on
+TT): **3 of 11** (`causal_mask_compare`, `llama_feedforward_glu`,
+`llama_lm_head_projection`).
 
 ```bash
 cd zyx && cargo build
@@ -16,7 +18,7 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
 # ZYX_DEBUG=8 dumps the post-epilogue IR (only on the compile path).
 ```
 
-### What landed this session (5 commits)
+### What landed this session (6 commits)
 
 - `b898b983` **merge of `~/Dev/rust/zyx` main** (`976178c4`, 8 commits, 176
   files, base `9564adc9`): llama bench, `Dev::synchronize`, rope arg order,
@@ -51,6 +53,21 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   (it wants one reduce and a 32-wide tile) -> `tt_dataflow_select` extracts
   with `Op::Expand` -> `verify` rejects a shape op. **15 red -> 4 red.**
   Neither `tt_tile` nor `tt_reindex` was changed: the shapes came back.
+- **`tt_dataflow_select` hands off straight-line Register storages** (matmul
+  fix). `tt_tile` unrolls matmul's K-loop into lanes, which leaves the
+  loop-carried accumulator as a straight-line `store zero; load; add; store`
+  round trip. The pass only reserved a DST slot for storages written *inside a
+  loop*, so those generic stores survived to `tt_verify` (`SSA memory op
+  OpId(31) survived register allocation`). Register stores are hand-offs, not
+  traffic: every written `Register` storage now gets a slot, with in-loop
+  writes still anchored on their loop header (that anchor decides where the
+  pre-loop const fill lands, i.e. which *section* it lands in) and
+  straight-line writes anchored on themselves. Result: `matmul`,
+  `matmul_sigmoid`, `matmul_add`, `llama_feedforward_glu` and
+  `llama_lm_head_projection` green. First attempt anchored the pre-loop store
+  itself and emitted native compute into the reader section
+  (`native compute words outside the compute section`), which is why the
+  in-loop/linear split exists — do not merge the two lists.
 
 ### What is still red, and where to look
 
@@ -58,21 +75,21 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
 
 | gate | failure | note |
 |---|---|---|
-| `matmul` | `tt_verify: SSA memory op OpId(31) survived register allocation` (`kernel/tenstorrent.rs:6500`) | new with the merge; the register allocator leaves an SSA memory op |
-| `softmax` | value assertion, `23_tt_lowering.rs:829` (`N of 65536 values wrong`) | compiles and runs, ~52 s; wrong numbers, not a shape |
+| `softmax` | value assertion, `23_tt_lowering.rs:829`: all 65536 values are `inf` (worst error `inf`) | compiles and runs, ~52 s; wrong numbers, not a shape. Unchanged by the matmul fix (verified by A/B) |
 | `sum_drop_col` | `z[0]` right, `z[1..]` zero | pre-existing (session 11): `Col` fold leaves row 0, rank-1 boundary is a column |
 | `sum_one_row` | `boundary offset 32 is not a whole tile` | pre-existing: `tt_slice` divides logical offsets by a hard-coded 1024; a rank-1 `[N]` is `N` rows x 1 lane, so tile 1 starts at logical 32 |
 
-`24_tt` (llama op groups) red list is in session 13 below; unchanged except
-`causal_mask_compare` now passes.
+`24_tt` (llama op groups) red list is in session 13 below; `causal_mask_compare`,
+`llama_feedforward_glu` and `llama_lm_head_projection` now pass. The other
+eight are the index-path / softmax / kv-cache work listed under Next.
 
 ### Next, in order
 
-1. `matmul`'s "SSA memory op survived register allocation" — a regressed gate,
-   and matmul is on llama's critical path.
-2. `softmax`'s value assertion — it is the only composed (3-op) gate, so it is
-   the closest thing to llama's attention block.
-3. The CB ring with credits (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`, per
+1. `softmax`'s value assertion — it is the only composed (3-op) gate, so it is
+   the closest thing to llama's attention block. Every output is `inf`, so the
+   fail is in the `exp`/normalise chain, not in the reduce traffic (the reduce
+   itself is exercised by the green `sum*` gates).
+2. The CB ring with credits (`CbDeclare`/`Reserve`/`Push`/`Wait`/`Pop`, per
    iteration when `t > depth`, the overfill guard, the grid capped at the core
    count with the remainder looped). Required for llama's widths: ffn 8192 is
    256 tile columns, lm_head 128256 is 4008, the grid is ~120 cores and
