@@ -1373,9 +1373,14 @@ impl Dev {
         };
         let el = dtype.bit_size() as usize / 8;
         debug_assert!(el > 0, "tilize_transfer: zero element width");
+        // A rank-1 value is a tile *column*: element `i` is row `i`, lane 0.
+        // That is the layout `tt_reindex` writes for a reduce (`out_lane =
+        // row * 32`) and the one a `[N, 1]` keepdim value uses, so a dropped
+        // axis and a host vector land in the same bytes. Reading it as a
+        // `1 x N` row made every `sum([N])`/`max([N])` return row 0's value.
         let (rows, cols) = match shape {
             [.., r, c] => (*r, *c),
-            [c] => (1, *c),
+            [c] => (*c, 1),
             [] => (1, 1),
         };
         debug_assert!(rows > 0 && cols > 0, "tilize_transfer: non-positive dims {rows}x{cols}");
@@ -1496,9 +1501,11 @@ impl Dev {
         };
         let el = dtype.bit_size() as usize / 8;
         debug_assert!(el > 0, "untilize_transfer: zero element width");
+        // Rank-1 is a tile column, matching `tilize_transfer` and the reduce
+        // emitter's `out_lane = row * 32` (see there).
         let (rows, cols) = match shape {
             [.., r, c] => (*r, *c),
-            [c] => (1, *c),
+            [c] => (*c, 1),
             [] => (1, 1),
         };
         debug_assert!(rows > 0 && cols > 0, "untilize_transfer: non-positive dims {rows}x{cols}");
