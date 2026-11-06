@@ -1,4 +1,138 @@
-## HANDOFF (2026-11-06, session 11) — axis-drop reduces fixed except the column form
+## HANDOFF (2026-11-06, session 12) — start here: general indexing is the plan
+
+**Snapshot.** Base `709d44d1`, seven commits on top; latest `1341758c`
+(axis-aware reduce fold). **116 lib tests green; 30 of 32 `23_tt_lowering`
+gates pass with the search on.** Red: `sum_drop_col`, `sum_one_row` (details
+in session-11 below). Tree clean.
+
+```bash
+cd zyx && cargo build
+cd zyx && AGENT=1 cargo test --lib                        # 116
+cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
+BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
+  AGENT=1 timeout 60 $BIN <gate> --exact --nocapture
+# ZYX_DEBUG=256 (NoSearch), ZYX_TT_IR=1 (IR after tt_tile / tt_cb_lower).
+```
+
+### The decision: solve general indexing, not the reduce
+
+`reduce_axes` permutes the kept axes ahead and then calls `reduce_last_axis`
+once per reduced axis. The permute is **indexing**, not an op that moves
+bytes. So the reduce emitter only ever needs the **last-dim fold**; the
+axis-aware `TtEmit::Reduce` override in `1341758c` (selecting `Col` when the
+reduce variable is not the stride-1 one) is a workaround for an index that is
+not canonical. It stays green for now and goes away once canonicalization
+exists.
+
+The general problem is: an arbitrary zyx access map
+
+```
+addr = c + Σ s_i * v_i
+```
+
+must be lowerable to TT. The current `tt_reindex` / `tt_cb_lower` /
+`tt_dataflow_select` are three partial templates; each new shape is a new
+debugging session. The fix is one canonical access path, not more templates.
+
+### What tt-metal does (the reference)
+
+- **Gather/scatter are dataflow kernels on the reader/writer (RISCV) cores**,
+  not compute. `gather_reader_single_row_single_core.cpp`: read a whole row of
+  input tiles into L1, read an index tile, loop faces/rows/cols, compute
+  `tile_idx`/`which_row`/`which_col`/`local_index`, read the value from L1,
+  write the output tile; the writer drains. `reader_scatter.cpp` copies
+  input -> output in L1, then applies each index/source element.
+- **They normalize the index axis with explicit transpose/permute ops**:
+  `gather.cpp:56` `perform_transpose(..., dim, -1)` (gather is last-dim only),
+  `scatter.cpp:164-168` TILE -> ROW_MAJOR + transpose to last,
+  `indexed_fill.cpp:82` permute target dim to front, run at dim=0, permute
+  back. Rank is normalized to 4D, then squeezed/reshaped.
+- **Correct-but-slow is an explicit tier**: gather has single-row-single-core
+  vs multi-core by `WT_THRESHOLD = 60`; `indexed_fill` has `mode 0 = generic
+  fallback` next to the sharded fast paths.
+- **Reduce orientation is the packer's job, not a transpose**:
+  `REDUCE_COL` just pools (`llk_math_reduce.h:184` `// Just pool`) and the
+  packer writes row 0 (`llk_pack_common.h:138`, `edge_offset_sec1_mask =
+  0xffff`, `row_set_mapping_1 = 0x1`). `REDUCE_ROW` transposes twice:
+  unpacker haloize (`llk_unpack_AB_reduce.h:126`) + `TRNSPSRCB` result
+  transpose (`reduce_row_perform_transpose`, `llk_math_reduce.h:27`), then the
+  packer keeps column 0. This is why `sum([0])` is not a reduce bug.
+- Within-tile row scatter-add exists narrowly (`ckernel_sfpu_reshuffle_rows.h`,
+  embedding backward): per-row mask + `SFPLOAD`/`SFPSTORE` + `SFPTRANSP`.
+
+**Reference files** (`~/Dev/cpp/tt-metal`):
+`ttnn/cpp/ttnn/operations/data_movement/{gather,scatter,indexed_fill}/`;
+`tt_metal/tt-llk/tt_llk_blackhole/llk_lib/{llk_math_reduce,llk_unpack_AB_reduce,llk_pack_common}.h`;
+`tt_metal/tt-llk/tt_llk_blackhole/common/inc/sfpu/ckernel_sfpu_reshuffle_rows.h`.
+zyx side: `kernel/tenstorrent.rs` (`tt_tile`, `tt_reindex`, `tt_cb_lower`,
+`tt_dataflow_select`, `TtEmit::Reduce`), `backend/tenstorrent/mod.rs`
+(`tilize_transfer`/`untilize_transfer`, `stripes`), `codegen/tenstorrent/`,
+`firmware/tt-firmware/src/mover.rs`, and
+`~/Dev/rust/metalium-rs/crates/tt-isa/src/dm.rs` (alignment, entries).
+
+### The architecture (agreed)
+
+**Reader canonicalizes inputs -> compute sees canonical tiles only -> writer
+canonicalizes outputs.**
+
+- This invariant is not new: it was tested through the custom kernel API in
+  `zyx/tests/14|15|18_tenstorrent_*`. Those are `#![cfg(feature =
+  "tenstorrent")]` and that feature is **not** in `zyx/Cargo.toml`, so they do
+  not compile today. Mine them for the old planner; do not assume the current
+  tensor->kernel path has it.
+- The universal fallback is correct-but-slow: **aligned DRAM envelope + L1
+  fixup** on the dataflow core.
+  - The 64-byte rule is a DMA congruence constraint, not a semantic limit:
+    `tt_isa::dm::Descriptor::decode` requires a read's DRAM offset and L1 to
+    be congruent mod 64 (write mod 16). `error::ALIGNMENT` documents it.
+  - Inside L1 the granularity is `CopyWords`/`CopyHalfwords` (4/2 bytes, word
+    aligned), `IndexPick` (64-byte slots), `Fill`, `TILIZE`/`UNTILIZE`, and
+    the firmware's `transpose_from_scratch` / `broadcast_col0`.
+  - So: round every DRAM move out to an aligned envelope, then do the actual
+    gather/permute/compaction in L1. tt-metal does the same (a whole input row
+    in L1, per-element gather in L1).
+- **Static affine indexing** is zyx's case; **dynamic index-tensor
+  gather/scatter** stays a separate op with its own dataflow kernel (as in
+  tt-metal). Do not conflate them.
+
+### Next session, in order
+
+1. **Write the planner contract**: `aligned_envelope(access map) ->
+   (DRAM slots, L1 fixup)`, and make every boundary move go through it
+   (extend the `tt_cb_lower` / `tt_slice` / `tt_pages` path). A sub-64 DRAM
+   slice must be impossible by construction, not a runtime `not a whole tile`.
+2. **Build the L1 fixup primitives**: compose `CopyWords`/`IndexPick`/`Fill`/
+   `DmReadTransposed`; add a computed L1 copy loop if the map needs it. Decide
+   whether that loop is a mover entry or codegen-emitted RISC-V (machine code
+   stays in `kernel`/`codegen`; vendored firmware is allowed).
+3. **Port `sum_drop_col` as the first case**: the `Col` fold leaves row 0;
+   the writer does the tiny row-0 -> column-0 fixup before the aligned DRAM
+   write (or the reader transposes the input; the placement is a cost choice,
+   finalize later). Then `sum_one_row` (looped `[32] -> []` vector reduce,
+   currently `boundary offset 32 ...`) as the second.
+4. Once canonicalization works, remove the `1341758c` axis override and the
+   rank-1 boundary guessing; compute only last-dim.
+5. Still ordered: `tt_cb_lower` errors instead of returning silently; delete
+   the temporary dumps (`ZYX_SYNC_DUMP`, `ZYX_WORD_DUMP`, `ZYX_DST_DUMP`,
+   `ZYX_CODE_DUMP`, `ZYX_MOVE_DUMP`, the `tt_verify` op dump).
+
+### Open questions for the next session
+
+- Fixup placement (reader vs writer) per case, chosen by cost.
+- Reader/writer fallback: new mover entry vocabulary vs a codegen RISC-V loop;
+  how much of the index arithmetic runs at runtime (symbolic dims) vs is
+  folded at compile time.
+- Scope of dynamic gather/scatter (separate op; not part of the affine
+  canonicalizer).
+- Whether to revive `14|15|18_tenstorrent_*` (add the missing feature) or only
+  mine them for the old invariant.
+
+## HANDOFF (2026-11-06, session 11) — detail: axis-drop reduces, column form
+
+**Superseded by session 12** for the *plan*: the fix is general indexing
+(reader/writer canonicalize, aligned DMA + L1 fixup), not a reduce-axis
+transpose. Keep this section for the gate diagnoses and the rank-1 history.
 
 **Snapshot.** Base `709d44d1`, six commits on top; latest `252ecd8a`
 (rank-1 = tile column). **116 lib tests green; 30 of the 32 `23_tt_lowering`
@@ -83,7 +217,7 @@ family, not the rank-1 layout (the same `[1, 256]` limit is noted in session
 - `softmax` is 17.8 s with the search (over the 10 s per-run cap; simulator
   time is not a concern).
 
-## HANDOFF (2026-11-06, session 10) — start here
+## HANDOFF (2026-11-06, session 10) — detail: stepped base, pacing, tt_tile, DST liveness
 
 **Snapshot.** Base `709d44d1`, five commits on top (`36f30a7f`, `72f675ef`,
 `5add2028`, `4c6374eb`; this notes commit), tree clean. **116 lib tests green;
