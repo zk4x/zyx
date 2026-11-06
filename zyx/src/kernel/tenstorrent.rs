@@ -1787,9 +1787,12 @@ impl Kernel {
                 Op::Load { src: base, src_idx: off }
                     if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) =>
                 {
-                    // A `[32, 32]` tile, or a `[32]` vector — one tile row.
+                    // A `[32, 32]` tile, a `[32]` vector — one tile row — or
+                    // a scalar (one lane; a pure copy kernel has nothing
+                    // else). The element-to-tile unit below carries the
+                    // difference.
                     let shape = self.shape(id);
-                    if shape != vec![32, 32] && shape != vec![32] {
+                    if shape != vec![32, 32] && shape != vec![32] && !shape.is_empty() {
                         return;
                     }
                     // An affine index cone only; a loop variable is a scalar
@@ -1868,6 +1871,53 @@ impl Kernel {
                     let Some(base_idx) = self.strip_unrolls(cloned, anchor, false) else {
                         return;
                     };
+                    // A boundary index is expressed in 1024-element tile units:
+                    // `strip_unrolls` rebases a group step to one whole tile, and
+                    // `tt_slice` turns those units into `TILE_SLOT` bytes. An
+                    // access that covers only part of a tile says so once, here:
+                    // a `[32]` lane vector is one tile row/column (32 elements),
+                    // a scalar is one lane. A group-rebased index already carries
+                    // tile units; anything else is the access's element footprint.
+                    let unit: i64 = match self.shape(load).as_slice() {
+                        [1024] | [32, 32] => 1024,
+                        [32] => 32,
+                        [] => 1,
+                        _ => return,
+                    };
+                    // Rebuild the map in 1024-element tile units. A group-
+                    // rebased index is already there; a non-affine or
+                    // non-dividing map keeps the original index and fails
+                    // loudly in `tt_slice`, never silently here.
+                    let converted = (|| -> Option<OpId> {
+                        if unit == 1024 {
+                            return None;
+                        }
+                        let strides = self.get_strides(base_idx)?;
+                        if strides.iter().any(|(&var, _)| {
+                            var != OpId::NULL
+                                && matches!(self.ops[var].op, Op::Range { kind: RangeKind::Group(_), .. })
+                        }) {
+                            return None;
+                        }
+                        if strides
+                            .iter()
+                            .any(|(&var, &(_, s))| var != OpId::NULL && s != 0 && s % unit != 0)
+                        {
+                            return None;
+                        }
+                        let mut acc = self
+                            .insert_const_idx_before(anchor, strides.get(&OpId::NULL).map_or(0, |(_, s)| s / unit * 1024));
+                        for (&var, &(_, stride)) in strides.iter() {
+                            if var == OpId::NULL || stride == 0 {
+                                continue;
+                            }
+                            let c = self.insert_const_idx_before(anchor, stride / unit * 1024);
+                            let term = self.insert_before(anchor, Op::Binary { x: var, y: c, bop: BOp::Mul });
+                            acc = self.insert_before(anchor, Op::Binary { x: acc, y: term, bop: BOp::Add });
+                        }
+                        Some(acc)
+                    })();
+                    let base_idx = converted.unwrap_or(base_idx);
                     let stride = self.insert_const_idx_before(anchor, 1024i64);
                     let slot = self.insert_before(anchor, Op::Binary { x: reader_loop, y: stride, bop: BOp::Mul });
                     self.insert_before(anchor, Op::Copy { src: base, src_idx: base_idx, dst: cb, dst_idx: slot });
@@ -1888,6 +1938,42 @@ impl Kernel {
                     let Some(base_idx) = self.strip_unrolls(off, anchor, true) else {
                         return;
                     };
+                    let unit: i64 = match self.shape(load).as_slice() {
+                        [1024] | [32, 32] => 1024,
+                        [32] => 32,
+                        [] => 1,
+                        _ => return,
+                    };
+                    let converted = (|| -> Option<OpId> {
+                        if unit == 1024 {
+                            return None;
+                        }
+                        let strides = self.get_strides(base_idx)?;
+                        if strides.iter().any(|(&var, _)| {
+                            var != OpId::NULL
+                                && matches!(self.ops[var].op, Op::Range { kind: RangeKind::Group(_), .. })
+                        }) {
+                            return None;
+                        }
+                        if strides
+                            .iter()
+                            .any(|(&var, &(_, s))| var != OpId::NULL && s != 0 && s % unit != 0)
+                        {
+                            return None;
+                        }
+                        let mut acc = self
+                            .insert_const_idx_before(anchor, strides.get(&OpId::NULL).map_or(0, |(_, s)| s / unit * 1024));
+                        for (&var, &(_, stride)) in strides.iter() {
+                            if var == OpId::NULL || stride == 0 {
+                                continue;
+                            }
+                            let c = self.insert_const_idx_before(anchor, stride / unit * 1024);
+                            let term = self.insert_before(anchor, Op::Binary { x: var, y: c, bop: BOp::Mul });
+                            acc = self.insert_before(anchor, Op::Binary { x: acc, y: term, bop: BOp::Add });
+                        }
+                        Some(acc)
+                    })();
+                    let base_idx = converted.unwrap_or(base_idx);
                     self.insert_before(anchor, Op::Copy { src: base, src_idx: base_idx, dst: cb, dst_idx: slot_zero });
                     cb_of.insert(load, cb);
                 }
@@ -1922,6 +2008,41 @@ impl Kernel {
                 let Some(base_idx) = self.strip_unrolls(off, self.tail, false) else {
                     return;
                 };
+                // Same boundary unit as the reader: a partial-tile access
+                // (`[32]` lane vector, scalar) counts 32 or 1 elements per tile
+                // instead of 1024; group-rebased indices already carry tiles.
+                let unit: i64 = match self.shape(store).as_slice() {
+                    [1024] | [32, 32] => 1024,
+                    [32] => 32,
+                    [] => 1,
+                    _ => return,
+                };
+                let converted = (|| -> Option<OpId> {
+                    if unit == 1024 {
+                        return None;
+                    }
+                    let strides = self.get_strides(base_idx)?;
+                    if strides.iter().any(|(&var, _)| {
+                        var != OpId::NULL && matches!(self.ops[var].op, Op::Range { kind: RangeKind::Group(_), .. })
+                    }) {
+                        return None;
+                    }
+                    if strides.iter().any(|(&var, &(_, s))| var != OpId::NULL && s != 0 && s % unit != 0) {
+                        return None;
+                    }
+                    let mut acc = self
+                        .insert_const_idx_before(self.tail, strides.get(&OpId::NULL).map_or(0, |(_, s)| s / unit * 1024));
+                    for (&var, &(_, stride)) in strides.iter() {
+                        if var == OpId::NULL || stride == 0 {
+                            continue;
+                        }
+                        let c = self.insert_const_idx_before(self.tail, stride / unit * 1024);
+                        let term = self.insert_before(self.tail, Op::Binary { x: var, y: c, bop: BOp::Mul });
+                        acc = self.insert_before(self.tail, Op::Binary { x: acc, y: term, bop: BOp::Add });
+                    }
+                    Some(acc)
+                })();
+                let base_idx = converted.unwrap_or(base_idx);
                 // The store's access index stays its own: it carries the
                 // value's shape, and the pack ignores it (the drain uses
                 // `base_idx`).
@@ -2086,13 +2207,20 @@ impl Kernel {
             let Some(kind) = uop_kind(uop) else { continue };
             let p2 = Pat::unary(Pat::bind('x').shape([32i64, 32]), uop).shape([32i64, 32]);
             let p1 = Pat::unary(Pat::bind('x').shape([32i64]), uop).shape([32i64]);
-            pats.push((Pat::Any(Box::new([p2, p1])), TtEmit::Sfpu { kind, arity: 1 }));
+            // A scalar value: a loop-carried accumulator over a reduce that
+            // already collapsed its lanes (`sum` over one row). The SFPU is
+            // lane-wise and the value lives in lane 0, so the rank-1 body
+            // computes it correctly.
+            let p0 = Pat::unary(Pat::bind('x').shape([] as [i64; 0]), uop).shape([] as [i64; 0]);
+            pats.push((Pat::Any(Box::new([p2, p1, p0])), TtEmit::Sfpu { kind, arity: 1 }));
         }
         for &bop in BOPS {
             let Some(kind) = bop_kind(bop) else { continue };
             let p2 = Pat::binary(bop, Pat::bind('x').shape([32i64, 32]), Pat::bind('y').shape([32i64, 32])).shape([32i64, 32]);
             let p1 = Pat::binary(bop, Pat::bind('x').shape([32i64]), Pat::bind('y').shape([32i64])).shape([32i64]);
-            pats.push((Pat::Any(Box::new([p2, p1])), TtEmit::Sfpu { kind, arity: 2 }));
+            let p0 = Pat::binary(bop, Pat::bind('x').shape([] as [i64; 0]), Pat::bind('y').shape([] as [i64; 0]))
+                .shape([] as [i64; 0]);
+            pats.push((Pat::Any(Box::new([p2, p1, p0])), TtEmit::Sfpu { kind, arity: 2 }));
             // A scalar-constant operand (`tt_unfold`'s coefficients): only the
             // other side's shape is pinned; the emitter tells the sides apart
             // by which operand is a `Const`.

@@ -130,6 +130,34 @@ Still open, separate: the TT search offers split shapes that overshoot the
 axis (group over 16/32 on a 256-row axis); no failing gate now, but it is
 the same legality hole as `opt_register_tiling`.
 
+### General index path, first step: the boundary tile unit
+
+Started the session-12 plan (aligned envelope + L1 fixup) with the piece every
+boundary move needs: **how many logical elements one tile image spans is the
+access's own footprint, not 1024**. `tt_cb_lower` now derives it from the
+loaded/stored value's shape and rebuilds the affine base in 1024-element tile
+units (`(Σ var*stride)/unit*1024`), for `[32]` (one tile row/column = 32) and
+`[]` (one lane) accesses. A group-rebased index is already in tile units and is
+left alone; a non-affine or non-dividing map keeps the old index and fails
+loudly in `tt_slice` (never a silent bail). A scalar load is also accepted now
+(a pure copy kernel is scalar-only).
+
+Also added scalar (`[]`) forms to the SFPU pattern table: the loop-carried
+accumulator of a reduce over a >32 axis is a scalar `Add`, and without a
+pattern it silently never lowered (the output stayed zero).
+
+`sum_one_row` now compiles, runs and reaches the right boundary (it used to
+fail at `boundary offset 32 is not a whole tile`), but its value is wrong
+(3.84 vs 125.9). The remaining cause is the **reduce orientation**: a
+`[32] -> []` reduce is `TileDim::Col` by shape, which is right for a rank-1
+tile-column vector but wrong when the 32 values are the columns of a row (a
+`[1,256]` reduce). The stride is 1 in both cases; the discriminator is the
+**source tensor's layout (rank / last-dim extent)**, which `linearize` knows and
+the tile IR has already lost. The same missing datum decides `sum_drop_col`'s
+output orientation (row 0 vs column 0). So the next step is to carry the
+access's layout into the map (an op field or a linearize marker) rather than
+guessing from shape/stride — a data-model decision.
+
 ### `24_tt::llama_attention_softmax`: transposed B has no lowering
 
 The DCE dangling-`OpId` panic (`fold_constants.rs:640`, from
