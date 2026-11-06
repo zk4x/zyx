@@ -1,4 +1,90 @@
-## HANDOFF (2026-11-06, session 15) — start here: indexing, TT conforms
+## HANDOFF (2026-11-06, session 16) — start here: shapes kept, index rewritten
+
+**Snapshot.** `main` at `1deedec2`, tree clean. `cargo build` green, `cargo
+test --lib` **116 green**, `23_tt_lowering` **29 of 30** (red: `sum_drop_col`
+only), `softmax` green (~35 s). `24_tt` unchanged at 3/11. Goal unchanged: one
+`examples/llama` forward step on `Dev::TT(0)` (ttsim), `seq_len = 1`, checked
+against the CPU.
+
+### What landed
+
+- **`linearize` keeps `Op::Param.shape` on a tiled device** (user decision:
+  "keep the shape and make things work"). Every other device still gets the
+  shape-less IR it had. Three consequences had to be fixed, all because a shape
+  is an *operand* of its param and must be declared before it:
+  - `add_indexing`: a viewless `Stack` is metadata (a param's shape vector), not
+    a movement value — it used to be removed without remapping, leaving the
+    param naming a dead op, which the "clear the shapes" loop then hid.
+  - the post-linearize "no movement op survived" assertion exempts Stacks in a
+    param's shape cone.
+  - **toposort hoists the shape cone ahead of the params**; `verify`'s
+    param-first phase treats the cone as preamble (and a param's shape is exempt
+    from declared-before-use); `instruction_schedule` and
+    `move_constants_to_beginning` keep the cone in front. Without those two, the
+    cone lands after the params and the def-before-use walkers (e.g. `split`)
+    panic.
+- **`tt_reindex` is now a shape-derived transform, not two templates.** For the
+  DRAM load and store it takes the flat logical index and rewrites it:
+  ```
+  physical = tile*1024 + row_in_tile*32 + col_in_tile
+  tile     = outer*tiles_per_outer + row_hi*tiles_across + col_hi
+  ```
+  with the plane `(rows, cols)` read from the param's shape (rank-1 = `N x 1`,
+  the tilize rule). Each term is classified **by its stride** against the plane:
+  multiple of the plane → outer slice; multiple of 32 rows → tile row; multiple
+  of the row width → row; multiple of 32 columns → tile column; else a lane. A
+  concrete offset is split the same way (it used to have to be zero). `drop3`
+  and `row2` are gone; `[32,32,32]`, `[32,32]`, `[1,256]`, `[256]` all fall out
+  of the one rule.
+- **The reduce fold reads the rewritten index**: the reduce variable's stride is
+  `1` when the lanes are tile columns (`TileDim::Row`) and `32` when they are
+  tile rows (`TileDim::Col`). The `[32] -> []`/`[32,32] -> [32]` shape table no
+  longer decides `sum_one_row` (it was picking `Col` for a row of 32 columns,
+  hence 3.84 vs 125.9).
+- `tt_cb_lower` no longer re-scales an index already in tile units (every step a
+  whole tile) with its access-footprint heuristic — that was turning `i*1024`
+  into `i*32768`.
+- The two `reindex_tests` unit gates now give their params real shapes, because
+  the transform reads them; their expected strides are unchanged.
+
+### The one red gate, and why it is the next work item
+
+`sum_drop_col` (`[10,20].sum([0])`): the value is written one *scalar per
+column*, so the writer drains a single element per grid core. Its byte offset
+in the tile image is **not affine in the element index**: element `(r, 0)` sits
+at `face*256 + (r%16)*16` datums, i.e. `64r` bytes for `r < 16` and then jumps
+to face 2. `tt_slice`/`tt_move_offset` only express `base + gidx*stride`, so a
+per-element scatter needs the face-aware address computed where the words are
+placed — exactly the **general gather** (indexing rule, item 3): 64-byte-aligned
+DRAM loads, single items, L1 fixup, with whole-tile/transposed/broadcast/runs as
+optimizations over it. `DmCopyWords`/`DmIndexPick` exist as variants with no
+producer.
+
+### Next, in order
+
+1. **The general gather** (reader and writer): element-wise moves with a
+   face-aware address, wired through `DmCopyWords`/`DmIndexPick` and the L1
+   fixup; keep the whole-tile fast paths. It closes `sum_drop_col`.
+2. The rest of the universal walk: `tt_reindex` still bails when the kernel is
+   not exactly one reduce + one load + one store. Lift that, so every param
+   load/store is rewritten (matmul operands, embedding row select, rope
+   rotate-half, transposed B).
+3. CB ring with credits (session 13 detail), grid capped at the core count with
+   the remainder looped.
+4. `examples/llama`, `seq_len = 1`, on ttsim, checked against the CPU.
+
+### Traps (unchanged, plus)
+
+- `ttsim`'s owner thread dies with a failed test: run gates **one per process**.
+  A suite run shows a cascade (10 passed / 20 failed) that means nothing.
+- 10 s per individual run; `softmax` needs ~35 s, run it alone.
+- Any pass that walks program order needs def-before-use. If you ever keep
+  another operand on an op that must be declared early (params), hoist its cone
+  in `toposort` *and* teach `instruction_schedule` +
+  `move_constants_to_beginning` + `verify`'s phase check.
+- IR dumps: `ZYX_TT_IR=1`, `ZYX_DEBUG=8`, `ZYX_DEBUG=256` (NoSearch).
+
+## HANDOFF (2026-11-06, session 15) — detail: indexing, TT conforms
 
 **Snapshot.** `main` at `b3af2a84` (notes) / `89da01b4` (code), tree clean.
 `cargo build` green, `cargo test --lib` **116 green**, `23_tt_lowering`
