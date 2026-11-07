@@ -32,9 +32,12 @@ pub(crate) fn run(t: Tensor) -> Result<(), ZyxError> {
     // Drop the producer handle before forcing: a live handle means the runtime
     // must materialize that tensor, which would leave a second store of the
     // (already fused) value in the kernel. Reading does not need it.
+    eprintln!("[mark] run: cast");
     let out = t.cast(DType::F32);
     drop(t);
+    eprintln!("[mark] run: read");
     let v: Vec<f32> = out.try_into()?;
+    eprintln!("[mark] run: done len={}", v.len());
     std::hint::black_box(v.len());
     Ok(())
 }

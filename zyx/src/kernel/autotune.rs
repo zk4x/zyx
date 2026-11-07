@@ -23,7 +23,7 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::derived_hash_with_manual_eq)]
 
-use crate::backend::{Dev, DeviceProgramId, LaunchArg};
+use crate::backend::{Dev, DeviceProgramId, LaunchArg, gws_from_kernel};
 use crate::dtype::{Constant, DType};
 use crate::error::BackendError;
 use crate::hashers::AHasher;
@@ -57,7 +57,7 @@ pub type MakeOpt = fn(&Kernel) -> Box<dyn Optimization>;
 impl Kernel {
     /// The default optimization set: the search space [`BeamSearch`] explores
     /// unless the caller provides its own list of make functions.
-    pub const fn default_optimizations() -> [MakeOpt; 12] {
+    pub const fn default_optimizations() -> [MakeOpt; 11] {
         [
             Kernel::opt_split,
             Kernel::opt_reassociate_commutative,
@@ -66,7 +66,6 @@ impl Kernel {
             Kernel::opt_pad,
             Kernel::opt_tensorize,
             Kernel::opt_local_staging,
-            Kernel::opt_ldmatrix,
             Kernel::opt_recipe,
             Kernel::opt_tensor_recipe,
             Kernel::opt_register_tiling,
@@ -551,7 +550,23 @@ impl BeamSearch {
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(args, dev, debug) {
                         Ok((program_id, time)) => {
-                            record_measurement(&kernel, opt_seq, seed_id, Some(time), "measured");
+                            // The resolved grid exists only here: the group
+                            // lengths are `Param` expressions over `args`, so
+                            // the same IR gives different extents per launch.
+                            let grid = {
+                                let gws = gws_from_kernel(&kernel, &kernel.dev_info().max_global_work_dims)
+                                    .expect("grid expression of a kernel that launched");
+                                let mut dims: [Dim; 3] = [1, 1, 1];
+                                let mut dim = |ordinal: usize| match &args[ordinal] {
+                                    LaunchArg::Variable(c) => c.as_dim().expect("gws param is not a dim"),
+                                    LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
+                                };
+                                for (axis, g) in gws.iter().enumerate().take(3) {
+                                    dims[axis] = g.eval(&mut dim);
+                                }
+                                dims
+                            };
+                            record_measurement(&kernel, opt_seq, seed_id, self.n_launches, Some(time), Some(grid), "measured");
                             programs.push(program_id);
                             measured += 1;
                             if time < best_time {
@@ -560,7 +575,11 @@ impl BeamSearch {
                             }
                         }
                         Err(e) => {
-                            record_measurement(&kernel, opt_seq, seed_id, None, "failed");
+                            // Temporary: name the failing candidate so it can
+                            // be matched to its `bench.db` row. Removed after
+                            // the diagnosis.
+                            eprintln!("autotune: candidate seq={:?} failed: {e:?}", opt_seq.opts);
+                            record_measurement(&kernel, opt_seq, seed_id, self.n_launches, None, None, "failed");
                             last_error = Some(e);
                         }
                     }
@@ -569,9 +588,12 @@ impl BeamSearch {
         }
 
         // Drop all compiled programs; the winner is returned as a kernel.
+        eprintln!("[mark] autotune: all threads measured");
+        let n_programs = programs.len();
         for program_id in programs {
             dev.release(program_id);
         }
+        eprintln!("[mark] autotune: released {n_programs}");
 
         match best_kernel {
             Some(kernel) => Ok((kernel, best_time)),
@@ -582,59 +604,93 @@ impl BeamSearch {
     }
 }
 
-/// Append one measured candidate to the benchmark record stream
-/// (`ZYX_BENCH_OUT`), unless that variable is unset — nothing here runs unless
-/// a benchmark asks for it.
+/// One measured autotune candidate, handed to the recorder installed by a
+/// benchmark harness.
 ///
-/// One JSON object per line: the label, the optimization sequence that produced
-/// the kernel, its identity, and the raw cost features from
-/// [`Kernel::features`]. The benchmark side ingests these into its database;
-/// `zyx` itself never touches it.
-fn record_measurement(kernel: &Kernel, seq: &OptSeq, seed_id: u64, nanos: Option<u64>, status: &str) {
-    let Ok(path) = std::env::var("ZYX_BENCH_OUT") else {
+/// This is the *only* way a measurement leaves `zyx`: there is no file, no
+/// environment variable and no database. A harness installs a recorder with
+/// [`set_measurement_recorder`] and is free to put the rows wherever it wants.
+pub struct Measurement {
+    /// Device label, e.g. `Cuda(0)`.
+    pub dev: String,
+    /// Compute capability.
+    pub cc: [i32; 2],
+    /// Hash of the seed kernel the candidate was tuned for.
+    pub seed: u64,
+    /// Hash of the final kernel.
+    pub kernel_hash: u64,
+    /// The optimization path: `(optimization index, config index)`.
+    pub seq: Vec<(usize, u64)>,
+    /// The search budget this candidate was measured under
+    /// ([`BeamSearch::n_launches`]).
+    ///
+    /// Not derivable from the winner's IR: the same kernel can be the best at
+    /// budget 20 and lose at budget 1000, so rows from different budgets are
+    /// different experiments even when the stored IR is identical.
+    pub n_launches: usize,
+    /// Measured time in nanoseconds; `None` when the launch failed.
+    pub nanos: Option<u64>,
+    /// The grid the launch used: one extent per gws axis, padded with `1`.
+    ///
+    /// Not derivable from the IR: group lengths bottom out in
+    /// `Op::Param { kind: Variable }` leaves ([`crate::backend::gws_from_kernel`]),
+    /// so the extents only exist once the launch args fill them in — which is
+    /// why they are recorded per launch. `None` when the launch failed.
+    pub grid: Option<[Dim; 3]>,
+    /// `"measured"` or `"failed"`.
+    pub status: &'static str,
+    /// The cost-model feature vector of the final kernel.
+    pub features: Features,
+    /// The final kernel's serialized IR (`SerBin`). Stored so features stay
+    /// re-derivable after a feature or cost-model change.
+    pub ir: Vec<u8>,
+}
+
+/// Sink for measurements, installed by a benchmark harness.
+pub type MeasurementRecorder = Box<dyn FnMut(&Measurement) + Send>;
+
+static RECORDER: std::sync::Mutex<Option<MeasurementRecorder>> = std::sync::Mutex::new(None);
+
+/// Install (or clear) the measurement recorder.
+///
+/// Nothing is recorded unless a recorder is installed; `zyx` itself never
+/// writes files or opens a database.
+pub fn set_measurement_recorder(recorder: Option<MeasurementRecorder>) {
+    *RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = recorder;
+}
+
+/// Hand one measured candidate to the installed recorder, if any.
+fn record_measurement(
+    kernel: &Kernel,
+    seq: &OptSeq,
+    seed_id: u64,
+    n_launches: usize,
+    nanos: Option<u64>,
+    grid: Option<[Dim; 3]>,
+    status: &'static str,
+) {
+    let mut guard = RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(recorder) = guard.as_mut() else {
         return;
     };
-    let tag = std::env::var("ZYX_BENCH_TAG").unwrap_or_else(|_| "untagged".to_string());
+    let info = kernel.dev_info();
     // The rendering path is part of the measurement: PTX-direct skips NVRTC and
     // can produce different SASS, so it must not mix with NVRTC rows.
     let codegen = if std::env::var("ZYX_PTX").is_ok() { "+ptx" } else { "" };
-    let info = kernel.dev_info();
-    let features = kernel.features();
-    let values = features.values();
-
-    let mut line = String::with_capacity(1024);
-    line.push_str("{\"schema\":1");
-    line.push_str(&format!(",\"tag\":{tag:?}"));
-    line.push_str(&format!(",\"dev\":\"{:?}{codegen}\"", kernel.dev));
-    line.push_str(&format!(",\"cc\":[{},{}]", info.cc[0], info.cc[1]));
-    line.push_str(",\"seq\":[");
-    for (i, (opt, config)) in seq.opts.iter().enumerate() {
-        if i > 0 {
-            line.push(',');
-        }
-        line.push_str(&format!("[{opt},{config}]"));
-    }
-    line.push(']');
-    line.push_str(&format!(",\"seed\":\"{seed_id:016x}\"",));
-    line.push_str(&format!(",\"kernel\":\"{:016x}\"", kernel.get_hash()));
-    match nanos {
-        Some(nanos) => line.push_str(&format!(",\"nanos\":{nanos}")),
-        None => line.push_str(",\"nanos\":null"),
-    }
-    line.push_str(&format!(",\"status\":\"{status}\""));
-    line.push_str(",\"features\":{");
-    for (i, name) in Features::NAMES.iter().enumerate() {
-        if i > 0 {
-            line.push(',');
-        }
-        line.push_str(&format!("\"{name}\":{}", values[i]));
-    }
-    line.push_str("}}\n");
-
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-        use std::io::Write;
-        let _ = file.write_all(line.as_bytes());
-    }
+    let measurement = Measurement {
+        dev: format!("{:?}{codegen}", kernel.dev),
+        cc: info.cc,
+        seed: seed_id,
+        kernel_hash: kernel.get_hash(),
+        seq: seq.opts.clone(),
+        n_launches,
+        nanos,
+        grid,
+        status,
+        features: kernel.features(),
+        ir: kernel.serialize_bin(),
+    };
+    recorder(&measurement);
 }
 
 /// Debug-only stand-in for [`BeamSearch`], enabled by `ZYX_DEBUG=256`

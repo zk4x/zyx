@@ -111,7 +111,7 @@ use crate::{
     shape::{Dim, UAxis},
     slab::Slab,
 };
-use nanoserde::{DeBin, SerBin};
+use nanoserde::{DeBin, DeBinErr, SerBin};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::{hash::BuildHasherDefault, hash::Hash};
@@ -119,6 +119,7 @@ use std::{hash::BuildHasherDefault, hash::Hash};
 mod algebraic;
 pub mod autotune;
 mod cost;
+pub use cost::Features;
 mod custom;
 pub(crate) mod debug;
 mod devectorize;
@@ -128,7 +129,6 @@ mod fuse;
 mod instr_sched;
 mod licm;
 mod linearize;
-mod ldmatrix;
 mod local_reduce;
 mod local_staging;
 mod merge;
@@ -246,22 +246,52 @@ impl PartialEq for Kernel {
 
 impl Eq for Kernel {}
 
+/// Version of the stored kernel IR format. Bump when the `Op` variant tags,
+/// their field order, or the `Kernel` header change: a stored kernel from a
+/// different version must fail loudly rather than deserialize into a
+/// reinterpreted IR.
+const IR_FORMAT_VERSION: u8 = 1;
+
 impl SerBin for Kernel {
     fn ser_bin(&self, output: &mut Vec<u8>) {
+        IR_FORMAT_VERSION.ser_bin(output);
         self.ops.ser_bin(output);
         self.head.ser_bin(output);
         self.tail.ser_bin(output);
+        self.dev.ser_bin(output);
+        match &self.dev_info {
+            Some(info) => {
+                1u8.ser_bin(output);
+                info.ser_bin(output);
+            }
+            None => 0u8.ser_bin(output),
+        }
     }
 }
 
-/*impl DeBin for Kernel {
-    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, nanoserde::DeBinErr> {
-        let ops = Slab::<OpId, OpNode>::de_bin(offset, bytes)?;
-        let start = OpId::de_bin(offset, bytes)?;
-        let end = OpId::de_bin(offset, bytes)?;
-        Ok(Self { head: start, tail: end, ops, device_id: Dev::Auto })
+impl DeBin for Kernel {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let version: u8 = DeBin::de_bin(offset, bytes)?;
+        if version != IR_FORMAT_VERSION {
+            // nanoserde 0.2.1's only error variant is `Length`: carry the
+            // expected and stored versions as the two lengths.
+            return Err(DeBinErr::new(*offset, IR_FORMAT_VERSION as usize, version as usize));
+        }
+        let ops = Slab::<OpId, OpLinked>::de_bin(offset, bytes)?;
+        let head = OpId::de_bin(offset, bytes)?;
+        let tail = OpId::de_bin(offset, bytes)?;
+        let dev = Dev::de_bin(offset, bytes)?;
+        let has_info: u8 = DeBin::de_bin(offset, bytes)?;
+        let dev_info = match has_info {
+            0 => None,
+            1 => Some(Arc::new(DeviceInfo::de_bin(offset, bytes)?)),
+            _ => {
+                return Err(DeBinErr::new(*offset, 0, has_info as usize));
+            }
+        };
+        Ok(Self { ops, head, tail, dev, dev_info })
     }
-}*/
+}
 
 impl Hash for Kernel {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 use std::hash::{Hash, Hasher};
 
-use nanoserde::{DeBin, SerBin};
+use nanoserde::{DeBin, DeBinErr, SerBin};
 
 use crate::backend::{Dev, GwsDim, ProgramId};
 use crate::dtype::Constant;
@@ -13,7 +13,7 @@ use crate::types::{TinyString, TinyVec};
 use crate::{DType, Map};
 
 /// Kernel parameter kind
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum ParamKind {
     /// Single scalar variable
     Variable,
@@ -45,7 +45,22 @@ impl SerBin for SourceBlock {
     }
 }
 
-#[derive(Debug, Clone, SerBin)]
+impl DeBin for SourceBlock {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let len: usize = DeBin::de_bin(offset, bytes)?;
+        let end = *offset + len;
+        let Some(text) = bytes.get(*offset..end) else {
+            return Err(DeBinErr::new(*offset, len, bytes.len()));
+        };
+        let Ok(text) = std::str::from_utf8(text) else {
+            return Err(DeBinErr::new(*offset, len, bytes.len()));
+        };
+        *offset = end;
+        Ok(SourceBlock(text.into()))
+    }
+}
+
+#[derive(Debug, Clone)]
 /// Kernel IR op: one node of the op list, walked `head` → `next_op`.
 /// Pre-linearization ops are pure DAG views/reduces; post-linearization
 /// they are linear SSA over `Param`/`Storage` escape hatches (see
@@ -428,7 +443,7 @@ pub enum Op {
     PTX(Box<PTXOp>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// GPU backend meta op: launch configuration shared by all GPU backends.
 /// Lives inside [`Op::GPU`].
 pub enum GPUOp {
@@ -446,7 +461,7 @@ pub enum GPUOp {
     Params(Box<[ParamKind]>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// SPIR-V backend meta op: compiled module plus SPIR-V-specific
 /// annotations. Lives inside [`Op::Spirv`].
 pub enum SpirvOp {
@@ -458,7 +473,7 @@ pub enum SpirvOp {
     PushConstants(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// PTX backend meta op: assembled PTX bytes. Lives inside [`Op::PTX`].
 pub enum PTXOp {
     /// Assembled PTX assembly bytes, as handed to the driver (same shape
@@ -480,7 +495,7 @@ pub enum PTXOp {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One page of the Tenstorrent reader list ([`TTOp::DmRead`]).
 pub struct TTDmRead {
     /// Global head-order param ordinal (the launch arg index).
@@ -497,7 +512,7 @@ pub struct TTDmRead {
     pub gstride1: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One page of the Tenstorrent writer list ([`TTOp::DmWrite`]).
 pub struct TTDmWrite {
     /// Global head-order param ordinal (the launch arg index).
@@ -517,7 +532,7 @@ pub struct TTDmWrite {
     pub narrow: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One tile-slot read of the reader list, in either shape the mover knows:
 /// transposed ([`TTOp::DmReadTransposed`]) or with column 0 copied across
 /// ([`TTOp::DmReadBroadcastCol`]). Both are `dm::op::READ_TRANSPOSED` /
@@ -536,7 +551,7 @@ pub struct TTDmTileRead {
     pub gstride1: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One padding fill of a reader/writer list ([`TTOp::DmFill`]): every datum
 /// of the tile slot at `dst` outside the first `bounds & 0xff` rows and
 /// `bounds >> 8` columns takes `value` (each bound of `0` means 32).
@@ -549,7 +564,7 @@ pub struct TTDmFill {
     pub dst: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One L1-to-L1 word copy of a list ([`TTOp::DmCopyWords`]):
 /// `count` aligned words from `src` to `dst`, `src_stride`/`dst_stride`
 /// bytes apart. The mover does no arithmetic: this is a bit-preserving
@@ -567,7 +582,7 @@ pub struct TTDmCopyWords {
     pub dst_stride: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One indexed gather of a list ([`TTOp::DmIndexPick`]): B selects one datum
 /// per row using resident I32 indices. All three slots are L1 addresses; the
 /// source holds a 32-column chunk beginning at column `first`.
@@ -588,7 +603,7 @@ pub struct TTDmIndexPick {
     pub datum_bytes: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// The list entry that runs the tile's roles ([`TTOp::DmKernel`]): the mover
 /// waits for every move before it, points each role at its program image,
 /// bumps the generation, and waits for the acknowledgement. Zero `at`/`len`
@@ -602,7 +617,7 @@ pub struct TTDmKernel {
     pub len: [u32; 3],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One row-level SFPU load ([`TTOp::SfpLoad`]): the `Dst` datum at address `at`
 /// of the Register tile `slot` goes into lane register `reg`. `at` is the
 /// address inside the tile, so codegen packs `slot.id * rows + at`; `fmt` is
@@ -618,7 +633,7 @@ pub struct TTSfpLoad {
     pub fmt: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One row-level SFPU store ([`TTOp::SfpStore`]): lane register `reg` goes to
 /// the `Dst` address `at` of the Register tile `slot`. See [`TTSfpLoad`].
 pub struct TTSfpStore {
@@ -632,7 +647,7 @@ pub struct TTSfpStore {
     pub fmt: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// One role's program ([`TTOp::Math`]): the instruction words codegen encoded,
 /// plus the block repeats the role runner pushes. A loop entry is
 /// `[start, len, count]`: push `words[start..start + len]` `count` times. This
@@ -645,7 +660,7 @@ pub struct TTRoleProgram {
     pub loops: Box<[[u32; 3]]>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One lane-register immediate ([`TTOp::SfpConst`]): `reg = bits`, in every
 /// enabled lane. One `SFPLOADI` when the low half is zero, two otherwise.
 pub struct TTSfpConst {
@@ -655,7 +670,7 @@ pub struct TTSfpConst {
     pub bits: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 /// One non-addressing SFPU instruction ([`TTOp::Sfp`]): the ISA form named by
 /// its opcode, with the operand fields in the ISA's own order (high bits
 /// first, as `InstructionDef::fields` lists them) and zero padding. Every
@@ -668,7 +683,7 @@ pub struct TTSfpInsn {
     pub args: [u16; 5],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Tenstorrent backend op: the DRAM boundary stream, run-level compute
 /// programs, and section markers. Lives inside [`Op::TT`].
 ///
@@ -930,7 +945,7 @@ pub enum TTOp {
 /// Boxed payload of [`Op::Kernel`]: a custom kernel boundary's inputs,
 /// output `(class, shape, dtype)` triples, owning program, and measured
 /// timing. Boxed so `Op` keeps its 24-byte budget.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CustomKernel {
     pub inputs: Box<[OpId]>,
     pub outputs: Box<[(OpId, OpId, DType)]>,
@@ -1497,7 +1512,7 @@ pub enum MMADType {
     b1_b1_s32_and_popc,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub struct OpLinked {
     pub prev: OpId,
     pub next: OpId, // Use Vec<OpId> instead for egraph
@@ -1805,5 +1820,711 @@ impl std::fmt::Display for ParamKind {
             ParamKind::Global => "global",
             ParamKind::GlobalMut => "global mut",
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Binary IR format
+//
+// `Op` and the backend payloads contain `Box<[T]>` fields. nanoserde has no
+// `DeBin for [T]`, and its `SerBin for [T]` writes the elements without a
+// length, so these payloads carry manual impls that prefix every slice with
+// its element count. The encoding is ours: the tag is the variant's
+// declaration index, so variants may be appended but never reordered or
+// removed (that would reinterpret every stored kernel).
+// ---------------------------------------------------------------------------
+
+fn bad_tag(tag: u8, offset: usize) -> DeBinErr {
+    // nanoserde 0.2.1 exposes a single error variant (`Length`): put the
+    // offending tag in `actual_length` so the offset and byte survive in the
+    // message.
+    DeBinErr::new(offset, 1, tag as usize)
+}
+
+fn ser_slice<T: SerBin>(items: &[T], out: &mut Vec<u8>) {
+    items.len().ser_bin(out);
+    for item in items {
+        item.ser_bin(out);
+    }
+}
+
+fn de_slice<T: DeBin>(offset: &mut usize, bytes: &[u8]) -> Result<Box<[T]>, DeBinErr> {
+    let len: usize = DeBin::de_bin(offset, bytes)?;
+    let mut out = Vec::with_capacity(len);
+    for _ in 0..len {
+        out.push(T::de_bin(offset, bytes)?);
+    }
+    Ok(out.into_boxed_slice())
+}
+
+impl SerBin for GPUOp {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        match self {
+            GPUOp::LocalWorkSize(size) => {
+                0u8.ser_bin(out);
+                size.ser_bin(out);
+            }
+            GPUOp::Grid(grid) => {
+                1u8.ser_bin(out);
+                grid.ser_bin(out);
+            }
+            GPUOp::Params(params) => {
+                2u8.ser_bin(out);
+                ser_slice(params, out);
+            }
+        }
+    }
+}
+
+impl DeBin for GPUOp {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let tag: u8 = DeBin::de_bin(offset, bytes)?;
+        let op = match tag {
+            0 => GPUOp::LocalWorkSize(DeBin::de_bin(offset, bytes)?),
+            1 => GPUOp::Grid(DeBin::de_bin(offset, bytes)?),
+            2 => GPUOp::Params(de_slice(offset, bytes)?),
+            _ => return Err(bad_tag(tag, *offset)),
+        };
+        Ok(op)
+    }
+}
+
+impl SerBin for SpirvOp {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        match self {
+            SpirvOp::WordBytes(words) => {
+                0u8.ser_bin(out);
+                ser_slice(words, out);
+            }
+            SpirvOp::PushConstants(bytes) => {
+                1u8.ser_bin(out);
+                bytes.ser_bin(out);
+            }
+        }
+    }
+}
+
+impl DeBin for SpirvOp {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let tag: u8 = DeBin::de_bin(offset, bytes)?;
+        let op = match tag {
+            0 => SpirvOp::WordBytes(de_slice(offset, bytes)?),
+            1 => SpirvOp::PushConstants(DeBin::de_bin(offset, bytes)?),
+            _ => return Err(bad_tag(tag, *offset)),
+        };
+        Ok(op)
+    }
+}
+
+impl SerBin for PTXOp {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        match self {
+            PTXOp::Bytes(bytes) => {
+                0u8.ser_bin(out);
+                ser_slice(bytes, out);
+            }
+            PTXOp::LdMatrix { frags, src, addr, trans } => {
+                1u8.ser_bin(out);
+                frags.ser_bin(out);
+                src.ser_bin(out);
+                addr.ser_bin(out);
+                trans.ser_bin(out);
+            }
+        }
+    }
+}
+
+impl DeBin for PTXOp {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let tag: u8 = DeBin::de_bin(offset, bytes)?;
+        let op = match tag {
+            0 => PTXOp::Bytes(de_slice(offset, bytes)?),
+            1 => PTXOp::LdMatrix {
+                frags: DeBin::de_bin(offset, bytes)?,
+                src: DeBin::de_bin(offset, bytes)?,
+                addr: DeBin::de_bin(offset, bytes)?,
+                trans: DeBin::de_bin(offset, bytes)?,
+            },
+            _ => return Err(bad_tag(tag, *offset)),
+        };
+        Ok(op)
+    }
+}
+
+impl SerBin for TTRoleProgram {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        ser_slice(&self.words, out);
+        ser_slice(&self.loops, out);
+    }
+}
+
+impl DeBin for TTRoleProgram {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let words = de_slice(offset, bytes)?;
+        let loops = de_slice(offset, bytes)?;
+        Ok(TTRoleProgram { words, loops })
+    }
+}
+
+impl SerBin for CustomKernel {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        ser_slice(&self.inputs, out);
+        ser_slice(&self.outputs, out);
+        self.program_id.ser_bin(out);
+        self.time.ser_bin(out);
+    }
+}
+
+impl DeBin for CustomKernel {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let inputs = de_slice(offset, bytes)?;
+        let outputs = de_slice(offset, bytes)?;
+        let program_id = DeBin::de_bin(offset, bytes)?;
+        let time = DeBin::de_bin(offset, bytes)?;
+        Ok(CustomKernel { inputs, outputs, program_id, time })
+    }
+}
+
+impl SerBin for Op {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        match self {
+            Op::Const(c) => {
+                0u8.ser_bin(out);
+                c.ser_bin(out);
+            }
+            Op::Param { dtype, kind, shape, id } => {
+                1u8.ser_bin(out);
+                dtype.ser_bin(out);
+                kind.ser_bin(out);
+                shape.ser_bin(out);
+                id.ser_bin(out);
+            }
+            Op::Cast { x, dtype } => {
+                2u8.ser_bin(out);
+                x.ser_bin(out);
+                dtype.ser_bin(out);
+            }
+            Op::Bitcast { x, dtype } => {
+                3u8.ser_bin(out);
+                x.ser_bin(out);
+                dtype.ser_bin(out);
+            }
+            Op::Unary { x, uop } => {
+                4u8.ser_bin(out);
+                x.ser_bin(out);
+                uop.ser_bin(out);
+            }
+            Op::Binary { x, y, bop } => {
+                5u8.ser_bin(out);
+                x.ser_bin(out);
+                y.ser_bin(out);
+                bop.ser_bin(out);
+            }
+            Op::Select { cond, if_true, if_false } => {
+                6u8.ser_bin(out);
+                cond.ser_bin(out);
+                if_true.ser_bin(out);
+                if_false.ser_bin(out);
+            }
+            Op::Stack { ops } => {
+                7u8.ser_bin(out);
+                ser_slice(ops, out);
+            }
+            Op::Index { vec, idx } => {
+                8u8.ser_bin(out);
+                vec.ser_bin(out);
+                idx.ser_bin(out);
+            }
+            Op::Storage { dtype, scope, len, id } => {
+                9u8.ser_bin(out);
+                dtype.ser_bin(out);
+                scope.ser_bin(out);
+                len.ser_bin(out);
+                id.ser_bin(out);
+            }
+            Op::Store { dst, dst_idx, src } => {
+                10u8.ser_bin(out);
+                dst.ser_bin(out);
+                dst_idx.ser_bin(out);
+                src.ser_bin(out);
+            }
+            Op::Load { src, src_idx } => {
+                11u8.ser_bin(out);
+                src.ser_bin(out);
+                src_idx.ser_bin(out);
+            }
+            Op::Copy { src, src_idx, dst, dst_idx } => {
+                12u8.ser_bin(out);
+                src.ser_bin(out);
+                src_idx.ser_bin(out);
+                dst.ser_bin(out);
+                dst_idx.ser_bin(out);
+            }
+            Op::Range { axis, kind } => {
+                13u8.ser_bin(out);
+                axis.ser_bin(out);
+                kind.ser_bin(out);
+            }
+            Op::Loop { len } => {
+                14u8.ser_bin(out);
+                len.ser_bin(out);
+            }
+            Op::EndLoop => 15u8.ser_bin(out),
+            Op::Barrier => 16u8.ser_bin(out),
+            Op::Wmma { dims, layout, dtype, a, b, c } => {
+                17u8.ser_bin(out);
+                dims.ser_bin(out);
+                layout.ser_bin(out);
+                dtype.ser_bin(out);
+                a.ser_bin(out);
+                b.ser_bin(out);
+                c.ser_bin(out);
+            }
+            Op::Asm { asm, ops } => {
+                18u8.ser_bin(out);
+                asm.ser_bin(out);
+                ops.ser_bin(out);
+            }
+            Op::Reshape { x, shape } => {
+                19u8.ser_bin(out);
+                x.ser_bin(out);
+                shape.ser_bin(out);
+            }
+            Op::Expand { x, shape } => {
+                20u8.ser_bin(out);
+                x.ser_bin(out);
+                shape.ser_bin(out);
+            }
+            Op::Permute { x, axes } => {
+                21u8.ser_bin(out);
+                x.ser_bin(out);
+                axes.ser_bin(out);
+            }
+            Op::Flip { x, axes } => {
+                22u8.ser_bin(out);
+                x.ser_bin(out);
+                axes.ser_bin(out);
+            }
+            Op::Pad { x, axis, lp, len } => {
+                23u8.ser_bin(out);
+                x.ser_bin(out);
+                axis.ser_bin(out);
+                lp.ser_bin(out);
+                len.ser_bin(out);
+            }
+            Op::Narrow { x, axis, start, len } => {
+                24u8.ser_bin(out);
+                x.ser_bin(out);
+                axis.ser_bin(out);
+                start.ser_bin(out);
+                len.ser_bin(out);
+            }
+            Op::Reduce { x, rop, reduce_axis } => {
+                25u8.ser_bin(out);
+                x.ser_bin(out);
+                rop.ser_bin(out);
+                reduce_axis.ser_bin(out);
+            }
+            Op::After { x, dep } => {
+                26u8.ser_bin(out);
+                x.ser_bin(out);
+                dep.ser_bin(out);
+            }
+            Op::ToDevice { x, device, time } => {
+                27u8.ser_bin(out);
+                x.ser_bin(out);
+                device.ser_bin(out);
+                time.ser_bin(out);
+            }
+            Op::Contiguous { x } => {
+                28u8.ser_bin(out);
+                x.ser_bin(out);
+            }
+            Op::Detach { x } => {
+                29u8.ser_bin(out);
+                x.ser_bin(out);
+            }
+            Op::Unroll { axis, len } => {
+                30u8.ser_bin(out);
+                axis.ser_bin(out);
+                len.ser_bin(out);
+            }
+            Op::Source(src) => {
+                31u8.ser_bin(out);
+                src.ser_bin(out);
+            }
+            Op::Program { inputs, outputs, info } => {
+                32u8.ser_bin(out);
+                inputs.ser_bin(out);
+                outputs.ser_bin(out);
+                info.ser_bin(out);
+            }
+            Op::Kernel(kernel) => {
+                33u8.ser_bin(out);
+                kernel.ser_bin(out);
+            }
+            Op::TT(tt) => {
+                34u8.ser_bin(out);
+                tt.ser_bin(out);
+            }
+            Op::GPU(gpu) => {
+                35u8.ser_bin(out);
+                gpu.ser_bin(out);
+            }
+            Op::Spirv(spirv) => {
+                36u8.ser_bin(out);
+                spirv.ser_bin(out);
+            }
+            Op::PTX(ptx) => {
+                37u8.ser_bin(out);
+                ptx.ser_bin(out);
+            }
+        }
+    }
+}
+
+impl DeBin for Op {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let tag: u8 = DeBin::de_bin(offset, bytes)?;
+        let op = match tag {
+            0 => Op::Const(DeBin::de_bin(offset, bytes)?),
+            1 => Op::Param {
+                dtype: DeBin::de_bin(offset, bytes)?,
+                kind: DeBin::de_bin(offset, bytes)?,
+                shape: DeBin::de_bin(offset, bytes)?,
+                id: DeBin::de_bin(offset, bytes)?,
+            },
+            2 => Op::Cast { x: DeBin::de_bin(offset, bytes)?, dtype: DeBin::de_bin(offset, bytes)? },
+            3 => Op::Bitcast { x: DeBin::de_bin(offset, bytes)?, dtype: DeBin::de_bin(offset, bytes)? },
+            4 => Op::Unary { x: DeBin::de_bin(offset, bytes)?, uop: DeBin::de_bin(offset, bytes)? },
+            5 => Op::Binary {
+                x: DeBin::de_bin(offset, bytes)?,
+                y: DeBin::de_bin(offset, bytes)?,
+                bop: DeBin::de_bin(offset, bytes)?,
+            },
+            6 => Op::Select {
+                cond: DeBin::de_bin(offset, bytes)?,
+                if_true: DeBin::de_bin(offset, bytes)?,
+                if_false: DeBin::de_bin(offset, bytes)?,
+            },
+            7 => Op::Stack { ops: de_slice(offset, bytes)? },
+            8 => Op::Index { vec: DeBin::de_bin(offset, bytes)?, idx: DeBin::de_bin(offset, bytes)? },
+            9 => Op::Storage {
+                dtype: DeBin::de_bin(offset, bytes)?,
+                scope: DeBin::de_bin(offset, bytes)?,
+                len: DeBin::de_bin(offset, bytes)?,
+                id: DeBin::de_bin(offset, bytes)?,
+            },
+            10 => Op::Store {
+                dst: DeBin::de_bin(offset, bytes)?,
+                dst_idx: DeBin::de_bin(offset, bytes)?,
+                src: DeBin::de_bin(offset, bytes)?,
+            },
+            11 => Op::Load { src: DeBin::de_bin(offset, bytes)?, src_idx: DeBin::de_bin(offset, bytes)? },
+            12 => Op::Copy {
+                src: DeBin::de_bin(offset, bytes)?,
+                src_idx: DeBin::de_bin(offset, bytes)?,
+                dst: DeBin::de_bin(offset, bytes)?,
+                dst_idx: DeBin::de_bin(offset, bytes)?,
+            },
+            13 => Op::Range { axis: DeBin::de_bin(offset, bytes)?, kind: DeBin::de_bin(offset, bytes)? },
+            14 => Op::Loop { len: DeBin::de_bin(offset, bytes)? },
+            15 => Op::EndLoop,
+            16 => Op::Barrier,
+            17 => Op::Wmma {
+                dims: DeBin::de_bin(offset, bytes)?,
+                layout: DeBin::de_bin(offset, bytes)?,
+                dtype: DeBin::de_bin(offset, bytes)?,
+                a: DeBin::de_bin(offset, bytes)?,
+                b: DeBin::de_bin(offset, bytes)?,
+                c: DeBin::de_bin(offset, bytes)?,
+            },
+            18 => Op::Asm { asm: DeBin::de_bin(offset, bytes)?, ops: DeBin::de_bin(offset, bytes)? },
+            19 => Op::Reshape { x: DeBin::de_bin(offset, bytes)?, shape: DeBin::de_bin(offset, bytes)? },
+            20 => Op::Expand { x: DeBin::de_bin(offset, bytes)?, shape: DeBin::de_bin(offset, bytes)? },
+            21 => Op::Permute { x: DeBin::de_bin(offset, bytes)?, axes: DeBin::de_bin(offset, bytes)? },
+            22 => Op::Flip { x: DeBin::de_bin(offset, bytes)?, axes: DeBin::de_bin(offset, bytes)? },
+            23 => Op::Pad {
+                x: DeBin::de_bin(offset, bytes)?,
+                axis: DeBin::de_bin(offset, bytes)?,
+                lp: DeBin::de_bin(offset, bytes)?,
+                len: DeBin::de_bin(offset, bytes)?,
+            },
+            24 => Op::Narrow {
+                x: DeBin::de_bin(offset, bytes)?,
+                axis: DeBin::de_bin(offset, bytes)?,
+                start: DeBin::de_bin(offset, bytes)?,
+                len: DeBin::de_bin(offset, bytes)?,
+            },
+            25 => Op::Reduce {
+                x: DeBin::de_bin(offset, bytes)?,
+                rop: DeBin::de_bin(offset, bytes)?,
+                reduce_axis: DeBin::de_bin(offset, bytes)?,
+            },
+            26 => Op::After { x: DeBin::de_bin(offset, bytes)?, dep: DeBin::de_bin(offset, bytes)? },
+            27 => Op::ToDevice {
+                x: DeBin::de_bin(offset, bytes)?,
+                device: DeBin::de_bin(offset, bytes)?,
+                time: DeBin::de_bin(offset, bytes)?,
+            },
+            28 => Op::Contiguous { x: DeBin::de_bin(offset, bytes)? },
+            29 => Op::Detach { x: DeBin::de_bin(offset, bytes)? },
+            30 => Op::Unroll { axis: DeBin::de_bin(offset, bytes)?, len: DeBin::de_bin(offset, bytes)? },
+            31 => Op::Source(DeBin::de_bin(offset, bytes)?),
+            32 => Op::Program {
+                inputs: DeBin::de_bin(offset, bytes)?,
+                outputs: DeBin::de_bin(offset, bytes)?,
+                info: DeBin::de_bin(offset, bytes)?,
+            },
+            33 => Op::Kernel(DeBin::de_bin(offset, bytes)?),
+            34 => Op::TT(DeBin::de_bin(offset, bytes)?),
+            35 => Op::GPU(DeBin::de_bin(offset, bytes)?),
+            36 => Op::Spirv(DeBin::de_bin(offset, bytes)?),
+            37 => Op::PTX(DeBin::de_bin(offset, bytes)?),
+            _ => return Err(bad_tag(tag, *offset)),
+        };
+        Ok(op)
+    }
+}
+
+impl SerBin for TTOp {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        match self {
+            TTOp::EndReader => 0u8.ser_bin(out),
+            TTOp::EndCompute => 1u8.ser_bin(out),
+            TTOp::TensixGrid(grid) => {
+                2u8.ser_bin(out);
+                (**grid).ser_bin(out);
+            }
+            TTOp::DmRead(read) => {
+                3u8.ser_bin(out);
+                read.ser_bin(out);
+            }
+            TTOp::DmWrite(write) => {
+                4u8.ser_bin(out);
+                write.ser_bin(out);
+            }
+            TTOp::DmReadTransposed(read) => {
+                5u8.ser_bin(out);
+                read.ser_bin(out);
+            }
+            TTOp::DmReadBroadcastCol(read) => {
+                6u8.ser_bin(out);
+                read.ser_bin(out);
+            }
+            TTOp::DmFill(fill) => {
+                7u8.ser_bin(out);
+                fill.ser_bin(out);
+            }
+            TTOp::DmCopyWords(copy) => {
+                8u8.ser_bin(out);
+                copy.ser_bin(out);
+            }
+            TTOp::DmIndexPick(pick) => {
+                9u8.ser_bin(out);
+                pick.ser_bin(out);
+            }
+            TTOp::DmKernel(kernel) => {
+                10u8.ser_bin(out);
+                kernel.ser_bin(out);
+            }
+            TTOp::DmWait => 11u8.ser_bin(out),
+            TTOp::SfpLoad(load) => {
+                12u8.ser_bin(out);
+                load.ser_bin(out);
+            }
+            TTOp::SfpStore(store) => {
+                13u8.ser_bin(out);
+                store.ser_bin(out);
+            }
+            TTOp::SfpConst(k) => {
+                14u8.ser_bin(out);
+                k.ser_bin(out);
+            }
+            TTOp::Sfp(insn) => {
+                15u8.ser_bin(out);
+                insn.ser_bin(out);
+            }
+            TTOp::WaitBelowMax { sem, before, role } => {
+                16u8.ser_bin(out);
+                sem.ser_bin(out);
+                before.ser_bin(out);
+                role.ser_bin(out);
+            }
+            TTOp::Replay { len, count } => {
+                17u8.ser_bin(out);
+                len.ser_bin(out);
+                count.ser_bin(out);
+            }
+            TTOp::Unpack(words) => {
+                18u8.ser_bin(out);
+                ser_slice(words, out);
+            }
+            TTOp::Math(program) => {
+                19u8.ser_bin(out);
+                program.ser_bin(out);
+            }
+            TTOp::Pack(words) => {
+                20u8.ser_bin(out);
+                ser_slice(words, out);
+            }
+            TTOp::Copy { src, src_idx, dst, dst_idx, bytes } => {
+                21u8.ser_bin(out);
+                src.ser_bin(out);
+                src_idx.ser_bin(out);
+                dst.ser_bin(out);
+                dst_idx.ser_bin(out);
+                bytes.ser_bin(out);
+            }
+            TTOp::Unpacr { src, unit, count, flip } => {
+                22u8.ser_bin(out);
+                src.ser_bin(out);
+                unit.ser_bin(out);
+                count.ser_bin(out);
+                flip.ser_bin(out);
+            }
+            TTOp::Setadczw { unit, face } => {
+                23u8.ser_bin(out);
+                unit.ser_bin(out);
+                face.ser_bin(out);
+            }
+            TTOp::Setadcx { unit, first, count } => {
+                24u8.ser_bin(out);
+                unit.ser_bin(out);
+                first.ser_bin(out);
+                count.ser_bin(out);
+            }
+            TTOp::Setrwc { dst } => {
+                25u8.ser_bin(out);
+                dst.ser_bin(out);
+            }
+            TTOp::Zeroacc { mode, imm10 } => {
+                26u8.ser_bin(out);
+                mode.ser_bin(out);
+                imm10.ser_bin(out);
+            }
+            TTOp::Mvmul { dst_row, addr_mod, flip_a, flip_b, broadcast_b } => {
+                27u8.ser_bin(out);
+                dst_row.ser_bin(out);
+                addr_mod.ser_bin(out);
+                flip_a.ser_bin(out);
+                flip_b.ser_bin(out);
+                broadcast_b.ser_bin(out);
+            }
+            TTOp::Setc16 { field, value } => {
+                28u8.ser_bin(out);
+                field.ser_bin(out);
+                value.ser_bin(out);
+            }
+            TTOp::Setcfg { addr, value } => {
+                29u8.ser_bin(out);
+                addr.ser_bin(out);
+                value.ser_bin(out);
+            }
+            TTOp::Post { sem, role } => {
+                30u8.ser_bin(out);
+                sem.ser_bin(out);
+                role.ser_bin(out);
+            }
+            TTOp::Wait { sem, before, role } => {
+                31u8.ser_bin(out);
+                sem.ser_bin(out);
+                before.ser_bin(out);
+                role.ser_bin(out);
+            }
+            TTOp::Semset { sem, value } => {
+                32u8.ser_bin(out);
+                sem.ser_bin(out);
+                value.ser_bin(out);
+            }
+            TTOp::Sfpu { kind, a, b, slot } => {
+                33u8.ser_bin(out);
+                kind.ser_bin(out);
+                a.ser_bin(out);
+                b.ser_bin(out);
+                slot.ser_bin(out);
+            }
+        }
+    }
+}
+
+impl DeBin for TTOp {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let tag: u8 = DeBin::de_bin(offset, bytes)?;
+        let op = match tag {
+            0 => TTOp::EndReader,
+            1 => TTOp::EndCompute,
+            2 => {
+                let grid: [GwsDim; 2] = DeBin::de_bin(offset, bytes)?;
+                TTOp::TensixGrid(Box::new(grid))
+            }
+            3 => TTOp::DmRead(DeBin::de_bin(offset, bytes)?),
+            4 => TTOp::DmWrite(DeBin::de_bin(offset, bytes)?),
+            5 => TTOp::DmReadTransposed(DeBin::de_bin(offset, bytes)?),
+            6 => TTOp::DmReadBroadcastCol(DeBin::de_bin(offset, bytes)?),
+            7 => TTOp::DmFill(DeBin::de_bin(offset, bytes)?),
+            8 => TTOp::DmCopyWords(DeBin::de_bin(offset, bytes)?),
+            9 => TTOp::DmIndexPick(DeBin::de_bin(offset, bytes)?),
+            10 => TTOp::DmKernel(DeBin::de_bin(offset, bytes)?),
+            11 => TTOp::DmWait,
+            12 => TTOp::SfpLoad(DeBin::de_bin(offset, bytes)?),
+            13 => TTOp::SfpStore(DeBin::de_bin(offset, bytes)?),
+            14 => TTOp::SfpConst(DeBin::de_bin(offset, bytes)?),
+            15 => TTOp::Sfp(DeBin::de_bin(offset, bytes)?),
+            16 => TTOp::WaitBelowMax {
+                sem: DeBin::de_bin(offset, bytes)?,
+                before: DeBin::de_bin(offset, bytes)?,
+                role: DeBin::de_bin(offset, bytes)?,
+            },
+            17 => TTOp::Replay { len: DeBin::de_bin(offset, bytes)?, count: DeBin::de_bin(offset, bytes)? },
+            18 => TTOp::Unpack(de_slice(offset, bytes)?),
+            19 => TTOp::Math(DeBin::de_bin(offset, bytes)?),
+            20 => TTOp::Pack(de_slice(offset, bytes)?),
+            21 => TTOp::Copy {
+                src: DeBin::de_bin(offset, bytes)?,
+                src_idx: DeBin::de_bin(offset, bytes)?,
+                dst: DeBin::de_bin(offset, bytes)?,
+                dst_idx: DeBin::de_bin(offset, bytes)?,
+                bytes: DeBin::de_bin(offset, bytes)?,
+            },
+            22 => TTOp::Unpacr {
+                src: DeBin::de_bin(offset, bytes)?,
+                unit: DeBin::de_bin(offset, bytes)?,
+                count: DeBin::de_bin(offset, bytes)?,
+                flip: DeBin::de_bin(offset, bytes)?,
+            },
+            23 => TTOp::Setadczw { unit: DeBin::de_bin(offset, bytes)?, face: DeBin::de_bin(offset, bytes)? },
+            24 => TTOp::Setadcx {
+                unit: DeBin::de_bin(offset, bytes)?,
+                first: DeBin::de_bin(offset, bytes)?,
+                count: DeBin::de_bin(offset, bytes)?,
+            },
+            25 => TTOp::Setrwc { dst: DeBin::de_bin(offset, bytes)? },
+            26 => TTOp::Zeroacc { mode: DeBin::de_bin(offset, bytes)?, imm10: DeBin::de_bin(offset, bytes)? },
+            27 => TTOp::Mvmul {
+                dst_row: DeBin::de_bin(offset, bytes)?,
+                addr_mod: DeBin::de_bin(offset, bytes)?,
+                flip_a: DeBin::de_bin(offset, bytes)?,
+                flip_b: DeBin::de_bin(offset, bytes)?,
+                broadcast_b: DeBin::de_bin(offset, bytes)?,
+            },
+            28 => TTOp::Setc16 { field: DeBin::de_bin(offset, bytes)?, value: DeBin::de_bin(offset, bytes)? },
+            29 => TTOp::Setcfg { addr: DeBin::de_bin(offset, bytes)?, value: DeBin::de_bin(offset, bytes)? },
+            30 => TTOp::Post { sem: DeBin::de_bin(offset, bytes)?, role: DeBin::de_bin(offset, bytes)? },
+            31 => TTOp::Wait {
+                sem: DeBin::de_bin(offset, bytes)?,
+                before: DeBin::de_bin(offset, bytes)?,
+                role: DeBin::de_bin(offset, bytes)?,
+            },
+            32 => TTOp::Semset { sem: DeBin::de_bin(offset, bytes)?, value: DeBin::de_bin(offset, bytes)? },
+            33 => TTOp::Sfpu {
+                kind: DeBin::de_bin(offset, bytes)?,
+                a: DeBin::de_bin(offset, bytes)?,
+                b: DeBin::de_bin(offset, bytes)?,
+                slot: DeBin::de_bin(offset, bytes)?,
+            },
+            _ => return Err(bad_tag(tag, *offset)),
+        };
+        Ok(op)
     }
 }

@@ -1222,7 +1222,7 @@ pub enum LaunchArg {
 /// Per-gws-axis launch size for a compiled kernel. Backends store one of these
 /// per gws axis at compile time and derive the actual grid at launch from it +
 /// the bound `args`. See AGENTS.md "gws (Global Work Size)".
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
 pub enum GwsDim {
     /// The group length is an `Op::Const`; use this size directly.
     Const(Dim),
@@ -1276,6 +1276,12 @@ impl GwsDim {
 /// group length that exceeds the device limit is a compilation error. Symbolic
 /// (param-backed) lengths cannot be checked here — backends must check the
 /// evaluated grid extents before launching.
+///
+/// The returned extents are therefore expressions, not sizes: the numeric grid
+/// exists only once the launch args are known, which is why a benchmark row
+/// records the grid per launch rather than deriving it from the IR. Local
+/// (block) extents are different: `RangeKind::Local(u32)` carries a static
+/// length, so block dims *are* in the IR.
 pub(crate) fn gws_from_kernel(kernel: &Kernel, max_grid_dims: &[Dim]) -> Result<Vec<GwsDim>, BackendError> {
     // Head-order position of every `Op::Param`, matching the arg ordering.
     let mut param_ordinal: Map<OpId, usize> = Map::with_hasher(BuildHasherDefault::<FHasher>::new());

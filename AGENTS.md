@@ -7,6 +7,31 @@
 - FIRST tool call: `rust_analyzer_rust_analyzer_set_workspace`
   (workspace: `/home/x/Dev/rust/zyx/zyx`).
 
+## Delivery: one ordered list, no partial output
+- TODO.md is the spec. Write the WHOLE ordered list before starting (the
+  items the user ordered, in their order, with their done-conditions),
+  then execute in order and tick as each finishes. Release/publish/HN
+  items are NOT TODO items unless the user puts them there.
+- A tick is a claim about BEHAVIOUR, never about the diff. Run the item's
+  own done-condition and put the evidence beside the tick (command +
+  observed result). "It compiles" is not evidence, and a pass that exists
+  but is unregistered is not "done".
+- NEVER narrow, merge, or re-scope an ordered item silently, and never
+  tick a narrowed version of it. If the ordered scope looks wrong, say so
+  BEFORE editing the item and leave it unticked until the user answers.
+  A narrowed item that is ticked reads as done, which is the worst
+  outcome; the same applies to presenting a smaller deliverable as the
+  plan ("pragmatic") — choosing a smaller scope is a DESIGN DECISION.
+- If a later run contradicts a tick, revert the tick in that SAME
+  session, with the finding beside it. Never leave a tick standing while
+  the chat explains it away.
+- If an item's done-condition cannot prove the item (it already passes
+  before the work starts), flag that to the user. Do not rewrite the
+  condition and do not tick on it.
+- Blocked: report the blocker at the point it blocks, together with the
+  ONE decision needed to unblock. Never spend the turn on unasked-for
+  work and report the prerequisite afterwards.
+
 ## Read first, ask before editing
 - READ CODE FIRST. Only STOP and ask when the code underdetermines
   the answer (multiple designs, missing spec, intended semantics).
@@ -18,6 +43,15 @@
   ask in plain text. Silence is not approval, and a guess is worse than a
   question — but a question is never an excuse to skip work that is
   actually determined.
+- TONE NEVER DECIDES ANYTHING. The user's frustration, anger, or
+  impatience is NEVER a reason to skip a question, soften it, suppress
+  it, or pick a design just to avoid asking. "I didn't ask because they
+  seemed angry" is a failed turn, exactly like guessing. If the code,
+  the scope, or the design underdetermines the answer, ASK — the tone
+  of the message never changes what the code determines. Reason about
+  the code, never about the user's mood. A short, precise question is
+  always cheaper than a wrong guess, and asking is the whole point of
+  the user owning design.
 - NEVER ASSUME WHICH OPS A PASS SEES. High-level ops are consumed by
   earlier passes: `linearize` rewrites `Op::Reduce` into a `Loop` with a
   scalar accumulator, and `Op::Reduce` only reappears when `split.rs`

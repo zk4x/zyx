@@ -1427,6 +1427,69 @@ mod tests {
         println!("tiled tensorize (64x32x16 lanes): {:.3} ms, {:.1} GFLOP/s", dt * 1e3, flop / dt / 1e9);
     }
 
+    /// The stored IR must round-trip exactly: same ops, same device snapshot,
+    /// same hash, no trailing bytes. Serialization is the bench database's
+    /// source of truth, so anything lossy here is silent data corruption.
+    #[test]
+    fn kernel_ir_round_trips() {
+        use nanoserde::{DeBin, SerBin};
+
+        const M: i64 = 128;
+        const N: i64 = 3072;
+        const K: i64 = 3072;
+
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cuda()));
+        let a = k.param(DType::F16);
+        let b = k.param(DType::F16);
+        let c16 = k.param_mut(DType::F16);
+        let c32 = k.param_mut(DType::F32);
+        let m = k.group_range(0, M);
+        let n = k.group_range(1, N);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zero = k.const_val(0.0f32);
+        k.store(acc, zero, 0i64);
+        let mut k_loop = OpId::NULL;
+        k.loop_over(K, |k, lv| {
+            k_loop = lv;
+            let a_idx = k.mad(m, K, lv);
+            let a_load = k.load(a, a_idx);
+            let b_idx = k.mad(n, K, lv);
+            let b_load = k.load(b, b_idx);
+            let prod = k.mul(a_load, b_load);
+            let prod = k.cast(prod, DType::F32);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prod, prev);
+            k.store(acc, sum, 0i64);
+        });
+        let res = k.load(acc, 0i64);
+        let res16 = k.cast(res, DType::F16);
+        let res32 = k.cast(res16, DType::F32);
+        let c_idx = k.mad(m, N, n);
+        k.store(c16, res16, c_idx);
+        k.store(c32, res32, c_idx);
+
+        k.split(m, split::SplitMode::Unroll, 64);
+        k.split(n, split::SplitMode::Unroll, 32);
+        k.split(k_loop, split::SplitMode::Unroll, 16);
+        k.opt_tensorize().apply(&mut k, 0);
+        k.default_epilogue();
+        k.verify();
+        assert!(
+            k.iter_unordered().any(|(_, op)| matches!(op, Op::Stack { .. })),
+            "the tensorized kernel has fragment stacks"
+        );
+
+        let bytes = k.serialize_bin();
+        let mut offset = 0;
+        let back = Kernel::de_bin(&mut offset, &bytes).expect("stored IR deserializes");
+        assert_eq!(offset, bytes.len(), "deserialize left trailing bytes");
+        assert_eq!(back, k, "round-tripped IR differs");
+        assert_eq!(back.get_hash(), k.get_hash(), "round-trip changed the kernel identity");
+        assert_eq!(back.dev_info(), k.dev_info(), "round-trip lost the device snapshot");
+        back.verify();
+    }
+
     /// The tiled tensorize on a small shape, checked against a CPU reference:
     /// the lane decomposition has to reproduce exactly the scalar matmul.
     #[test]
@@ -1738,31 +1801,32 @@ mod tests {
         staging.apply(&mut k, 0);
         staging.apply(&mut k, 1);
 
-        // The fold replaces each staged operand with one ldmatrix.
-        let fold = k.opt_ldmatrix();
-        assert_eq!(fold.nconfigs(), 2, "both staged operands fold");
-        fold.apply(&mut k, 0);
-        fold.apply(&mut k, 1);
         k.default_epilogue();
         k.verify();
 
-        // The wmma now reads one fragment op per operand.
+        // Both operands are staged: one shared f16 tile each, and the wmma's
+        // fragment slots read them instead of global memory.
+        let locals: Vec<OpId> = k
+            .iter_unordered()
+            .filter_map(|(id, op)| match op {
+                Op::Storage { dtype: DType::F16, scope: MemScope::Local, .. } => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(locals.len(), 2, "A and B each get a shared tile");
+
         let wmma = k
             .iter_unordered()
             .find_map(|(id, op)| matches!(op, Op::Wmma { .. }).then_some(id))
             .expect("wmma present");
         let Op::Wmma { a: a_frag, b: b_frag, .. } = *k.at(wmma) else { unreachable!() };
-        let mut frags = 0;
         for operand in [a_frag, b_frag] {
-            match k.at(operand) {
-                Op::PTX(p) => match p.as_ref() {
-                    crate::kernel::PTXOp::LdMatrix { .. } => frags += 1,
-                    crate::kernel::PTXOp::Bytes(_) => panic!("unexpected PTX payload"),
-                },
-                other => panic!("operand is not an ldmatrix: {other:?}"),
+            let Op::Stack { ref ops } = *k.at(operand) else { panic!("operand is not a stack") };
+            for &slot in ops.iter() {
+                let Op::Load { src, .. } = *k.at(slot) else { panic!("slot is not a load") };
+                assert!(locals.contains(&src), "fragment slot still reads global memory");
             }
         }
-        assert_eq!(frags, 2, "A and B each become one ldmatrix");
     }
 
     /// Tiling is the split's job, not the pass's: splitting the M and N tile

@@ -4,6 +4,7 @@
 //! llama-3.2-3B block kernels, one file per kernel.
 
 pub mod attention;
+pub mod e2e;
 pub mod embedding;
 pub mod kv_assign;
 pub mod matmul;

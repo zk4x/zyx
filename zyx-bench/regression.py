@@ -25,11 +25,27 @@ def load_bench():
     if not os.path.exists(BENCH_DB):
         sys.exit(f"missing {BENCH_DB}: run `cargo run --release` in zyx-bench first")
     con = sqlite3.connect(f"file:{BENCH_DB}?mode=ro", uri=True)
-    df = pd.read_sql_query(
-        "SELECT dev, seed, kernel, nanos, features FROM measurements"
-        " WHERE status = 'measured' AND nanos IS NOT NULL",
-        con,
-    )
+    # `kernel_features` is `features()` recomputed from the stored IR
+    # (`zyx-bench reindex`). Prefer it when present so a feature/cost-model
+    # change applies to historical rows without re-running the benches; fall
+    # back to the per-row snapshot for rows measured before IR storage.
+    reindexed = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'kernel_features'"
+    ).fetchone() is not None
+    if reindexed:
+        sql = (
+            "SELECT m.dev, m.seed, m.kernel, m.nanos,"
+            "       COALESCE(kf.features, m.features) AS features"
+            " FROM measurements m"
+            " LEFT JOIN kernel_features kf ON kf.hash = m.kernel"
+            " WHERE m.status = 'measured' AND m.nanos IS NOT NULL"
+        )
+    else:
+        sql = (
+            "SELECT dev, seed, kernel, nanos, features FROM measurements"
+            " WHERE status = 'measured' AND nanos IS NOT NULL"
+        )
+    df = pd.read_sql_query(sql, con)
     con.close()
     if df.empty:
         sys.exit(f"{BENCH_DB} has no measured rows")

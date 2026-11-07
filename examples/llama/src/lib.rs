@@ -14,9 +14,10 @@
 //! and the tape.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use serde::Deserialize;
-use zyx::{DType, Module, Tape, Tensor};
+use zyx::{DType, GGUFMetadataValue, Module, Tape, Tensor, ZyxError};
 use zyx_nn::{DecoderBlock, Embedding, GqaAttention, Linear, RMSNorm, RopeConfig, RopeScaling as NnRopeScaling, SwiGlu};
 
 /// Llama-3.1 style RoPE frequency scaling.
@@ -124,6 +125,112 @@ impl Default for LlamaConfig {
     }
 }
 
+/// Reads a required GGUF metadata value.
+fn gguf_value<'a>(metadata: &'a HashMap<String, GGUFMetadataValue>, key: &str) -> Result<&'a GGUFMetadataValue, ZyxError> {
+    metadata
+        .get(key)
+        .ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata is missing `{key}`").into()))
+}
+
+/// One integer metadata value, or the uniform per-layer value of an array.
+fn gguf_int(metadata: &HashMap<String, GGUFMetadataValue>, key: &str) -> Result<i64, ZyxError> {
+    fn one(value: &GGUFMetadataValue, key: &str) -> Result<i64, ZyxError> {
+        match *value {
+            GGUFMetadataValue::Uint8(v) => Ok(i64::from(v)),
+            GGUFMetadataValue::Int8(v) => Ok(i64::from(v)),
+            GGUFMetadataValue::Uint16(v) => Ok(i64::from(v)),
+            GGUFMetadataValue::Int16(v) => Ok(i64::from(v)),
+            GGUFMetadataValue::Uint32(v) => Ok(i64::from(v)),
+            GGUFMetadataValue::Int32(v) => Ok(i64::from(v)),
+            GGUFMetadataValue::Uint64(v) => i64::try_from(v)
+                .map_err(|_| ZyxError::parse_error(format!("GGUF metadata `{key}` does not fit i64").into())),
+            GGUFMetadataValue::Int64(v) => Ok(v),
+            _ => Err(ZyxError::parse_error(format!("GGUF metadata `{key}` is not an integer").into())),
+        }
+    }
+    match gguf_value(metadata, key)? {
+        GGUFMetadataValue::Array(items) => {
+            let Some(first) = items.first() else {
+                return Err(ZyxError::parse_error(format!("GGUF metadata `{key}` is an empty array").into()));
+            };
+            let value = one(first, key)?;
+            for item in items.iter() {
+                if one(item, key)? != value {
+                    return Err(ZyxError::parse_error(
+                        format!("GGUF metadata `{key}` has per-layer values; zyx models one value for all layers").into(),
+                    ));
+                }
+            }
+            Ok(value)
+        }
+        value => one(value, key),
+    }
+}
+
+fn gguf_usize(metadata: &HashMap<String, GGUFMetadataValue>, key: &str) -> Result<usize, ZyxError> {
+    usize::try_from(gguf_int(metadata, key)?)
+        .map_err(|_| ZyxError::parse_error(format!("GGUF metadata `{key}` is negative").into()))
+}
+
+fn gguf_opt_usize(metadata: &HashMap<String, GGUFMetadataValue>, key: &str) -> Result<Option<usize>, ZyxError> {
+    match metadata.get(key) {
+        None => Ok(None),
+        Some(_) => gguf_usize(metadata, key).map(Some),
+    }
+}
+
+fn gguf_f64(metadata: &HashMap<String, GGUFMetadataValue>, key: &str) -> Result<f64, ZyxError> {
+    match gguf_value(metadata, key)? {
+        GGUFMetadataValue::Float32(v) => Ok(f64::from(*v)),
+        GGUFMetadataValue::Float64(v) => Ok(*v),
+        _ => Ok(gguf_int(metadata, key)? as f64),
+    }
+}
+
+fn gguf_opt_str<'a>(metadata: &'a HashMap<String, GGUFMetadataValue>, key: &str) -> Result<Option<&'a str>, ZyxError> {
+    match metadata.get(key) {
+        None => Ok(None),
+        Some(GGUFMetadataValue::String(value)) => Ok(Some(value)),
+        Some(_) => Err(ZyxError::parse_error(format!("GGUF metadata `{key}` is not a string").into())),
+    }
+}
+
+impl LlamaConfig {
+    /// Builds the config from the checkpoint's own GGUF metadata, so the file
+    /// is the single source of truth (no `config.json` beside it to disagree).
+    pub fn from_gguf_metadata(
+        metadata: &HashMap<String, GGUFMetadataValue>,
+        max_context: usize,
+        tie_word_embeddings: bool,
+    ) -> Result<Self, ZyxError> {
+        let rope_scaling = match gguf_opt_str(metadata, "llama.rope.scaling.type")? {
+            None => None,
+            Some(rope_type) => Some(RopeScaling {
+                factor: gguf_f64(metadata, "llama.rope.scaling.factor")?,
+                high_freq_factor: gguf_f64(metadata, "llama.rope.scaling.high_freq_factor")?,
+                low_freq_factor: gguf_f64(metadata, "llama.rope.scaling.low_freq_factor")?,
+                original_max_position_embeddings: gguf_usize(metadata, "llama.rope.scaling.original_context_length")?,
+                rope_type: rope_type.to_string(),
+            }),
+        };
+        Ok(Self {
+            vocab_size: gguf_usize(metadata, "llama.vocab_size")?,
+            hidden_size: gguf_usize(metadata, "llama.embedding_length")?,
+            intermediate_size: gguf_usize(metadata, "llama.feed_forward_length")?,
+            num_hidden_layers: gguf_usize(metadata, "llama.block_count")?,
+            num_attention_heads: gguf_usize(metadata, "llama.attention.head_count")?,
+            num_key_value_heads: gguf_opt_usize(metadata, "llama.attention.head_count_kv")?,
+            max_position_embeddings: gguf_usize(metadata, "llama.context_length")?,
+            rms_norm_eps: gguf_f64(metadata, "llama.attention.layer_norm_rms_epsilon")?,
+            rope_theta: gguf_f64(metadata, "llama.rope.freq_base")?,
+            head_dim: gguf_opt_usize(metadata, "llama.attention.key_length")?,
+            rope_scaling,
+            tie_word_embeddings,
+            max_context,
+        })
+    }
+}
+
 trait VarMap {
     fn remove_prefix(&mut self, prefix: &str) -> Self;
     fn take(&mut self, key: &str) -> Tensor;
@@ -214,6 +321,29 @@ impl Llama {
     /// Builds a model with random weights, for benchmarks that want llama's
     /// shapes without loading a checkpoint.
     ///
+    /// Loads a GGUF checkpoint and builds the model from the file alone: the
+    /// weights, the hyperparameters and the tied-head flag all come out of the
+    /// GGUF (no `config.json` needed beside it).
+    ///
+    /// # Errors
+    ///
+    /// Errors if the file is not a readable GGUF, if a required metadata key
+    /// is missing, or if a per-layer metadata value is not uniform (the model
+    /// has one value for all layers).
+    pub fn from_gguf(path: impl AsRef<Path>, dtype: DType, max_context: usize) -> Result<Self, ZyxError> {
+        let (metadata, tensors) = Tensor::load_gguf(path)?;
+        // A tied checkpoint has no separate output projection.
+        let tie_word_embeddings = !tensors.contains_key("output.weight");
+        let cfg = LlamaConfig::from_gguf_metadata(&metadata, max_context, tie_word_embeddings)?;
+        let mut vb = remap_gguf_weights(tensors);
+        // GGUF keeps the norms in f32 while the compute dtype is f16/bf16;
+        // the model has one dtype, so cast every parameter once at load.
+        for tensor in vb.values_mut() {
+            *tensor = tensor.cast(dtype);
+        }
+        Ok(Self::new(&cfg, &mut vb, dtype))
+    }
+
     /// Every tensor gets the shape the Hugging Face checkpoint would have, at
     /// `dtype`, so the resulting graph is identical to a real forward pass.
     #[must_use]
