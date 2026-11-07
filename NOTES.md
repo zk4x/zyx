@@ -1,4 +1,62 @@
-## HANDOFF (2026-11-06, session 16) — start here: shapes kept, index rewritten
+## HANDOFF (2026-11-07, session 17) — start here: `tt_add_movers` is the pass
+
+**The design (user's, 10 days — do not stray).** The pass that creates the
+reader/writer segments is **`tt_add_movers`** (formerly `tt_cb_lower`). It must
+carry a helper that turns *whatever* indexing into **canonical tile form**:
+
+```
+tt_canonical_tile(base: OpId, idx: OpId, at: OpId) -> Option<(dram, l1)>
+  dram = tile*TILE_SLOT + TILE_DATA + (face*256 + row16*16 + col16)*elem_bytes
+  l1   = tile_in_cb*1024 + row_in_tile*32 + col_in_tile
+```
+
+- The DRAM side is the load/store's **own index, unchanged**, with the tilize
+  inverse **appended** (face layout, header, tile pitch). It is arbitrary and
+  may be non-affine (`/`, `%` by the shape's dims). It is **not** rewritten into
+  tile ordinals, not divided by an access footprint, and no lane is stripped.
+- The L1 side is the **canonical tile**: row-major inside the tile, faces
+  interleaved, which is what the compute segment and SFPU already expect.
+- Boundary copies therefore read `copy cb[l1] = dram[dram]` (reader) and
+  `copy dram[dram] = cb[l1]` (writer). **`tt_dataflow_select` needs no layout
+  knowledge at all** — every CB it sees is canonical tiles. Compute reads only
+  canonical tiles.
+- Codegen (`tt_boundary_moves`) stops requiring affinity and stops adding
+  `t*slot + data`: it binds the enumeration variables per entry and **evaluates**
+  the DRAM expression to a constant address, emitting **64-byte-congruent**
+  moves (single chunks, any order — whole-tile runs are an optimization, never a
+  precondition).
+- Later passes may recognize "this is a transpose" / "this is a direct tile
+  load" **from the rewritten index**. That is the optimization stage. The
+  general lowering below is the baseline that must make the whole suite pass
+  first.
+
+**State.** `tt_add_movers` now dumps `self.debug()` at entry and exit and ends
+with `todo!("no removing this todo until the f*cking IR is good looking")`
+(`tenstorrent.rs:2096`). Every TT compile aborts there on purpose: the IR is the
+deliverable, not green gates. Remove the todo only when every load and store
+reads as the two-line form above.
+
+**Next, in order (do not reorder):**
+
+1. The helper + wiring in `tt_add_movers` (replacing `strip_unrolls` and the
+   `unit`/`converted` blocks).
+2. The codegen evaluator in `tt_boundary_moves` (non-affine, per-entry constant
+   address, 64B-congruent moves).
+3. Loop/iteration support for the same expressions (the user's "also properly
+   working with loops").
+4. Wide suite green on the baseline (this includes the per-op buffers: the KV
+   fill, `sum_drop_col`, rope, embedding, KV assign — the failures that the old
+   unit ladder kept missing).
+5. Only then: optimization passes that recognize transposes/direct tile loads
+   and delete the general path where it is provably unnecessary.
+
+Known failures the baseline must fix, each one a case of "the index was
+rewritten instead of transformed": the KV fill's `%4096`/`/4096` permuted drain
+(also covers only a quarter of the padded buffer), `sum_drop_col`'s
+face-inconsistent scalar store, rope's `boundary offset 2 is not a whole tile`,
+and the KV-assign "boundary index is not affine".
+
+## HANDOFF (2026-11-06, session 16) — shapes kept, index rewritten
 
 **Snapshot.** `main` at `85a16a6d` (code) plus this notes commit, tree clean.
 `cargo build` green, `cargo
@@ -54,7 +112,7 @@ The gates are **regression nets, not a progress meter.** Concretely:
 - `23_tt_lowering` (29/30) is one *op group per test* on a single kernel
   invocation, small constant shapes, mostly f32, compared word-for-word against
   a host reference on ttsim. Green means: for this op, on this shape, the tile
-  access (`tt_reindex`/`tt_cb_lower`), the pattern choice, the movers and the
+  access (`tt_reindex`/`tt_add_movers`), the pattern choice, the movers and the
   SFPU program are right. It is the pass-level contract: a pass that breaks one
   of these paths is caught here in seconds instead of surfacing as a wrong
   number inside a model.
@@ -118,7 +176,7 @@ The gates are **regression nets, not a progress meter.** Concretely:
   tile rows (`TileDim::Col`). The `[32] -> []`/`[32,32] -> [32]` shape table no
   longer decides `sum_one_row` (it was picking `Col` for a row of 32 columns,
   hence 3.84 vs 125.9).
-- `tt_cb_lower` no longer re-scales an index already in tile units (every step a
+- `tt_add_movers` no longer re-scales an index already in tile units (every step a
   whole tile) with its access-footprint heuristic — that was turning `i*1024`
   into `i*32768`.
 - `tt_dataflow_select` no longer removes every compute-side circular load; only
@@ -267,7 +325,7 @@ row-0/column-0 result is the same class (access/fold keyed on shape).
 
 ### What landed this session (session 15)
 
-- `89da01b4` boundary tile unit from the access footprint (`tt_cb_lower`):
+- `89da01b4` boundary tile unit from the access footprint (`tt_add_movers`):
   a `[32]` access spans 32 elements per tile, a scalar 1, not 1024; the affine
   base is rebuilt in 1024-element units. Group-rebased indices are left alone;
   a non-affine/non-dividing map keeps the old index (loud in `tt_slice`, never
@@ -304,7 +362,7 @@ row-0/column-0 result is the same class (access/fold keyed on shape).
 - `ttsim`'s owner thread dies with a failed test: run gates **one per
   process**; a later failure in the same process is a cascade.
 - 10 s per individual run; `softmax` needs ~50 s, run it alone.
-- IR dumps: `ZYX_TT_IR=1` (before/after `tt_tile`/`tt_reindex`/`tt_cb_lower`),
+- IR dumps: `ZYX_TT_IR=1` (before/after `tt_tile`/`tt_reindex`/`tt_add_movers`),
   `ZYX_DEBUG=8` winner IR, `ZYX_DEBUG=256` NoSearch seed.
 - `--tests` does not fit 900 s on this box; an earlier "all green" came from
   that truncation.
@@ -333,7 +391,7 @@ BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
 # ONE gate per process; a failed ttsim thread poisons every later test.
 TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   AGENT=1 timeout 10 $BIN <gate> --exact --nocapture
-# ZYX_TT_IR=1 dumps the IR before/after tt_tile, tt_reindex, tt_cb_lower.
+# ZYX_TT_IR=1 dumps the IR before/after tt_tile, tt_reindex, tt_add_movers.
 # ZYX_DEBUG=8 dumps the post-epilogue IR (only on the compile path).
 ```
 
@@ -431,18 +489,18 @@ Established, each by a run (kept for the next reduce/index bug):
   row groups: every group sums rows 0..31.
 - The non-winning sum candidates that were traced keep the row base through
   `tt_tile` (`r62 = r55 + r3`, `r55 = (32*g + lane) * 64`), so the loss is in
-  the block-hoist path (`tt_cb_lower`'s `strip_unrolls(..., strip_loops=true)`
+  the block-hoist path (`tt_add_movers`'s `strip_unrolls(..., strip_loops=true)`
   zeroes a loop-valued row base) or in the candidate itself, not in
   `tt_tile`'s split. Some search candidates also cover 512/1024 rows on a
   256-row axis (group over 16/32), i.e. the search still offers split shapes
   the tiling cannot represent — the same class as the `opt_register_tiling`
   bug.
 - Candidate IR dumps for the record: `ZYX_TT_IR=1` (before/after
-  `tt_tile`/`tt_reindex`/`tt_cb_lower`), `ZYX_DEBUG=8` (winner IR),
+  `tt_tile`/`tt_reindex`/`tt_add_movers`), `ZYX_DEBUG=8` (winner IR),
   `ZYX_DEBUG=256` (NoSearch).
 
 Resolution: the loss was in `tt_tile`'s nested-loop fold, not in the
-`tt_cb_lower` hoist (`strip_unrolls` saw an index whose base had already
+`tt_add_movers` hoist (`strip_unrolls` saw an index whose base had already
 been dropped) and not in the fusion (the same fused shape lowers fine once
 the fold keeps the base). The eager path and `strip_unrolls` needed no change.
 Still open, separate: the TT search offers split shapes that overshoot the
@@ -528,7 +586,7 @@ its stride; the shape-keyed `[32] -> []` table is then redundant.
 
 Started the session-12 plan (aligned envelope + L1 fixup) with the piece every
 boundary move needs: **how many logical elements one tile image spans is the
-access's own footprint, not 1024**. `tt_cb_lower` now derives it from the
+access's own footprint, not 1024**. `tt_add_movers` now derives it from the
 loaded/stored value's shape and rebuilds the affine base in 1024-element tile
 units (`(Σ var*stride)/unit*1024`), for `[32]` (one tile row/column = 32) and
 `[]` (one lane) accesses. A group-rebased index is already in tile units and is
@@ -786,7 +844,7 @@ What exists today vs what is missing:
 - `CbState`/`CbTransactions` are ported (`kernel/tenstorrent.rs`) with 16 unit
   tests and **zero callers**; `tt_cb_plan` computes the batching but nothing
   emits it.
-- `tt_cb_lower` sizes the CB from the loop instead: `tiles.checked_mul(1024)`
+- `tt_add_movers` sizes the CB from the loop instead: `tiles.checked_mul(1024)`
   at `:1831` and `:1854`, so `t <= capacity` always holds and the whole block
   is always hoisted. That is the unbounded streaming the user prohibited.
 - `TTOp` has **no** CB credit variant (the port deleted `ReserveBack`,
@@ -823,7 +881,7 @@ What exists today vs what is missing:
   process**, or later tests fail as a cascade.
 - 10 s per individual test run is the cap; a passing `softmax` took ~17 s
   historically, so `24_tt` uses small shapes on purpose.
-- `ZYX_DEBUG=256` (NoSearch), `ZYX_TT_IR=1` (IR after `tt_tile`/`tt_cb_lower`).
+- `ZYX_DEBUG=256` (NoSearch), `ZYX_TT_IR=1` (IR after `tt_tile`/`tt_add_movers`).
 - The examples workspace does not resolve (`features = ["tenstorrent"]` in
   `tt_gemm`/`qwen`); `zyx/tests` is unaffected.
 
@@ -841,7 +899,7 @@ cd zyx && AGENT=1 cargo test --test 23_tt_lowering --no-run
 BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
 TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   AGENT=1 timeout 60 $BIN <gate> --exact --nocapture
-# ZYX_DEBUG=256 (NoSearch), ZYX_TT_IR=1 (IR after tt_tile / tt_cb_lower).
+# ZYX_DEBUG=256 (NoSearch), ZYX_TT_IR=1 (IR after tt_tile / tt_add_movers).
 ```
 
 ### The decision: solve general indexing, not the reduce
@@ -860,7 +918,7 @@ The general problem is: an arbitrary zyx access map
 addr = c + Σ s_i * v_i
 ```
 
-must be lowerable to TT. The current `tt_reindex` / `tt_cb_lower` /
+must be lowerable to TT. The current `tt_reindex` / `tt_add_movers` /
 `tt_dataflow_select` are three partial templates; each new shape is a new
 debugging session. The fix is one canonical access path, not more templates.
 
@@ -894,7 +952,7 @@ debugging session. The fix is one canonical access path, not more templates.
 `ttnn/cpp/ttnn/operations/data_movement/{gather,scatter,indexed_fill}/`;
 `tt_metal/tt-llk/tt_llk_blackhole/llk_lib/{llk_math_reduce,llk_unpack_AB_reduce,llk_pack_common}.h`;
 `tt_metal/tt-llk/tt_llk_blackhole/common/inc/sfpu/ckernel_sfpu_reshuffle_rows.h`.
-zyx side: `kernel/tenstorrent.rs` (`tt_tile`, `tt_reindex`, `tt_cb_lower`,
+zyx side: `kernel/tenstorrent.rs` (`tt_tile`, `tt_reindex`, `tt_add_movers`,
 `tt_dataflow_select`, `TtEmit::Reduce`), `backend/tenstorrent/mod.rs`
 (`tilize_transfer`/`untilize_transfer`, `stripes`), `codegen/tenstorrent/`,
 `firmware/tt-firmware/src/mover.rs`, and
@@ -929,7 +987,7 @@ canonicalizes outputs.**
 
 1. **Write the planner contract**: `aligned_envelope(access map) ->
    (DRAM slots, L1 fixup)`, and make every boundary move go through it
-   (extend the `tt_cb_lower` / `tt_slice` / `tt_pages` path). A sub-64 DRAM
+   (extend the `tt_add_movers` / `tt_slice` / `tt_pages` path). A sub-64 DRAM
    slice must be impossible by construction, not a runtime `not a whole tile`.
 2. **Build the L1 fixup primitives**: compose `CopyWords`/`IndexPick`/`Fill`/
    `DmReadTransposed`; add a computed L1 copy loop if the map needs it. Decide
@@ -942,7 +1000,7 @@ canonicalizes outputs.**
    currently `boundary offset 32 ...`) as the second.
 4. Once canonicalization works, remove the `1341758c` axis override and the
    rank-1 boundary guessing; compute only last-dim.
-5. Still ordered: `tt_cb_lower` errors instead of returning silently; delete
+5. Still ordered: `tt_add_movers` errors instead of returning silently; delete
    the temporary dumps (`ZYX_SYNC_DUMP`, `ZYX_WORD_DUMP`, `ZYX_DST_DUMP`,
    `ZYX_CODE_DUMP`, `ZYX_MOVE_DUMP`, the `tt_verify` op dump).
 
@@ -1016,7 +1074,7 @@ lowering:
    transpose-into-`SrcA` mode (`unpack_src_transposed_config`; ttsim refuses
    transpose with `UnpackToDst`). With the operand transposed, the reduce is
    an inner-axis `Row` fold and the existing column output is already right.
-   Needs `tt_reindex`/`tt_cb_lower` to emit the transposed read and to
+   Needs `tt_reindex`/`tt_add_movers` to emit the transposed read and to
    generalize the tile-loop stride (a row-tile advance is `32 * cols`, not
    `32`), so it is the general form.
 2. **Transpose the result tile** after the `Col` fold (row 0 -> column 0)
@@ -1038,7 +1096,7 @@ family, not the rank-1 layout (the same `[1, 256]` limit is noted in session
 
 ### Still ordered, not done
 
-- `tt_cb_lower` must error instead of bailing silently (the argument is the
+- `tt_add_movers` must error instead of bailing silently (the argument is the
   `sum_drop_col` case: a wrong-axis reduce falls through to a plausible but
   wrong kernel).
 - Delete the env-gated temporary dumps (`ZYX_SYNC_DUMP`, `ZYX_WORD_DUMP`,
@@ -1062,7 +1120,7 @@ BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
 TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   AGENT=1 timeout 60 $BIN <gate> --exact --nocapture
 # add ZYX_DEBUG=256 (NoSearch) to test the seed kernel alone, and
-# ZYX_TT_IR=1 for the IR after tt_tile and after tt_cb_lower.
+# ZYX_TT_IR=1 for the IR after tt_tile and after tt_add_movers.
 ```
 
 **What session 9 fixed** (details in the session-9 section below):
@@ -1098,7 +1156,7 @@ axis-dropping `sum([1])`.
    `Tensor::reduce_impl`/`reshape` and the writer's narrowed output
    (`backend/tenstorrent/mod.rs`'s `narrows`), then the `tt_copy` the writer
    emits (`ZYX_TT_IR=1`).
-2. **`tt_cb_lower` must error instead of bailing silently** (ordered, not
+2. **`tt_add_movers` must error instead of bailing silently** (ordered, not
    done): its early `return`s on a shape it cannot lower leave the kernel
    unlowered and `tt_verify` panics with `missing EndReader`. The callers are
    `device_epilogue`/`autotune`, so this is a signature change.
@@ -1172,7 +1230,7 @@ value is the max per loop; it asserts against `sync::MAX_VALUE` (15).
 
 ### `tt_tile`: a reduce kernel's group split needs a rank budget
 
-Softmax's `max`/`sum` reduce arrived at `tt_cb_lower` as a `[32,32,32]` load
+Softmax's `max`/`sum` reduce arrived at `tt_add_movers` as a `[32,32,32]` load
 plus a loop: the group (grid) axis had been padded into a **third lane axis**.
 Neither downstream template has that shape — `tt_reindex`'s `drop3` requires no
 loop and no grid, `row2` requires a `[32,32]` load — so both bailed, the kernel
@@ -1185,7 +1243,7 @@ optimization; the bug was producing an access no template has.)
 uses the same rank budget: `axes` while a reduce loop remains, `axes + 1` when
 the loop was fully split into lanes. Softmax's reduce kernels now lower:
 reader CBs + `end_reader` + the compute loop + writer drains (`kernel.debug`
-after `tt_cb_lower`, `ZYX_TT_IR=1`).
+after `tt_add_movers`, `ZYX_TT_IR=1`).
 
 ### The last bug: `tt_dst_reuse` ignored loop back edges
 
@@ -1219,7 +1277,7 @@ that turned the cross-loop value into a fresh kernel input.
   of the reduce. No gate covers the axis-dropping form.
 - `[1,256].sum(None)` fails with `boundary offset 32 is not a whole tile`
   (tiling, separate).
-- `tt_cb_lower` still returns silently on shapes it cannot lower instead of
+- `tt_add_movers` still returns silently on shapes it cannot lower instead of
   erroring (ordered, not done).
 
 ### The reference the user pointed at
@@ -1243,17 +1301,17 @@ BIN=$(ls -t target/debug/deps/23_tt_lowering-* | grep -v '\.d$' | head -1)
 # kernels that cannot be lowered:
 TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so ZYX_DEBUG=256 \
   AGENT=1 timeout 60 $BIN softmax --exact --nocapture
-# IR at the two structure points: after tt_tile and after tt_cb_lower (right
+# IR at the two structure points: after tt_tile and after tt_add_movers (right
 # before tt_dataflow_select):  ZYX_TT_IR=1
 ```
 
 ### Next, in order
 
 1. The `sum([1])` axis-drop path (keepdim is right, drop is not).
-2. `tt_cb_lower` errors instead of bailing; remove the temporary dumps (see
+2. `tt_add_movers` errors instead of bailing; remove the temporary dumps (see
    the tree-state list above).
 3. The search path and `[1,256]` tiling (`boundary offset 32 …`).
-3. Then `tt_cb_lower` must return an error instead of bailing silently
+3. Then `tt_add_movers` must return an error instead of bailing silently
    (ordered), and the temporary dumps above must go.
 4. Then the search path: it still compiles kernels that cannot be lowered
    (`Move`/empty-loop shapes) and panics in `verify`; run with `ZYX_DEBUG=256`
@@ -1412,7 +1470,7 @@ also calls APIs that were deleted (`tt_lock_dst`, `tt_sync_cbs`,
 
 ### Landed: per-iteration CB traffic in a loop
 
-`tt_cb_lower` (`kernel/tenstorrent.rs`) emits the **streaming** form when every
+`tt_add_movers` (`kernel/tenstorrent.rs`) emits the **streaming** form when every
 DRAM load sits in the same single constant-trip loop:
 
 ```
@@ -1443,7 +1501,7 @@ for i in 0..n { v = load cb[i*1024]; ... }           # compute loop, unchanged
 | case | today |
 |---|---|
 | per-iteration reader push | **yes** — own reader loop, one entry per iteration, full ring |
-| per-iteration writer drain | **no** — `tt_cb_lower` still drains at the tail; a store *inside* a loop keeps its loop counter in the DRAM index and the encoder refuses it (`tt_slice`: "neither a grid axis nor a bound loop", loud) |
+| per-iteration writer drain | **no** — `tt_add_movers` still drains at the tail; a store *inside* a loop keeps its loop counter in the DRAM index and the encoder refuses it (`tt_slice`: "neither a grid axis nor a bound loop", loud) |
 | ring smaller than the trip count | no — needs credits (a wrapped ring without them would overwrite unread tiles) |
 | credits / reader-compute overlap | no |
 | loop-carried accumulator across tiles | **broken** — the compute loop is emitted once (below) |
@@ -1631,7 +1689,7 @@ the pushed body (a loop-carried/fused exp+div body dependence). Only
 4×4/8×4/4×8, pass. Relevant code is now `codegen/tenstorrent/{loops.rs,
 code.rs}` and `backend/tenstorrent/runtime.rs`.
 
-## HANDOFF (2026-11-04, session 4) — the CB plan is SSA (`tt_cb_lower`)
+## HANDOFF (2026-11-04, session 4) — the CB plan is SSA (`tt_add_movers`)
 
 **Tree state:** uncommitted: `kernel/tenstorrent.rs`, `kernel/autotune.rs`, this
 file. **23/24 ttsim gates green**; `softmax` hangs on the device — it hangs
@@ -1640,9 +1698,9 @@ pre-existing, not the refactor. `cargo test --lib` = 116. The user commits.
 
 ### What landed
 
-- **`Kernel::tt_cb_lower()`** (`kernel/tenstorrent.rs`) runs between
+- **`Kernel::tt_add_movers()`** (`kernel/tenstorrent.rs`) runs between
   `default_epilogue()` and `tt_dataflow_select()` in `device_epilogue`
-  (`ZYX_TT_IR=1` dumps `=== IR after tt_cb_lower ===`).
+  (`ZYX_TT_IR=1` dumps `=== IR after tt_add_movers ===`).
   - *Reader*: one `Op::Copy { Param -> Circular }` per DRAM load, at slot 0,
     moving the whole `Π trips × tile` block, hoisted before the innermost loop
     (loop var zeroed through `strip_unrolls(.., true)`), then `EndReader`. Each

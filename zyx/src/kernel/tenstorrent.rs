@@ -1116,7 +1116,7 @@ impl Kernel {
         // lanes; `drop3` refuses grids, and the padded lanes read past the
         // tensor (measured on softmax's `max`: `r27` up to 261888 for a 65536
         // element input, and the load bails in both `tt_reindex` and
-        // `tt_cb_lower`). So the group split gets the same rank budget as the
+        // `tt_add_movers`). So the group split gets the same rank budget as the
         // elementwise case: `axes` lanes while a loop remains, `axes + 1` when
         // the loop was fully split into lanes.
         let rank = self.iter_unordered().fold(0, |rank, (_, op)| {
@@ -1721,10 +1721,11 @@ impl Kernel {
     /// custom API (an `Op::Copy` on `Circular` storages) keeps its copies; only
     /// their boundary indices are normalised, and a loop variable is kept so
     /// the encoder refuses it loudly instead of guessing.
-    pub fn tt_cb_lower(&mut self) {
+    pub fn tt_add_movers(&mut self) {
         if !self.device_info().tenstorrent {
             return;
         }
+        self.debug();
         // CB Storage definitions live in the prologue (past leading
         // params/storages, before everything else).
         let mut prologue = self.head;
@@ -1849,7 +1850,7 @@ impl Kernel {
             let mut cb_of: Map<OpId, OpId> = Map::default();
             if streaming {
                 let Op::Loop { len } = self.ops[anchor].op else {
-                    unreachable!("tt_cb_lower: the streaming anchor is a loop")
+                    unreachable!("tt_add_movers: the streaming anchor is a loop")
                 };
                 // The reader's own induction variable: the compute loop keeps
                 // its slot arithmetic, and each entry advances one tile.
@@ -2075,7 +2076,7 @@ impl Kernel {
                         dst_idx
                     }
                 }
-                _ => unreachable!("tt_cb_lower: a collected op is not a copy"),
+                _ => unreachable!("tt_add_movers: a collected op is not a copy"),
             };
             let Some(stripped) = self.strip_unrolls(idx, copy, false) else {
                 return;
@@ -2088,9 +2089,11 @@ impl Kernel {
                         *dst_idx = stripped;
                     }
                 }
-                _ => unreachable!("tt_cb_lower: a collected op is not a copy"),
+                _ => unreachable!("tt_add_movers: a collected op is not a copy"),
             }
         }
+        self.debug();
+        todo!("no removing this todo until the f*cking IR is good looking");
     }
 
     /// Lower the remaining plain ops of a TT kernel to their `TTOp` form:
@@ -2257,7 +2260,7 @@ impl Kernel {
                 drain_of.insert(src, id);
             }
         }
-        // Phase 1 — encode the plan `tt_cb_lower` wrote. The CBs, the block
+        // Phase 1 — encode the plan `tt_add_movers` wrote. The CBs, the block
         // copies and the two section markers are ordinary SSA by now; this
         // walk is mechanical: a parameter-side copy becomes the mover's
         // `TTOp::Copy` with an explicit byte count taken from the storage it
@@ -2507,7 +2510,7 @@ impl Kernel {
         // `EndCompute`. A value already materialized in a CB is drained
         // directly; a DST result is packed to a writer CB first.
         //
-        // The writer CBs and their drains are the ones `tt_cb_lower` planned:
+        // The writer CBs and their drains are the ones `tt_add_movers` planned:
         // a store into one of them is only the pack side.
         let mut stores: Vec<(OpId, OpId, OpId, OpId)> = Vec::new();
         let mut id = self.head;
@@ -2529,7 +2532,7 @@ impl Kernel {
                     } else if matches!(self.ops[base].op, Op::Storage { .. }) {
                         // Already lowered; nothing owned here.
                     } else {
-                        // A DRAM store survived `tt_cb_lower`: its plan bailed,
+                        // A DRAM store survived `tt_add_movers`: its plan bailed,
                         // and nothing here may guess at one.
                         return;
                     }
@@ -2567,7 +2570,7 @@ impl Kernel {
                     continue;
                 };
                 if writer_cbs.contains(base) {
-                    // The drain to DRAM is already SSA (`tt_cb_lower`); this
+                    // The drain to DRAM is already SSA (`tt_add_movers`); this
                     // only fills the writer CB.
                     if self.is_circular(storage) && storage != *base {
                         // Multi-use value already in L1: drain it directly by
