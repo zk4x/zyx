@@ -27,7 +27,7 @@
 //! memory or a fused matmul mean another pass already ran and the sequence's
 //! assumptions no longer hold.
 
-use super::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind, autotune::Optimization, split::SplitMode};
+use super::{BOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, autotune::Optimization, split::SplitMode};
 use crate::shape::Dim;
 
 /// Local factors a lane recipe tries, largest first.
@@ -177,6 +177,39 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         if ranges.len() != 2 || loop_id.is_null() || loop_len <= 0 {
+            return Box::new(TensorRecipe { configs });
+        }
+        // The kernel must actually read a dense 2D matrix: one load whose
+        // outer axis is strided by exactly the inner extent. A reduction over
+        // a flat buffer has the same two-ranges-plus-loop shape (softmax over
+        // the last axis looks exactly like an M x N x K matmul) but its outer
+        // stride is the distance between rows of a *larger* tensor, e.g.
+        // 524288 while it contracts over 4096. Splitting such a "matrix"
+        // yields indices tens of millions of elements past the buffer, which
+        // faults with CUDA_ERROR_ILLEGAL_ADDRESS at launch.
+        let has_dense_operand = self.iter_unordered().any(|(_, op)| {
+            let Op::Load { src_idx, .. } = op else {
+                return false;
+            };
+            let Some(map) = self.get_strides(*src_idx) else {
+                return false;
+            };
+            let axes: Vec<(Dim, Dim)> = map.values().copied().filter(|(len, _)| *len > 1).collect();
+            axes.len() == 2 && {
+                let ((l0, s0), (l1, s1)) = (axes[0], axes[1]);
+                (s1 == 1 && s0 == l1) || (s0 == 1 && s1 == l0)
+            }
+        });
+        // And it must contain a dot product: a multiply of two loads. A
+        // reduction (`max`, `x + exp(...)`) has the same ranges-plus-loop
+        // shape but no contraction, and tiling it corrupts the lane index.
+        let has_dot_product = self.iter_unordered().any(|(_, op)| {
+            let Op::Binary { x, y, bop: BOp::Mul } = op else {
+                return false;
+            };
+            matches!(self.at(*x), Op::Load { .. }) && matches!(self.at(*y), Op::Load { .. })
+        });
+        if !has_dense_operand || !has_dot_product {
             return Box::new(TensorRecipe { configs });
         }
         ranges.sort_by_key(|&(_, axis, _)| axis);

@@ -61,7 +61,11 @@ impl Optimization for OptSplit {
     fn apply(&self, kernel: &mut Kernel, config: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("OptSplit::apply");
-        let &(axis_id, mode, factor) = &self.configs[config as usize];
+        // See `PadIndex::apply`: an id that is not in this instance's list
+        // means the config is unavailable on the state being replayed.
+        let Some(&(axis_id, mode, factor)) = self.configs.get(config as usize) else {
+            return;
+        };
         kernel.split(axis_id, mode, factor);
         kernel.verify();
     }

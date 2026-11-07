@@ -218,6 +218,12 @@ impl Kernel {
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("device compile");
+        // Temporary: the search path did not honor the IR debug bit, and the
+        // failing candidate can only be identified from its IR. Removed after
+        // the illegal-address diagnosis.
+        if debug.ir() {
+            self.debug();
+        }
         let program_id = device.compile(self, debug.asm())?;
         // Warmup: the first device execution pays cold-start overhead
         // (kernel load, fabric init) that would otherwise dominate
@@ -468,11 +474,29 @@ impl BeamSearch {
             visited.insert(base.get_hash());
             let mut items: Vec<OptSeq> = vec![OptSeq { opts: Vec::new(), cost: cost(&base) }];
 
+            // Temporary: `ZYX_SEQ="opt:cfg,opt:cfg"` measures exactly that
+            // sequence and skips the search, so a single failing candidate can
+            // be reproduced in seconds instead of minutes. Removed once the
+            // illegal-address bug is closed.
+            let forced: Option<Vec<(usize, u64)>> = std::env::var("ZYX_SEQ").ok().map(|spec| {
+                spec.split(',')
+                    .filter(|pair| !pair.is_empty())
+                    .map(|pair| {
+                        let (opt, config) = pair.split_once(':').expect("ZYX_SEQ entries are `opt:config`");
+                        (opt.parse().expect("ZYX_SEQ opt id"), config.parse().expect("ZYX_SEQ config id"))
+                    })
+                    .collect()
+            });
+            if let Some(opts) = &forced {
+                items = vec![OptSeq { opts: opts.clone(), cost: 0 }];
+            }
+
             // Initial candidates: one optimization applied to state_0.
             let avail_configs: Vec<Box<dyn Optimization>> = optimizations.iter().map(|make| make(&base)).collect();
             let total_configs: u64 = avail_configs.iter().map(|opt| opt.nconfigs()).sum();
             let mult = self.n_seeds.min(total_configs as usize) as u64;
-            for (opt_id, opt) in avail_configs.iter().enumerate() {
+            if forced.is_none() {
+                for (opt_id, opt) in avail_configs.iter().enumerate() {
                 let n_configs = opt.nconfigs();
                 let n_configs_to_try = ((n_configs * mult) as f32 / total_configs as f32).ceil() as u64;
                 for config_id in 0..n_configs_to_try {
@@ -486,12 +510,13 @@ impl BeamSearch {
                     visited.insert(hash);
                     items.push(OptSeq { opts: vec![(opt_id, config_id)], cost: cost(&new_kernel) });
                 }
+                }
             }
 
             let mut rng = Rng::seed_from_u64(3_498_203_498);
             let mut exhausted = Set::default();
             let mut i = 0;
-            while i < self.n_total_opts && !items.is_empty() {
+            while forced.is_none() && i < self.n_total_opts && !items.is_empty() {
                 i += 1;
                 let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else {
                     break;

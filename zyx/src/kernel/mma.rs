@@ -773,6 +773,22 @@ impl Kernel {
             let k = a_map[&k_loop].0;
             let n = b_map[&n_range].0;
 
+            // Both operands must be dense 2D views around the contraction:
+            // the K axis contiguous with the outer axis strided by exactly K,
+            // or the transpose of that. Without this, a reduction over a
+            // flat buffer parses as a matmul — its "strides" are iteration
+            // steps, e.g. a softmax row is 524288 elements away while it
+            // contracts over 4096, so `m % fm == 0` still passes and the
+            // fragments address tens of millions of elements past the
+            // buffer (CUDA_ERROR_ILLEGAL_ADDRESS at launch).
+            let a_dense = (a_map[&k_loop].1 == 1 && a_map[&m_range].1 == k)
+                || (a_map[&m_range].1 == 1 && a_map[&k_loop].1 == m);
+            let b_dense = (b_map[&k_loop].1 == 1 && b_map[&n_range].1 == k)
+                || (b_map[&n_range].1 == 1 && b_map[&k_loop].1 == n);
+            if !a_dense || !b_dense {
+                continue;
+            }
+
             // The whole span from the init store to the final store must be
             // this matmul: `apply` replaces it as one contiguous region.
             let Some(init_pos) = order.iter().position(|&id| id == init_store) else {

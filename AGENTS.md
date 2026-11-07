@@ -31,6 +31,10 @@
 - Blocked: report the blocker at the point it blocks, together with the
   ONE decision needed to unblock. Never spend the turn on unasked-for
   work and report the prerequisite afterwards.
+- If something CANNOT be done, doing nothing and continuing is PROHIBITED.
+  Stop at that point, say what failed and why, and ask for the decision
+  that unblocks it. Silently dropping the task, working around it, or
+  reporting the turn as if it had been done are all failed turns.
 
 ## Read first, ask before editing
 - READ CODE FIRST. Only STOP and ask when the code underdetermines

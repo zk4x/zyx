@@ -44,10 +44,13 @@ impl Optimization for PadIndex {
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
-        if self.factors.is_empty() {
+        // A config id is only meaningful for the state it was enumerated on;
+        // the sequence is replayed on a rebuilt kernel, so an id can outlive
+        // its instance (e.g. after the state changed under it). Out of range
+        // means "this config is not available here", not a panic.
+        let Some(&(idx_id, pad_to)) = self.factors.get(config as usize) else {
             return;
-        }
-        let (idx_id, pad_to) = self.factors[config as usize];
+        };
         kernel.pad_to(idx_id, pad_to);
     }
 }

@@ -34,7 +34,11 @@ impl Optimization for TiledReduce {
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
-        let (op_id, factor, tree_branch) = self.factors[config as usize];
+        // See `PadIndex::apply`: an id that is not in this instance's list
+        // means the config is unavailable on the state being replayed.
+        let Some(&(op_id, factor, tree_branch)) = self.factors.get(config as usize) else {
+            return;
+        };
         kernel.local_reduce(op_id, factor as u32, tree_branch as u32);
     }
 }
@@ -79,6 +83,12 @@ impl Kernel {
         let candidates = vec![1024, 512, 256, 128, 64, 32, 16, 8];
         let tree_branch_candidates = vec![2, 4, 8, 16];
         let mut factors = Vec::new();
+        // A tiled reduce splits the loop into `factor` lanes and stages the
+        // tree over them: the emitted IR grows with the factor, so refuse a
+        // config that would take the kernel past what the search can afford
+        // (the same bound `opt_split` and `opt_register_tiling` use).
+        const SEARCH_OPS: u64 = 10_000;
+        let op_len: u64 = self.ops.len().0 as u64;
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
@@ -89,7 +99,11 @@ impl Kernel {
                 };
                 if len >= 16 {
                     for &factor in &candidates {
-                        if len % factor as Dim == 0 && len / factor as Dim >= 4 && remaining_threads as Dim >= factor as Dim {
+                        if len % factor as Dim == 0
+                            && len / factor as Dim >= 4
+                            && remaining_threads as Dim >= factor as Dim
+                            && op_len.saturating_mul(u64::from(factor)) <= SEARCH_OPS
+                        {
                             for &tree_branch in &tree_branch_candidates {
                                 factors.push((op_id, factor, tree_branch));
                             }

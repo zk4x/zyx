@@ -254,6 +254,22 @@ fn main() -> Result<(), ZyxError> {
         return Ok(());
     }
     if folder == "reindex" {
+        // `zyx-bench reindex <hash>` prints one stored kernel's IR instead of
+        // refreshing features: the exact artifact of a recorded measurement,
+        // decodable without a device.
+        if let Some(hash) = args.next() {
+            use nanoserde::DeBin;
+            use zyx::kernel::Kernel;
+            let conn = open_db(&db_path()).map_err(|e| ZyxError::kernel_error(e.to_string().into()))?;
+            let ir: Vec<u8> = conn
+                .query_row("SELECT ir FROM kernels WHERE hash = ?1", [&hash], |row| row.get(0))
+                .map_err(|e| ZyxError::kernel_error(format!("no kernel {hash}: {e}").into()))?;
+            let kernel = Kernel::deserialize_bin(&ir)
+                .map_err(|e| ZyxError::kernel_error(format!("kernel {hash}: {e:?}").into()))?;
+            println!("kernel {hash}");
+            kernel.debug();
+            return Ok(());
+        }
         return reindex(&db_path()).map_err(|e| ZyxError::kernel_error(e.to_string().into()));
     }
     let Some(name) = args.next() else {

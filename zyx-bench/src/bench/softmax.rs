@@ -6,6 +6,9 @@
 use zyx::{DType, Tensor, ZyxError};
 
 pub fn bench() -> Result<(), ZyxError> {
+    // Temporary: `ZYX_SHAPE="8x512x2048:2"` runs one shape only, so a single
+    // failing sequence can be reproduced without the other nine.
+    let only = std::env::var("ZYX_SHAPE").ok();
     for &(dims, axes) in &[
         (&[4096i64][..], &[0i32][..]),
         (&[128, 4096], &[0i32][..]),
@@ -18,6 +21,17 @@ pub fn bench() -> Result<(), ZyxError> {
         (&[32, 4096], &[0i32][..]),
         (&[8, 512, 2048], &[2i32][..]),
     ] {
+        let label = format!(
+            "{}:{}",
+            dims.iter().map(ToString::to_string).collect::<Vec<_>>().join("x"),
+            axes.iter().map(ToString::to_string).collect::<Vec<_>>().join(",")
+        );
+        if let Some(only) = &only {
+            if only != &label {
+                continue;
+            }
+        }
+        println!("softmax {label}");
         let x = Tensor::rand(dims.iter().copied(), DType::F32)?;
         x.softmax(axes.iter().copied())?;
     }
