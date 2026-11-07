@@ -1,4 +1,106 @@
-## HANDOFF (2026-11-07, session 18) — start here: write `tt_canonical_tile`
+## HANDOFF (2026-11-07, session 19) — start here: `tt_canonical_tile` landed
+
+**Snapshot.** `tt_add_movers` now carries `Kernel::tt_canonical_tile(base, idx,
+at) -> Option<(dram, l1)>` and all three boundary sites use it. The todo is
+gone; `23_tt_lowering` is 29/30 (only `sum_drop_col`), lib 116, `24_tt` 3/11.
+
+### What the pass now produces (the bar that was asked for)
+
+`sum_one_row`, end of `tt_add_movers`:
+
+```
+ for r20 in 0..8 {
+   r82: i64 = 4160 * r20
+   r83: i64 = 16 + r82          // tile image address, header included
+   r85: i64 = 1024 * r20        // CB tile slot
+   copy r7[r85] = r32[r83]
+ }
+ end_reader
+ ... compute reads only r7 ...
+ end_compute
+ copy r5[r80] = r90[r9]         // r80 = 16, the tile image address
+```
+
+The KV-cache fill's drain:
+
+```
+ r56 = (idx/128)/8*4 + (idx%128)/32      // tile   = b*ntc + tile_col
+ r83 = ((row%32)/16)*256 + (row%16)*16 + (col%16)
+ r90 = r56*4160 + 16 + r83*2             // f16 datum width
+ copy r7[r90] = r32[r91]
+```
+
+`dram` is a byte address: the access's own index with the tilize inverse
+**appended** (`tile*TILE_SLOT + TILE_DATA + (face*256 + within)*el`). It is never
+divided by a footprint and no lane is stripped. `l1` is
+`tile*1024 + row*32 + col`. `default_epilogue()` runs at the end of the pass so
+the constant cones a zeroed loop leaves behind are folded before the phase
+boundary. The dumps are under `ZYX_TT_IR` (`=== IR before/after tt_add_movers`).
+
+Implementation notes worth keeping:
+
+- **Two index conventions.** `tt_reindex` rewrites a kernel's load/store index
+  into tile-datum units (`tile*1024 + pos`); every other kernel keeps the flat
+  logical index. `tt_canonical_tile` accepts both, discriminated by
+  `tt_index_max(idx) >= outer*rows*cols` — a logical index can never exceed its
+  buffer, a tile-datum one can (padding). Do not replace this with
+  `tt_index_is_tile_units`: it requires a grid *and* a loop and misses
+  `sum_one_row`.
+- **The block form zeroes loops and lanes** (`tt_zero_iteration_vars`, which
+  leaves group ids alone) because the block copy is hoisted out of the loop.
+  The streaming form adds `reader_loop*TILE_SLOT` per iteration.
+- Codegen `tt_slice` now *evaluates* the expression (`tt_eval_index`) with the
+  bound loops/lanes, takes the base at grid coordinate zero and each grid
+  axis's stride at coordinate one, and checks the last coordinate so a
+  non-affine coordinate is refused instead of sliced wrong. `+ t*TILE_SLOT` is
+  the only per-tile advance it adds; `TILE_DATA` is in the expression. A shaped
+  read subtracts it again (it writes the header itself).
+- The writer's tile advance now uses the **CB** dtype, so an f16 output's FP32
+  writer tile is one entry (it used to be split into two).
+- CB bases are placed at `≡16 mod 64` (`tt_place_cbs`), which is exactly where
+  a tile image's datum block lives.
+
+### The two hard constraints the mover imposes (measured, not guessed)
+
+1. **A move's per-core address is affine in the grid coordinates.**
+   `TTDmMove` carries one base and one `gidx*stride` per axis, and the launch
+   computes `base + gidx0*gstride0 + gidx1*gstride1` (`tt_move_offset`). The
+   *list* is staged per core, so this is a zyx data-structure limit, not a
+   firmware one — but with `TTDmMove` as it is, a boundary index that is
+   non-affine in a grid coordinate cannot be expressed. The KV fill's drain is
+   exactly that (`b = E%4096`), which is why it still cannot launch.
+2. **A read must be 64-byte congruent between DRAM and L1.** A partial-tile
+   datum offset breaks it: `base = tile*4160 + 16 + datum*el` is congruent only
+   when `datum*el ≡ 0 (mod 64)` — for f16, `datum` a multiple of 32. Whole
+   tiles and the block/stream bases (datum 0) are fine; an odd row of a `[32]`
+   access is not. `llama_rope` now fails at launch with `the B mover refused
+   list 2: error 4` for this reason. The fix is chunking: round the address
+   down to 64 bytes and shift the L1 side by the same amount, per entry. That
+   needs the CB side in **datum** units (`tile*1024 + datum`, matching the
+   expression), not `tile*1024 + row*32 + col`, otherwise a shifted chunk lands
+   in the wrong place.
+
+### Current failure list (`24_tt`, one process per test)
+
+| test | now |
+|---|---|
+| `llama_attention_softmax`, `llama_promote_realized_eager_load` | `tt_verify: OpId(16) is not fully lowered (SSA compute remains)` |
+| `llama_embedding_one_hot` | `cast U32 -> F32 has no native row-op program` |
+| `llama_kv_cache_assign_*` | no panic line; check the `Err value` at the end of the output |
+| `llama_rms_norm` | `to_device: host-staged tensor has no buffer` |
+| `llama_rope` | `B mover refused list 2: error 4` (the congruence item above) |
+
+### Next, in order
+
+1. Per-entry chunking with the 64-byte rule (fixes `rope`), with the CB side in
+   datum units.
+2. The grid question: a non-affine grid coordinate needs either per-grid-point
+   addresses on `TTDmMove` (a data-structure change — ask first) or a pass that
+   chooses a launch where each boundary index is affine (the grid cap is
+   needed anyway: the KV fill asks for 4096 points against ~120 cores).
+3. Then `sum_drop_col`, the SSA-leftover failures, and the wide suite.
+
+## HANDOFF (2026-11-07, session 18) — write `tt_canonical_tile`
 
 **Snapshot.** `main` at `23d266e0`, tree clean, `cargo build` green. Every TT
 compile **deliberately aborts** at the todo at the end of `tt_add_movers`

@@ -1700,6 +1700,166 @@ impl Kernel {
         bin(self, q, one, BOp::Add)
     }
 
+    /// Upper bound of an affine index (the constant term plus every
+    /// variable's `(extent - 1) * stride`), or `None` when the index is not
+    /// affine. Used only to tell a logical index from the tile-datum form
+    /// `tt_reindex` writes: a logical index is always `< outer * rows * cols`,
+    /// because that is the buffer it addresses.
+    fn tt_index_max(&self, idx: OpId) -> Option<i64> {
+        let strides = self.get_strides(idx)?;
+        let mut max = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+        for (var, (len, stride)) in strides.iter() {
+            if *var == OpId::NULL || *stride <= 0 {
+                continue;
+            }
+            let span = len.checked_sub(1)?.checked_mul(*stride)?;
+            max = max.checked_add(span)?;
+        }
+        Some(max)
+    }
+
+    /// Clone an index cone with every loop and lane variable bound to zero.
+    ///
+    /// The block form of a boundary copy publishes the whole block with one
+    /// entry, so the per-iteration term is not in scope at its anchor; the
+    /// lane axes are the access's within-tile offsets and the copy is
+    /// tile-granular. Group ids are left alone: they are the grid, and the
+    /// canonical transform reads them as logical coordinates.
+    fn tt_zero_iteration_vars(&mut self, idx: OpId, before: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
+        if let Some(&done) = memo.get(&idx) {
+            return Some(done);
+        }
+        let op = self.ops[idx].op.clone();
+        let out = match op {
+            Op::Loop { .. } | Op::Unroll { .. } => self.insert_const_idx_before(before, 0i64),
+            Op::Const(_) | Op::Range { .. } | Op::Param { .. } => idx,
+            Op::Binary { x, y, bop } => {
+                let x = self.tt_zero_iteration_vars(x, before, memo)?;
+                let y = self.tt_zero_iteration_vars(y, before, memo)?;
+                self.insert_before(before, Op::Binary { x, y, bop })
+            }
+            Op::Unary { x, uop } => {
+                let x = self.tt_zero_iteration_vars(x, before, memo)?;
+                self.insert_before(before, Op::Unary { x, uop })
+            }
+            Op::Cast { x, dtype } => {
+                let x = self.tt_zero_iteration_vars(x, before, memo)?;
+                self.insert_before(before, Op::Cast { x, dtype })
+            }
+            _ => return None,
+        };
+        memo.insert(idx, out);
+        Some(out)
+    }
+
+    /// Canonicalize one boundary access into the two forms a mover copy needs.
+    ///
+    /// `dram` is the parameter's **physical address, in bytes**: the access's
+    /// own index with the tilize inverse *appended* — outer slice, tile row,
+    /// tile column, then face and position inside the face — plus the tile
+    /// image's pitch and 16-byte header. The index is never rewritten into a
+    /// tile ordinal and never divided by an access footprint; a `/` or `%`
+    /// the access already carries stays in the expression.
+    ///
+    /// `l1` is the tile's slot in the compute-side CB,
+    /// `tile * 1024 + row_in_tile * 32 + col_in_tile` — the coordinates the
+    /// unpack/pack selectors and the SFPU already use, so
+    /// [`Kernel::tt_dataflow_select`] and compute need no layout knowledge.
+    ///
+    /// Geometry comes from the parameter's shape (`Op::Param.shape`, kept for
+    /// TT by `linearize`): the last two dims are the plane the upload tilize
+    /// laid out, the rest is the outer batch; a `[N]` parameter is `N x 1`.
+    /// Two index conventions are accepted: the buffer's flat logical index,
+    /// and the tile-datum form `tt_reindex` writes (`tile * 1024 + pos`).
+    fn tt_canonical_tile(&mut self, base: OpId, idx: OpId, at: OpId) -> Option<(OpId, OpId)> {
+        fn cst(k: &mut Kernel, at: OpId, v: i64) -> OpId {
+            k.insert_const_idx_before(at, v)
+        }
+        fn bin(k: &mut Kernel, at: OpId, x: OpId, y: OpId, op: BOp) -> OpId {
+            k.insert_before(at, Op::Binary { x, y, bop: op })
+        }
+        fn mul(k: &mut Kernel, at: OpId, x: OpId, c: i64) -> OpId {
+            let cc = cst(k, at, c);
+            bin(k, at, x, cc, BOp::Mul)
+        }
+        fn div(k: &mut Kernel, at: OpId, x: OpId, c: i64) -> OpId {
+            let cc = cst(k, at, c);
+            bin(k, at, x, cc, BOp::Div)
+        }
+        fn rem(k: &mut Kernel, at: OpId, x: OpId, c: i64) -> OpId {
+            let cc = cst(k, at, c);
+            bin(k, at, x, cc, BOp::Mod)
+        }
+
+        let shape = self.shape(base);
+        let rank = shape.len();
+        let (rows, cols) = match shape.as_slice() {
+            [.., r, c] => (*r, *c),
+            [c] => (*c, 1),
+            [] => (1, 1),
+        };
+        if rows <= 0 || cols <= 0 {
+            return None;
+        }
+        let outer: i64 = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
+        if outer <= 0 {
+            return None;
+        }
+        let el = i64::from(self.dtype(base).bit_size()) / 8;
+        if el <= 0 {
+            return None;
+        }
+        let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
+        // `tt_reindex` rewrote this index into tile-datum units. Everything
+        // else is the buffer's flat logical index.
+        let tile_units = self.tt_index_max(idx).is_some_and(|m| m >= outer * rows * cols);
+
+        let (tile, row_lo, col_lo) = if tile_units {
+            let tile = div(self, at, idx, 1024);
+            let pos = rem(self, at, idx, 1024);
+            let row = div(self, at, pos, 32);
+            let col = rem(self, at, pos, 32);
+            (tile, row, col)
+        } else {
+            let col = rem(self, at, idx, cols);
+            let flat = div(self, at, idx, cols);
+            let row = rem(self, at, flat, rows);
+            let outer_slice = div(self, at, flat, rows);
+            let tile_row = div(self, at, row, 32);
+            let tile_col = div(self, at, col, 32);
+            let tile = mul(self, at, outer_slice, ntr * ntc);
+            let tr_tile = mul(self, at, tile_row, ntc);
+            let tile = bin(self, at, tile, tr_tile, BOp::Add);
+            let tile = bin(self, at, tile, tile_col, BOp::Add);
+            let row_lo = rem(self, at, row, 32);
+            let col_lo = rem(self, at, col, 32);
+            (tile, row_lo, col_lo)
+        };
+        // Canonical tile slot in the CB: row-major inside the tile, which is
+        // the coordinate the unpack/pack selectors name.
+        let l1_tile = mul(self, at, tile, 1024);
+        let l1_row = mul(self, at, row_lo, 32);
+        let l1 = bin(self, at, l1_tile, l1_row, BOp::Add);
+        let l1 = bin(self, at, l1, col_lo, BOp::Add);
+        // The tile image: four 16x16 faces in face order, then the datum.
+        let face_row = div(self, at, row_lo, 16);
+        let face_col = div(self, at, col_lo, 16);
+        let face_row2 = mul(self, at, face_row, 2);
+        let face = bin(self, at, face_row2, face_col, BOp::Add);
+        let within_row = rem(self, at, row_lo, 16);
+        let within_col = rem(self, at, col_lo, 16);
+        let within_row16 = mul(self, at, within_row, 16);
+        let within = bin(self, at, within_row16, within_col, BOp::Add);
+        let face256 = mul(self, at, face, 256);
+        let datum = bin(self, at, face256, within, BOp::Add);
+        let slot = mul(self, at, tile, tt_isa::dm::TILE_SLOT as i64);
+        let hdr = cst(self, at, tt_isa::dm::TILE_DATA as i64);
+        let slot = bin(self, at, slot, hdr, BOp::Add);
+        let datum_el = mul(self, at, datum, el);
+        let dram = bin(self, at, slot, datum_el, BOp::Add);
+        Some((dram, l1))
+    }
+
     /// Materialise the circular-buffer plan as ordinary SSA before the phase
     /// boundary.
     ///
@@ -1711,21 +1871,15 @@ impl Kernel {
     /// this pass the plan is ordinary IR: generic passes and `cost` see it, and
     /// [`Kernel::tt_dataflow_select`] only encodes it.
     ///
-    /// The block is hoisted before the innermost loop and its index has the
-    /// loop variable zeroed ([`Kernel::strip_unrolls`]): a per-iteration
-    /// boundary copy (the counter as slot) is not encodable yet, because
-    /// `tt_slice` rejects a non-grid variable in a boundary index and the
-    /// mover list is straight-line.
-    ///
-    /// Idempotent for traffic that already exists: a kernel written through the
-    /// custom API (an `Op::Copy` on `Circular` storages) keeps its copies; only
-    /// their boundary indices are normalised, and a loop variable is kept so
-    /// the encoder refuses it loudly instead of guessing.
+    /// The DRAM side of every copy is [`Kernel::tt_canonical_tile`]'s
+    /// `dram` — the access's own index with the tilize inverse appended — so
+    /// it may be any expression the access already carries, `/` and `%`
+    /// included. The L1 side is the tile's slot in the CB. Everything after
+    /// this pass sees canonical tiles only.
     pub fn tt_add_movers(&mut self) {
         if !self.device_info().tenstorrent {
             return;
         }
-        self.debug();
         // CB Storage definitions live in the prologue (past leading
         // params/storages, before everything else).
         let mut prologue = self.head;
@@ -1845,8 +1999,8 @@ impl Kernel {
                 (_, _, _, _, hoist) if !hoist.is_null() => hoist,
                 (load, ..) => load,
             };
-            let streaming = matches!(self.ops[anchor].op, Op::Loop { .. })
-                && loads.iter().all(|(_, _, _, _, hoist)| *hoist == anchor);
+            let streaming =
+                matches!(self.ops[anchor].op, Op::Loop { .. }) && loads.iter().all(|(_, _, _, _, hoist)| *hoist == anchor);
             let mut cb_of: Map<OpId, OpId> = Map::default();
             if streaming {
                 let Op::Loop { len } = self.ops[anchor].op else {
@@ -1855,7 +2009,6 @@ impl Kernel {
                 // The reader's own induction variable: the compute loop keeps
                 // its slot arithmetic, and each entry advances one tile.
                 let reader_loop = self.insert_before(anchor, Op::Loop { len });
-                let mut cone: Map<OpId, OpId> = Map::default();
                 for (load, base, off, tiles, _) in loads.iter().copied() {
                     let Op::Param { dtype, .. } = self.ops[base].op else { return };
                     let Some(len) = tiles.checked_mul(1024) else { return };
@@ -1865,73 +2018,30 @@ impl Kernel {
                     } else {
                         self.insert_before(prologue, storage)
                     };
-                    let Some(cloned) = self.tt_clone_index(off, anchor, reader_loop, anchor, &mut cone) else {
+                    // The block start: the access's own index with every loop
+                    // and lane bound to zero, turned into the parameter's
+                    // physical address by `tt_canonical_tile`. One iteration
+                    // advances one tile image on the DRAM side and one tile in
+                    // the CB.
+                    let mut zero: Map<OpId, OpId> = Map::default();
+                    let Some(flat) = self.tt_zero_iteration_vars(off, anchor, &mut zero) else {
                         return;
                     };
-                    let Some(base_idx) = self.strip_unrolls(cloned, anchor, false) else {
+                    let Some((tile_base, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
                         return;
                     };
-                    // A boundary index is expressed in 1024-element tile units:
-                    // `strip_unrolls` rebases a group step to one whole tile, and
-                    // `tt_slice` turns those units into `TILE_SLOT` bytes. An
-                    // access that covers only part of a tile says so once, here:
-                    // a `[32]` lane vector is one tile row/column (32 elements),
-                    // a scalar is one lane. A group-rebased index already carries
-                    // tile units; anything else is the access's element footprint.
-                    let unit: i64 = match self.shape(load).as_slice() {
-                        [1024] | [32, 32] => 1024,
-                        [32] => 32,
-                        [] => 1,
-                        _ => return,
-                    };
-                    // Rebuild the map in 1024-element tile units. A group-
-                    // rebased index is already there; a non-affine or
-                    // non-dividing map keeps the original index and fails
-                    // loudly in `tt_slice`, never silently here.
-                    let converted = (|| -> Option<OpId> {
-                        if unit == 1024 {
-                            return None;
-                        }
-                        let strides = self.get_strides(base_idx)?;
-                        if strides.iter().any(|(&var, _)| {
-                            var != OpId::NULL
-                                && matches!(self.ops[var].op, Op::Range { kind: RangeKind::Group(_), .. })
-                        }) {
-                            return None;
-                        }
-                        // An index `tt_reindex` rewrote is already in tile
-                        // units: every step there is a whole tile. This unit is
-                        // only for the flat logical indices it left alone.
-                        if strides.iter().all(|(&var, &(_, s))| var == OpId::NULL || s == 0 || s % 1024 == 0) {
-                            return None;
-                        }
-                        if strides
-                            .iter()
-                            .any(|(&var, &(_, s))| var != OpId::NULL && s != 0 && s % unit != 0)
-                        {
-                            return None;
-                        }
-                        let mut acc = self
-                            .insert_const_idx_before(anchor, strides.get(&OpId::NULL).map_or(0, |(_, s)| s / unit * 1024));
-                        for (&var, &(_, stride)) in strides.iter() {
-                            if var == OpId::NULL || stride == 0 {
-                                continue;
-                            }
-                            let c = self.insert_const_idx_before(anchor, stride / unit * 1024);
-                            let term = self.insert_before(anchor, Op::Binary { x: var, y: c, bop: BOp::Mul });
-                            acc = self.insert_before(anchor, Op::Binary { x: acc, y: term, bop: BOp::Add });
-                        }
-                        Some(acc)
-                    })();
-                    let base_idx = converted.unwrap_or(base_idx);
+                    let tile_pitch = self.insert_const_idx_before(anchor, tt_isa::dm::TILE_SLOT as i64);
+                    let dram_step = self.insert_before(anchor, Op::Binary { x: reader_loop, y: tile_pitch, bop: BOp::Mul });
+                    let dram = self.insert_before(anchor, Op::Binary { x: tile_base, y: dram_step, bop: BOp::Add });
                     let stride = self.insert_const_idx_before(anchor, 1024i64);
                     let slot = self.insert_before(anchor, Op::Binary { x: reader_loop, y: stride, bop: BOp::Mul });
-                    self.insert_before(anchor, Op::Copy { src: base, src_idx: base_idx, dst: cb, dst_idx: slot });
+                    self.insert_before(anchor, Op::Copy { src: base, src_idx: dram, dst: cb, dst_idx: slot });
                     cb_of.insert(load, cb);
                 }
                 self.insert_before(anchor, Op::EndLoop);
             } else {
                 let slot_zero = self.insert_const_idx_before(anchor, 0i64);
+                let mut zero: Map<OpId, OpId> = Map::default();
                 for (load, base, off, tiles, _) in loads.iter().copied() {
                     let Op::Param { dtype, .. } = self.ops[base].op else { return };
                     let Some(len) = tiles.checked_mul(1024) else { return };
@@ -1941,52 +2051,13 @@ impl Kernel {
                     } else {
                         self.insert_before(prologue, storage)
                     };
-                    let Some(base_idx) = self.strip_unrolls(off, anchor, true) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(off, anchor, &mut zero) else {
                         return;
                     };
-                    let unit: i64 = match self.shape(load).as_slice() {
-                        [1024] | [32, 32] => 1024,
-                        [32] => 32,
-                        [] => 1,
-                        _ => return,
+                    let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
+                        return;
                     };
-                    let converted = (|| -> Option<OpId> {
-                        if unit == 1024 {
-                            return None;
-                        }
-                        let strides = self.get_strides(base_idx)?;
-                        if strides.iter().any(|(&var, _)| {
-                            var != OpId::NULL
-                                && matches!(self.ops[var].op, Op::Range { kind: RangeKind::Group(_), .. })
-                        }) {
-                            return None;
-                        }
-                        // An index `tt_reindex` rewrote is already in tile
-                        // units: every step there is a whole tile. This unit is
-                        // only for the flat logical indices it left alone.
-                        if strides.iter().all(|(&var, &(_, s))| var == OpId::NULL || s == 0 || s % 1024 == 0) {
-                            return None;
-                        }
-                        if strides
-                            .iter()
-                            .any(|(&var, &(_, s))| var != OpId::NULL && s != 0 && s % unit != 0)
-                        {
-                            return None;
-                        }
-                        let mut acc = self
-                            .insert_const_idx_before(anchor, strides.get(&OpId::NULL).map_or(0, |(_, s)| s / unit * 1024));
-                        for (&var, &(_, stride)) in strides.iter() {
-                            if var == OpId::NULL || stride == 0 {
-                                continue;
-                            }
-                            let c = self.insert_const_idx_before(anchor, stride / unit * 1024);
-                            let term = self.insert_before(anchor, Op::Binary { x: var, y: c, bop: BOp::Mul });
-                            acc = self.insert_before(anchor, Op::Binary { x: acc, y: term, bop: BOp::Add });
-                        }
-                        Some(acc)
-                    })();
-                    let base_idx = converted.unwrap_or(base_idx);
-                    self.insert_before(anchor, Op::Copy { src: base, src_idx: base_idx, dst: cb, dst_idx: slot_zero });
+                    self.insert_before(anchor, Op::Copy { src: base, src_idx: dram, dst: cb, dst_idx: slot_zero });
                     cb_of.insert(load, cb);
                 }
             }
@@ -2017,50 +2088,19 @@ impl Kernel {
                 } else {
                     self.insert_before(prologue, storage)
                 };
-                let Some(base_idx) = self.strip_unrolls(off, self.tail, false) else {
+                let mut zero: Map<OpId, OpId> = Map::default();
+                let Some(flat) = self.tt_zero_iteration_vars(off, self.tail, &mut zero) else {
                     return;
                 };
-                // Same boundary unit as the reader: a partial-tile access
-                // (`[32]` lane vector, scalar) counts 32 or 1 elements per tile
-                // instead of 1024; group-rebased indices already carry tiles.
-                let unit: i64 = match self.shape(store).as_slice() {
-                    [1024] | [32, 32] => 1024,
-                    [32] => 32,
-                    [] => 1,
-                    _ => return,
+                let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, self.tail) else {
+                    return;
                 };
-                let converted = (|| -> Option<OpId> {
-                    if unit == 1024 {
-                        return None;
-                    }
-                    let strides = self.get_strides(base_idx)?;
-                    if strides.iter().any(|(&var, _)| {
-                        var != OpId::NULL && matches!(self.ops[var].op, Op::Range { kind: RangeKind::Group(_), .. })
-                    }) {
-                        return None;
-                    }
-                    if strides.iter().any(|(&var, &(_, s))| var != OpId::NULL && s != 0 && s % unit != 0) {
-                        return None;
-                    }
-                    let mut acc = self
-                        .insert_const_idx_before(self.tail, strides.get(&OpId::NULL).map_or(0, |(_, s)| s / unit * 1024));
-                    for (&var, &(_, stride)) in strides.iter() {
-                        if var == OpId::NULL || stride == 0 {
-                            continue;
-                        }
-                        let c = self.insert_const_idx_before(self.tail, stride / unit * 1024);
-                        let term = self.insert_before(self.tail, Op::Binary { x: var, y: c, bop: BOp::Mul });
-                        acc = self.insert_before(self.tail, Op::Binary { x: acc, y: term, bop: BOp::Add });
-                    }
-                    Some(acc)
-                })();
-                let base_idx = converted.unwrap_or(base_idx);
                 // The store's access index stays its own: it carries the
                 // value's shape, and the pack ignores it (the drain uses
-                // `base_idx`).
+                // `dram`).
                 self.ops[store].op = Op::Store { dst: cb, dst_idx: off, src: value };
                 let slot_zero = self.push_back(Op::Const(Constant::idx(0i64)));
-                self.push_back(Op::Copy { src: cb, src_idx: slot_zero, dst: base, dst_idx: base_idx });
+                self.push_back(Op::Copy { src: cb, src_idx: slot_zero, dst: base, dst_idx: dram });
             }
         }
         // Normalise the boundary indices of traffic that was already SSA: the
@@ -2092,8 +2132,11 @@ impl Kernel {
                 _ => unreachable!("tt_add_movers: a collected op is not a copy"),
             }
         }
-        self.debug();
-        todo!("no removing this todo until the f*cking IR is good looking");
+        // The transform leaves constant subexpressions behind (a zeroed loop
+        // makes most of a tile's arithmetic constant) and the copies share
+        // cones. The generic pipeline is still legal here — the phase boundary
+        // has not been crossed — so clean up before the IR is handed on.
+        self.default_epilogue();
     }
 
     /// Lower the remaining plain ops of a TT kernel to their `TTOp` form:
@@ -2288,10 +2331,8 @@ impl Kernel {
                 Op::Loop { .. } => loop_depth += 1,
                 Op::EndLoop => loop_depth = loop_depth.saturating_sub(1),
                 Op::Copy { src, dst, .. } => {
-                    let src_dram =
-                        matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
-                    let dst_dram =
-                        matches!(self.ops[dst].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
+                    let src_dram = matches!(self.ops[src].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
+                    let dst_dram = matches!(self.ops[dst].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
                     if src_dram && self.is_circular(dst) {
                         boundary.push((scan, true, loop_depth > 0));
                     } else if self.is_circular(src) && dst_dram {
@@ -6092,12 +6133,8 @@ impl Kernel {
             // performs: the first iteration's writes have nothing to wait for.
             // An edge used by two different loops is sized by the busier one;
             // tokens are only ever returned by a post that follows a read.
-            let value = reuse
-                .iter()
-                .filter(|((edge, _), _)| *edge == edges[sem as usize])
-                .map(|(_, count)| *count)
-                .max()
-                .unwrap_or(0);
+            let value =
+                reuse.iter().filter(|((edge, _), _)| *edge == edges[sem as usize]).map(|(_, count)| *count).max().unwrap_or(0);
             assert!(
                 value <= tt_isa::sync::MAX_VALUE,
                 "tt_reg_sync: edge {edge:?} performs {value} loop hand-offs per iteration, more than the {} a semaphore can start with",
@@ -6122,7 +6159,11 @@ impl Kernel {
             let mut n = 0;
             while !id.is_null() && n < 4000 {
                 match self.at(id) {
-                    Op::Loop { .. } | Op::EndLoop | Op::TT(TTOp::Post { .. }) | Op::TT(TTOp::Wait { .. }) | Op::TT(TTOp::WaitBelowMax { .. })
+                    Op::Loop { .. }
+                    | Op::EndLoop
+                    | Op::TT(TTOp::Post { .. })
+                    | Op::TT(TTOp::Wait { .. })
+                    | Op::TT(TTOp::WaitBelowMax { .. })
                     | Op::TT(TTOp::Semset { .. }) => eprintln!("S{n} {id:?}: {:?}", self.at(id)),
                     _ => {}
                 }
@@ -6226,44 +6267,6 @@ impl Kernel {
     /// physical tile stride (one full [32, 32] tile per step, times
     /// inner-group extents) and a bare group id inside Add/Sub wraps
     /// to id * stride. Symbolic extents bail the caller.
-    /// Clone an index cone with `from` replaced by `to`.
-    ///
-    /// Every leaf other than the replaced variable is shared (it dominates
-    /// `before` exactly like the original cone does); only the expressions
-    /// above it are rebuilt, before `before`. Anything that is not index
-    /// arithmetic bails, so callers never invent a value.
-    fn tt_clone_index(&mut self, idx: OpId, from: OpId, to: OpId, before: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
-        if let Some(&done) = memo.get(&idx) {
-            return Some(done);
-        }
-        let op = self.ops[idx].op.clone();
-        let out = match op {
-            Op::Const(_) | Op::Range { .. } | Op::Param { .. } | Op::Unroll { .. } => idx,
-            Op::Loop { .. } => {
-                if idx != from {
-                    return None;
-                }
-                to
-            }
-            Op::Binary { x, y, bop } => {
-                let x = self.tt_clone_index(x, from, to, before, memo)?;
-                let y = self.tt_clone_index(y, from, to, before, memo)?;
-                self.insert_before(before, Op::Binary { x, y, bop })
-            }
-            Op::Unary { x, uop } => {
-                let x = self.tt_clone_index(x, from, to, before, memo)?;
-                self.insert_before(before, Op::Unary { x, uop })
-            }
-            Op::Cast { x, dtype } => {
-                let x = self.tt_clone_index(x, from, to, before, memo)?;
-                self.insert_before(before, Op::Cast { x, dtype })
-            }
-            _ => return None,
-        };
-        memo.insert(idx, out);
-        Some(out)
-    }
-
     fn strip_unrolls(&mut self, idx: OpId, before: OpId, strip_loops: bool) -> Option<OpId> {
         // Clone memo per call (index math is small).
         let mut memo: Map<OpId, OpId> = Map::default();
@@ -7939,13 +7942,17 @@ mod reindex_tests {
             let r = k.const_idx(256u32);
             let c = k.const_idx(256u32);
             let s = k.push_back(Op::Stack { ops: vec![r, c].into_boxed_slice() });
-            let Op::Param { shape, .. } = &mut k.ops[src].op else { unreachable!() };
+            let Op::Param { shape, .. } = &mut k.ops[src].op else {
+                unreachable!()
+            };
             *shape = s;
         }
         {
             let r = k.const_idx(256u32);
             let s = k.push_back(Op::Stack { ops: vec![r].into_boxed_slice() });
-            let Op::Param { shape, .. } = &mut k.ops[dst].op else { unreachable!() };
+            let Op::Param { shape, .. } = &mut k.ops[dst].op else {
+                unreachable!()
+            };
             *shape = s;
         }
         let row_len = k.const_idx(256u32);
@@ -8008,13 +8015,17 @@ mod reindex_tests {
             let r = k.const_idx(32u32);
             let c = k.const_idx(20u32);
             let s = k.push_back(Op::Stack { ops: vec![r, c].into_boxed_slice() });
-            let Op::Param { shape, .. } = &mut k.ops[src].op else { unreachable!() };
+            let Op::Param { shape, .. } = &mut k.ops[src].op else {
+                unreachable!()
+            };
             *shape = s;
         }
         {
             let r = k.const_idx(32u32);
             let s = k.push_back(Op::Stack { ops: vec![r].into_boxed_slice() });
-            let Op::Param { shape, .. } = &mut k.ops[dst].op else { unreachable!() };
+            let Op::Param { shape, .. } = &mut k.ops[dst].op else {
+                unreachable!()
+            };
             *shape = s;
         }
         let row_len = k.const_idx(20u32);

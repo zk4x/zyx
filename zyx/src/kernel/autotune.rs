@@ -160,8 +160,13 @@ impl Kernel {
             self.default_epilogue();
             // The CB plan is SSA: `tt_add_movers` writes the block copies, the
             // writer drains and the two section markers as ordinary
-            // `Op::Copy`/`Load`/`Store` on `Circular` storages. The phase
-            // boundary below only encodes it.
+            // `Op::Copy`/`Load`/`Store` on `Circular` storages, with every
+            // boundary copy's DRAM side a canonical tile-image address. The
+            // phase boundary below only encodes it.
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR before tt_add_movers ===");
+                self.debug();
+            }
             self.tt_add_movers();
             if std::env::var_os("ZYX_TT_IR").is_some() {
                 eprintln!("=== IR after tt_add_movers ===");
