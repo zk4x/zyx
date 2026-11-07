@@ -1,4 +1,96 @@
-## HANDOFF (2026-11-07, session 17) — start here: `tt_add_movers` is the pass
+## HANDOFF (2026-11-07, session 18) — start here: write `tt_canonical_tile`
+
+**Snapshot.** `main` at `23d266e0`, tree clean, `cargo build` green. Every TT
+compile **deliberately aborts** at the todo at the end of `tt_add_movers`
+(`zyx/src/kernel/tenstorrent.rs`, search `no removing this todo`). That is the
+gate, not a bug: the deliverable is the IR at the end of that pass, not green
+gates. The 23/24 suites are red by construction and stay red until the IR is
+right.
+
+**The job of this session, in one line:** implement
+`Kernel::tt_canonical_tile(base, idx, at) -> Option<(dram, l1)>` in
+`tt_add_movers` and wire it into the three boundary sites; then make
+`tt_boundary_moves` evaluate `dram` per entry. Nothing else.
+
+### The transform (exact)
+
+Shape from `self.shape(base)` (the param's shape, kept for TT since `a726d047`):
+
+```
+(rows, cols) = last two dims;  rank-1 [c] = (c, 1);  [] = (1, 1)
+ntr = ceil(rows/32)   ntc = ceil(cols/32)   el = dtype bits / 8
+E     = idx                       // the load/store's own index, untouched
+col   = E % cols
+row   = (E / cols) % rows
+b     = E / (rows * cols)
+tile  = b*ntr*ntc + (row/32)*ntc + (col/32)
+face  = ((row % 32) / 16) * 2 + ((col % 32) / 16)
+within= (row % 16) * 16 + (col % 16)
+dram  = tile*TILE_SLOT + TILE_DATA + (face*256 + within)*el
+l1    = tile*1024 + (row % 32)*32 + (col % 32)
+```
+
+- `dram` is the parameter's **physical address** including the tile pitch and
+  the 16-byte header. It is arbitrary and may be non-affine. Do **not** divide
+  it by an access footprint (the old `unit`/`converted` heuristic) and do
+  **not** `strip_unrolls` — a lane is part of the address.
+- `l1` is the **canonical tile**: row-major inside the tile, faces interleaved.
+  It is what the compute segment and the SFPU already read.
+- Emit with plain IR (`Const`, `Binary` Div/Mod/Mul/Add/Sub) at `at`. Emit a
+  fresh const per use (the one-use-per-const invariant).
+
+### The three sites in `tt_add_movers`
+
+1. Reader, streaming (`anchor` is the loop): `tt_clone_index(off, …)` as now,
+   then `tt_canonical_tile(base, cloned, anchor)`; emit
+   `Copy { src: base, src_idx: dram, dst: cb, dst_idx: l1 }`.
+2. Reader, block (no loop): same with `off`; drop `slot_zero`.
+3. Writer drain: `tt_canonical_tile(base, off, self.tail)`, emit
+   `Copy { src: cb, src_idx: l1, dst: base, dst_idx: dram }`.
+
+Delete the `unit`/`converted` blocks and the `strip_unrolls` calls on those
+paths. `tt_dataflow_select` is not touched: every CB it sees is canonical.
+
+### Then codegen (`tt_boundary_moves` in `codegen/tenstorrent/mod.rs`)
+
+- Drop `tt_slice`'s affinity requirement (`get_strides`) for boundary indices.
+- Bind every non-grid variable of `dram` per move (unrolled loop/group
+  iteration), **evaluate** the expression — div/mod by constants included — to
+  a constant byte address, and emit **64-byte-congruent** moves (a single 64B
+  chunk is legal; whole-tile runs are an optimization).
+- Stop adding `t*slot + data`: the transform owns the pitch and the header.
+- Caps: `LIST_MAX = 512` entries per role per core, grid ≤
+  `DeviceInfo.max_global_work_dims` (tensix rows × columns). Work over the core
+  count is blocked with a static per-entry stride; prefer a block size that
+  divides the work so no tail exists.
+
+### Failure modes this must close (all are "the index was rewritten, not transformed")
+
+| case | today |
+|---|---|
+| KV-cache fill `f16[4096x8x128]` | permuted `%4096`/`/4096` drain; also writes only 4096 of 16384 padded tiles (rows 8 → padded 32) |
+| `23_tt_lowering::sum_drop_col` | scalar-per-column store lands at `row*32`, not the face slot |
+| `24_tt::llama_rope` | `boundary offset 2 is not a whole tile` |
+| `24_tt::llama_kv_cache_assign_*` | `boundary index … is not affine` |
+| `24_tt::llama_embedding_one_hot` | row select is a gather by construction |
+
+### Reporting protocol (the user asked for this explicitly)
+
+- Show `kernel.debug()` at the **start and end of `tt_add_movers`** for a
+  small kernel (`sum_one_row`) and for the KV fill. The end IR must read as
+  `copy cb[tile*l1] = dram[<canonical expression>]`.
+- Green tests are not the progress meter here; correct IR is. Do not weaken or
+  rewrite a gate to get green.
+- Keep the todo until the IR looks right, then remove it in its own commit.
+
+### Do not stray
+
+- No metadata, no side tables, no per-template arms, no graph-level shortcuts.
+- `tt_canonical_tile` is the only place that knows the layout.
+- Loops are part of this baseline ("properly working with loops"), not a later
+  optimization; optimization starts only after the wide suite is green.
+
+## HANDOFF (2026-11-07, session 17) — `tt_add_movers` is the pass
 
 **The design (user's, 10 days — do not stray).** The pass that creates the
 reader/writer segments is **`tt_add_movers`** (formerly `tt_cb_lower`). It must
