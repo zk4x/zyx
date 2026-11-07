@@ -9,6 +9,44 @@ the rest now fail loudly at the real gap — see below). Goal unchanged: one
 `examples/llama` forward step on `Dev::TT(0)` (ttsim), `seq_len = 1`, checked
 against the CPU.
 
+### The assembled run (this is the progress meter)
+
+`zyx-bench/src/bin/llama_bench.rs` is the assembled driver: `Llama::random`
+(f16, no checkpoint), decode 1x1 and prefill 128x128, tape-based `forward`,
+compile measured separately. Pin the device with the existing override:
+
+```bash
+cd zyx-bench && cargo build --release --bin llama_bench
+TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so ZYX_DEV=tt:0 \
+  ./target/release/llama_bench
+```
+
+`ZYX_DEV` goes through `config.select_only(dev)` (`backend/mod.rs:1185`), so a
+pinned run computes only on TT. **The tape is device-generic** — `compile_graph`
+matches kernels per device and `add_memory_ops` adds `ToDevice` only for a
+producer/consumer pair extraction placed on different devices; `cuda.rs:2437`
+is CUDA's copy-into-CUDA arm and needs a CUDA kernel consuming a TT value, which
+`select_only` makes impossible. (The earlier "24_tt must not use Tape" note was
+wrong.)
+
+First failures of the assembled model, in order:
+
+1. **Constant store → surviving SSA store.** The model's first kernel is the
+   KV-cache zero fill (`f16[4096x8x128]`). Phase 3 of `tt_dataflow_select`
+   handled a DST-produced store and a multi-use CB drain, not a store whose
+   source is a constant, so the store survived into `tt_verify` ("SSA memory op
+   survived register allocation"). Fixed: fill the writer CB from the constant
+   (SFPU const + stores, FP32 bits; the host boundary narrows) and drop the
+   store, leaving the planned drain to move it.
+2. **Non-affine (permuted) drain index.** Next: `tenstorrent: boundary index
+   OpId(32) is not affine`. The fill kernel's store index is a *permutation*
+   (`(pos, kv, hd)` written as `pos*1024 + kv*128 + hd`, produced with `%4096`
+   and `/4096` over the launch axis), and its grid is `1024 x 4 = 4096` group
+   points against ~120 cores. Both are the two structural items the gate ladder
+   could never reach: the **general gather** (element-wise, face-aware, 64-byte
+   aligned) and the **grid cap with the remainder looped**. They are now the
+   first thing the model hits, not a later checkbox.
+
 ### How the green gates work for us (read this before quoting progress)
 
 The gates are **regression nets, not a progress meter.** Concretely:
@@ -270,7 +308,9 @@ row-0/column-0 result is the same class (access/fold keyed on shape).
   `ZYX_DEBUG=8` winner IR, `ZYX_DEBUG=256` NoSearch seed.
 - `--tests` does not fit 900 s on this box; an earlier "all green" came from
   that truncation.
-- `24_tt` must not use `Tape`.
+- `24_tt` runs without `Tape` because these gates exercise the eager/lowering
+  path directly, not the tape. (The tape itself is device-generic; see the
+  correction under "Tape" below.)
 - The examples workspace still asks for `features = ["tenstorrent"]`.
 - `24_tt::llama_attention_softmax` is a real op-group failure: transposed B
   (`pat_b` binds the reduced lane on the multiplier; `q @ k^T` gives it as the
@@ -572,7 +612,9 @@ earlier "transposed-B design decision" was the wrong framing.
 - The examples workspace does not resolve: `examples/tt_gemm` and
   `examples/qwen3.8-27b` ask for `features = ["tenstorrent"]`, which no longer
   exists (TT is always compiled in). `zyx/tests` is unaffected.
-- `24_tt` must not use `Tape` (see above).
+- `24_tt` places tensors explicitly and reads back with `.to(Dev::C)`; it does
+  not use `Tape`, because it tests the eager/lowering path, not the tape. (The
+  tape is device-generic — see the correction in the session-16 handoff.)
 - Do not exempt shape ops from `verify`'s `has_move_or_reduce`: tried this
   session, it only moved the failures to `tt_verify: missing EndReader` and
   `matmul` still had a value-position shape op. Reverted.
@@ -636,10 +678,15 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
   AGENT=1 timeout 10 $BIN <test> --exact --nocapture
 ```
 
-**No `Tape` in these tests.** The tape plans device assignments of its own and
-will copy a TT result to CUDA (`not yet implemented: CUDA copy from TT(0)`,
-`backend/cuda.rs:2437`), which is not what is under test. Tensors are placed
-explicitly and read back with `.to(Dev::C)`, as the `23_tt_lowering` gates do.
+**These gates do not use `Tape`.** They place tensors explicitly and read back
+with `.to(Dev::C)`, because they test the eager lowering path directly. The tape
+is *not* device-bound: `Tape::realize` → `compile_graph` matches kernels per
+device, extracts, and `add_memory_ops` inserts `ToDevice` only for a
+producer/consumer pair extraction actually placed on different devices. The
+`CUDA copy from TT(0)` todo (`backend/cuda.rs:2437`) is CUDA's *copy-into-CUDA*
+arm and is reached only when a **CUDA** kernel is chosen to consume a TT value.
+`ZYX_DEV=tt:0` calls `config.select_only(TT(0))`, so no CUDA kernel can be
+chosen — the assembled model runs through the tape fine.
 
 | gate | exact failure |
 |---|---|

@@ -2541,6 +2541,27 @@ impl Kernel {
         if !stores.is_empty() {
             // Compute-side rewrites in head order; drains are already SSA.
             for (store, base, _off, src) in stores.iter() {
+                // A constant store (a `zeros`/`full` buffer — the KV cache
+                // initialiser is the model's first kernel) has no DST producer
+                // to pack. Fill the writer CB with the value and let the
+                // planned drain move it: the CB is FP32 whatever the
+                // parameter's dtype, and the host boundary narrows on the way
+                // out. The store's index cone dies with it.
+                if let Op::Const(c) = self.ops[*src].op {
+                    if !writer_cbs.contains(base) {
+                        todo!("a constant store outside a writer CB has no lowering");
+                    }
+                    let bits = (c.as_float().expect("a stored constant is numeric") as f32).to_bits();
+                    self.insert_before(*store, Op::TT(TTOp::SfpConst(Box::new(TTSfpConst { reg: L0, bits }))));
+                    for o in (0..64u16).step_by(2) {
+                        self.insert_before(
+                            *store,
+                            Op::TT(TTOp::SfpStore(Box::new(TTSfpStore { slot: *base, at: o, reg: L0, fmt: FP32 }))),
+                        );
+                    }
+                    self.remove_op(*store);
+                    continue;
+                }
                 let Some((_dtype, storage)) = self.tt_lowered_storage(*src, &lower) else {
                     // Unlowered value: stays for later increments.
                     continue;
