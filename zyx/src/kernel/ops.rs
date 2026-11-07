@@ -466,7 +466,7 @@ pub enum PTXOp {
     Bytes(Box<[u8]>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// One page of the Tenstorrent reader list ([`TTOp::DmRead`]).
 pub struct TTDmRead {
     /// Global head-order param ordinal (the launch arg index).
@@ -475,15 +475,13 @@ pub struct TTDmRead {
     pub l1: u32,
     /// Bytes this page moves.
     pub len: u32,
-    /// Byte offset of the page inside the param's slice at grid point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (the column).
-    pub gstride1: u32,
+    /// Byte offset of the page inside the param's buffer for every grid point,
+    /// in launch order (`axis0 * extent1 + axis1`). The list is staged per
+    /// core, so the address is arbitrary per grid point, never a stride.
+    pub offsets: Box<[u32]>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// One page of the Tenstorrent writer list ([`TTOp::DmWrite`]).
 pub struct TTDmWrite {
     /// Global head-order param ordinal (the launch arg index).
@@ -492,18 +490,15 @@ pub struct TTDmWrite {
     pub l1: u32,
     /// Bytes this page moves.
     pub len: u32,
-    /// Byte offset of the page inside the param's slice at grid point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (the column).
-    pub gstride1: u32,
+    /// Byte offset of the page inside the param's buffer for every grid point,
+    /// in launch order (`axis0 * extent1 + axis1`).
+    pub offsets: Box<[u32]>,
     /// Writer-side narrowing: the L1 tile is FP32 and the param is 16-bit, so
     /// the host write-back converts (`TT_NARROW_*`).
     pub narrow: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// One tile-slot read of the reader list, in either shape the mover knows:
 /// transposed ([`TTOp::DmReadTransposed`]) or with column 0 copied across
 /// ([`TTOp::DmReadBroadcastCol`]). Both are `dm::op::READ_TRANSPOSED` /
@@ -514,12 +509,9 @@ pub struct TTDmTileRead {
     pub param: u32,
     /// L1 byte address the shaped tile lands at.
     pub dst: u32,
-    /// Byte offset of the tile inside the param's slice at grid point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (the column).
-    pub gstride1: u32,
+    /// Byte offset of the tile inside the param's buffer for every grid point,
+    /// in launch order (`axis0 * extent1 + axis1`).
+    pub offsets: Box<[u32]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
@@ -681,8 +673,8 @@ pub enum TTOp {
     /// Boxed to keep `Op` in budget.
     TensixGrid(Box<[GwsDim; 2]>),
     /// One DRAM page of the reader list: `len` bytes from the buffer of param
-    /// `param` (at byte `base` plus the launch's grid coordinates times
-    /// `gstride0`/`gstride1`) into L1 at `l1`. Codegen emits one per 4 KB page,
+    /// `param` (at the byte offset its per-grid-point table names, for the
+    /// launch's grid point) into L1 at `l1`. Codegen emits one per 4 KB page,
     /// so the entry count — the stream's shape — is fixed at compile time; the
     /// launch only substitutes the chunk address and the grid point. Effect
     /// only: a DCE root, never deduplicated. Boxed to keep `Op` in budget.

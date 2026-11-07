@@ -134,26 +134,45 @@ impl Kernel {
                 Op::TT(TTOp::DmRead(ref page)) => {
                     writeln!(
                         f,
-                        "{indent}{blue}dm_read{reset} param:{} l1:{:#x} len:{} base:{}",
-                        page.param, page.l1, page.len, page.base
+                        "{indent}{blue}dm_read{reset} param:{} l1:{:#x} len:{} offsets:{:?}",
+                        page.param,
+                        page.l1,
+                        page.len,
+                        &page.offsets[..page.offsets.len().min(8)]
                     )
                     .unwrap();
                 }
                 Op::TT(TTOp::DmWrite(ref page)) => {
                     writeln!(
                         f,
-                        "{indent}{blue}dm_write{reset} param:{} l1:{:#x} len:{} base:{} narrow:{}",
-                        page.param, page.l1, page.len, page.base, page.narrow
+                        "{indent}{blue}dm_write{reset} param:{} l1:{:#x} len:{} offsets:{:?} narrow:{}",
+                        page.param,
+                        page.l1,
+                        page.len,
+                        &page.offsets[..page.offsets.len().min(8)],
+                        page.narrow
                     )
                     .unwrap();
                 }
                 Op::TT(TTOp::DmReadTransposed(ref t)) => {
-                    writeln!(f, "{indent}{blue}dm_read_transposed{reset} param:{} dst:{:#x} base:{}", t.param, t.dst, t.base)
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_read_transposed{reset} param:{} dst:{:#x} offsets:{:?}",
+                        t.param,
+                        t.dst,
+                        &t.offsets[..t.offsets.len().min(8)]
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::DmReadBroadcastCol(ref t)) => {
-                    writeln!(f, "{indent}{blue}dm_read_broadcast_col{reset} param:{} dst:{:#x} base:{}", t.param, t.dst, t.base)
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_read_broadcast_col{reset} param:{} dst:{:#x} offsets:{:?}",
+                        t.param,
+                        t.dst,
+                        &t.offsets[..t.offsets.len().min(8)]
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::DmFill(ref fill)) => {
                     writeln!(

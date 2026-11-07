@@ -49,36 +49,54 @@ Implementation notes worth keeping:
 - **The block form zeroes loops and lanes** (`tt_zero_iteration_vars`, which
   leaves group ids alone) because the block copy is hoisted out of the loop.
   The streaming form adds `reader_loop*TILE_SLOT` per iteration.
-- Codegen `tt_slice` now *evaluates* the expression (`tt_eval_index`) with the
-  bound loops/lanes, takes the base at grid coordinate zero and each grid
-  axis's stride at coordinate one, and checks the last coordinate so a
-  non-affine coordinate is refused instead of sliced wrong. `+ t*TILE_SLOT` is
-  the only per-tile advance it adds; `TILE_DATA` is in the expression. A shaped
-  read subtracts it again (it writes the header itself).
+- Codegen `tt_slice` becomes an evaluator: bind the loops and lanes, then
+  **evaluate the expression for every grid point** into a per-move table
+  (`TTDmMove::offsets`, in launch order `axis0*extent1 + axis1`). There is no
+  base/stride split any more and nothing has to be affine in a grid coordinate:
+  the launch already stages a **separate list per core**, so a grid point may
+  name any address. `tt_grid_extents` reads the extents from the group ranges
+  (`gws_from_kernel`); a symbolic grid is refused because the table would need
+  the extent at compile time.
 - The writer's tile advance now uses the **CB** dtype, so an f16 output's FP32
   writer tile is one entry (it used to be split into two).
 - CB bases are placed at `≡16 mod 64` (`tt_place_cbs`), which is exactly where
   a tile image's datum block lives.
 
-### The two hard constraints the mover imposes (measured, not guessed)
+### The one hard constraint left: 64-byte congruence
 
-1. **A move's per-core address is affine in the grid coordinates.**
-   `TTDmMove` carries one base and one `gidx*stride` per axis, and the launch
-   computes `base + gidx0*gstride0 + gidx1*gstride1` (`tt_move_offset`). The
-   *list* is staged per core, so this is a zyx data-structure limit, not a
-   firmware one — but with `TTDmMove` as it is, a boundary index that is
-   non-affine in a grid coordinate cannot be expressed. The KV fill's drain is
-   exactly that (`b = E%4096`), which is why it still cannot launch.
-2. **A read must be 64-byte congruent between DRAM and L1.** A partial-tile
-   datum offset breaks it: `base = tile*4160 + 16 + datum*el` is congruent only
-   when `datum*el ≡ 0 (mod 64)` — for f16, `datum` a multiple of 32. Whole
-   tiles and the block/stream bases (datum 0) are fine; an odd row of a `[32]`
-   access is not. `llama_rope` now fails at launch with `the B mover refused
-   list 2: error 4` for this reason. The fix is chunking: round the address
-   down to 64 bytes and shift the L1 side by the same amount, per entry. That
-   needs the CB side in **datum** units (`tile*1024 + datum`, matching the
-   expression), not `tile*1024 + row*32 + col`, otherwise a shifted chunk lands
-   in the wrong place.
+**A read must be 64-byte congruent between DRAM and L1.** A partial-tile datum
+offset breaks it: `base = tile*4160 + 16 + datum*el` is congruent only when
+`datum*el ≡ 0 (mod 64)` — for f16, `datum` a multiple of 32. Whole tiles and
+the block/stream bases (datum 0) are fine; an odd row of a `[32]` access is
+not. `llama_rope` shows it as `the B mover refused list 2: error 4`. The fix is
+per-entry chunking: round the address down to 64 bytes and shift the L1 side by
+the same amount. That needs the CB side in **datum** units
+(`tile*1024 + datum`, matching the expression), not `tile*1024 + row*32 + col`,
+or a shifted chunk lands in the wrong place.
+
+### The next blocker, now reachable: the grid cap
+
+The assembled bench now gets past the KV fill's index and stops at
+`grid dim 0 32768 exceeds device max 10`. That is the launch-size limit, not a
+representation limit: the fill asks for 32768×4 points against ~120 cores. The
+work has to be blocked per core (a divisor of the work so there is no tail, or
+a tail rule), which is a pass of its own.
+
+### Per-grid-point tables: what to know
+
+- `TTDmRead`/`TTDmWrite`/`TTDmTileRead`/`TTDmMove` carry `offsets: Box<[u32]>`
+  instead of `base`/`gstride0`/`gstride1`; `tt_move_offset` is gone.
+- `tt_pages` splits a move into 4 KB pages; each page re-bases the table by its
+  byte delta (`tt_page_offsets`).
+- The launch indexes the table by the **dense** grid point
+  (`gidx0*grid_dims[1] + gidx1`), not by `point` (`gidx0*ncols + gidx1`, which
+  indexes the chip's Tensix tiles). Mixing them up is what made `tiling` fail
+  with "2 grid offsets but the launch has 15 points".
+- A `RangeKind::Local` in a section renders as no code, like `Unroll`: it is a
+  lane axis, and the boundary copies address lane-free bases.
+- A boundary index that names a `Param { Variable }` still cannot be lowered:
+  the offsets table needs the value at compile time. `llama_kv_cache_assign_*`
+  is that case (`... is not evaluable at grid point (0, 0)`).
 
 ### Current failure list (`24_tt`, one process per test)
 
@@ -86,18 +104,16 @@ Implementation notes worth keeping:
 |---|---|
 | `llama_attention_softmax`, `llama_promote_realized_eager_load` | `tt_verify: OpId(16) is not fully lowered (SSA compute remains)` |
 | `llama_embedding_one_hot` | `cast U32 -> F32 has no native row-op program` |
-| `llama_kv_cache_assign_*` | no panic line; check the `Err value` at the end of the output |
+| `llama_kv_cache_assign_*` | boundary index names a runtime variable (`Param { Variable }`) |
 | `llama_rms_norm` | `to_device: host-staged tensor has no buffer` |
-| `llama_rope` | `B mover refused list 2: error 4` (the congruence item above) |
+| `llama_rope` | `B mover refused list 2: error 4` (64-byte congruence) |
 
 ### Next, in order
 
-1. Per-entry chunking with the 64-byte rule (fixes `rope`), with the CB side in
-   datum units.
-2. The grid question: a non-affine grid coordinate needs either per-grid-point
-   addresses on `TTDmMove` (a data-structure change — ask first) or a pass that
-   chooses a launch where each boundary index is affine (the grid cap is
-   needed anyway: the KV fill asks for 4096 points against ~120 cores).
+1. Per-entry chunking with the 64-byte rule (fixes `rope`), CB side in datum
+   units.
+2. The grid cap: block the work per core with a static per-entry stride,
+   preferring a divisor of the work so no tail exists.
 3. Then `sum_drop_col`, the SSA-leftover failures, and the wide suite.
 
 ## HANDOFF (2026-11-07, session 18) — write `tt_canonical_tile`

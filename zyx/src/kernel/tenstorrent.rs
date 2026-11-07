@@ -1723,15 +1723,18 @@ impl Kernel {
     /// The block form of a boundary copy publishes the whole block with one
     /// entry, so the per-iteration term is not in scope at its anchor; the
     /// lane axes are the access's within-tile offsets and the copy is
-    /// tile-granular. Group ids are left alone: they are the grid, and the
-    /// canonical transform reads them as logical coordinates.
+    /// tile-granular. A `Local` range is a lane by another name. Group ids are
+    /// left alone: they are the grid, and the canonical transform reads them
+    /// as logical coordinates.
     fn tt_zero_iteration_vars(&mut self, idx: OpId, before: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
         if let Some(&done) = memo.get(&idx) {
             return Some(done);
         }
         let op = self.ops[idx].op.clone();
         let out = match op {
-            Op::Loop { .. } | Op::Unroll { .. } => self.insert_const_idx_before(before, 0i64),
+            Op::Loop { .. } | Op::Unroll { .. } | Op::Range { kind: RangeKind::Local(_), .. } => {
+                self.insert_const_idx_before(before, 0i64)
+            }
             Op::Const(_) | Op::Range { .. } | Op::Param { .. } => idx,
             Op::Binary { x, y, bop } => {
                 let x = self.tt_zero_iteration_vars(x, before, memo)?;

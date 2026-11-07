@@ -120,7 +120,7 @@ pub struct TTProgram {
     pub sems: Vec<TTSemaphoreInit>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
 /// One data-mover move of the native program: `bytes` between the DRAM
 /// buffer of param `param` and L1 address `l1`.
 pub struct TTDmMove {
@@ -135,19 +135,11 @@ pub struct TTDmMove {
     /// it: F32 `Dst` -> BF16 L1 is `pack_fmt_conv_mode=0x105`, which the
     /// pinned ttsim refuses (`ttsim-divergence.md`, "BF16 late narrowing").
     pub narrow: u8,
-    /// Byte offset of this move's slice inside the param's buffer at grid
-    /// point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (gidx0, the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (gidx1, the column).
-    pub gstride1: u32,
-}
-
-/// Byte offset of a move's slice for one grid point: the program is
-/// tile-uniform, so this is the only thing a grid point changes.
-pub fn tt_move_offset(mv: &TTDmMove, gidx0: u32, gidx1: u32) -> usize {
-    mv.base as usize + gidx0 as usize * mv.gstride0 as usize + gidx1 as usize * mv.gstride1 as usize
+    /// Byte offset of this move's slice inside the param's buffer for every
+    /// grid point, in launch order (`axis0 * extent1 + axis1`). The launch
+    /// hands each core its own entry list, so a grid point may name any
+    /// address: the expression is evaluated, not reduced to a stride.
+    pub offsets: Box<[u32]>,
 }
 
 /// `TTDmMove::narrow`: the L1 bytes are copied as they are.
@@ -317,9 +309,7 @@ impl Kernel {
                 rendered.push_back(Op::TT(TTOp::DmReadBroadcastCol(Box::new(TTDmTileRead {
                     param: mv.param,
                     dst: mv.l1,
-                    base: mv.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
+                    offsets: mv.offsets.clone(),
                 }))));
                 continue;
             }
@@ -328,9 +318,7 @@ impl Kernel {
                     param: mv.param,
                     l1: page.l1,
                     len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
+                    offsets: tt_page_offsets(mv, page.at)?,
                 }))));
             }
         }
@@ -346,9 +334,7 @@ impl Kernel {
                     param: mv.param,
                     l1: page.l1,
                     len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
+                    offsets: tt_page_offsets(mv, page.at)?,
                     narrow: mv.narrow,
                 }))));
             }
@@ -358,13 +344,12 @@ impl Kernel {
     }
 }
 
-/// One 4 KB page of a boundary move: its L1 side, its byte length, and its
-/// byte offset inside the param's slice. The grid strides move the whole
-/// slice, so they stay on the move.
+/// One 4 KB page of a boundary move: its L1 side, its byte length, and the
+/// byte delta that turns the move's per-grid-point table into this page's.
 struct TtPage {
     l1: u32,
     len: u32,
-    base: u32,
+    at: u32,
 }
 
 /// Split a boundary move into the pages codegen emits one op each for: the
@@ -372,16 +357,26 @@ struct TtPage {
 /// (`READ_BROADCAST_COL`, one whole `TILE_SLOT`) is one entry by definition.
 fn tt_pages(mv: &TTDmMove) -> Vec<TtPage> {
     if mv.bytes == tt_isa::dm::TILE_SLOT as u32 {
-        return vec![TtPage { l1: mv.l1, len: mv.bytes, base: mv.base }];
+        return vec![TtPage { l1: mv.l1, len: mv.bytes, at: 0 }];
     }
     let mut pages = Vec::with_capacity(mv.bytes.div_ceil(TT_DRAM_PAGE_BYTES) as usize);
     let mut at = 0u32;
     while at < mv.bytes {
         let len = (mv.bytes - at).min(TT_DRAM_PAGE_BYTES);
-        pages.push(TtPage { l1: mv.l1 + at, len, base: mv.base + at });
+        pages.push(TtPage { l1: mv.l1 + at, len, at });
         at += len;
     }
     pages
+}
+
+/// A move's per-grid-point table, shifted by one page's byte delta.
+fn tt_page_offsets(mv: &TTDmMove, at: u32) -> Result<Box<[u32]>, BackendError> {
+    let mut table = Vec::with_capacity(mv.offsets.len());
+    for off in mv.offsets.iter() {
+        let value = i64::from(*off) + i64::from(at);
+        table.push(u32::try_from(value).map_err(|_| tt_err(format!("tenstorrent: page offset {value} does not fit u32")))?);
+    }
+    Ok(table.into_boxed_slice())
 }
 fn tt_err(context: String) -> BackendError {
     BackendError { status: ErrorStatus::KernelCompilation, context: context.into() }
@@ -995,7 +990,11 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::Unroll { .. } => {}
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(_) => {}
-                _ => return Err(sec.err(format!("range {id:?} is not a group range"))),
+                // A lane axis is a within-tile offset: the boundary copies
+                // address lane-free bases (the transform binds it) and the
+                // tile-shape carriers never become addresses, so it emits no
+                // code — exactly like `Unroll` above.
+                RangeKind::Local(_) => {}
             },
             Op::Loop { len } => {
                 if sec.k.dtype(*len) == DType::Bool {
@@ -1638,80 +1637,75 @@ fn tt_index_vars(k: &Kernel, idx: OpId, out: &mut Vec<OpId>) {
     }
 }
 
-/// Byte offset and per-grid-axis byte strides of a boundary move's slice.
+/// The launch grid's axis extents, from the kernel's group ranges. A boundary
+/// move's address is evaluated per grid point, so the extents must be known at
+/// compile time; a symbolic grid is refused rather than guessed.
+fn tt_grid_extents(k: &Kernel) -> Result<[u32; 2], BackendError> {
+    let gws = crate::backend::gws_from_kernel(k, &k.dev_info().max_global_work_dims)?;
+    let mut grid = [1u32; 2];
+    for (axis, dim) in gws.iter().enumerate() {
+        let GwsDim::Const(len) = dim else {
+            return Err(tt_err(format!(
+                "tenstorrent: grid axis {axis} is symbolic; a boundary move is evaluated per grid point"
+            )));
+        };
+        grid[axis] =
+            u32::try_from(*len).map_err(|_| tt_err(format!("tenstorrent: grid axis {axis} length {len} does not fit u32")))?;
+    }
+    Ok(grid)
+}
+
+/// Byte offset of a boundary slice inside its param's buffer for **every** grid
+/// point, in launch order (`axis0 * extent1 + axis1`).
 ///
 /// The index is `tt_add_movers`' canonical DRAM address — bytes, with the tile
 /// pitch, header and face layout already in the expression — so it may be any
-/// tree of integer arithmetic, `/` and `%` included. It is *evaluated* for one
-/// concrete binding: the bound loops and lanes come from `bind`, and the grid
-/// coordinates are the only thing a core changes, so each grid axis must be a
-/// pure stride. The base is the expression at grid coordinate zero, an axis's
-/// stride is its value at coordinate one, and the expression is checked at the
-/// axis's last coordinate so a coordinate that is not affine is refused rather
-/// than sliced wrong.
-fn tt_slice(k: &Kernel, idx: OpId, bind: &Map<OpId, i64>) -> Result<(u32, u32, u32), BackendError> {
+/// tree of integer arithmetic, `/` and `%` included. The bound loops and lanes
+/// come from `bind`; the two grid coordinates are substituted per entry. The
+/// list is staged per core, so a grid point may name any address: nothing here
+/// is required to be affine.
+fn tt_move_offsets(k: &Kernel, idx: OpId, bind: &Map<OpId, i64>, grid: [u32; 2]) -> Result<Box<[u32]>, BackendError> {
     let mut vars = Vec::new();
     tt_index_vars(k, idx, &mut vars);
-    // Grid axis -> the one variable that moves it.
-    let mut axes: [Option<(OpId, i64, u32)>; 2] = [None, None];
+    let mut axis_var: [Option<OpId>; 2] = [None, None];
     for var in vars.iter().copied() {
-        let Op::Range { axis, kind: RangeKind::Group(len), .. } = k.at(var) else {
+        let Op::Range { axis, kind: RangeKind::Group(_), .. } = k.at(var) else {
             continue;
         };
         if bind.contains_key(&var) {
             continue;
         }
-        let slot = axes.get_mut(*axis as usize).ok_or_else(|| {
+        let slot = axis_var.get_mut(*axis as usize).ok_or_else(|| {
             tt_err(format!("tenstorrent: boundary index {idx:?} names grid axis {axis}, which is not dispatched"))
         })?;
         if slot.is_some() {
             return Err(tt_err(format!("tenstorrent: boundary index {idx:?} names more than one variable on grid axis {axis}")));
         }
-        let extent = k
-            .resolve_const(*len)
-            .and_then(Constant::as_dim)
-            .ok_or_else(|| tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string()))?;
-        let extent = u32::try_from(extent)
-            .map_err(|_| tt_err(format!("tenstorrent: grid axis {axis} extent {extent} does not fit u32")))?;
-        *slot = Some((var, 0, extent));
+        *slot = Some(var);
     }
-    // Base: every grid coordinate at zero, every bound variable as given.
-    let mut at_zero = bind.clone();
-    for (var, _, _) in axes.iter().flatten() {
-        at_zero.insert(*var, 0);
-    }
-    let base =
-        tt_eval_index(k, idx, &at_zero).ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not evaluable")))?;
-    let mut strides = [0i64; 2];
-    for axis in 0..2 {
-        let Some((var, _, extent)) = axes[axis] else { continue };
-        let mut at_one = at_zero.clone();
-        at_one.insert(var, 1);
-        let stride = tt_eval_index(k, idx, &at_one)
-            .ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not evaluable at grid 1")))?
-            .checked_sub(base)
-            .ok_or_else(|| tt_err("tenstorrent: a grid stride overflows".to_string()))?;
-        // The split has one base and one stride per axis: the expression must
-        // actually be affine in that coordinate, not merely piecewise.
-        let last = i64::from(extent) - 1;
-        let mut at_last = at_zero.clone();
-        at_last.insert(var, last);
-        let seen = tt_eval_index(k, idx, &at_last)
-            .ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not evaluable at its last grid point")))?;
-        let span = last.checked_mul(stride).ok_or_else(|| tt_err("tenstorrent: a grid stride overflows".to_string()))?;
-        let want = base.checked_add(span).ok_or_else(|| tt_err("tenstorrent: a grid stride overflows".to_string()))?;
-        if seen != want {
-            return Err(tt_err(format!(
-                "tenstorrent: boundary index {idx:?} is not affine in grid axis {axis}: \
-                 {seen} bytes at {last}, {want} from base {base} + {last} * {stride}"
-            )));
+    let count = (grid[0] as usize)
+        .checked_mul(grid[1] as usize)
+        .ok_or_else(|| tt_err("tenstorrent: boundary grid overflows".to_string()))?;
+    let mut offsets = Vec::with_capacity(count);
+    for g0 in 0..grid[0] {
+        for g1 in 0..grid[1] {
+            let mut at = bind.clone();
+            if let Some(var) = axis_var[0] {
+                at.insert(var, i64::from(g0));
+            }
+            if let Some(var) = axis_var[1] {
+                at.insert(var, i64::from(g1));
+            }
+            let value = tt_eval_index(k, idx, &at).ok_or_else(|| {
+                tt_err(format!("tenstorrent: boundary index {idx:?} is not evaluable at grid point ({g0}, {g1})"))
+            })?;
+            offsets.push(
+                u32::try_from(value)
+                    .map_err(|_| tt_err(format!("tenstorrent: boundary offset {value} bytes does not fit u32")))?,
+            );
         }
-        strides[axis] = stride;
     }
-    let to_u32 = |v: i64| -> Result<u32, BackendError> {
-        u32::try_from(v).map_err(|_| tt_err(format!("tenstorrent: boundary offset {v} bytes does not fit u32")))
-    };
-    Ok((to_u32(base)?, to_u32(strides[0])?, to_u32(strides[1])?))
+    Ok(offsets.into_boxed_slice())
 }
 
 /// The L1 byte offset a boundary copy's buffer-side index names, for one
@@ -1767,6 +1761,7 @@ fn tt_boundary_moves(
     l1: &[u32],
     param_ordinal_of: &Map<OpId, u32>,
 ) -> Result<(Vec<TTDmMove>, Vec<TTDmMove>), BackendError> {
+    let grid = tt_grid_extents(k)?;
     let mut reader: Vec<TTDmMove> = Vec::new();
     let mut writer: Vec<TTDmMove> = Vec::new();
     let mut section = 0u8;
@@ -1848,7 +1843,7 @@ fn tt_boundary_moves(
                     combos = next;
                 }
                 for bind in &combos {
-                    let (base, gstride0, gstride1) = tt_slice(k, idx, bind)?;
+                    let offsets = tt_move_offsets(k, idx, bind, grid)?;
                     // The buffer side is a slot inside the CB, never a grid
                     // slice: only a bound loop moves it.
                     let cb_off = if loops.is_empty() {
@@ -1865,17 +1860,24 @@ fn tt_boundary_moves(
                             l1[cb_num as usize] + cb_off + t * tile_bytes
                         };
                         // The slice's byte address names the tile image's
-                        // datums; the next tile of a block is one pitch on.
-                        // A shaped read writes the header itself, so its DRAM
-                        // base is the slot start, 16 bytes before the datums.
-                        let base = if shaped {
-                            base.checked_sub(data)
-                                .ok_or_else(|| tt_err("tenstorrent: shaped read before the buffer".to_string()))?
+                        // datums; the next tile of a block is one pitch on, per
+                        // grid point. A shaped read writes the header itself,
+                        // so its DRAM base is the slot start, 16 bytes before
+                        // the datums.
+                        let shift = if shaped {
+                            i64::from(t) * i64::from(slot) - i64::from(data)
                         } else {
-                            base + t * slot
+                            i64::from(t) * i64::from(slot)
                         };
+                        let mut table = Vec::with_capacity(offsets.len());
+                        for off in offsets.iter() {
+                            let value = i64::from(*off) + shift;
+                            table.push(u32::try_from(value).map_err(|_| {
+                                tt_err(format!("tenstorrent: boundary move {op_id:?} offset {value} does not fit u32"))
+                            })?);
+                        }
                         let bytes = if shaped { slot } else { tile_bytes };
-                        let move_ = TTDmMove { param: ord, l1, bytes, narrow, base, gstride0, gstride1 };
+                        let move_ = TTDmMove { param: ord, l1, bytes, narrow, offsets: table.into_boxed_slice() };
                         match section {
                             0 => reader.push(move_),
                             2 => writer.push(move_),

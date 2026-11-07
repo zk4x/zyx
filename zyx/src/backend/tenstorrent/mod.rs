@@ -77,7 +77,7 @@ pub(crate) mod ttsim;
 
 use crate::codegen::tenstorrent::code::Loop;
 use crate::codegen::tenstorrent::l1::SemaphoreInit;
-use crate::codegen::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit, tt_move_offset};
+use crate::codegen::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit};
 use tt_isa::mailbox::role::Mailbox;
 use tt_isa::tensix::Core;
 
@@ -788,9 +788,7 @@ impl TTDevice {
                     l1: page.l1,
                     bytes: page.len,
                     narrow: TT_NARROW_NONE,
-                    base: page.base,
-                    gstride0: page.gstride0,
-                    gstride1: page.gstride1,
+                    offsets: page.offsets.clone(),
                 }),
                 // One whole tile image, shaped by the mover: `READ_BROADCAST_COL`
                 // copies the header and writes row `r`'s value into every column.
@@ -799,18 +797,14 @@ impl TTDevice {
                     l1: tile.dst,
                     bytes: tt_isa::dm::TILE_SLOT as u32,
                     narrow: TT_NARROW_NONE,
-                    base: tile.base,
-                    gstride0: tile.gstride0,
-                    gstride1: tile.gstride1,
+                    offsets: tile.offsets.clone(),
                 }),
                 Op::TT(TTOp::DmWrite(page)) => writer.push(TTDmMove {
                     param: page.param,
                     l1: page.l1,
                     bytes: page.len,
                     narrow: page.narrow,
-                    base: page.base,
-                    gstride0: page.gstride0,
-                    gstride1: page.gstride1,
+                    offsets: page.offsets.clone(),
                 }),
                 Op::TT(TTOp::Semset { sem, value }) => {
                     semset.push(TTSemaphoreInit { index: *sem, value: *value, max: tt_isa::sync::MAX_VALUE })
@@ -1128,6 +1122,9 @@ impl TTDevice {
         for gidx0 in 0..grid_dims[0] {
             for gidx1 in 0..grid_dims[1] {
                 let point = usize::try_from(gidx0 * ncols + gidx1).unwrap_or(usize::MAX);
+                // The offsets table is dense in the launch grid, while `point`
+                // indexes the chip's Tensix tiles: they are different walks.
+                let grid_point = (gidx0 as usize) * (grid_dims[1] as usize) + gidx1 as usize;
                 let (x, y) = *tiles.get(point).ok_or_else(|| BackendError {
                     status: ErrorStatus::KernelLaunch,
                     context: format!("tenstorrent grid point ({gidx0}, {gidx1}) is not a Tensix tile").into(),
@@ -1135,6 +1132,20 @@ impl TTDevice {
                 let mut reads: Vec<(DramRange, u32)> = Vec::new();
                 let mut writes: Vec<(DramRange, u32)> = Vec::new();
                 let mut narrows: Vec<(u32, ChunkId, usize, u64, usize, u8)> = Vec::new();
+                // Each move carries its byte offset for every grid point, in
+                // launch order; this core takes its own.
+                let offset_of = |mv: &TTDmMove| -> Result<usize, BackendError> {
+                    mv.offsets.get(grid_point).map(|o| *o as usize).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelLaunch,
+                        context: format!(
+                            "move of param {} has {} grid offsets but the launch has {} points",
+                            mv.param,
+                            mv.offsets.len(),
+                            grid_point + 1
+                        )
+                        .into(),
+                    })
+                };
                 {
                     let tpool = super::lock(self.memory_pool, tpool);
                     for mv in prog.reader.iter() {
@@ -1142,11 +1153,10 @@ impl TTDevice {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("reader move names param {}, which has no buffer arg", mv.param).into(),
                         })?;
-                        let ranges = tpool.ranges(chunk, tt_move_offset(mv, gidx0, gidx1), mv.bytes as usize).map_err(|e| {
-                            BackendError {
-                                status: ErrorStatus::KernelLaunch,
-                                context: format!("reader move of param {}: {e}", mv.param).into(),
-                            }
+                        let off = offset_of(mv)?;
+                        let ranges = tpool.ranges(chunk, off, mv.bytes as usize).map_err(|e| BackendError {
+                            status: ErrorStatus::KernelLaunch,
+                            context: format!("reader move of param {}: {e}", mv.param).into(),
                         })?;
                         for (range, at) in ranges {
                             reads.push((range, mv.l1 + at as u32));
@@ -1157,7 +1167,7 @@ impl TTDevice {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("writer move names param {}, which has no buffer arg", mv.param).into(),
                         })?;
-                        let off = tt_move_offset(mv, gidx0, gidx1);
+                        let off = offset_of(mv)?;
                         let ranges = tpool.ranges(chunk, off, mv.bytes as usize).map_err(|e| BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("writer move of param {}: {e}", mv.param).into(),
