@@ -76,6 +76,23 @@ impl Kernel {
     ///   instead).
     pub(crate) fn pad_to(&mut self, axis: OpId, multiple: Dim) {
         debug_assert!(multiple > 0, "pad_to: multiple {multiple} <= 0");
+        // A vector access cannot be guarded element-wise: the guard is a
+        // Select on the whole index, and a vector load's index has a shape.
+        // Padding an axis whose loads are vector accesses would extend the
+        // range and leave those lanes unguarded, so out-of-bounds lanes read
+        // far outside the buffer. Refuse to pad here instead.
+        {
+            let mut scan = self.next_op(axis);
+            while !scan.is_null() {
+                if let Op::Load { src_idx, .. } = self.ops[scan].op
+                    && !self.shape(src_idx).is_empty()
+                    && self.depends_on(src_idx, axis, &mut Set::default())
+                {
+                    return;
+                }
+                scan = self.next_op(scan);
+            }
+        }
         match self.ops[axis].op {
             Op::Range { axis: range_axis, kind } => {
                 // 1. Extend the index length to the next multiple.
