@@ -1,4 +1,57 @@
-## HANDOFF (2026-11-07, session 20) — start here: the gate is back; fix IR, one kernel
+## HANDOFF (2026-11-07, session 21) — start here: kernel 1, the writer store
+
+**Snapshot.** `main` at `3baa7c1b` + the working tree below (uncommitted: the
+loud bails). `tt_add_movers` is now a wrapper: `debug()` → `_body()` →
+`debug()` → `todo!()`. **The gate fires even when the body bails** — an early
+`return` used to skip the todo entirely, which is how kernel 1 reached
+`tt_verify` (`DRAM write in compute at OpId(8)`) instead of stopping here.
+
+**Bails are loud now.** `tt_add_movers` is `device_epilogue`, not a search
+option: every "cannot lower" is a `todo!` naming the access and the step
+(reader / block reader / compute load / store / drain / existing copy). The
+first one the model hits:
+
+```
+tt_add_movers: store index 25 is not tile arithmetic
+```
+
+That is `tt_zero_iteration_vars(off, store, OpId::NULL, false, true, false, …)`
+returning `None` for the KV-fill store (`store r7[r25] = 0`). `r25` is
+`r14 + r23` over `Op::Binary`/`Const`/`Range::Group`/`Unroll`, all of which the
+walker handles — so the `None` comes from a leaf the walker does not expect.
+Find it before anything else; the function is at `tenstorrent.rs:1741` and its
+`_ => return None` is the only path that produces it (a `Range` that is neither
+`Group` nor `Local` cannot happen; an `Op::Param { kind: Variable }` can, and
+`tt_index_max`/`get_strides` both bail on those too).
+
+**Kernel 1's exit IR before this failure** (what is already right): the entry
+cone (`r11 = 32*group0`, `r25 = r14 + r23`), `end_reader`, then the canonical
+transform `r56 = tile`, `r66 = r56*1024 + row*32 + col`, `r90 = r56*4160 + 16 +
+(face*256 + within)*2`. **Still wrong:** the store still targets the DRAM param
+(`store r7[r25] = r26`), there is no drain `copy`, and the grid is `1024 x 4`
+against the device's `10 x 14`.
+
+**Order of work for kernel 1:** (1) the store index must canonicalize and the
+store must land in the writer CB (not the param); (2) the compute-side index
+must be the block-relative canonical tile (grid zeroed, lanes kept); (3) the
+grid must fit — which needs the split in `tt_tile` plus per-iteration traffic,
+and per-iteration traffic without streaming means the credit ring
+(`CbDeclare`/`ReserveBack`/`PushBack`/`WaitFront`/`PopFront`, `CbState`/
+`CbTransactions` at `tenstorrent.rs:7378`/`:7479`, firmware `op::CB`).
+
+**Definitions that do not move:** a group range over the device max is
+invalid; loops must be handled correctly; **streaming CBs and unrolled loops are
+invalid**; a non-canonical tile access inside compute is invalid;
+`tt_dataflow_select` only pattern-matches and lowers to the native ISA — it must
+never work out an index or a tile.
+
+Command: `cd zyx-bench && cargo build --release --bin llama_bench` then
+`TT_TTSIM_LIB=… ZYX_DEV=tt:0 ./target/release/llama_bench` (the gate aborts
+after printing kernel 1's entry and exit IR). The CPU side of the bench crashes
+in **prefill** (`assign shape mismatch: dst=[128,8,128], src=[8,128,128,128]`);
+decode works, so the kernel list for `seq = 1` is sound.
+
+## HANDOFF (2026-11-07, session 20) — the gate is back; fix IR, one kernel
 
 **The rule, verbatim: no moving past the `todo!()` at the end of
 `tt_add_movers` until the IR is correct.** It aborts every TT compile on

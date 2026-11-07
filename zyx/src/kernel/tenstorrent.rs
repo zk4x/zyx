@@ -1935,6 +1935,20 @@ impl Kernel {
         Some((dram, l1))
     }
 
+    /// The gate. Every TT compile stops here, at the pass's exit, so the IR is
+    /// inspected kernel by kernel: `debug()` at entry, one body run, `debug()`
+    /// at exit, then `todo!()`. A body that bails early still hits the gate —
+    /// a bail is exactly the IR that is not good yet.
+    pub fn tt_add_movers(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        self.debug();
+        self.tt_add_movers_body();
+        self.debug();
+        todo!("no removing this todo until the f*cking IR is good looking");
+    }
+
     /// Materialise the circular-buffer plan as ordinary SSA before the phase
     /// boundary.
     ///
@@ -1951,11 +1965,7 @@ impl Kernel {
     /// it may be any expression the access already carries, `/` and `%`
     /// included. The L1 side is the tile's slot in the CB. Everything after
     /// this pass sees canonical tiles only.
-    pub fn tt_add_movers(&mut self) {
-        if !self.device_info().tenstorrent {
-            return;
-        }
-        self.debug();
+    pub fn tt_add_movers_body(&mut self) {
         // CB Storage definitions live in the prologue (past leading
         // params/storages, before everything else).
         let mut prologue = self.head;
@@ -2102,14 +2112,14 @@ impl Kernel {
                     // a permuted index enumerates what it actually names.
                     let mut memo: Map<OpId, OpId> = Map::default();
                     let Some(sub) = self.tt_replace_loop(off, anchor, reader_loop, anchor, &mut memo) else {
-                        return;
+                        todo!("tt_add_movers: reader index {off} is not loop arithmetic")
                     };
                     let mut zero: Map<OpId, OpId> = Map::default();
                     let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, reader_loop, true, false, true, &mut zero) else {
-                        return;
+                        todo!("tt_add_movers: reader index {off} is not iteration arithmetic")
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
-                        return;
+                        todo!("tt_add_movers: reader index {off} does not canonicalize")
                     };
                     let stride = self.insert_const_idx_before(anchor, 1024i64);
                     let slot = self.insert_before(anchor, Op::Binary { x: reader_loop, y: stride, bop: BOp::Mul });
@@ -2130,10 +2140,10 @@ impl Kernel {
                         self.insert_before(prologue, storage)
                     };
                     let Some(flat) = self.tt_zero_iteration_vars(off, anchor, OpId::NULL, true, false, true, &mut zero) else {
-                        return;
+                        todo!("tt_add_movers: block reader index {off} is not iteration arithmetic")
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
-                        return;
+                        todo!("tt_add_movers: block reader index {off} does not canonicalize")
                     };
                     self.insert_before(anchor, Op::Copy { src: base, src_idx: dram, dst: cb, dst_idx: slot_zero });
                     cb_of.insert(load, cb);
@@ -2150,10 +2160,10 @@ impl Kernel {
                 let cb = cb_of[&load];
                 let mut zero: Map<OpId, OpId> = Map::default();
                 let Some(flat) = self.tt_zero_iteration_vars(off, load, OpId::NULL, false, true, false, &mut zero) else {
-                    return;
+                    todo!("tt_add_movers: compute load index {off} is not tile arithmetic")
                 };
                 let Some((_dram, l1)) = self.tt_canonical_tile(base, flat, load) else {
-                    return;
+                    todo!("tt_add_movers: compute load index {off} does not canonicalize")
                 };
                 self.ops[load].op = Op::Load { src: cb, src_idx: l1 };
             }
@@ -2199,10 +2209,10 @@ impl Kernel {
                     // zero, the loop kept.
                     let mut zero: Map<OpId, OpId> = Map::default();
                     let Some(flat) = self.tt_zero_iteration_vars(off, store, OpId::NULL, false, true, false, &mut zero) else {
-                        return;
+                        todo!("tt_add_movers: looped store index {off} is not tile arithmetic")
                     };
                     let Some((_dram, l1)) = self.tt_canonical_tile(base, flat, store) else {
-                        return;
+                        todo!("tt_add_movers: looped store index {off} does not canonicalize")
                     };
                     self.ops[store].op = Op::Store { dst: cb, dst_idx: l1, src: value };
                     // ...and the drain repeats the loop, at the tail. Its body
@@ -2215,14 +2225,14 @@ impl Kernel {
                     let anchor = self.push_back(Op::Const(Constant::idx(0i64)));
                     let mut memo: Map<OpId, OpId> = Map::default();
                     let Some(sub) = self.tt_replace_loop(off, store_loop, drain, anchor, &mut memo) else {
-                        return;
+                        todo!("tt_add_movers: drain index {off} is not loop arithmetic")
                     };
                     let mut zero: Map<OpId, OpId> = Map::default();
                     let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, drain, true, false, true, &mut zero) else {
-                        return;
+                        todo!("tt_add_movers: drain index {off} is not iteration arithmetic")
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
-                        return;
+                        todo!("tt_add_movers: drain index {off} does not canonicalize")
                     };
                     let stride = self.insert_const_idx_before(anchor, 1024i64);
                     let slot = self.insert_before(anchor, Op::Binary { x: drain, y: stride, bop: BOp::Mul });
@@ -2232,19 +2242,19 @@ impl Kernel {
                 } else {
                     let mut zero: Map<OpId, OpId> = Map::default();
                     let Some(flat) = self.tt_zero_iteration_vars(off, self.tail, OpId::NULL, true, false, true, &mut zero) else {
-                        return;
+                        todo!("tt_add_movers: drain index {off} is not iteration arithmetic")
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, self.tail) else {
-                        return;
+                        todo!("tt_add_movers: drain index {off} does not canonicalize")
                     };
                     // The compute index is the canonical tile index within the
                     // block, with the grid bound to zero.
                     let mut czero: Map<OpId, OpId> = Map::default();
                     let Some(cflat) = self.tt_zero_iteration_vars(off, store, OpId::NULL, false, true, false, &mut czero) else {
-                        return;
+                        todo!("tt_add_movers: store index {off} is not tile arithmetic")
                     };
                     let Some((_d, l1)) = self.tt_canonical_tile(base, cflat, store) else {
-                        return;
+                        todo!("tt_add_movers: store index {off} does not canonicalize")
                     };
                     self.ops[store].op = Op::Store { dst: cb, dst_idx: l1, src: value };
                     let slot_zero = self.push_back(Op::Const(Constant::idx(0i64)));
@@ -2268,7 +2278,7 @@ impl Kernel {
                 _ => unreachable!("tt_add_movers: a collected op is not a copy"),
             };
             let Some(stripped) = self.strip_unrolls(idx, copy, false) else {
-                return;
+                todo!("tt_add_movers: existing copy {copy:?} has a non-affine boundary index {idx}")
             };
             match &mut self.ops[copy].op {
                 Op::Copy { src_idx, dst_idx, .. } => {
@@ -2286,8 +2296,6 @@ impl Kernel {
         // cones. The generic pipeline is still legal here — the phase boundary
         // has not been crossed — so clean up before the IR is handed on.
         self.default_epilogue();
-        self.debug();
-        todo!("no removing this todo until the f*cking IR is good looking");
     }
 
     /// Lower the remaining plain ops of a TT kernel to their `TTOp` form:
