@@ -1202,16 +1202,43 @@ impl Kernel {
         }
 
         // The launch grid is the device's Tensix grid: a group axis longer than
-        // `max_global_work_dims[axis]` cannot be dispatched, so it must be
-        // split into an outer group the device can hold and a loop over the
-        // rest (`split`'s `outer * factor + inner`). That is the mechanism, but
-        // it is **not enabled yet**: `tt_add_movers` now carries per-iteration
-        // traffic (reader substitution, writer block + drain loop, pack slot),
-        // yet the *compute* load index still encodes the loop's tile ordinal,
-        // so the unpack's per-iteration slot (`tt_resolve_dst`) adds it a
-        // second time and the values are wrong. The remaining piece is
-        // rewriting the load index to the canonical block-relative tile index;
-        // until then the renderer reports `grid dim N exceeds device max`.
+        // `max_global_work_dims[axis]` cannot be dispatched, so it is split
+        // into an outer group the device can hold and a loop over the rest
+        // (`split`'s `outer * factor + inner`, `factor` the smallest divisor
+        // of the length that leaves the outer part within the limit). The
+        // loop wraps the whole kernel body, so every iteration is one of the
+        // group's points.
+        let max_grid = self.device_info().max_global_work_dims.clone();
+        let mut oversized: Vec<(OpId, i64)> = Vec::new();
+        for (op, x) in self.iter_unordered() {
+            if let Op::Range { axis, kind: RangeKind::Group(len) } = *x {
+                let Some(l) = self.resolve_const(len).and_then(Constant::as_dim) else {
+                    continue;
+                };
+                let Some(&max) = max_grid.get(axis as usize) else {
+                    continue;
+                };
+                if l > max {
+                    oversized.push((op, max));
+                }
+            }
+        }
+        for (group, max) in oversized {
+            let Op::Range { kind: RangeKind::Group(len), .. } = self.ops[group].op else {
+                unreachable!("tt_tile: collected op is a group range");
+            };
+            let Some(l) = self.resolve_const(len).and_then(Constant::as_dim) else {
+                continue;
+            };
+            let min_factor = (l + max - 1) / max;
+            let Some(factor) = (min_factor..=l).find(|d| l % d == 0) else {
+                todo!("tt_tile: group range {l} has no divisor leaving ≤ {max}")
+            };
+            let Ok(factor) = u16::try_from(factor) else {
+                todo!("tt_tile: group split factor does not fit u16")
+            };
+            self.split(group, SplitMode::Loop, factor);
+        }
 
         self.default_epilogue();
         self.default_epilogue();
@@ -1766,7 +1793,7 @@ impl Kernel {
             return Some(zero);
         }
         let out = match op {
-            Op::Const(_) | Op::Range { .. } | Op::Unroll { .. } | Op::Param { .. } => idx,
+            Op::Const(_) | Op::Range { .. } | Op::Unroll { .. } | Op::Loop { .. } | Op::Param { .. } => idx,
             Op::Binary { x, y, bop } => {
                 let x = self.tt_zero_iteration_vars(x, before, keep, loops, groups, lanes, memo)?;
                 let y = self.tt_zero_iteration_vars(y, before, keep, loops, groups, lanes, memo)?;

@@ -245,6 +245,14 @@ fn unary_math() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn large_elementwise() -> Result<(), ZyxError> {
+    let x = Tensor::rand([1024, 256], DType::F32)?;
+    let xs = x.to(Dev::TT(0))?;
+    let _ = (-&xs).to(Dev::C);
+    Ok(())
+}
+
+#[test]
 fn tiling() -> Result<(), ZyxError> {
     // The shapes that exercise the forms `tt_tile` must finish (NOTES,
     // "Tiling: the search explores, `tt_tile` completes"):
