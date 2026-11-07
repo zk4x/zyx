@@ -1201,6 +1201,18 @@ impl Kernel {
             }
         }
 
+        // The launch grid is the device's Tensix grid: a group axis longer than
+        // `max_global_work_dims[axis]` cannot be dispatched, so it must be
+        // split into an outer group the device can hold and a loop over the
+        // rest (`split`'s `outer * factor + inner`). That is the mechanism, but
+        // it is **not enabled yet**: `tt_add_movers` now carries per-iteration
+        // traffic (reader substitution, writer block + drain loop, pack slot),
+        // yet the *compute* load index still encodes the loop's tile ordinal,
+        // so the unpack's per-iteration slot (`tt_resolve_dst`) adds it a
+        // second time and the values are wrong. The remaining piece is
+        // rewriting the load index to the canonical block-relative tile index;
+        // until then the renderer reports `grid dim N exceeds device max`.
+
         self.default_epilogue();
         self.default_epilogue();
     }
@@ -1726,27 +1738,59 @@ impl Kernel {
     /// tile-granular. A `Local` range is a lane by another name. Group ids are
     /// left alone: they are the grid, and the canonical transform reads them
     /// as logical coordinates.
-    fn tt_zero_iteration_vars(&mut self, idx: OpId, before: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
+    fn tt_zero_iteration_vars(&mut self, idx: OpId, before: OpId, keep: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
         if let Some(&done) = memo.get(&idx) {
             return Some(done);
         }
         let op = self.ops[idx].op.clone();
         let out = match op {
+            _ if idx == keep && !keep.is_null() => idx,
             Op::Loop { .. } | Op::Unroll { .. } | Op::Range { kind: RangeKind::Local(_), .. } => {
                 self.insert_const_idx_before(before, 0i64)
             }
             Op::Const(_) | Op::Range { .. } | Op::Param { .. } => idx,
             Op::Binary { x, y, bop } => {
-                let x = self.tt_zero_iteration_vars(x, before, memo)?;
-                let y = self.tt_zero_iteration_vars(y, before, memo)?;
+                let x = self.tt_zero_iteration_vars(x, before, keep, memo)?;
+                let y = self.tt_zero_iteration_vars(y, before, keep, memo)?;
                 self.insert_before(before, Op::Binary { x, y, bop })
             }
             Op::Unary { x, uop } => {
-                let x = self.tt_zero_iteration_vars(x, before, memo)?;
+                let x = self.tt_zero_iteration_vars(x, before, keep, memo)?;
                 self.insert_before(before, Op::Unary { x, uop })
             }
             Op::Cast { x, dtype } => {
-                let x = self.tt_zero_iteration_vars(x, before, memo)?;
+                let x = self.tt_zero_iteration_vars(x, before, keep, memo)?;
+                self.insert_before(before, Op::Cast { x, dtype })
+            }
+            _ => return None,
+        };
+        memo.insert(idx, out);
+        Some(out)
+    }
+
+    /// Clone an index cone with the loop variable `from` replaced by `to`
+    /// (another loop's induction variable). Every other leaf is shared: it
+    /// dominates `before` exactly like the original cone does.
+    fn tt_replace_loop(&mut self, idx: OpId, from: OpId, to: OpId, before: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
+        if let Some(&done) = memo.get(&idx) {
+            return Some(done);
+        }
+        let op = self.ops[idx].op.clone();
+        let out = match op {
+            Op::Loop { .. } if idx == from => to,
+            Op::Loop { .. } => return None,
+            Op::Const(_) | Op::Range { .. } | Op::Param { .. } | Op::Unroll { .. } => idx,
+            Op::Binary { x, y, bop } => {
+                let x = self.tt_replace_loop(x, from, to, before, memo)?;
+                let y = self.tt_replace_loop(y, from, to, before, memo)?;
+                self.insert_before(before, Op::Binary { x, y, bop })
+            }
+            Op::Unary { x, uop } => {
+                let x = self.tt_replace_loop(x, from, to, before, memo)?;
+                self.insert_before(before, Op::Unary { x, uop })
+            }
+            Op::Cast { x, dtype } => {
+                let x = self.tt_replace_loop(x, from, to, before, memo)?;
                 self.insert_before(before, Op::Cast { x, dtype })
             }
             _ => return None,
@@ -1814,8 +1858,18 @@ impl Kernel {
         }
         let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
         // `tt_reindex` rewrote this index into tile-datum units. Everything
-        // else is the buffer's flat logical index.
-        let tile_units = self.tt_index_max(idx).is_some_and(|m| m >= outer * rows * cols);
+        // else is the buffer's flat logical index. Three tells, any of which
+        // settles it: the rewritten shape (`tile*1024+pos` over a grid *and* a
+        // loop), an index that runs past the buffer (padding), or a loop that
+        // steps exactly one tile image — `tt_reindex`'s own template, which a
+        // logical index only reproduces by accident.
+        let tile_units = self.tt_index_is_tile_units(idx)
+            || self.tt_index_max(idx).is_some_and(|m| m >= outer * rows * cols)
+            || self.get_strides(idx).is_some_and(|s| {
+                s.iter().any(|(var, &(_, stride))| {
+                    *var != OpId::NULL && stride != 0 && stride % 1024 == 0 && matches!(self.ops[*var].op, Op::Loop { .. })
+                })
+            });
 
         let (tile, row_lo, col_lo) = if tile_units {
             let tile = div(self, at, idx, 1024);
@@ -2021,21 +2075,23 @@ impl Kernel {
                     } else {
                         self.insert_before(prologue, storage)
                     };
-                    // The block start: the access's own index with every loop
-                    // and lane bound to zero, turned into the parameter's
-                    // physical address by `tt_canonical_tile`. One iteration
-                    // advances one tile image on the DRAM side and one tile in
-                    // the CB.
+                    // The access's own index with every other loop and lane
+                    // bound to zero and the compute loop replaced by this
+                    // reader's counter: the parameter's physical address for
+                    // one tile of *this* iteration. Nothing is added per
+                    // iteration by hand — the transform reads the counter, so
+                    // a permuted index enumerates what it actually names.
+                    let mut memo: Map<OpId, OpId> = Map::default();
+                    let Some(sub) = self.tt_replace_loop(off, anchor, reader_loop, anchor, &mut memo) else {
+                        return;
+                    };
                     let mut zero: Map<OpId, OpId> = Map::default();
-                    let Some(flat) = self.tt_zero_iteration_vars(off, anchor, &mut zero) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, reader_loop, &mut zero) else {
                         return;
                     };
-                    let Some((tile_base, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
+                    let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
                         return;
                     };
-                    let tile_pitch = self.insert_const_idx_before(anchor, tt_isa::dm::TILE_SLOT as i64);
-                    let dram_step = self.insert_before(anchor, Op::Binary { x: reader_loop, y: tile_pitch, bop: BOp::Mul });
-                    let dram = self.insert_before(anchor, Op::Binary { x: tile_base, y: dram_step, bop: BOp::Add });
                     let stride = self.insert_const_idx_before(anchor, 1024i64);
                     let slot = self.insert_before(anchor, Op::Binary { x: reader_loop, y: stride, bop: BOp::Mul });
                     self.insert_before(anchor, Op::Copy { src: base, src_idx: dram, dst: cb, dst_idx: slot });
@@ -2054,7 +2110,7 @@ impl Kernel {
                     } else {
                         self.insert_before(prologue, storage)
                     };
-                    let Some(flat) = self.tt_zero_iteration_vars(off, anchor, &mut zero) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(off, anchor, OpId::NULL, &mut zero) else {
                         return;
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
@@ -2082,28 +2138,76 @@ impl Kernel {
                 self.insert_before(first, Op::TT(TTOp::EndReader));
             }
             self.push_back(Op::TT(TTOp::EndCompute));
+            // Stores that share one loop are a block: each iteration packs into
+            // its own tile slot of the writer CB, and the drain is that same
+            // loop at the tail. (Anything else keeps the single-slot form.)
+            let store_loop = self.tt_enclosing_loop(stores[0].0).unwrap_or(OpId::NULL);
+            let looped =
+                !store_loop.is_null() && stores.iter().all(|(store, ..)| self.tt_enclosing_loop(*store) == Some(store_loop));
+            let trips = if looped {
+                let Op::Loop { len } = self.ops[store_loop].op else { return };
+                match self.resolve_const(len).and_then(Constant::as_dim) {
+                    Some(t) if t > 0 => t,
+                    _ => return,
+                }
+            } else {
+                1
+            };
             for (store, base, off, value) in stores.iter().copied() {
+                let Some(len) = trips.checked_mul(1024) else { return };
                 // FP32: the packer writes F32 out of `Dst`, and the host
                 // boundary narrows on the way back.
-                let storage = Op::Storage { dtype: DType::F32, scope: MemScope::Circular, len: 1024, id: 0 };
+                let storage = Op::Storage { dtype: DType::F32, scope: MemScope::Circular, len, id: 0 };
                 let cb = if prologue.is_null() {
                     self.push_back(storage)
                 } else {
                     self.insert_before(prologue, storage)
                 };
-                let mut zero: Map<OpId, OpId> = Map::default();
-                let Some(flat) = self.tt_zero_iteration_vars(off, self.tail, &mut zero) else {
-                    return;
-                };
-                let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, self.tail) else {
-                    return;
-                };
-                // The store's access index stays its own: it carries the
-                // value's shape, and the pack ignores it (the drain uses
-                // `dram`).
-                self.ops[store].op = Op::Store { dst: cb, dst_idx: off, src: value };
-                let slot_zero = self.push_back(Op::Const(Constant::idx(0i64)));
-                self.push_back(Op::Copy { src: cb, src_idx: slot_zero, dst: base, dst_idx: dram });
+                if looped {
+                    // The compute side packs into the iteration's own slot; the
+                    // pack's destination offset is set where the pack is made
+                    // (`tt_dataflow_select`), so the store's access index stays
+                    // its own.
+                    self.ops[store].op = Op::Store { dst: cb, dst_idx: off, src: value };
+                    // ...and the drain repeats the loop, at the tail. Its body
+                    // is built before a temporary anchor so every emitted op
+                    // lands after the loop header.
+                    let Op::Loop { len: loop_len } = self.ops[store_loop].op else {
+                        return;
+                    };
+                    let drain = self.push_back(Op::Loop { len: loop_len });
+                    let anchor = self.push_back(Op::Const(Constant::idx(0i64)));
+                    let mut memo: Map<OpId, OpId> = Map::default();
+                    let Some(sub) = self.tt_replace_loop(off, store_loop, drain, anchor, &mut memo) else {
+                        return;
+                    };
+                    let mut zero: Map<OpId, OpId> = Map::default();
+                    let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, drain, &mut zero) else {
+                        return;
+                    };
+                    let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
+                        return;
+                    };
+                    let stride = self.insert_const_idx_before(anchor, 1024i64);
+                    let slot = self.insert_before(anchor, Op::Binary { x: drain, y: stride, bop: BOp::Mul });
+                    self.push_back(Op::Copy { src: cb, src_idx: slot, dst: base, dst_idx: dram });
+                    self.remove_op(anchor);
+                    self.push_back(Op::EndLoop);
+                } else {
+                    let mut zero: Map<OpId, OpId> = Map::default();
+                    let Some(flat) = self.tt_zero_iteration_vars(off, self.tail, OpId::NULL, &mut zero) else {
+                        return;
+                    };
+                    let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, self.tail) else {
+                        return;
+                    };
+                    // The store's access index stays its own: it carries the
+                    // value's shape, and the pack ignores it (the drain uses
+                    // `dram`).
+                    self.ops[store].op = Op::Store { dst: cb, dst_idx: off, src: value };
+                    let slot_zero = self.push_back(Op::Const(Constant::idx(0i64)));
+                    self.push_back(Op::Copy { src: cb, src_idx: slot_zero, dst: base, dst_idx: dram });
+                }
             }
         }
         // Normalise the boundary indices of traffic that was already SSA: the
@@ -2651,6 +2755,16 @@ impl Kernel {
                             _ => return,
                         };
                         let zero_pack = self.insert_const_idx_before(*store, 0i64);
+                        // A store inside a loop packs into that iteration's own
+                        // tile slot, so the drain (the same loop at the tail)
+                        // finds each iteration's value where it left it.
+                        let dst_idx = match self.tt_enclosing_loop(*store) {
+                            Some(lv) => {
+                                let stride = self.insert_const_idx_before(*store, 1024i64);
+                                self.insert_before(*store, Op::Binary { x: lv, y: stride, bop: BOp::Mul })
+                            }
+                            None => zero_pack,
+                        };
                         // The pack is a tile move (DST -> L1), not an SSA
                         // store: after allocation there is no SSA, so it goes
                         // out as `Copy` like every other memory-level move. It
@@ -2658,13 +2772,7 @@ impl Kernel {
                         // reuse pass needs to know the row is still live.
                         self.insert_before(
                             *store,
-                            Op::TT(TTOp::Copy {
-                                src: storage,
-                                src_idx: zero_pack,
-                                dst: *base,
-                                dst_idx: zero_pack,
-                                bytes: pack_bytes,
-                            }),
+                            Op::TT(TTOp::Copy { src: storage, src_idx: zero_pack, dst: *base, dst_idx, bytes: pack_bytes }),
                         );
                     }
                     self.remove_op(*store);

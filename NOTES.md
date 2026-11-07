@@ -77,10 +77,39 @@ or a shifted chunk lands in the wrong place.
 ### The next blocker, now reachable: the grid cap
 
 The assembled bench now gets past the KV fill's index and stops at
-`grid dim 0 32768 exceeds device max 10`. That is the launch-size limit, not a
-representation limit: the fill asks for 32768×4 points against ~120 cores. The
-work has to be blocked per core (a divisor of the work so there is no tail, or
-a tail rule), which is a pass of its own.
+`grid dim 0 32768 exceeds device max 10`. That is the launch-size limit; the
+mechanism is to split the group axis in `tt_tile` into an outer group (≤ the
+device's per-axis max) and a loop over the rest (`split`'s
+`outer * factor + inner`, factor = the smallest divisor of the length that
+leaves the outer part within the limit).
+
+**That split is not enabled yet, and why is worth keeping:** three of the four
+per-iteration pieces are in `tt_add_movers` now —
+
+- the reader substitutes the compute loop variable with its own reader loop
+  (`tt_replace_loop`) and canonicalizes *that* index, so a permuted index
+  enumerates what it actually names instead of assuming `+ i*TILE_SLOT`;
+- a store inside a loop gets a writer CB of `trips * 1024` and a drain loop at
+  the tail (`tt_replace_loop` + `tt_zero_iteration_vars` with the drain as the
+  kept variable);
+- the pack writes into the iteration's slot (`tt_dataflow_select` reads the
+  enclosing loop).
+
+The missing piece is the **compute** side: the `Op::Load` index still carries
+the loop's tile ordinal, and `tt_resolve_dst` adds the iteration slot on top,
+so the ordinal is counted twice. The fix is the design's own sentence —
+rewrite the compute load index to the canonical block-relative tile index
+(the helper's `l1` with the loop bound) — but that index is also what the
+matmul roles read to tell A from B, so it has to be done with that arm in hand.
+Until then `tt_tile` keeps the split commented out and the renderer reports the
+grid.
+
+Also worth knowing: the tile-unit/logical discriminator in `tt_canonical_tile`
+needed a third tell. An index that `tt_reindex` rewrote can have the same
+maximum as its logical form (`[32, 256]` summed over 8 tiles: 8191 either way),
+so "runs past the buffer" is not enough — a loop stepping exactly one tile
+image (`stride % 1024 == 0`) settles it. `sum_loop` and `sum_drop_loop` are
+the gates.
 
 ### Per-grid-point tables: what to know
 
