@@ -76,6 +76,15 @@ impl Kernel {
     pub(crate) fn split(&mut self, axis_id: OpId, split_mode: SplitMode, factor: u16) -> OpId {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("split");
+        // A split multiplies the IR by its factor (an unroll duplicates the
+        // body `factor` times, a lane split keeps the same ops but grows the
+        // vector width that `devectorize` later unfolds). Refuse a factor that
+        // would push the kernel past the render ceiling: the epilogue is
+        // superlinear in op count, so emitting one is a hang, not a slow
+        // candidate.
+        if self.ops.len().0.saturating_mul(u32::from(factor)) > crate::kernel::MAX_OPS {
+            return OpId::NULL;
+        }
         let factor_dim = Dim::from(factor);
         match split_mode {
             SplitMode::Local => {

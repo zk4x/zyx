@@ -7160,7 +7160,7 @@ mod acceptance {
         let x = k.load(src, idx);
         let y = f(&mut k, x);
         k.store(dst, y, idx);
-        k.device_epilogue();
+        k.device_epilogue().expect("test kernel devectorizes");
         k
     }
 

@@ -134,10 +134,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "render_cuda: kernel exceeds 50000 op render limit".into(),
+                    context: "render_cuda: kernel exceeds the op render limit".into(),
                 });
             }
             if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op {
@@ -159,10 +159,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "generate_cuda: kernel exceeds 50000 op render limit".into(),
+                    context: "generate_cuda: kernel exceeds the op render limit".into(),
                 });
             }
             let op = &self.ops[op_id].op;
@@ -241,10 +241,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "generate_cuda: kernel exceeds 50000 op render limit".into(),
+                    context: "generate_cuda: kernel exceeds the op render limit".into(),
                 });
             }
             if skip.contains(&op_id) {

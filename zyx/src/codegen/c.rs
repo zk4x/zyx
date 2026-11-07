@@ -49,10 +49,10 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 50_000 {
+                if steps_op_id > crate::kernel::MAX_OPS as usize {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: "generate_c: kernel exceeds 50000 op render limit".into(),
+                        context: "generate_c: kernel exceeds the op render limit".into(),
                     });
                 }
                 match self.ops[op_id].op {
@@ -109,10 +109,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "generate_c: kernel exceeds 50000 op render limit".into(),
+                    context: "generate_c: kernel exceeds the op render limit".into(),
                 });
             }
             match self.ops[op_id].op {

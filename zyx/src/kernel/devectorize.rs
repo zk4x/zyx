@@ -19,7 +19,7 @@
 //! operand-substitution arm covers every op).
 
 use crate::{
-    Map, Set,
+    Map, Set, ZyxError,
     dtype::Constant,
     kernel::{BOp, Kernel, MemScope, Op, OpId},
     shape::Dim,
@@ -38,9 +38,20 @@ impl Kernel {
     /// duplicates are cleaned once at the end: constant folding turns
     /// per-lane index expressions into literals, CSE merges the
     /// identical forms, DCE removes what is dead.
-    pub fn devectorize(&mut self) {
+    pub fn devectorize(&mut self) -> Result<(), ZyxError> {
         let mut kept: Set<OpId> = Set::default();
         for _ in 0..10000 {
+            // The expansion multiplies the IR by the lane count. Stop at the
+            // render ceiling instead of handing the next pass a state it
+            // cannot finish: constant folding is superlinear in op count, so
+            // an oversized kernel turns the epilogue into minutes of host work
+            // rather than a failure.
+            let n_ops = self.ops.len().0;
+            if n_ops > crate::kernel::MAX_OPS {
+                return Err(ZyxError::kernel_error(
+                    format!("devectorize: kernel IR has {n_ops} ops, above the {} -op limit", crate::kernel::MAX_OPS).into(),
+                ));
+            }
             // Upstream first (IR order, not unordered): expanding an inner
             // reduce before its consumers keeps nested reduces out of each
             // other's cones. Disjoint reduces don't care about order; a
@@ -80,6 +91,7 @@ impl Kernel {
         self.common_subexpression_elimination();
         self.dead_code_elimination();
         self.verify();
+        Ok(())
     }
 
     /// Expand one lane-space reduce: substitute the reduce axis' unroll nodes
@@ -609,7 +621,7 @@ mod tests {
 
         let split = split::OptSplit { configs: vec![(loop_id, split::SplitMode::Unroll, 4)] };
         Optimization::apply(&split, &mut k, 0);
-        k.devectorize();
+        k.devectorize().expect("small kernel devectorizes");
 
         assert!(!k.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. })));
         assert!(!k.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. })));

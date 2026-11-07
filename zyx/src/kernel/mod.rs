@@ -252,6 +252,17 @@ impl Eq for Kernel {}
 /// reinterpreted IR.
 const IR_FORMAT_VERSION: u8 = 1;
 
+/// Hard ceiling on a kernel's op count.
+///
+/// Past this a kernel is not renderable: every backend's walk guard refuses
+/// it, and the epilogue passes (constant folding, CSE, DCE, scheduling) are
+/// superlinear in op count, so a pass that emits one turns the rest of the
+/// pipeline into minutes-to-hours of host work instead of a failure. Three
+/// places hold this ceiling and must agree: `devectorize` returns an error
+/// rather than grow past it, [`Kernel::split`] refuses a factor that would
+/// multiply the IR past it, and `verify` panics on it.
+pub const MAX_OPS: u32 = 100_000;
+
 impl SerBin for Kernel {
     fn ser_bin(&self, output: &mut Vec<u8>) {
         IR_FORMAT_VERSION.ser_bin(output);

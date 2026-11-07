@@ -457,10 +457,10 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 50_000 {
+                if steps_op_id > crate::kernel::MAX_OPS as usize {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                        context: "generate_spirv: kernel exceeds the op render limit".into(),
                     });
                 }
                 if let Op::Param { dtype: DType::Bool, kind, .. } = self.at(op_id)
@@ -481,10 +481,10 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 50_000 {
+                if steps_op_id > crate::kernel::MAX_OPS as usize {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                        context: "generate_spirv: kernel exceeds the op render limit".into(),
                     });
                 }
                 if let Op::Storage { dtype: DType::BF16, .. } = self.at(op_id) {
@@ -760,10 +760,10 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 50_000 {
+                if steps_op_id > crate::kernel::MAX_OPS as usize {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                        context: "generate_spirv: kernel exceeds the op render limit".into(),
                     });
                 }
                 match self.at(op_id) {
@@ -1101,10 +1101,10 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 50_000 {
+                if steps_op_id > crate::kernel::MAX_OPS as usize {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                        context: "generate_spirv: kernel exceeds the op render limit".into(),
                     });
                 }
                 if let &Op::Range { .. } = self.at(op_id) {
@@ -1246,10 +1246,10 @@ impl Kernel {
             let mut steps_op_id = 0usize;
             while !op_id.is_null() {
                 steps_op_id += 1;
-                if steps_op_id > 50_000 {
+                if steps_op_id > crate::kernel::MAX_OPS as usize {
                     return Err(BackendError {
                         status: ErrorStatus::KernelCompilation,
-                        context: "generate_spirv: kernel exceeds 50000 op render limit".into(),
+                        context: "generate_spirv: kernel exceeds the op render limit".into(),
                     });
                 }
                 match self.ops[op_id].op {
@@ -1980,10 +1980,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "render_spirv: kernel exceeds 50000 op render limit".into(),
+                    context: "render_spirv: kernel exceeds the op render limit".into(),
                 });
             }
             if let Op::Param { dtype, kind: ParamKind::Variable, .. } = self.at(op_id) {

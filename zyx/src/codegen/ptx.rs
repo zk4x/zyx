@@ -425,10 +425,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                    context: "generate_ptx: kernel exceeds the op render limit".into(),
                 });
             }
             if let Op::Range { axis, kind: scope } = self.ops[op_id].op {
@@ -448,10 +448,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                    context: "generate_ptx: kernel exceeds the op render limit".into(),
                 });
             }
             // Kernel arguments are Op::Param defines, flat head order —
@@ -481,10 +481,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                    context: "generate_ptx: kernel exceeds the op render limit".into(),
                 });
             }
             match self.ops[op_id].op {
@@ -956,10 +956,10 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
                 return Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
-                    context: "generate_ptx: kernel exceeds 50000 op render limit".into(),
+                    context: "generate_ptx: kernel exceeds the op render limit".into(),
                 });
             }
             if matches!(self.ops[op_id].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }) {

@@ -103,7 +103,13 @@ impl Kernel {
     }
 
     /// Device specific epilogue
-    pub fn device_epilogue(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Fails when a lowering step cannot produce a renderable kernel — today
+    /// that is `devectorize` growing the IR past [`crate::kernel::MAX_OPS`],
+    /// which is a property of the candidate, not of the device.
+    pub fn device_epilogue(&mut self) -> Result<(), ZyxError> {
         // `Pow` -> `exp2(y * log2 x)` is a *lowering* decision, so it happens
         // exactly once, here, for every backend: the pairs this creates are
         // what the backend-specific passes below turn into primitives
@@ -184,8 +190,9 @@ impl Kernel {
             // checker.
             self.tt_verify();
         } else {
-            self.devectorize();
+            self.devectorize()?;
         }
+        Ok(())
     }
 
     /// Get a hash of the kernel for deduplication during autotuning.
@@ -448,7 +455,7 @@ impl BeamSearch {
         let mut programs: Vec<DeviceProgramId> = Vec::new();
         let mut best_kernel: Option<Kernel> = None;
         let mut best_time = u64::MAX;
-        let mut last_error: Option<BackendError> = None;
+        let mut last_error: Option<ZyxError> = None;
 
         for seed in seeds {
             let base = seed;
@@ -545,8 +552,15 @@ impl BeamSearch {
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
                 // Hardware lowering runs once here, right before timed
-                // launches — never inside the search loop above.
-                kernel.device_epilogue();
+                // launches — never inside the search loop above. A candidate
+                // whose lowering refuses to produce a renderable kernel (an
+                // oversized devectorization) is a rejected candidate, not a
+                // broken run: record it and move on.
+                if let Err(e) = kernel.device_epilogue() {
+                    record_measurement(&kernel, opt_seq, seed_id, self.n_launches, None, None, "failed");
+                    last_error = Some(e);
+                    continue;
+                }
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(args, dev, debug) {
                         Ok((program_id, time)) => {
@@ -580,7 +594,7 @@ impl BeamSearch {
                             // the diagnosis.
                             eprintln!("autotune: candidate seq={:?} failed: {e:?}", opt_seq.opts);
                             record_measurement(&kernel, opt_seq, seed_id, self.n_launches, None, None, "failed");
-                            last_error = Some(e);
+                            last_error = Some(e.into());
                         }
                     }
                 }
@@ -597,9 +611,7 @@ impl BeamSearch {
 
         match best_kernel {
             Some(kernel) => Ok((kernel, best_time)),
-            None => Err(last_error
-                .map(ZyxError::from)
-                .unwrap_or_else(|| ZyxError::kernel_error("autotune: no successful kernel launches".into()))),
+            None => Err(last_error.unwrap_or_else(|| ZyxError::kernel_error("autotune: no successful kernel launches".into()))),
         }
     }
 }
@@ -726,7 +738,7 @@ impl NoSearch {
             seed.default_epilogue();
         }
 
-        seed.device_epilogue();
+        seed.device_epilogue()?;
         seed.dead_code_elimination();
 
         let debug = crate::debug_mask();

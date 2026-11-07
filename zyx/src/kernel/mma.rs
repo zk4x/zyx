@@ -1314,7 +1314,7 @@ mod tests {
         k.split(m, split::SplitMode::Unroll, 4);
         k.split(n, split::SplitMode::Unroll, 4);
         k.default_epilogue();
-        k.device_epilogue();
+        k.device_epilogue().expect("tensorized kernel devectorizes");
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
         assert_eq!(wmmas, 16, "4x4 register block");
@@ -1401,7 +1401,7 @@ mod tests {
 
         // Speed of the tiled match on the prefill projection.
         k.default_epilogue();
-        k.device_epilogue();
+        k.device_epilogue().expect("tiled match devectorizes");
         let compiled = match k.compile() {
             Ok(c) => c,
             Err(e) => {
@@ -1554,7 +1554,7 @@ mod tests {
         assert_eq!(opt.nconfigs(), 1, "the tiled form matches");
         opt.apply(&mut k, 0);
         k.default_epilogue();
-        k.device_epilogue();
+        k.device_epilogue().expect("tensorized kernel devectorizes");
         k.verify();
 
         // One input pair for both kernels: resolve the device once.

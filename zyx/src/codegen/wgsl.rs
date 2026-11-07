@@ -169,8 +169,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
-                return Err(wgsl_err("render_wgsl: kernel exceeds 50000 op render limit".into()));
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
+                return Err(wgsl_err("render_wgsl: kernel exceeds the op render limit".into()));
             }
             if let Op::Range { axis, kind: RangeKind::Local(len) } = self.ops[op_id].op
                 && axis < 3
@@ -204,8 +204,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
-                return Err(wgsl_err("render_wgsl: kernel exceeds 50000 op render limit".into()));
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
+                return Err(wgsl_err("render_wgsl: kernel exceeds the op render limit".into()));
             }
             match self.at(op_id) {
                 Op::Param { dtype, kind, .. } => match kind {
@@ -288,8 +288,8 @@ impl Kernel {
         let mut steps_op_id = 0usize;
         while !op_id.is_null() {
             steps_op_id += 1;
-            if steps_op_id > 50_000 {
-                return Err(wgsl_err("render_wgsl: kernel exceeds 50000 op render limit".into()));
+            if steps_op_id > crate::kernel::MAX_OPS as usize {
+                return Err(wgsl_err("render_wgsl: kernel exceeds the op render limit".into()));
             }
             let ind = "  ".repeat(depth);
             match self.ops[op_id].op {
