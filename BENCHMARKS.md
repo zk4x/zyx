@@ -7,50 +7,91 @@ One decoder block's seven projections, both phases: **prefill** is sequence 128,
 `zyx-bench llama prefill_gemm` and `zyx-bench llama decode_gemm` run. f16
 weights and activations, f32 accumulation, no bias.
 
-Device: NVIDIA GeForce RTX 2060 12GB, compute capability 7.5, driver 13.0.
-Phase total is the sum of the projection times, i.e. what one block of the
-phase costs in its matmuls.
+Device: NVIDIA GeForce RTX 2060 12GB, compute capability 7.5, driver 13.0,
+336 GB/s HBM. Phase total is the sum of the projection times, i.e. what one
+block of the phase costs in its matmuls.
+
+Two numbers per row, because the two phases stress different limits:
+
+- **TFLOP/s** = `2*m*k*n / time` — useful for prefill, which is compute-bound.
+- **GB/s** = `(m*k + n*k + m*n) * 2 / time` — the *effective* bandwidth: the
+  minimal traffic (activations in, weights in, result out, f16 elements), not
+  a measured counter. Useful for decode, which is bandwidth-bound: at
+  `m = 1` the whole weight matrix has to be read for a single row of output.
+- Phase totals use summed bytes and summed time, so they are the aggregate,
+  not an average of the per-projection ratios.
 
 ### Phase totals (end to end)
 
-| phase | framework | total | TFLOP/s |
-|---|---|---|---|
-| prefill (seq 128) | llama.cpp `c6824a9e4` (ggml CUDA, f16) | 1.2288 ms | 20.97 |
-| prefill (seq 128) | torch 2.11.0+cu130 (cuBLAS) | 1.3037 ms | 19.77 |
-| prefill (seq 128) | tinygrad 0.11.0 (CUDA, `TinyJit`) | 3.7941 ms | 6.79 |
-| decode (seq 1 + lm_head) | torch 2.11.0+cu130 (cuBLAS) | 3.2532 ms | 0.30 |
-| decode (seq 1 + lm_head) | llama.cpp `c6824a9e4` (ggml CUDA, f16) | 3.3703 ms | 0.29 |
-| decode (seq 1 + lm_head) | tinygrad 0.11.0 (CUDA, `TinyJit`) | 39.6068 ms | 0.02 |
+| phase | framework | total | TFLOP/s | GB/s |
+|---|---|---|---|---|
+| prefill (seq 128) | llama.cpp `c6824a9e4` (ggml CUDA, f16) | 1.2288 ms | 20.97 | 175 |
+| prefill (seq 128) | torch 2.11.0+cu130 (cuBLAS) | 1.3037 ms | 19.77 | 165 |
+| prefill (seq 128) | tinygrad 0.11.0 (CUDA, `TinyJit`) | 3.7942 ms | 6.79 | 57 |
+| decode (seq 1 + lm_head) | torch 2.11.0+cu130 (cuBLAS) | 3.2532 ms | 0.30 | 304 |
+| decode (seq 1 + lm_head) | llama.cpp `c6824a9e4` (ggml CUDA, f16) | 3.3702 ms | 0.29 | 294 |
+| decode (seq 1 + lm_head) | tinygrad 0.11.0 (CUDA, `TinyJit`) | 39.6069 ms | 0.02 | 25 |
 
-Decode is memory-bound (one row of activations against the whole weight
-matrix), so TFLOP/s is small by construction: the useful decode number is the
-time. tinygrad's decode total is dominated by `lm_head` (37.5 ms), where it is
-~14x slower than the other two.
+Decode is bandwidth-bound: torch and llama.cpp both reach ~90% of the card's
+336 GB/s, and TFLOP/s is small by construction. tinygrad's decode total is
+dominated by `lm_head` (37.5 ms, 21 GB/s), where it is ~14x slower than the
+other two. Prefill is compute-bound: tinygrad sits at 6.8 TFLOP/s and 57 GB/s,
+i.e. it is not limited by either wall.
 
 ### Prefill, per projection
 
-| projection | shape | llama.cpp | torch | tinygrad |
-|---|---|---|---|---|
-| `q_proj` | [128x3072]x[3072x3072] | 0.1205 ms | 0.1485 ms | 0.3557 ms |
-| `k_proj` | [128x3072]x[3072x1024] | 0.0560 ms | 0.0552 ms | 0.1349 ms |
-| `v_proj` | [128x3072]x[3072x1024] | 0.0568 ms | 0.0547 ms | 0.1355 ms |
-| `o_proj` | [128x3072]x[3072x3072] | 0.1200 ms | 0.1507 ms | 0.3525 ms |
-| `gate_proj` | [128x3072]x[3072x8192] | 0.3185 ms | 0.2927 ms | 1.0439 ms |
-| `up_proj` | [128x3072]x[3072x8192] | 0.3163 ms | 0.2936 ms | 1.0353 ms |
-| `down_proj` | [128x8192]x[8192x3072] | 0.2407 ms | 0.3083 ms | 0.7364 ms |
+| projection | shape | framework | ms | TFLOP/s | GB/s |
+|---|---|---|---|---|---|
+| `q_proj` | [128x3072]x[3072x3072] | llama.cpp | 0.1205 | 20.05 | 170 |
+| `q_proj` | [128x3072]x[3072x3072] | torch | 0.1485 | 16.27 | 138 |
+| `q_proj` | [128x3072]x[3072x3072] | tinygrad | 0.3557 | 6.79 | 57 |
+| `k_proj` | [128x3072]x[3072x1024] | llama.cpp | 0.0560 | 14.38 | 131 |
+| `k_proj` | [128x3072]x[3072x1024] | torch | 0.0552 | 14.59 | 133 |
+| `k_proj` | [128x3072]x[3072x1024] | tinygrad | 0.1349 | 5.97 | 54 |
+| `v_proj` | [128x3072]x[3072x1024] | llama.cpp | 0.0568 | 14.18 | 129 |
+| `v_proj` | [128x3072]x[3072x1024] | torch | 0.0547 | 14.72 | 134 |
+| `v_proj` | [128x3072]x[3072x1024] | tinygrad | 0.1355 | 5.94 | 54 |
+| `o_proj` | [128x3072]x[3072x3072] | llama.cpp | 0.1200 | 20.13 | 170 |
+| `o_proj` | [128x3072]x[3072x3072] | torch | 0.1507 | 16.03 | 136 |
+| `o_proj` | [128x3072]x[3072x3072] | tinygrad | 0.3525 | 6.85 | 58 |
+| `gate_proj` | [128x3072]x[3072x8192] | llama.cpp | 0.3185 | 20.23 | 167 |
+| `gate_proj` | [128x3072]x[3072x8192] | torch | 0.2927 | 22.01 | 182 |
+| `gate_proj` | [128x3072]x[3072x8192] | tinygrad | 1.0439 | 6.17 | 51 |
+| `up_proj` | [128x3072]x[3072x8192] | llama.cpp | 0.3163 | 20.37 | 168 |
+| `up_proj` | [128x3072]x[3072x8192] | torch | 0.2936 | 21.94 | 181 |
+| `up_proj` | [128x3072]x[3072x8192] | tinygrad | 1.0353 | 6.22 | 51 |
+| `down_proj` | [128x8192]x[8192x3072] | llama.cpp | 0.2407 | 26.77 | 221 |
+| `down_proj` | [128x8192]x[8192x3072] | torch | 0.3083 | 20.90 | 173 |
+| `down_proj` | [128x8192]x[8192x3072] | tinygrad | 0.7364 | 8.75 | 72 |
 
 ### Decode, per projection
 
-| projection | shape | torch | llama.cpp | tinygrad |
-|---|---|---|---|---|
-| `q_proj` | [1x3072]x[3072x3072] | 0.0656 ms | 0.0746 ms | 0.1917 ms |
-| `k_proj` | [1x3072]x[3072x1024] | 0.0241 ms | 0.0327 ms | 0.2011 ms |
-| `v_proj` | [1x3072]x[3072x1024] | 0.0245 ms | 0.0328 ms | 0.2009 ms |
-| `o_proj` | [1x3072]x[3072x3072] | 0.0649 ms | 0.0743 ms | 0.1921 ms |
-| `gate_proj` | [1x3072]x[3072x8192] | 0.1672 ms | 0.1887 ms | 0.4576 ms |
-| `up_proj` | [1x3072]x[3072x8192] | 0.1679 ms | 0.1885 ms | 0.4670 ms |
-| `down_proj` | [1x8192]x[8192x3072] | 0.1683 ms | 0.1807 ms | 0.3490 ms |
-| `lm_head` | [1x3072]x[3072x128256] | 2.5707 ms | 2.5979 ms | 37.5475 ms |
+| projection | shape | framework | ms | TFLOP/s | GB/s |
+|---|---|---|---|---|---|
+| `q_proj` | [1x3072]x[3072x3072] | torch | 0.0656 | 0.29 | 288 |
+| `q_proj` | [1x3072]x[3072x3072] | llama.cpp | 0.0746 | 0.25 | 253 |
+| `q_proj` | [1x3072]x[3072x3072] | tinygrad | 0.1917 | 0.10 | 99 |
+| `k_proj` | [1x3072]x[3072x1024] | torch | 0.0241 | 0.26 | 261 |
+| `k_proj` | [1x3072]x[3072x1024] | llama.cpp | 0.0327 | 0.19 | 193 |
+| `k_proj` | [1x3072]x[3072x1024] | tinygrad | 0.2011 | 0.03 | 31 |
+| `v_proj` | [1x3072]x[3072x1024] | torch | 0.0245 | 0.26 | 257 |
+| `v_proj` | [1x3072]x[3072x1024] | llama.cpp | 0.0328 | 0.19 | 192 |
+| `v_proj` | [1x3072]x[3072x1024] | tinygrad | 0.2009 | 0.03 | 31 |
+| `o_proj` | [1x3072]x[3072x3072] | torch | 0.0649 | 0.29 | 291 |
+| `o_proj` | [1x3072]x[3072x3072] | llama.cpp | 0.0743 | 0.25 | 254 |
+| `o_proj` | [1x3072]x[3072x3072] | tinygrad | 0.1921 | 0.10 | 98 |
+| `gate_proj` | [1x3072]x[3072x8192] | torch | 0.1672 | 0.30 | 301 |
+| `gate_proj` | [1x3072]x[3072x8192] | llama.cpp | 0.1887 | 0.27 | 267 |
+| `gate_proj` | [1x3072]x[3072x8192] | tinygrad | 0.4576 | 0.11 | 110 |
+| `up_proj` | [1x3072]x[3072x8192] | torch | 0.1679 | 0.30 | 300 |
+| `up_proj` | [1x3072]x[3072x8192] | llama.cpp | 0.1885 | 0.27 | 267 |
+| `up_proj` | [1x3072]x[3072x8192] | tinygrad | 0.4670 | 0.11 | 108 |
+| `down_proj` | [1x8192]x[8192x3072] | torch | 0.1683 | 0.30 | 299 |
+| `down_proj` | [1x8192]x[8192x3072] | llama.cpp | 0.1807 | 0.28 | 279 |
+| `down_proj` | [1x8192]x[8192x3072] | tinygrad | 0.3490 | 0.14 | 144 |
+| `lm_head` | [1x3072]x[3072x128256] | torch | 2.5707 | 0.31 | 307 |
+| `lm_head` | [1x3072]x[3072x128256] | llama.cpp | 2.5979 | 0.30 | 303 |
+| `lm_head` | [1x3072]x[3072x128256] | tinygrad | 37.5475 | 0.02 | 21 |
 
 ### Reproduce
 

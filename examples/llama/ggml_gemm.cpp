@@ -114,6 +114,7 @@ int main() {
     for (const Phase & phase : PHASES) {
         double total_s = 0.0;
         double total_flops = 0.0;
+        double total_bytes = 0.0;
         for (int i = 0; i < (int) (sizeof(PROJS) / sizeof(PROJS[0])) + (phase.lm_head ? 1 : 0); ++i) {
             const Proj p = i < (int) (sizeof(PROJS) / sizeof(PROJS[0])) ? PROJS[i] : Proj{"lm_head", HIDDEN, VOCAB};
             const ggml_init_params params = {
@@ -138,15 +139,18 @@ int main() {
 
             const double per = measure(backend, graph);
             const double flops = 2.0 * phase.seq * p.k * p.n;
-            std::printf("%-8s %-10s [%dx%d]x[%dx%d]  %8.4f ms  %6.2f TFLOP/s\n",
-                        phase.name, p.name, phase.seq, p.k, p.k, p.n, per * 1e3, flops / per / 1e12);
+            const double bytes = 2.0 * (phase.seq * p.k + p.k * p.n + phase.seq * p.n);
+            std::printf("%-8s %-10s [%dx%d]x[%dx%d]  %8.4f ms  %6.2f TFLOP/s  %6.0f GB/s\n",
+                        phase.name, p.name, phase.seq, p.k, p.k, p.n, per * 1e3, flops / per / 1e12, bytes / per / 1e9);
             total_s += per;
             total_flops += flops;
+            total_bytes += bytes;
 
             ggml_backend_buffer_free(buf);
             ggml_free(ctx);
         }
-        std::printf("%-8s %-10s %8.4f ms  %6.2f TFLOP/s\n", phase.name, "total", total_s * 1e3, total_flops / total_s / 1e12);
+        std::printf("%-8s %-10s %8.4f ms  %6.2f TFLOP/s  %6.0f GB/s\n",
+                    phase.name, "total", total_s * 1e3, total_flops / total_s / 1e12, total_bytes / total_s / 1e9);
     }
 
     ggml_backend_free(backend);

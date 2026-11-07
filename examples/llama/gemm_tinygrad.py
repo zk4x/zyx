@@ -73,6 +73,7 @@ def main():
     for phase, seq, extra in PHASES:
         total_ms = 0.0
         total_flops = 0.0
+        total_bytes = 0.0
         for name, k, n in PROJS + extra:
             x = Tensor.rand(seq, k, dtype=dtypes.float16).realize()
             w = Tensor.rand(n, k, dtype=dtypes.float16).realize()
@@ -84,10 +85,15 @@ def main():
             ms = measure(dev, lambda: gemm(x, w)) * 1e3
             flops = 2.0 * seq * k * n
             tflops = flops / (ms * 1e-3) / 1e12
+            gbs = (seq * k + n * k + seq * n) * 2 / (ms * 1e-3) / 1e9
             total_ms += ms
             total_flops += flops
-            print(f"{phase:8s} {name:10s} [{seq}x{k}]x[{k}x{n}]  {ms:8.4f} ms  {tflops:6.2f} TFLOP/s")
-        print(f"{phase:8s} {'total':10s} {total_ms:8.4f} ms  {total_flops / (total_ms * 1e-3) / 1e12:6.2f} TFLOP/s")
+            total_bytes += (seq * k + n * k + seq * n) * 2
+            print(f"{phase:8s} {name:10s} [{seq}x{k}]x[{k}x{n}]  {ms:8.4f} ms  {tflops:6.2f} TFLOP/s  {gbs:6.0f} GB/s")
+        print(
+            f"{phase:8s} {'total':10s} {total_ms:8.4f} ms  "
+            f"{total_flops / (total_ms * 1e-3) / 1e12:6.2f} TFLOP/s  {total_bytes / (total_ms * 1e-3) / 1e9:6.0f} GB/s"
+        )
 
 
 if __name__ == "__main__":
