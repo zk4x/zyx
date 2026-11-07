@@ -19,6 +19,18 @@ impl Kernel {
     pub fn verify(&self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("verify");
+        // A kernel above the render limit is not a kernel: every backend
+        // refuses it (`render_cuda: kernel exceeds 50000 op render limit`), and
+        // by then a pass has already produced a state whose size makes the
+        // epilogue superlinear in the op count — which is how a search grinds
+        // for hours instead of failing. Checked *above* the debug bail so it
+        // also fires in release; this is a hard invariant, not a debug
+        // assertion.
+        const MAX_OPS: u32 = 50_000;
+        let n_ops = self.ops.len().0;
+        if n_ops > MAX_OPS {
+            panic!("kernel IR has {n_ops} ops, above the {MAX_OPS}-op render limit");
+        }
         if !cfg!(debug_assertions) {
             return;
         }
