@@ -1,49 +1,77 @@
-## HANDOFF (2026-11-07, session 21) — start here: kernel 1, the writer store
+## HANDOFF (2026-11-07, session 22) — start here: the block is 32 tiles, not one
 
-**Snapshot.** `main` at `3baa7c1b` + the working tree below (uncommitted: the
-loud bails). `tt_add_movers` is now a wrapper: `debug()` → `_body()` →
-`debug()` → `todo!()`. **The gate fires even when the body bails** — an early
-`return` used to skip the todo entirely, which is how kernel 1 reached
-`tt_verify` (`DRAM write in compute at OpId(8)`) instead of stopping here.
+**What landed.** `tt_zero_iteration_vars` now treats `Op::Unroll` as a leaf
+(alongside `Const`/`Range`/`Param`). It was only a leaf when `lanes` was
+`true`; with `lanes = false` it fell through to `_ => return None`, which is
+exactly why the KV-fill store cone (`r25 = r14 + r23`, containing the two
+unrolls) could not canonicalize. Kernel 1 now runs `tt_add_movers` to the gate.
 
-**Bails are loud now.** `tt_add_movers` is `device_epilogue`, not a search
-option: every "cannot lower" is a `todo!` naming the access and the step
-(reader / block reader / compute load / store / drain / existing copy). The
-first one the model hits:
+**Kernel 1's exit IR at the gate now** (`/tmp/opencode/g4.txt`):
 
-```
-tt_add_movers: store index 25 is not tile arithmetic
-```
+- Reader section empty (store-only kernel), `storage cb, len=1024`.
+- Compute store: `store r32[r130] = r26`, with
+  `r130 = r120*1024 + r122*32 + r124`, `r120 = (r106/8)*4 + r104/32`,
+  `r102 = r12 + r28*1024`, `r12`/`r28` the two lane unrolls. With the group
+  ranges bound to zero this is canonical (tile, row, col) — and the
+  **group ranges are no longer in the compute index**.
+- Drain: `copy r7[r90] = r32[0]`.
 
-That is `tt_zero_iteration_vars(off, store, OpId::NULL, false, true, false, …)`
-returning `None` for the KV-fill store (`store r7[r25] = 0`). `r25` is
-`r14 + r23` over `Op::Binary`/`Const`/`Range::Group`/`Unroll`, all of which the
-walker handles — so the `None` comes from a leaf the walker does not expect.
-Find it before anything else; the function is at `tenstorrent.rs:1741` and its
-`_ => return None` is the only path that produces it (a `Range` that is neither
-`Group` nor `Local` cannot happen; an `Op::Param { kind: Variable }` can, and
-`tt_index_max`/`get_strides` both bail on those too).
+**What is still wrong with kernel 1** — two things, and they are the same
+thing:
 
-**Kernel 1's exit IR before this failure** (what is already right): the entry
-cone (`r11 = 32*group0`, `r25 = r14 + r23`), `end_reader`, then the canonical
-transform `r56 = tile`, `r66 = r56*1024 + row*32 + col`, `r90 = r56*4160 + 16 +
-(face*256 + within)*2`. **Still wrong:** the store still targets the DRAM param
-(`store r7[r25] = r26`), there is no drain `copy`, and the grid is `1024 x 4`
-against the device's `10 x 14`.
+1. **The block is not one tile.** Per core the store covers
+   `{4*k*1024 + lane0 : k in 0..32, lane0 in 0..32}`: 32 tile slots, each
+   holding one 32-element row (the logical stride between lane iterations is
+   1024 elements = 4 tiles, because a tile in this tensor is 32 cols x 8 rows).
+   The CB is `len=1024`, so 31 of the 32 slots are out of bounds, and the
+   single drain `r32[0]` would copy one tile's worth of mostly-unwritten L1.
+   The write pattern is right (canonical, lanes kept); the CB size and the
+   drain count are wrong.
+2. **The grid is `1024 x 4`** against the device's `10 x 14`.
 
-**Order of work for kernel 1:** (1) the store index must canonicalize and the
-store must land in the writer CB (not the param); (2) the compute-side index
-must be the block-relative canonical tile (grid zeroed, lanes kept); (3) the
-grid must fit — which needs the split in `tt_tile` plus per-iteration traffic,
-and per-iteration traffic without streaming means the credit ring
-(`CbDeclare`/`ReserveBack`/`PushBack`/`WaitFront`/`PopFront`, `CbState`/
-`CbTransactions` at `tenstorrent.rs:7378`/`:7479`, firmware `op::CB`).
+Both are fixed by the same piece: a loop over the block's tiles, one tile of
+traffic per iteration, CB depth fixed (not `trips * 1024`), drain loop at the
+tail. That is the credit ring. **The loop does not exist yet** (the work is
+still 32 wide unroll lanes), so this is not "unwrap the existing loop": the
+lane axis that enumerates tiles has to become the loop.
+
+**Protocol facts checked this session (they correct the previous handoff):**
+
+- The ISA has no `TTOp` for CB sync, by design (`ops.rs`, `TTOp` doc: the
+  native builders carry their own semaphores and slots). `CbState`/
+  `CbTransactions`/`tt_cb_plan` still have no callers.
+- The **mover firmware does implement it**: `Entry::Buffer`
+  (`metalium-rs/crates/tt-firmware/src/mover.rs`, `dm::op::CB = 0x42`) calls
+  `tt_firmware::dataflow::buffer`, which is in our own
+  `firmware/tt-firmware/src/dataflow.rs`: `Reserve`/`Wait`/`Push`/`Pop`, one
+  credit per call, counters at `dataflow::INPUT` (producer Reader=B,
+  consumer Unpack=T0) and `dataflow::OUTPUT` (producer Pack=T2, consumer
+  Writer=NC), capacity < 0x8000.
+- The **role runner is already streamed-capable**: a role program whose length
+  word carries `dataflow::STREAMED` is `[VERSION, batches, capacity, role]` +
+  `[body_addr, body_len, 0, 0]` per batch, and each batch does
+  `Wait`/`Pop` on Input (T0) or `Reserve`/`Push` on Output (T2) around its
+  body (`firmware/tt-firmware/src/corpus.rs`).
+- Our renderer does not use any of that: `TTRoleProgram` is a flat word list
+  plus `loops`, the reader and writer lists are static one-shot `DmRead`/
+  `DmWrite` pages whose DRAM addresses are per-grid-point tables fixed at
+  compile time, and the launch runs one list of reads, one role run, one list
+  of writes. Per-iteration DRAM addresses therefore need either (a) a
+  streamed segment (batch per iteration) or (b) compile-time expansion of the
+  trip count into list entries. `LIST_MAX` is 512 entries per role per core.
+
+**Order of work, unchanged in substance:** (1) decide/implement how the loop
+becomes per-iteration traffic (streamed batches vs list expansion — this is a
+data-shape change and needs the user's word), (2) then enable the `tt_tile`
+group split so the grid fits, (3) re-inspect kernel 1's IR at the gate.
 
 **Definitions that do not move:** a group range over the device max is
 invalid; loops must be handled correctly; **streaming CBs and unrolled loops are
 invalid**; a non-canonical tile access inside compute is invalid;
 `tt_dataflow_select` only pattern-matches and lowers to the native ISA — it must
 never work out an index or a tile.
+
+## HANDOFF (2026-11-07, session 21) — the gate always fires; bails are loud
 
 Command: `cd zyx-bench && cargo build --release --bin llama_bench` then
 `TT_TTSIM_LIB=… ZYX_DEV=tt:0 ./target/release/llama_bench` (the gate aborts

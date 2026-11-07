@@ -1766,7 +1766,7 @@ impl Kernel {
             return Some(zero);
         }
         let out = match op {
-            Op::Const(_) | Op::Range { .. } | Op::Param { .. } => idx,
+            Op::Const(_) | Op::Range { .. } | Op::Unroll { .. } | Op::Param { .. } => idx,
             Op::Binary { x, y, bop } => {
                 let x = self.tt_zero_iteration_vars(x, before, keep, loops, groups, lanes, memo)?;
                 let y = self.tt_zero_iteration_vars(y, before, keep, loops, groups, lanes, memo)?;
