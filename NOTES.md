@@ -1,4 +1,58 @@
-## HANDOFF (2026-11-07, session 19) — start here: `tt_canonical_tile` landed
+## HANDOFF (2026-11-07, session 20) — start here: the gate is back; fix IR, one kernel
+
+**The rule, verbatim: no moving past the `todo!()` at the end of
+`tt_add_movers` until the IR is correct.** It aborts every TT compile on
+purpose, at the pass's exit, after `self.debug()` at entry and at exit. That
+is how a kernel is inspected: build the model, look at the kernel the gate
+stopped on, fix *that* kernel's IR, and only then do anything else.
+
+**What "correct IR" means (the user's four criteria):**
+
+1. A `group_range` longer than the device's per-axis max is **invalid**
+   (`max_global_work_dims`, TT `[10, 14]`). The grid has to fit.
+2. A loop handled incorrectly is **invalid**.
+3. **Streaming CBs and unrolled loops are invalid**: the CB is never sized
+   from the loop, and a loop around boundary traffic is never hoisted into one
+   block copy.
+4. A **non-canonical tile access inside the compute segment is invalid**.
+   Every load/store reads `cb[tile*1024 + row*32 + col]`, not a logical index.
+
+**`tt_dataflow_select`'s contract:** it must not think about indexing or tiles.
+It pattern-matches the already-tiled, already-canonical kernel and lowers the
+match straight to the native TT ISA. If it has to work out an address or a
+tile layout, the IR arriving at it is wrong — fix `tt_add_movers`, not
+`tt_dataflow_select`.
+
+**State of the pass at the gate (kernel 1 of the model, the KV-cache fill):**
+
+- Reader empty; writer `copy dram[16 + tile*4160 ...] = cb[0]` — canonical.
+- Compute store index: canonical as of the current edit (grid bound to zero,
+  lanes kept), needs a rebuild to confirm in the dump.
+- **Invalid:** group ranges `1024 x 4` against `10 x 14`. That is the one
+  remaining item for kernel 1.
+- No loop today, so no streaming and no unrolling to remove yet.
+
+**The way past item 3 (and the grid cap) is the per-tile credit ring**, and it
+is the next piece of work: `CbDeclare`/`ReserveBack`/`PushBack`/`WaitFront`/
+`PopFront` as `TTOp`s, emitted per iteration by `tt_add_movers`, with the CB
+depth fixed (never `tiles * 1024`) and the firmware `op::CB`
+(`firmware/tt-firmware/src/dataflow.rs`) doing the throttling. The port is
+already half-present: `CbState`/`CbTransactions` (`kernel/tenstorrent.rs:7378`,
+`:7479`) with unit tests and no callers, `tt_cb_plan` at `:7660`, and the
+80-line state machine NOTES describes for `588110a9`. What is missing is the
+`TTOp` variants, the emitter in `tt_add_movers`, and the codegen encoding.
+
+**Getting the real kernel list** (do not run the bench for this): run the model
+with `ZYX_DEV=cpu ZYX_DEBUG=4` (or `260` for NoSearch, much faster) and the
+kernel IR prints before `linearize`. That list — not the hand-written `24_tt`
+approximations — is what has to lower, and each entry replaces one `24_tt`
+test as it is fixed.
+
+**Do not** claim the gates mean the model works, and do not say "essentially"
+or "almost": the gates are op-mix approximations at small shapes, the bench is
+the model, and the model has never executed a kernel.
+
+## HANDOFF (2026-11-07, session 19) — `tt_canonical_tile` landed
 
 **Snapshot.** `tt_add_movers` now carries `Kernel::tt_canonical_tile(base, idx,
 at) -> Option<(dram, l1)>` and all three boundary sites use it. The todo is

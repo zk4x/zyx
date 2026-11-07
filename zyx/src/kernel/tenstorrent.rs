@@ -1738,28 +1738,46 @@ impl Kernel {
     /// tile-granular. A `Local` range is a lane by another name. Group ids are
     /// left alone: they are the grid, and the canonical transform reads them
     /// as logical coordinates.
-    fn tt_zero_iteration_vars(&mut self, idx: OpId, before: OpId, keep: OpId, memo: &mut Map<OpId, OpId>) -> Option<OpId> {
+    fn tt_zero_iteration_vars(
+        &mut self,
+        idx: OpId,
+        before: OpId,
+        keep: OpId,
+        loops: bool,
+        groups: bool,
+        lanes: bool,
+        memo: &mut Map<OpId, OpId>,
+    ) -> Option<OpId> {
         if let Some(&done) = memo.get(&idx) {
             return Some(done);
         }
         let op = self.ops[idx].op.clone();
+        let zero = match &op {
+            _ if idx == keep && !keep.is_null() => false,
+            Op::Loop { .. } => loops,
+            Op::Range { kind: RangeKind::Local(_), .. } => true,
+            Op::Range { kind: RangeKind::Group(_), .. } => groups,
+            Op::Unroll { .. } => lanes,
+            _ => false,
+        };
+        if zero {
+            let zero = self.insert_const_idx_before(before, 0i64);
+            memo.insert(idx, zero);
+            return Some(zero);
+        }
         let out = match op {
-            _ if idx == keep && !keep.is_null() => idx,
-            Op::Loop { .. } | Op::Unroll { .. } | Op::Range { kind: RangeKind::Local(_), .. } => {
-                self.insert_const_idx_before(before, 0i64)
-            }
             Op::Const(_) | Op::Range { .. } | Op::Param { .. } => idx,
             Op::Binary { x, y, bop } => {
-                let x = self.tt_zero_iteration_vars(x, before, keep, memo)?;
-                let y = self.tt_zero_iteration_vars(y, before, keep, memo)?;
+                let x = self.tt_zero_iteration_vars(x, before, keep, loops, groups, lanes, memo)?;
+                let y = self.tt_zero_iteration_vars(y, before, keep, loops, groups, lanes, memo)?;
                 self.insert_before(before, Op::Binary { x, y, bop })
             }
             Op::Unary { x, uop } => {
-                let x = self.tt_zero_iteration_vars(x, before, keep, memo)?;
+                let x = self.tt_zero_iteration_vars(x, before, keep, loops, groups, lanes, memo)?;
                 self.insert_before(before, Op::Unary { x, uop })
             }
             Op::Cast { x, dtype } => {
-                let x = self.tt_zero_iteration_vars(x, before, keep, memo)?;
+                let x = self.tt_zero_iteration_vars(x, before, keep, loops, groups, lanes, memo)?;
                 self.insert_before(before, Op::Cast { x, dtype })
             }
             _ => return None,
@@ -1937,6 +1955,7 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
+        self.debug();
         // CB Storage definitions live in the prologue (past leading
         // params/storages, before everything else).
         let mut prologue = self.head;
@@ -2086,7 +2105,7 @@ impl Kernel {
                         return;
                     };
                     let mut zero: Map<OpId, OpId> = Map::default();
-                    let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, reader_loop, &mut zero) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, reader_loop, true, false, true, &mut zero) else {
                         return;
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
@@ -2110,7 +2129,7 @@ impl Kernel {
                     } else {
                         self.insert_before(prologue, storage)
                     };
-                    let Some(flat) = self.tt_zero_iteration_vars(off, anchor, OpId::NULL, &mut zero) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(off, anchor, OpId::NULL, true, false, true, &mut zero) else {
                         return;
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
@@ -2121,13 +2140,22 @@ impl Kernel {
                 }
             }
             self.insert_before(anchor, Op::TT(TTOp::EndReader));
-            // The value reads from its block now. The access index stays the
-            // load's own: it is the tile's logical descriptor (and the matmul
-            // roles read it to tell A from B), while the block slot comes from
-            // the plan and the unpack's own index (`tt_resolve_dst`).
-            for (load, _base, off, _, _) in loads.iter().copied() {
+            // The value reads from its block now, at the **canonical tile
+            // index**: the within-tile row/column the unpack selects, with the
+            // grid bound to zero (a core's block starts at tile 0 of its CB)
+            // and the loop kept (each iteration has its own slot). The matmul
+            // roles read this index to tell A from B, and their tell is the
+            // lane stride, which the transform preserves.
+            for (load, base, off, _, _) in loads.iter().copied() {
                 let cb = cb_of[&load];
-                self.ops[load].op = Op::Load { src: cb, src_idx: off };
+                let mut zero: Map<OpId, OpId> = Map::default();
+                let Some(flat) = self.tt_zero_iteration_vars(off, load, OpId::NULL, false, true, false, &mut zero) else {
+                    return;
+                };
+                let Some((_dram, l1)) = self.tt_canonical_tile(base, flat, load) else {
+                    return;
+                };
+                self.ops[load].op = Op::Load { src: cb, src_idx: l1 };
             }
         }
         // Writer: the store targets a writer CB and the drain to DRAM is the
@@ -2166,9 +2194,17 @@ impl Kernel {
                 if looped {
                     // The compute side packs into the iteration's own slot; the
                     // pack's destination offset is set where the pack is made
-                    // (`tt_dataflow_select`), so the store's access index stays
-                    // its own.
-                    self.ops[store].op = Op::Store { dst: cb, dst_idx: off, src: value };
+                    // (`tt_dataflow_select`). The store's access index is the
+                    // canonical tile index within the block: the grid bound to
+                    // zero, the loop kept.
+                    let mut zero: Map<OpId, OpId> = Map::default();
+                    let Some(flat) = self.tt_zero_iteration_vars(off, store, OpId::NULL, false, true, false, &mut zero) else {
+                        return;
+                    };
+                    let Some((_dram, l1)) = self.tt_canonical_tile(base, flat, store) else {
+                        return;
+                    };
+                    self.ops[store].op = Op::Store { dst: cb, dst_idx: l1, src: value };
                     // ...and the drain repeats the loop, at the tail. Its body
                     // is built before a temporary anchor so every emitted op
                     // lands after the loop header.
@@ -2182,7 +2218,7 @@ impl Kernel {
                         return;
                     };
                     let mut zero: Map<OpId, OpId> = Map::default();
-                    let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, drain, &mut zero) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(sub, anchor, drain, true, false, true, &mut zero) else {
                         return;
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
@@ -2195,16 +2231,22 @@ impl Kernel {
                     self.push_back(Op::EndLoop);
                 } else {
                     let mut zero: Map<OpId, OpId> = Map::default();
-                    let Some(flat) = self.tt_zero_iteration_vars(off, self.tail, OpId::NULL, &mut zero) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(off, self.tail, OpId::NULL, true, false, true, &mut zero) else {
                         return;
                     };
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, self.tail) else {
                         return;
                     };
-                    // The store's access index stays its own: it carries the
-                    // value's shape, and the pack ignores it (the drain uses
-                    // `dram`).
-                    self.ops[store].op = Op::Store { dst: cb, dst_idx: off, src: value };
+                    // The compute index is the canonical tile index within the
+                    // block, with the grid bound to zero.
+                    let mut czero: Map<OpId, OpId> = Map::default();
+                    let Some(cflat) = self.tt_zero_iteration_vars(off, store, OpId::NULL, false, true, false, &mut czero) else {
+                        return;
+                    };
+                    let Some((_d, l1)) = self.tt_canonical_tile(base, cflat, store) else {
+                        return;
+                    };
+                    self.ops[store].op = Op::Store { dst: cb, dst_idx: l1, src: value };
                     let slot_zero = self.push_back(Op::Const(Constant::idx(0i64)));
                     self.push_back(Op::Copy { src: cb, src_idx: slot_zero, dst: base, dst_idx: dram });
                 }
@@ -2244,6 +2286,8 @@ impl Kernel {
         // cones. The generic pipeline is still legal here — the phase boundary
         // has not been crossed — so clean up before the IR is handed on.
         self.default_epilogue();
+        self.debug();
+        todo!("no removing this todo until the f*cking IR is good looking");
     }
 
     /// Lower the remaining plain ops of a TT kernel to their `TTOp` form:
