@@ -119,7 +119,10 @@ writer list, launched once.
 - **Grid cap.** A group range above `max_global_work_dims[axis]` (TT `[10,14]`)
   is split by `split(g, SplitMode::Loop, factor)` with `factor` the smallest
   divisor of the length whose outer part fits. The loop wraps the whole body, so
-  each iteration is one of the group's points. Enabled in `tt_tile`.
+  each iteration is one of the group's points. Enabled in `tt_tile`. If no
+  divisor leaves an outer part within the max, the split is a loud rejection;
+  the later form is `pad_to` the group to a multiple of the grid max, then
+  split.
 - **`tt_tile` chooses the tiling (user, 2026-11-08): whatever is easiest to
   lower.** The easiest form is: **one loop iteration = one tile**, so every
   access is `grid group(s) + Loop(tiles) + Unroll(32 within the tile)` and a
@@ -509,6 +512,8 @@ Every case below is unproven until it runs green on ttsim:
 2. If a group length has no divisor whose outer part fits `max_global_work_dims`
    (a prime above the max), what is the IR: a tail loop, an over-allocated
    outer with masking, or a loud rejection?
+   **Answered (2026-11-08): loud rejection for now. Later, `pad_to` the group to
+   a multiple of the grid max and split afterwards.**
 3. With both a grid-split loop and a tile loop present, which loop is the batch
    loop? (The current answer is the tile loop, one tile per batch.)
 4. Does `tt_tile` ever fold an existing lane split back into a loop, and under
