@@ -196,7 +196,7 @@ impl Kernel {
                     .map_err(|_| tt_err(format!("tenstorrent: page {scan} has negative length")))?
                     .checked_mul(dtype.bit_size() as u64 / 8)
                     .ok_or_else(|| tt_err(format!("tenstorrent: page {scan} size overflows")))?;
-                let base = (at + 63) & !63;
+                let base = ((at + 63) & !63) + tt_isa::dm::TILE_DATA;
                 if base + bytes > tt_isa::l1::DATA.end {
                     return Err(tt_err(format!(
                         "tenstorrent: L1 data arena exhausted: page {scan} needs {bytes} bytes at {base:#x}"

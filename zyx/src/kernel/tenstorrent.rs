@@ -3096,27 +3096,21 @@ impl Kernel {
                 let Op::Param { dtype, .. } = self.ops[base].op else {
                     unreachable!("tt_add_movers: a Global load's base is a param")
                 };
-                // The page is what the access moves: one contiguous run of
-                // `lanes` datums, or one 64-byte span for a scalar access.
-                let page_len = if lanes > 1 { lanes } else { span };
-                let page = Op::Storage { dtype, scope: MemScope::Local, len: page_len, id: 0 };
-                let page = if prologue.is_null() {
-                    self.push_back(page)
-                } else {
-                    self.insert_before(prologue, page)
-                };
-                // The read: the span containing lane 0 (all lanes are inside it).
+                // A tiled image splits a logical run at every 16-datum face row
+                // (`tt_canonical_tile`: the faces are 4 KiB apart), so the unit
+                // of a tiled move is one face row — 16 datums, 64 bytes, at a
+                // DRAM address `≡ 16 mod 64`. tt-metal moves pages like this;
+                // what travels is the layout's unit, and a row inside a tile is
+                // not a page, so a longer run is split here.
+                if lanes >= 16 && lanes % 16 != 0 {
+                    todo!("tt_add_movers: transfer load {scan:?} moves {lanes} datums, not whole face rows");
+                }
                 let mut memo: Map<OpId, OpId> = Map::default();
                 let Some(flat0) = self.tt_zero_iteration_vars(off, scan, OpId::NULL, false, false, true, &mut memo) else {
                     todo!("tt_add_movers: transfer load {scan:?} index {off} is not iteration arithmetic")
                 };
-                let byte0 = mul(self, scan, flat0, el);
-                let blocks = div(self, scan, byte0, 64);
-                let span_base = mul(self, scan, blocks, 64);
-                let slot = cst(self, scan, 0);
-                self.insert_before(scan, Op::Copy { src: base, src_idx: span_base, dst: page, dst_idx: slot });
+                let mut out_info: Option<(OpId, OpId, OpId)> = None;
                 if let Some(&store) = store_of.get(&scan) {
-                    let store_next = self.next_op(store);
                     let Op::Store { dst: out, dst_idx: out_idx, .. } = self.ops[store].op else {
                         unreachable!("tt_add_movers: a recorded store is a Store")
                     };
@@ -3132,24 +3126,68 @@ impl Kernel {
                     else {
                         todo!("tt_add_movers: transfer store {store:?} index {out_idx} is not iteration arithmetic")
                     };
-                    let obyte = mul(self, store, out0, out_el);
-                    let oblocks = div(self, store, obyte, 64);
-                    let obase = mul(self, store, oblocks, 64);
-                    let oslot = cst(self, store, 0);
-                    self.insert_before(store, Op::Copy { src: page, src_idx: oslot, dst: out, dst_idx: obase });
+                    out_info = Some((store, out, out0));
+                }
+                let mut last_page = OpId::NULL;
+                let chunks: i64 = if lanes >= 16 { lanes / 16 } else { 1 };
+                for k in 0..chunks {
+                    let off_k = if lanes >= 16 {
+                        let step = cst(self, scan, 16 * k);
+                        bin(self, scan, flat0, step, BOp::Add)
+                    } else {
+                        flat0
+                    };
+                    let Some((src_dram, _)) = self.tt_canonical_tile(base, off_k, scan) else {
+                        todo!("tt_add_movers: transfer load {scan:?} has no canonical tile address")
+                    };
+                    // The face row's base: the image's faces start at
+                    // `TILE_DATA ≡ 16 mod 64`, so the 64-byte rounding is done
+                    // on `dram - TILE_DATA` and put back.
+                    let hdr = cst(self, scan, tt_isa::dm::TILE_DATA as i64);
+                    let minus_hdr = cst(self, scan, -(tt_isa::dm::TILE_DATA as i64));
+                    let mask = cst(self, scan, !63);
+                    let shifted = bin(self, scan, src_dram, minus_hdr, BOp::Sub);
+                    let aligned = bin(self, scan, shifted, mask, BOp::BitAnd);
+                    let base_row = bin(self, scan, aligned, hdr, BOp::Add);
+                    let page = Op::Storage { dtype, scope: MemScope::Local, len: 16, id: 0 };
+                    let page = if prologue.is_null() {
+                        self.push_back(page)
+                    } else {
+                        self.insert_before(prologue, page)
+                    };
+                    let slot = cst(self, scan, 0);
+                    self.insert_before(scan, Op::Copy { src: base, src_idx: base_row, dst: page, dst_idx: slot });
+                    match out_info {
+                        Some((store, out, out0)) => {
+                            let ostep = cst(self, store, 16 * k);
+                            let out_k = bin(self, store, out0, ostep, BOp::Add);
+                            let Some((dst_dram, _)) = self.tt_canonical_tile(out, out_k, store) else {
+                                todo!("tt_add_movers: transfer store {store:?} has no canonical tile address")
+                            };
+                            let oslot = cst(self, store, 0);
+                            self.insert_before(store, Op::Copy { src: page, src_idx: oslot, dst: out, dst_idx: dst_dram });
+                        }
+                        None => {
+                            if k == 0 {
+                                // The gather's index: the token sits at its
+                                // offset inside the face row that holds it.
+                                let pick = bin(self, scan, src_dram, base_row, BOp::Sub);
+                                let pick = div(self, scan, pick, el);
+                                self.ops[scan].op = Op::Load { src: page, src_idx: pick };
+                            }
+                            last_page = page;
+                        }
+                    }
+                }
+                if let Some((store, _, _)) = out_info {
+                    let store_next = self.next_op(store);
                     self.remove_op(store);
                     self.remove_op(scan);
                     if next == store {
                         next = store_next;
                     }
-                } else {
-                    // The gather's index: read into the page, pick in L1. The
-                    // page starts at the 64-byte-rounded run base, so the pick
-                    // is the datum offset from that base.
-                    let base_datum = div(self, scan, span_base, el);
-                    let within = bin(self, scan, off, base_datum, BOp::Sub);
-                    self.ops[scan].op = Op::Load { src: page, src_idx: within };
                 }
+                let _ = last_page;
             }
             scan = next;
         }
