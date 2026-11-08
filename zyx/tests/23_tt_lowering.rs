@@ -246,9 +246,17 @@ fn unary_math() -> Result<(), ZyxError> {
 
 #[test]
 fn large_elementwise() -> Result<(), ZyxError> {
+    // A group range above the device max: `tt_tile` must split it into an
+    // outer group and a loop, and the loop's traffic must stay canonical.
     let x = Tensor::rand([1024, 256], DType::F32)?;
     let xs = x.to(Dev::TT(0))?;
-    let _ = (-&xs).to(Dev::C);
+    let neg: Vec<f32> = (-&xs).to(Dev::C)?.try_into().unwrap();
+    let xv: Vec<f32> = x.try_into().unwrap();
+    assert_eq!(neg.len(), xv.len());
+    for i in 0..xv.len() {
+        // `NEG` is `SFPMOV` with the negate modifier: exact in F32.
+        assert_eq!(neg[i].to_bits(), (-xv[i]).to_bits(), "neg lane {i}");
+    }
     Ok(())
 }
 
