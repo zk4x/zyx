@@ -1,55 +1,37 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-//! Simple implementation of mutex based on spinlock.
+//! The global runtime lock.
 
-/*use std::sync::{LockResult, MutexGuard};
+// Spinlock is better for debugging, but std::mutex::Mutex is better for release:
+// the runtime lock is global, so a spinning waiter burns a core the holder needs.
+#[derive(Debug)]
 pub(crate) struct Mutex<T>(std::sync::Mutex<T>);
 
+pub(crate) type MutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
+
 impl<T> Mutex<T> {
-    pub const fn new(data: T) -> Self {
+    pub(super) const fn new(data: T) -> Self {
         Self(std::sync::Mutex::new(data))
     }
 
-    pub fn lock(&self) -> MutexGuard<'_, T> {
-        match self.0.lock() {
-            Ok(guard) => guard,
-            Err(err) => {
-                println!("Poisoned mutex, forcefully recovering");
-                err.into_inner()
-            }
-        }
+    pub(super) fn lock(&self) -> MutexGuard<'_, T> {
+        self.0.lock().unwrap_or_else(|err| err.into_inner())
     }
 
-    pub fn try_lock(&self) -> LockResult<MutexGuard<'_, T>> {
-        self.0.lock()
+    /// Blocks, like `lock`: `Tensor::drop` reaches the lock through this name,
+    /// and a non-blocking failure there has no recovery.
+    pub(super) fn try_lock(&self) -> Result<MutexGuard<'_, T>, ()> {
+        Ok(self.lock())
     }
-}*/
+}
 
-// Good for debugging too
-/*pub struct Mutex<T>(parking_lot::Mutex<T>);
-
-impl<T> Mutex<T> {
-    pub const fn new(data: T) -> Self {
-        Self(parking_lot::Mutex::new(data))
-    }
-
-    pub fn lock(&self) -> parking_lot::MutexGuard<'_, T> {
-        self.0.lock()
-    }
-
-    pub fn try_lock(&self) -> Result<parking_lot::MutexGuard<'_, T>, ()> {
-        Ok(self.0.lock())
-    }
-}*/
-
-// Spinlock is better for debugging, but std::mutex::Mutex is better for release
-use std::{
+// Standard spinlock, kept for debugging (swap in place of the block above).
+/*use std::{
     cell::UnsafeCell,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-// Standard spinlock.
 #[derive(Debug)]
 pub(crate) struct Mutex<T> {
     data: UnsafeCell<T>,
@@ -78,15 +60,8 @@ impl<T> Mutex<T> {
                 return MutexGuard { mutex: self };
             }
 
-            //let mut i = 0;
             while self.lock.load(Ordering::Relaxed) {
-                //core::sync::atomic::spin_loop_hint();
-                //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                /*i += 1;
-                if i > 1000000000 {
-                    panic!("DEADLOCK\n{:?}", std::backtrace::Backtrace::force_capture());
-                }*/
             }
         }
     }
@@ -97,15 +72,8 @@ impl<T> Mutex<T> {
                 return Ok(MutexGuard { mutex: self });
             }
 
-            //let mut i = 0;
             while self.lock.load(Ordering::Relaxed) {
-                //core::sync::atomic::spin_loop_hint();
-                //std::thread::sleep(std::time::Duration::from_secs(1));
                 core::hint::spin_loop();
-                /*i += 1;
-                if i > 1000000000 {
-                    panic!("DEADLOCK");
-                }*/
             }
         }
     }
@@ -128,4 +96,21 @@ impl<T> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
         self.mutex.lock.store(false, Ordering::Release);
     }
-}
+}*/
+
+// Good for debugging too
+/*pub struct Mutex<T>(parking_lot::Mutex<T>);
+
+impl<T> Mutex<T> {
+    pub const fn new(data: T) -> Self {
+        Self(parking_lot::Mutex::new(data))
+    }
+
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, T> {
+        self.0.lock()
+    }
+
+    pub fn try_lock(&self) -> Result<parking_lot::MutexGuard<'_, T>, ()> {
+        Ok(self.0.lock())
+    }
+}*/

@@ -165,18 +165,31 @@ impl Optimization for LocalStaging {
         };
         let flat = kernel.insert_before(inner, Op::Binary { x: iter_stride, y: flat_lane, bop: BOp::Add });
 
-        // Decode the tile coordinates from the flat index. A single-value axis
-        // is a constant 0: leaving it as the raw flat index (after the div)
-        // would build an address outside the tensor.
+        // Decode the tile coordinates from the flat fill index. `flat`
+        // enumerates the logical tile, so each axis divides by the *dense*
+        // cumulative stride. `compact` is the padded slot stride: using it as
+        // the divisor maps a flat index to a coordinate tuple whose slot is
+        // not that flat index, so the fill would overwrite slots it never
+        // enumerated. A single-value axis is a constant 0: leaving it as the
+        // raw flat index (after the div) would build an address outside the
+        // tensor.
+        let mut dense: Vec<Dim> = vec![1; p.axes.len()];
+        {
+            let mut dense_stride: Dim = 1;
+            for (i, axis) in p.axes.iter().enumerate().rev() {
+                dense[i] = dense_stride;
+                dense_stride *= axis.len;
+            }
+        }
         let mut coords: Vec<OpId> = Vec::with_capacity(p.axes.len());
-        for axis in &p.axes {
+        for (axis, dense) in p.axes.iter().zip(dense) {
             if axis.len == 1 {
                 coords.push(kernel.insert_before(inner, Op::Const(Constant::idx(0))));
                 continue;
             }
             let mut coord = flat;
-            if axis.compact != 1 {
-                let c = kernel.insert_before(inner, Op::Const(Constant::idx(axis.compact)));
+            if dense != 1 {
+                let c = kernel.insert_before(inner, Op::Const(Constant::idx(dense)));
                 coord = kernel.insert_before(inner, Op::Binary { x: coord, y: c, bop: BOp::Div });
             }
             let c = kernel.insert_before(inner, Op::Const(Constant::idx(axis.len)));

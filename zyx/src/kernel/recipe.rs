@@ -126,18 +126,29 @@ impl Optimization for TensorRecipe {
         let Some(&(m, n, k, m_lanes, n_lanes, k_lanes)) = self.configs.get(config as usize) else {
             return;
         };
-        if kernel.split(m, SplitMode::Unroll, m_lanes).is_null()
-            || kernel.split(n, SplitMode::Unroll, n_lanes).is_null()
-            || kernel.split(k, SplitMode::Unroll, k_lanes).is_null()
+        // Build the tiled kernel on a copy: a config whose tile no
+        // `opt_tensorize_tiled` region can absorb is not a tensor recipe at
+        // all, and the raw tiled form devectorizes the lanes^3 product into
+        // tens of thousands of scalar ops (43 applied ops lowered to 35,363
+        // for a 512x1024x4096 matmul; a 64x64x64 one was refused outright at
+        // 835,974). A config that does not tensorize is dropped rather than
+        // left in the search space as a huge scalar kernel.
+        let mut tiled = kernel.clone();
+        if tiled.split(m, SplitMode::Unroll, m_lanes).is_null()
+            || tiled.split(n, SplitMode::Unroll, n_lanes).is_null()
+            || tiled.split(k, SplitMode::Unroll, k_lanes).is_null()
         {
-            kernel.verify();
             return;
         }
-        let tensor = kernel.opt_tensorize_tiled();
-        for c in 0..tensor.nconfigs() {
-            tensor.apply(kernel, c);
+        let tensor = tiled.opt_tensorize_tiled();
+        if tensor.nconfigs() == 0 {
+            return;
         }
-        kernel.verify();
+        for c in 0..tensor.nconfigs() {
+            tensor.apply(&mut tiled, c);
+        }
+        tiled.verify();
+        *kernel = tiled;
     }
 }
 
@@ -156,10 +167,27 @@ impl Kernel {
             return Box::new(TensorRecipe { configs });
         }
 
-        // The two output ranges and the contraction loop.
+        // The two output ranges, the contraction loop, and the dtypes the
+        // instruction must match: operand element dtypes and the
+        // accumulator's. A variant whose dtypes differ from these can never
+        // be absorbed by `opt_tensorize_tiled`, so the lane splits it asks
+        // for would only devectorize into a scalar body (an i64 matmul given
+        // an f16 tile recipe renders tens of thousands of ops).
+        let elem_dtype = |k: &Kernel, o: OpId| -> Option<crate::DType> {
+            match k.at(o) {
+                Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
+                Op::Load { src, .. } => match k.at(*src) {
+                    Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
         let mut ranges: Vec<(OpId, u32, Dim)> = Vec::new();
         let mut loop_id = OpId::NULL;
         let mut loop_len: Dim = 0;
+        let mut operand_dtypes: Option<(crate::DType, crate::DType)> = None;
+        let mut acc_dtype: Option<crate::DType> = None;
         let mut op_id = self.head;
         while !op_id.is_null() {
             match self.ops[op_id].op {
@@ -172,6 +200,10 @@ impl Kernel {
                     loop_id = op_id;
                     loop_len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(0);
                 }
+                Op::Binary { bop: super::BOp::Mul, x, y } if operand_dtypes.is_none() => {
+                    operand_dtypes = elem_dtype(self, x).zip(elem_dtype(self, y));
+                }
+                Op::Storage { scope: MemScope::Register, dtype, .. } => acc_dtype = Some(dtype),
                 _ => {}
             }
             op_id = self.next_op(op_id);
@@ -179,10 +211,22 @@ impl Kernel {
         if ranges.len() != 2 || loop_id.is_null() || loop_len <= 0 {
             return Box::new(TensorRecipe { configs });
         }
+        let (Some((x_dtype, y_dtype)), Some(acc_dtype)) = (operand_dtypes, acc_dtype) else {
+            return Box::new(TensorRecipe { configs });
+        };
         ranges.sort_by_key(|&(_, axis, _)| axis);
         let ((m_range, _, m), (n_range, _, n)) = (ranges[0], ranges[1]);
 
         for variant in &info.mma_variants {
+            // Same dtype gate `opt_tensorize_tiled` applies when it matches a
+            // region, minus which operand is A: the orientation is decided by
+            // the accumulator's view, not by the multiply order.
+            let dtypes_match = (variant.a_dtype == x_dtype && variant.b_dtype == y_dtype
+                || variant.a_dtype == y_dtype && variant.b_dtype == x_dtype)
+                && variant.c_dtype == acc_dtype;
+            if !dtypes_match {
+                continue;
+            }
             let (fm, fn_, fk) = {
                 let (fm, fn_, fk) = variant.dims.decompose_mnk();
                 (fm as Dim, fn_ as Dim, fk as Dim)

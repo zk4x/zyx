@@ -343,6 +343,42 @@ impl Kernel {
                         walk_id = next;
                         continue;
                     }
+                    // An mma fragment that the lane splits *into its slots* is
+                    // one packed operand, not a work bundle: unfolding it hands
+                    // each clone a single element where the instruction reads
+                    // the packed slots (a `half2` operand becomes two `half`
+                    // variables and the instruction reads the neighbour of the
+                    // first). Pack the per-lane values back into the `Stack`
+                    // the tensorizer emits and keep one instruction. A lane-
+                    // shaped accumulator means the lane selects a whole
+                    // instruction instead (one output tile per lane), so that
+                    // case falls through and duplicates, each clone carrying
+                    // its own fragment.
+                    if let Op::Wmma { dims, layout, dtype, c, a, b } = *op {
+                        let conditional = |p: OpId| p == unroll_id || remaps.contains_key(&p);
+                        let len_dim: Dim = i64::try_from(len).expect("devectorize: unroll length exceeds Dim");
+                        let one_fragment = |k: &Self, p: OpId| {
+                            k.wmma_operand_slots(walk_id, p).is_some_and(|slots| len_dim * k.elements(p) == slots)
+                        };
+                        let slots_packed = (!conditional(a) || one_fragment(self, a))
+                            && (!conditional(b) || one_fragment(self, b));
+                        if !conditional(c) && slots_packed && (conditional(a) || conditional(b)) {
+                            let mut pack = |k: &mut Self, operand: OpId| {
+                                let mut ops = Vec::with_capacity(len as usize);
+                                ops.push(operand);
+                                if let Some(clones) = remaps.get(&operand) {
+                                    ops.extend(clones.iter().copied());
+                                }
+                                debug_assert_eq!(ops.len() as u64, len, "devectorize: fragment lane count");
+                                k.insert_before(walk_id, Op::Stack { ops: ops.into() })
+                            };
+                            let a = if conditional(a) { pack(self, a) } else { a };
+                            let b = if conditional(b) { pack(self, b) } else { b };
+                            self.ops[walk_id].op = Op::Wmma { dims, layout, dtype, c, a, b };
+                            walk_id = next;
+                            continue;
+                        }
+                    }
                     let mut ids = Vec::with_capacity((len - 1) as usize);
                     let mut at_id = walk_id;
                     for i in 0..(len - 1) as usize {
