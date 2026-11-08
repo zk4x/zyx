@@ -3,20 +3,6 @@
 This file is the current design, state and next steps. History is in git; do not
 append session logs here. If something here is wrong, fix or delete it.
 
-## Governing rule (user, 2026-11-09)
-
-**Follow tt-metal unless there is a reason not to do the same thing.** A
-deviation states its reason in the same place the deviation is described.
-
-**The hardware limit is 64-byte congruence, hence whole-row reads.** A gather
-works at **scalar granularity**: by default the kernel loads a whole row for
-**each** scalar it names. Everything beyond that — row or tile granularity, one
-transfer covering several scalars — is an **optimization**, never a precondition
-and never something the sync, the CB page or the lowering may assume.
-
-This rule governs every hardware decision below (page size, the four syncs,
-launch, firmware, addressing). It is not an example; it is the rule.
-
 ## Goal
 
 One forward step of llama-3.2-3B on `Dev::TT(0)` (ttsim), end to end, all 28
@@ -65,11 +51,11 @@ Where things stand (2026-11-09):
   `cargo build` clean; `cargo test --lib` 129 pass, 1 fail (the gate);
   `ir_contract` green with the four passes run before the boundary snapshot.
 - **The tensor gather does not reach the gate:** `tt_sync_cbs` panics at its
-  pack store — `CB(142) publish run fills 32 datums, not whole pages`. Its
-  traffic is 32-datum vectors while `tt_add_movers` gives every CB a 1024-datum
-  (tile) page, and the same mismatch makes its reader copy transfer
-  `len * el = 4 KiB` from a 512-byte tensor. Page size versus non-tile traffic
-  is the open question below.
+  pack store — `CB(142) publish run fills 32 datums, not whole pages`. The
+  gather's traffic is whole 64-byte rows (one row per scalar access, per the
+  64-byte congruence rule), while `tt_add_movers` still gives every CB a
+  hardcoded 1024-datum page and a whole-tile reader transfer. That is a bug in
+  those two places against the rule, not a design question.
 - **One TT program has executed end to end:** the gather writeback on RISCV B,
   through the emitted RISC-V and the `exec_b` firmware (see below). No
   tensor-level kernel has run yet; the model has never run.
@@ -298,7 +284,9 @@ writer program, launched once.
   test (a row stride can be 32).
 - No sqrt pre-split (deleted): a lone group becomes a 1-D grid, never two
   `sqrt` factors.
-- Reduces produce rank 2: `Loop(k_tiles) + Unroll(32)`, one tile per iteration.
+- Reduces currently lower as rank 2: `Loop(k_tiles) + Unroll(32)`, one tile per
+  iteration. That is the tiled form the search chose, not a precondition for the
+  traffic unit.
 - **Grid cap.** A group range above `max_global_work_dims[axis]` (TT `[10,14]`)
   is split by `split(g, SplitMode::Loop, factor)` with `factor` the smallest
   divisor of the length whose outer part fits. The loop wraps the whole body, so
@@ -307,19 +295,20 @@ writer program, launched once.
   the later form is `pad_to` the group to a multiple of the grid max, then
   split.
 - **`tt_tile` completes the tiling; it assumes nothing about the page.** The
-  default movement unit is the traffic the index names: a scalar access moves
-  its whole row (64-byte congruence is the hardware limit), and each scalar
-  access gets its own row load. Row- or tile-granular movement (one iteration =
-  one tile, a congruent `TILE_SLOT` image) is an **optimization** the search may
-  choose, never a precondition: `tt_tile`, `tt_add_movers`, `tt_sync_cbs`, the CB
-  page and the emitter follow whatever the access actually moves. The earlier
-  "one loop iteration = one tile, the traffic is one whole tile per iteration"
-  text here was the agent's invention and is deleted.
+  movement unit is the traffic the index names: a scalar access moves its whole
+  row (64-byte congruence is the hardware limit), and each scalar access gets
+  its own row load. Row- or tile-granular movement (one iteration = one tile, a
+  congruent `TILE_SLOT` image) is an optimization the search may choose, never a
+  precondition: `tt_tile`, `tt_add_movers`, `tt_sync_cbs`, the CB page and the
+  emitter follow whatever the access actually moves.
 
 ## Boundary indexing: `tt_canonical_tile`
 
-The only place that knows the tile layout. Shape from `self.shape(base)`
-(kept on the param for TT since `linearize`):
+The tiled form of boundary addressing: used when the search has tiled the
+kernel, never assumed. The default is the traffic the access names (a whole
+64-byte-congruent row per scalar gather access). The transform is the only place
+that knows the tile layout. Shape from `self.shape(base)` (kept on the param for
+TT since `linearize`):
 
 ```
 (rows, cols) = last two dims;  rank-1 [c] = (c, 1);  [] = (1, 1)
@@ -400,17 +389,19 @@ tt-metal is the reference (`~/Dev/cpp/tt-metal/tt_metal/hw/inc`).
 
 ## 64-byte congruence
 
-This was the `dm` mover's validation: `dram_offset % 64 == l1 % 64` for reads
-(`% 16` for writes), else error 4. With `dm` dropped, the NOC transactions are
-emitted by the mover programs themselves, so the check is no longer a mover gate;
-what replaces it is part of the open questions.
+The hardware limit: a read needs the DRAM and L1 addresses congruent mod 64, a
+write mod 16. `dm` used to enforce it (`dram_offset % 64 == l1 % 64`, else error
+4); with `dm` dropped, the mover programs emit the transactions, and
+`fifo_check_copy` proves congruence at compile time before codegen.
 
-- The canonical transform adds the same datum offset on both sides, so whole
-  tiles and rows stay congruent.
+- **Whole-row reads follow from this limit**: a row that is a multiple of 64
+  bytes is congruent, so the default scalar gather moves its whole row.
+- The canonical tiled transform adds the same datum offset on both sides, so
+  whole tiles and rows stay congruent.
 - CB bases are placed at `≡16 mod 64` (`tt_place_cbs`), where a tile image's
   datum block lives; a tile slot is `TILE_SLOT = 4160` with a 16-byte header.
 - `fifo_check_copy` proves per-variable stride congruence at compile time; an
-  unprovable index is a loud rejection. It comes back with `tt_fifo_check`.
+  unprovable index is a loud rejection.
 
 ## Compilation, images, dispatch
 
@@ -447,11 +438,13 @@ Compilation ends at codegen. What runs is the images, not the `Kernel`.
   matmul face-block replay) are deleted with it. The SFPU builder's own `REPLAY`
   stays: it repeats recorded instructions inside a math program, which is an
   op-level hardware feature, not loop control flow.
-- One iteration = one tile (`tt_tile`). At depth 1 the body's Tensix words are
-  loop-invariant, so they are inline constants.
+- One iteration = one page (`tt_tile`), and a page is whatever the access moves:
+  a whole row per scalar gather access by default, a tile when the search tiled
+  the kernel. At depth 1 the body's Tensix words are loop-invariant, so they are
+  inline constants.
 - A trip count may be a launch argument: it is loaded once from the args array
   (`a0` base) before the loop. It does not have to fold to a constant.
-- Nesting: the grid split wraps the tile loop, two levels now. The emitter is
+- Nesting: the grid split wraps the page loop, two levels now. The emitter is
   built so deeper nesting is a counter stack rather than a rewrite.
 - Unrolling is a search decision before the device epilogue, never a backend
   choice.
@@ -750,7 +743,13 @@ Every case below is unproven until it runs green on ttsim:
 - **Follow tt-metal unless there is a good reason not to.** Hardware behaviour,
   kernel shape, launch shape, CB setup and the order work is proven all follow
   tt-metal. A deviation is stated with its reason in the same place the
-  deviation is described.
+  deviation is described. When in doubt, follow what tt-metal does.
+- **The hardware limit is 64-byte congruence, hence whole-row reads.** A gather
+  works at scalar granularity: by default the kernel loads a whole row for each
+  scalar it names, and each scalar access gets its own row load. Row or tile
+  granularity, and any one transfer covering several scalars, is an
+  optimization, never a precondition; the CB page, the four syncs and the
+  emitter follow what the access actually moves.
 - **Indexing is arbitrary; affine and tiled addressing are optimizations.** A
   kernel accesses rows and columns by indices computed from data, in any order:
   a gather is the case, not an exception. The reader and writer lower the index
@@ -823,7 +822,7 @@ Every case below is unproven until it runs green on ttsim:
   like the SPIR-V text dump; no check on the emitted stream for now.
 - `EndReader`/`EndCompute` stay and are emitted by `tt_add_movers`; no reason to
   delete them.
-- Emitter loop nesting: **two levels now** (grid split wrapping the tile loop),
+- Emitter loop nesting: **two levels now** (grid split wrapping the page loop),
   with the emitter structured so arbitrary nesting is a counter stack later, not
   a rewrite.
 - Start/join follows tt-metal: the firmware starts and joins the cores from the
@@ -895,19 +894,13 @@ Every case below is unproven until it runs green on ttsim:
 5. Is `sum_drop_col`'s orientation needed for llama at `seq_len = 1` (attention
    over one key is `v`), and is its shape the one the model actually uses?
    **Re-ask now that the gather writeback is green.**
-6. **CB page size for non-tile traffic.** `tt_add_movers` gives every CB a
-   1024-datum (one tile) page. The tensor gather's traffic is 32-datum vectors:
-   its pack store fills 32 of 1024 datums, so `tt_sync_cbs` refuses the partial
-   page, and its reader copy would move `len * el = 4 KiB` from a 512-byte
-   tensor. tt-metal makes the page whatever the host configures
-   (`fifo_page_size`; the loopback example's page is the host's L1 page). Should
-   a CB's page be the traffic's unit for a non-tile access (gather page = 32
-   datums, depth counted in those pages), or must every kernel's traffic be a
-   whole 32×32 tile image even when the tensor is not tiled?
 
 Nothing about launch, firmware, mailboxes, NoC init or the `tt-isa` surface is
 open: those follow tt-metal and the decisions above. `exec_nc` for the writer is
-work, not a question.
+work, not a question. CB page size is not a question either: it is the traffic
+the access moves (a whole row per scalar gather access by default, a tile only
+when the search tiled the kernel), and `tt_add_movers`'s hardcoded 1024-datum
+page is a bug against that rule.
 
 ## Next
 
@@ -918,13 +911,15 @@ nothing is to be done in a reduced form.
 1. **CB ops: done in the tree.** The four constructors and
    `tt_sync_cbs`/`tt_dedup_pushes`/`tt_place_pops`/`tt_fifo_check`/
    `fifo_check_copy` are wired after `tt_add_movers`. The publish tally is kept
-   but scoped to one loop body (a run never crosses `Loop`/`EndLoop`), publishes
-   are counted in pages (`Copy` = the page(s) it moves: one per iteration in a
-   loop, the CB length straight-line; `Store` = its datum count), waits precede
-   every CB `Load`/`Copy` source, and pops follow the last same-section read.
-   The boundary contract test now runs the four passes before its snapshot.
-   Remaining from this step: the tensor gather is refused by the partial-page
-   rule (open question 6) and the gate is therefore still in place.
+   but scoped to one loop body (a run never crosses `Loop`/`EndLoop`), waits
+   precede every CB `Load`/`Copy` source, and pops follow the last same-section
+   read. The boundary contract test now runs the four passes before its
+   snapshot. The publishes still count pages against a hardcoded 1024-datum page
+   (`Copy` straight-line = the CB length, `Store` = its datum count); that must
+   become the range the access actually moves (a whole row per scalar gather
+   access), and `tt_fifo_check`'s depth must be counted in those pages. Until
+   then the tensor gather is refused by the partial-page rule and the gate
+   stays.
 2. **Reader/writer programs from codegen.** Emit `TTOp::Reader`/`Writer` from
    the kernel IR instead of `DmRead`/`DmWrite` lists: one loop per boundary
    loop, no unrolling; the index expression lowered as written (loads,
@@ -949,9 +944,11 @@ nothing is to be done in a reduced form.
    all five. Delete `dm` from the backend, `ttsim`'s `mover_list`, and
    `tt-isa` (`dm`, the streamed `dataflow`, the list regions), moving the shared
    constants to `mailbox`/`l1`.
-6. Make `tt_tile` produce the chosen tiling: one loop iteration = one tile; a
-   tile-stepping `Unroll` becomes the `Loop`, the within-tile lanes stay
-   `Unroll(32)`.
+6. `tt_tile` completes the tiling without assuming a page: the default traffic
+   unit is what the access names (a whole row per scalar gather access), and the
+   tiled form (one loop iteration = one tile, a tile-stepping `Unroll` becoming
+   the `Loop`, within-tile lanes staying `Unroll(32)`) is an optimization the
+   search chooses, never a precondition.
 7. Replace `24_tt` with the model's 16 real kernels, in model order, until they
    run; every one stops at the debugging gate and is checked before the gate is
    removed for it.
