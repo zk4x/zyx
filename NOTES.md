@@ -205,7 +205,7 @@ tt-metal is the reference (`~/Dev/cpp/tt-metal/tt_metal/hw/inc`).
   `[VERSION, batches, capacity, role]` + `[body_addr, body_len, 0, 0]` per
   batch, with `Wait`/`Pop` (T0) or `Reserve`/`Push` (T2) around each batch body
   and `retire_batch` between batches
-  (`firmware/tt-firmware/src/corpus.rs`). Batch bodies must be resident
+  (`zyx/firmware/tt-firmware/src/corpus.rs`). Batch bodies must be resident
   programs in `l1::PROGRAM_CACHE`; a `(0,0)` batch is an empty body.
 - **The loop lives in the kernel**, one tile per iteration, in all three roles:
   `for i { reserve; read; push }` (reader), `for i { wait; compute; pop;
@@ -509,12 +509,29 @@ Every case below is unproven until it runs green on ttsim:
   (`matmul_multi_core/kernels/compute/mm.cpp`, `reader_mm_output_tiles_partitioned.cpp`).
   Our flat body lists, loop tables and compile-time entry addresses are not
   that. Loops must not be flattened into repeated bodies/entries.
-- **Remove the metalium-rs dependency.** It is not on crates.io and blocks
-  publication. Copy only the parts we actually use, simplified, into this repo;
-  keep our own `firmware/tt-firmware`. Nothing may depend on
-  `../../metalium-rs`.
+- **No dependency on metalium-rs.** It is not on crates.io and blocked
+  publication. `tt-isa` is now published as `tt-isa 0.1.0` (Apache-2.0,
+  https://github.com/zk4x/tt-isa, a fork credited to the metalium-rs authors,
+  transfer on request) and the firmware sources live in
+  `zyx/firmware/tt-firmware`.
 - metalium-rs was only ever an assembly reference. Do not preserve its
   structure, its abstractions or its dead code.
+
+## Dependency and firmware layout (2026-11-08)
+
+- `zyx` has no local path dependencies. `tt-isa = "0.1.0"` comes from crates.io
+  (also a `[build-dependencies]`, because `build.rs` reads `tt_isa::tensorm`).
+- The RISC-V firmware sources are inside the crate at
+  `zyx/firmware/tt-firmware`; the manifest is `Cargo.toml.in` because cargo does
+  not package a nested package. `zyx/build.rs` copies the tree into `OUT_DIR`,
+  writes `Cargo.toml`, builds `riscv32im-unknown-none-elf`, gates every image's
+  instruction set, and exports `FIRMWARE_*` paths.
+  `src/backend/tenstorrent/firmware_images.rs` embeds them.
+- `zyx` features forwarding to the firmware build: `fast-reads`,
+  `encoded-guard` (implies `fast-reads`), `ttinsn-experiment`.
+- `cargo package` verifies: 172 files, 5.7 MiB (1.3 MiB compressed), and the
+  packaged crate's `build.rs` rebuilds the firmware from the packaged sources.
+  `zyx` itself is not published.
 
 ## Open questions (unclear, to settle one by one)
 

@@ -44,7 +44,7 @@ const TARGET: &str = "riscv32im-unknown-none-elf";
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let firmware_dir = manifest.parent().unwrap().join("tt-firmware");
+    let firmware_dir = manifest.join("firmware").join("tt-firmware");
     println!("cargo:rerun-if-changed=build.rs");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
@@ -52,16 +52,24 @@ fn main() {
     // `rerun-if-changed` does not reliably notice an edit to a file nested inside
     // it, which showed up here as firmware changes that never rebuilt.
     track_sources(&firmware_dir);
-    // The ISA tables stay a shared, out-of-tree crate (zyx builds this firmware
-    // from its own copy but reads the instruction tables from metalium-rs).
-    track_sources(&manifest.parent().unwrap().join("../../../metalium-rs/crates/tt-isa"));
+
+    // The firmware sources ship inside this crate but are not a package of
+    // their own in the tree (`Cargo.toml.in`, not `Cargo.toml`): cargo refuses
+    // to package a nested package. Copy them into `OUT_DIR` and give them the
+    // manifest there, so the build works both from the tree and from the
+    // published crate.
+    let build_dir = out_dir.join("firmware-src");
+    copy_tree(&firmware_dir, &build_dir);
+    std::fs::copy(firmware_dir.join("Cargo.toml.in"), build_dir.join("Cargo.toml"))
+        .expect("could not write the firmware manifest");
+    println!("cargo:rerun-if-changed={}", firmware_dir.join("Cargo.toml.in").display());
 
     let target_dir = out_dir.join("firmware-target");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
     let experiment = std::env::var_os("CARGO_FEATURE_TTINSN_EXPERIMENT").is_some();
     let mut cmd = Command::new(&cargo);
-    cmd.current_dir(&firmware_dir)
+    cmd.current_dir(&build_dir)
         .args(["build", "--release", "--target", TARGET])
         .arg("--target-dir")
         .arg(&target_dir);
@@ -158,6 +166,24 @@ fn track_sources(dir: &Path) {
             track_sources(&path);
         } else {
             println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
+
+/// Copy the firmware source tree (no `target/`, no `.git/`) into `dst`.
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("could not create the firmware build directory");
+    for entry in std::fs::read_dir(src).expect("could not read the firmware sources").flatten() {
+        let name = entry.file_name();
+        if name == "target" || name == ".git" {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if from.is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("could not copy a firmware source file");
         }
     }
 }

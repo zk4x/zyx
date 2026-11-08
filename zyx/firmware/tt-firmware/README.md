@@ -2,9 +2,9 @@
 
 Bare-metal Rust for the Blackhole baby RISC-V cores (`riscv32im-unknown-none-elf`).
 A **separate workspace**, excluded from the host workspace so `cargo build` at the
-root does not try to build it for the host. Normally built by
-`crates/tt-firmware-images/build.rs`, which embeds the images; you rarely build it
-by hand.
+root does not try to build it for the host. Normally built by `zyx/build.rs`,
+which copies the sources into `OUT_DIR` and embeds the images; you rarely build
+it by hand.
 
 ## Images (`src/bin/`)
 
@@ -65,7 +65,7 @@ cargo clippy --manifest-path crates/tt-firmware/Cargo.toml \
 - **No `fence.i`** (Zifencei is unimplemented). Code is written before reset is
   released; leaving reset invalidates the I-cache.
 - **No core identity at run time** (`mhartid` reads 0): it comes from the link script.
-- `tt-firmware-images/build.rs` disassembles every image and refuses instructions
+- `zyx/build.rs` disassembles every image and refuses instructions
   Blackhole cannot execute (compressed, `lr`/`sc`, `fdiv`, `fsqrt`, the `fmadd`
   family, `fence.i`, `pause`, unlisted `fence` orderings, undecodable words).
   Executing an unimplemented instruction is undefined behaviour, not a trap.

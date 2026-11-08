@@ -34,10 +34,10 @@ path = "src/bin/ttinsn_t1.rs"
 required-features = ["ttinsn-experiment"]
 
 [dependencies]
-tt-isa = { path = "../../../metalium-rs/crates/tt-isa" }
+tt-isa = "0.1.0"
 
 [build-dependencies]
-tt-isa = { path = "../../../metalium-rs/crates/tt-isa" }
+tt-isa = "0.1.0"
 
 [profile.release]
 # Code size, not speed: every role image is linked into a 10 KiB L1 slot, and

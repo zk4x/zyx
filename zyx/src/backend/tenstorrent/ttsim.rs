@@ -28,6 +28,7 @@ use std::thread;
 
 use super::dev::Device;
 use super::dev::tlb::WindowKind;
+use super::firmware_images;
 use super::runtime::{self, Schedule};
 use super::sim::{self, Simulator};
 use crate::codegen::tenstorrent::l1::SemaphoreInit;
@@ -242,7 +243,7 @@ fn serve(rx: Receiver<Cmd>, ready: Sender<Result<(), String>>) {
 // ---------------------------------------------------------------------------
 // The data movers: RISCV B reads DRAM into L1, RISCV NC writes L1 back.
 //
-// Each tile boots the two images once ([`tt_firmware_images::DM_B`],
+// Each tile boots the two images once ([`firmware_images::DM_B`],
 // [`DM_NC`]) and keeps them resident; a launch then hands B its reads as one
 // list before the roles run and NC its writes as one list after, so the host
 // never carries a tensor byte. The protocol is `tt_isa::dm`'s: write the
@@ -563,7 +564,7 @@ fn execute(
             kernel.resident[thread] = flags[thread];
         }
     }
-    let out = runtime::run(dev, tile, &tt_firmware_images::ROLES, &kernel, BUDGET, &mut load);
+    let out = runtime::run(dev, tile, &firmware_images::ROLES, &kernel, BUDGET, &mut load);
     let ledger = resident.entry(run.tile).or_insert([None; 5]);
     match &out {
         Ok(_) => {

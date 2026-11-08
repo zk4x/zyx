@@ -69,6 +69,8 @@ use tt_isa::dram::{Dram, DramRange};
 // is dead until a later pass prunes it.
 #[allow(dead_code, unused_imports, unused_variables)]
 pub(crate) mod dev;
+#[allow(dead_code)]
+pub(crate) mod firmware_images;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub(crate) mod runtime;
 #[allow(dead_code, unused_imports, unused_variables)]
@@ -716,8 +718,8 @@ pub struct TTDevice {
     programs: Slab<DeviceProgramId, TTProgram>,
     /// The device's program cache: every image on the card (NOTES §2).
     images: Slab<ImageId, Image>,
-    /// The two mover firmware images ([`tt_firmware_images::DM_B`],
-    /// [`tt_firmware_images::DM_NC`]), created on first compile: boot is their first residency
+    /// The two mover firmware images ([`firmware_images::DM_B`],
+    /// [`firmware_images::DM_NC`]), created on first compile: boot is their first residency
     /// miss, not a special step.
     firmware: Option<[ImageId; 2]>,
 }
@@ -924,8 +926,8 @@ impl TTDevice {
             return Ok(ids);
         }
         let ids = [
-            self.upload(Core::B, tt_firmware_images::DM_B.1)?,
-            self.upload(Core::NC, tt_firmware_images::DM_NC.1)?,
+            self.upload(Core::B, firmware_images::DM_B.1)?,
+            self.upload(Core::NC, firmware_images::DM_NC.1)?,
         ];
         self.firmware = Some(ids);
         Ok(ids)

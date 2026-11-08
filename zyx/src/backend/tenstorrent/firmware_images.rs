@@ -1,11 +1,9 @@
 //! Firmware images for the baby RISC-V cores.
 //!
-//! Built from `crates/tt-firmware` by this crate's `build.rs` and checked there
-//! for instructions Blackhole cannot execute. The role images are what
-//! `tt_kernels::runtime::run` loads; the rest serve the bring-up gates in
-//! `tt-tests`, and live here so that the firmware is built in one place.
+//! Built from `firmware/tt-firmware` by this crate's `build.rs` and checked
+//! there for instructions Blackhole cannot execute. The role images are what
+//! the role runner loads; the rest serve the bring-up gates.
 
-#![no_std]
 
 use tt_isa::tensix::Core;
 
