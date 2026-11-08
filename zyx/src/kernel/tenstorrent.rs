@@ -2122,9 +2122,11 @@ impl Kernel {
                 // The reader's own induction variable: the compute loop keeps
                 // its slot arithmetic, and each entry advances one tile.
                 let reader_loop = self.insert_before(anchor, Op::Loop { len });
-                for (load, base, off, tiles, _) in loads.iter().copied() {
+                for (load, base, off, _tiles, _) in loads.iter().copied() {
                     let Op::Param { dtype, .. } = self.ops[base].op else { return };
-                    let Some(len) = tiles.checked_mul(1024) else { return };
+                    // The ring is one tile deep: one page per iteration, like
+                    // `cb_reserve_back(cb, 1)` in the tt-metal example.
+                    let len = 1024;
                     let storage = Op::Storage { dtype, scope: MemScope::Circular, len, id: 0 };
                     let cb = if prologue.is_null() {
                         self.push_back(storage)
@@ -2148,8 +2150,8 @@ impl Kernel {
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
                         todo!("tt_add_movers: reader index {off} does not canonicalize")
                     };
-                    let stride = self.insert_const_idx_before(anchor, 1024i64);
-                    let slot = self.insert_before(anchor, Op::Binary { x: reader_loop, y: stride, bop: BOp::Mul });
+                    // One page per iteration: the ring slot is 0.
+                    let slot = self.insert_const_idx_before(anchor, 0i64);
                     self.insert_before(anchor, Op::Copy { src: base, src_idx: dram, dst: cb, dst_idx: slot });
                     cb_of.insert(load, cb);
                 }
@@ -2186,7 +2188,7 @@ impl Kernel {
             for (load, base, off, _, _) in loads.iter().copied() {
                 let cb = cb_of[&load];
                 let mut zero: Map<OpId, OpId> = Map::default();
-                let Some(flat) = self.tt_zero_iteration_vars(off, load, OpId::NULL, false, true, false, &mut zero) else {
+                let Some(flat) = self.tt_zero_iteration_vars(off, load, OpId::NULL, true, true, false, &mut zero) else {
                     todo!("tt_add_movers: compute load index {off} is not tile arithmetic")
                 };
                 let Some((_dram, l1)) = self.tt_canonical_tile(base, flat, load) else {
@@ -2209,19 +2211,9 @@ impl Kernel {
             let store_loop = self.tt_enclosing_loop(stores[0].0).unwrap_or(OpId::NULL);
             let looped =
                 !store_loop.is_null() && stores.iter().all(|(store, ..)| self.tt_enclosing_loop(*store) == Some(store_loop));
-            let trips = if looped {
-                let Op::Loop { len } = self.ops[store_loop].op else { return };
-                match self.resolve_const(len).and_then(Constant::as_dim) {
-                    Some(t) if t > 0 => t,
-                    _ => return,
-                }
-            } else {
-                1
-            };
             for (store, base, off, value) in stores.iter().copied() {
-                let Some(len) = trips.checked_mul(1024) else { return };
-                // FP32: the packer writes F32 out of `Dst`, and the host
-                // boundary narrows on the way back.
+                // One page per iteration, as the reader's ring.
+                let len = 1024;
                 let storage = Op::Storage { dtype: DType::F32, scope: MemScope::Circular, len, id: 0 };
                 let cb = if prologue.is_null() {
                     self.push_back(storage)
@@ -2235,7 +2227,7 @@ impl Kernel {
                     // canonical tile index within the block: the grid bound to
                     // zero, the loop kept.
                     let mut zero: Map<OpId, OpId> = Map::default();
-                    let Some(flat) = self.tt_zero_iteration_vars(off, store, OpId::NULL, false, true, false, &mut zero) else {
+                    let Some(flat) = self.tt_zero_iteration_vars(off, store, OpId::NULL, true, true, false, &mut zero) else {
                         todo!("tt_add_movers: looped store index {off} is not tile arithmetic")
                     };
                     let Some((_dram, l1)) = self.tt_canonical_tile(base, flat, store) else {
@@ -2261,8 +2253,8 @@ impl Kernel {
                     let Some((dram, _l1)) = self.tt_canonical_tile(base, flat, anchor) else {
                         todo!("tt_add_movers: drain index {off} does not canonicalize")
                     };
-                    let stride = self.insert_const_idx_before(anchor, 1024i64);
-                    let slot = self.insert_before(anchor, Op::Binary { x: drain, y: stride, bop: BOp::Mul });
+                    // One page per iteration: the ring slot is 0.
+                    let slot = self.insert_const_idx_before(anchor, 0i64);
                     self.push_back(Op::Copy { src: cb, src_idx: slot, dst: base, dst_idx: dram });
                     self.remove_op(anchor);
                     self.push_back(Op::EndLoop);
