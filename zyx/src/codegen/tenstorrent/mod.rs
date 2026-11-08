@@ -33,6 +33,7 @@ pub mod boundary;
 pub mod code;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub mod datapath;
+pub mod disasm;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub mod elem;
 #[allow(dead_code, unused_imports, unused_variables)]

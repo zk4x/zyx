@@ -428,6 +428,8 @@ impl Kernel {
                         Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }
                             | Op::Storage { scope: MemScope::Circular, .. }
                             | Op::Storage { scope: MemScope::Register, .. }
+                            // A transfer page: the pure-copy kernel's L1 span.
+                            | Op::Storage { scope: MemScope::Local, .. }
                     ) {
                         println!("tt copy op={op_id} has non-traffic src {src:?}");
                         self.debug();
@@ -440,6 +442,8 @@ impl Kernel {
                         Op::Param { kind: ParamKind::GlobalMut, .. }
                             | Op::Storage { scope: MemScope::Circular, .. }
                             | Op::Storage { scope: MemScope::Register, .. }
+                            // A transfer page: the pure-copy kernel's L1 span.
+                            | Op::Storage { scope: MemScope::Local, .. }
                     ) {
                         println!("tt copy op={op_id} has non-traffic dst {dst:?}");
                         self.debug();

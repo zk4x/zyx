@@ -732,6 +732,9 @@ enum TtCopy {
     Pack,
     /// `Circular -> Param`: the writer (NC mover).
     Drain,
+    /// `Param -> Local` or `Local -> Param`: the pure transfer's page traffic,
+    /// which has no stream side at all.
+    Transfer,
 }
 
 /// zyx unary op -> metalium SFPU kind. `None` means no native kind yet;
@@ -3385,8 +3388,37 @@ impl Kernel {
         }
         // A pure transfer has no sections and no compute: `tt_add_movers`
         // already left its final form (L1 pages and the copies that fill and
-        // drain them).
+        // drain them). Lift those copies to typed traffic here: the page is
+        // what the copy moves, so `bytes` is the page's length in bytes. The
+        // RISC-V emitter cannot derive it from the index, which is lane-zeroed
+        // to the run's base address.
         if !self.iter_unordered().any(|(_, op)| matches!(op, Op::TT(TTOp::EndReader))) {
+            let mut copies: Vec<OpId> = Vec::new();
+            for (id, op) in self.iter_unordered() {
+                if matches!(op, Op::Copy { .. }) {
+                    copies.push(id);
+                }
+            }
+            for id in copies {
+                let Op::Copy { src, src_idx, dst, dst_idx } = self.ops[id].op else {
+                    unreachable!("tt_dataflow_select: a transfer copy is a Copy")
+                };
+                let page = if matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Local, .. }) {
+                    dst
+                } else if matches!(self.ops[src].op, Op::Storage { scope: MemScope::Local, .. }) {
+                    src
+                } else {
+                    continue;
+                };
+                let Op::Storage { dtype, len, .. } = self.ops[page].op else {
+                    unreachable!("tt_dataflow_select: a transfer page is a Storage")
+                };
+                let el = dtype.bit_size() as u32 / 8;
+                let Some(bytes) = u32::try_from(len).ok().and_then(|l| l.checked_mul(el)) else {
+                    return;
+                };
+                self.ops[id].op = Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes });
+            }
             return;
         }
         // The gate that used to sit here is removed: the gather's and the
@@ -5994,6 +6026,7 @@ impl Kernel {
             Op::Param { .. } => 'p',
             Op::Storage { scope: MemScope::Register, .. } => 'r',
             Op::Storage { scope: MemScope::Circular, .. } => 'c',
+            Op::Storage { scope: MemScope::Local, .. } => 'l',
             _ => '?',
         };
         match (scope(src), scope(dst)) {
@@ -6001,6 +6034,7 @@ impl Kernel {
             ('r', 'c') => TtCopy::Pack,
             ('p', 'c') => TtCopy::Publish,
             ('c', 'p') => TtCopy::Drain,
+            ('p', 'l') | ('l', 'p') => TtCopy::Transfer,
             _ => panic!("tt_copy_kind: copy {id:?} moves between scopes with no stream"),
         }
     }
@@ -7030,8 +7064,9 @@ impl Kernel {
                     unpacks.entry(*src).or_default().push(op);
                 }
                 // A publish or drain makes the CB a DRAM boundary: not a
-                // round trip.
+                // round trip. A transfer quiesces no register or CB at all.
                 TtCopy::Publish | TtCopy::Drain => touched.push(op),
+                TtCopy::Transfer => {}
             }
         }
         let mut found: Option<(OpId, OpId, OpId, OpId, OpId)> = None;
@@ -7182,6 +7217,7 @@ impl Kernel {
                         touched.push((dst, 2, true));
                     }
                     TtCopy::Publish | TtCopy::Drain => {}
+                    TtCopy::Transfer => {}
                 },
                 _ => {}
             }
@@ -9511,6 +9547,6 @@ mod ir_contract {
 
     const ENTRY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r3: i64 = 4\n r4: i64 = group_range(0) over r3    // 0..=3\n r5: i64 = 16\n r6: i64[16] = unroll axis0 lanes 16\n r7: i64 = load r1[r4]    // 0..=3\n r8: i64 = r7 * r5\n r9: i64[16] = r8 + r6\n r10: f32[16] = load vec16 r0[r9]    // 0..=0\n r11: i64 = r4 * r5    // 0..=48\n r12: i64[16] = r11 + r6    // 0..=63\n store vec16 r2[r12] = r10    // 0..=63\n\n";
     const ENTRY_HASH: u64 = 0x9565_bc91_42e3_feb2;
-    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r15: i64 = storage local, len=8\n r25: f32 = storage local, len=16\n r3: i64 = 4\n r5: i64 = 16\n r21: i64 = 0\n r31: i64 = 64\n r4: i64 = group_range(0) over r3    // 0..=3\n r37: i64 = r4 * r5    // 0..=48\n r41: i64 = r37 * r3    // 0..=192\n r43: i64 = r41 / r31    // 0..=3\n r45: i64 = r43 * r31    // 0..=192\n copy r15[r21] = r1[r21]\n r7: i64 = load r15[r4]    // 0..=3\n r26: i64 = r5 * r7\n r30: i64 = r26 * r3\n r32: i64 = r30 / r31\n r34: i64 = r32 * r31\n copy r25[r21] = r0[r34]\n copy r2[r45] = r25[r21]\n\n";
-    const BOUNDARY_HASH: u64 = 0xbad0_5a0d_2a40_4353;
+    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r15: i64 = storage local, len=8\n r26: f32 = storage local, len=16\n r3: i64 = 4\n r5: i64 = 16\n r21: i64 = 0\n r32: i64 = 64\n r4: i64 = group_range(0) over r3    // 0..=3\n r38: i64 = r4 * r5    // 0..=48\n r42: i64 = r38 * r3    // 0..=192\n r44: i64 = r42 / r32    // 0..=3\n r46: i64 = r44 * r32    // 0..=192\n copy r15[r21] = r1[r21]\n r7: i64 = load r15[r4]    // 0..=3\n r27: i64 = r5 * r7\n r31: i64 = r27 * r3\n r33: i64 = r31 / r32\n r35: i64 = r33 * r32\n copy r26[r21] = r0[r35]\n copy r2[r46] = r26[r21]\n\n";
+    const BOUNDARY_HASH: u64 = 0x1df8_586a_4bc6_dcea;
 }

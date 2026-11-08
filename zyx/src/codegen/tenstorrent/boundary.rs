@@ -86,9 +86,20 @@ struct Emitter<'a> {
     pinned: Vec<u8>,
     /// The lane loop's variable, while inside a vector copy.
     lane: Option<(OpId, u8)>,
-    /// Open loops: the `Loop` op's id, its iteration register, the remaining
-    /// trip count, and the top label.
-    loops: Vec<(OpId, u8, u8, Label)>,
+    /// Open loops: see [`OpenLoop`].
+    loops: Vec<OpenLoop>,
+}
+
+/// An open loop: its `Loop` op, the iteration index register, an optional
+/// remaining-count register (absent when the trip count is a constant, so the
+/// constant is re-materialised at the bottom instead of held), that constant,
+/// and the top label.
+struct OpenLoop {
+    var: OpId,
+    index: u8,
+    remain: Option<u8>,
+    count: Option<i64>,
+    top: Label,
 }
 
 impl<'a> Emitter<'a> {
@@ -115,7 +126,7 @@ impl<'a> Emitter<'a> {
     fn reset(&mut self) {
         // A loop counter lives across statements, so it is never handed out
         // again while the loop is open.
-        let held: Vec<u8> = self.loops.iter().flat_map(|(_, i, r, _)| [*i, *r]).collect();
+        let held: Vec<u8> = self.loops.iter().flat_map(|l| [Some(l.index), l.remain]).flatten().collect();
         self.free = vec![
             reg::T0,
             reg::T1,
@@ -147,8 +158,15 @@ impl<'a> Emitter<'a> {
     }
 
     /// Return a consumed temporary to the pool.
+    ///
+    /// A loop's index/remaining registers and the lane register are operands
+    /// that no statement owns: an expression that reads one must not hand it
+    /// back, or the next `alloc` overwrites the loop control.
     fn release(&mut self, r: u8) {
-        if !self.pinned.contains(&r) {
+        let held = self.pinned.contains(&r)
+            || self.loops.iter().any(|l| l.index == r || l.remain == Some(r))
+            || self.lane.is_some_and(|(_, lane)| lane == r);
+        if !held {
             self.free.push(r);
         }
     }
@@ -179,27 +197,53 @@ impl<'a> Emitter<'a> {
             }
             Op::Loop { len } => {
                 self.reset();
-                let count = self.value_into(*len);
-                let remain = self.alloc();
-                self.a.push(riscv::addi(remain, count, 0));
-                self.release(count);
+                // A constant trip count needs no register: the bottom of the
+                // loop re-materialises it. A dynamic one is read once.
+                let count = match self.k.at(*len) {
+                    Op::Const(c) => c.as_dim(),
+                    _ => None,
+                };
+                let remain = match count {
+                    Some(_) => None,
+                    None => {
+                        let n = self.value_into(*len);
+                        let r = self.alloc();
+                        self.a.push(riscv::addi(r, n, 0));
+                        self.release(n);
+                        Some(r)
+                    }
+                };
                 // The loop variable is the iteration index 0..len-1, as the
-                // kernel IR uses it, so it counts up while the remaining
-                // count counts down.
+                // kernel IR uses it.
                 let index = self.alloc();
                 self.a.li(index, 0);
                 let top = self.a.label();
                 self.a.bind(top);
-                self.loops.push((id, index, remain, top));
+                self.loops.push(OpenLoop { var: id, index, remain, count, top });
             }
             Op::EndLoop => {
-                let Some((_, index, remain, top)) = self.loops.pop() else {
+                // Read the loop while it is still open (its registers are held
+                // out of the pool), and pop it only after the branch is out.
+                let Some(OpenLoop { index, remain, count, top, .. }) = self.loops.last() else {
                     panic!("tenstorrent boundary: EndLoop without a loop");
                 };
+                let (index, remain, count, top) = (*index, *remain, *count, *top);
                 self.reset();
                 self.a.push(riscv::addi(index, index, 1));
-                self.a.push(riscv::addi(remain, remain, -1));
-                self.a.bne(remain, reg::ZERO, top);
+                match (remain, count) {
+                    (Some(r), _) => {
+                        self.a.push(riscv::addi(r, r, -1));
+                        self.a.bne(r, reg::ZERO, top);
+                    }
+                    (None, Some(n)) => {
+                        let t = self.alloc();
+                        self.a.li(t, u32::try_from(n).expect("loop length"));
+                        self.a.bne(index, t, top);
+                        self.release(t);
+                    }
+                    (None, None) => panic!("tenstorrent boundary: loop without a trip count"),
+                }
+                self.loops.pop();
             }
             Op::Copy { src, src_idx, dst, dst_idx } => {
                 self.reset();
@@ -249,6 +293,11 @@ impl<'a> Emitter<'a> {
         let lanes: u64 = self.k.shape(idx).iter().map(|d| *d as u64).product::<u64>().max(1);
         assert_eq!(page_datums % lanes, 0, "tenstorrent boundary: page {page_datums} is not {lanes} whole spans");
         let span = u32::try_from(page_datums / lanes * el).expect("span too large");
+        if std::env::var_os("ZYX_TT_DUMP").is_some() {
+            eprintln!(
+                "[tt boundary] copy {id:?} page={page:?} page_datums={page_datums} lanes={lanes} span={span} bytes={bytes:?} publish={publish}"
+            );
+        }
         if let Some(bytes) = bytes {
             assert_eq!(u64::from(bytes), page_datums * el, "tenstorrent boundary: copy {id:?} bytes disagree with its page");
         }
@@ -366,8 +415,8 @@ impl<'a> Emitter<'a> {
                 Some((var, r)) if var == id => r,
                 _ => panic!("tenstorrent boundary: unroll {id:?} outside its lane loop"),
             },
-            Op::Loop { .. } => match self.loops.iter().rev().find(|(v, _, _, _)| *v == id) {
-                Some((_, r, _, _)) => *r,
+            Op::Loop { .. } => match self.loops.iter().rev().find(|l| l.var == id) {
+                Some(l) => l.index,
                 None => panic!("tenstorrent boundary: loop counter {id:?} outside its loop"),
             },
             Op::Binary { x, y, bop } => {

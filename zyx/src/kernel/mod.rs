@@ -2368,8 +2368,9 @@ impl Kernel {
             }
             match self.ops[n].op {
                 Op::Unroll { .. } => return true,
-                // A loop var is a scalar iterator, not a lane.
-                Op::Const(_) | Op::Param { .. } | Op::Range { .. } | Op::Storage { .. } | Op::Loop { .. } => {}
+                // A loop var is a scalar iterator, not a lane; so is a value
+                // read from a page (the gather's token).
+                Op::Const(_) | Op::Param { .. } | Op::Range { .. } | Op::Storage { .. } | Op::Loop { .. } | Op::Load { .. } => {}
                 Op::Binary { x, y, .. } => {
                     stack.push(x);
                     stack.push(y);

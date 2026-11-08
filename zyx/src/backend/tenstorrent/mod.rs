@@ -840,8 +840,29 @@ impl TTDevice {
             eprintln!("[tenstorrent] reader:\n{}", sources[0]);
             eprintln!("[tenstorrent] compute:\n{}", sources[1]);
             eprintln!("[tenstorrent] writer:\n{}", sources[2]);
+            if !reader_program.is_empty() {
+                eprintln!(
+                    "[tenstorrent] reader program ({} words):\n{}",
+                    reader_program.len(),
+                    crate::codegen::tenstorrent::disasm::program(&reader_program)
+                );
+            }
+            if !writer_program.is_empty() {
+                eprintln!(
+                    "[tenstorrent] writer program ({} words):\n{}",
+                    writer_program.len(),
+                    crate::codegen::tenstorrent::disasm::program(&writer_program)
+                );
+            }
             for (role, words) in roles.iter().enumerate() {
-                eprintln!("[tenstorrent] role T{role}: {} words", words.len());
+                if words.is_empty() {
+                    continue;
+                }
+                eprintln!(
+                    "[tenstorrent] role T{role} ({} words):\n{}",
+                    words.len(),
+                    crate::codegen::tenstorrent::disasm::program(words)
+                );
             }
             eprintln!("[tenstorrent] dm: {} reader pages, {} writer pages", reader.len(), writer.len());
         }
@@ -1196,6 +1217,9 @@ impl TTDevice {
                                 context: "transfer parameter address overflows u32".into(),
                             })?);
                             args.push(tt_isa::noc::niu::Endpoint { x: ep.x(), y: ep.y(), addr: 0 }.hi());
+                        }
+                        if std::env::var_os("ZYX_TT_DUMP").is_some() {
+                            eprintln!("[tt transfer] grid=({gidx0},{gidx1}) args={args:?}");
                         }
                         Some(ttsim::Transfer { words: prog.reader_program.to_vec(), args })
                     };
