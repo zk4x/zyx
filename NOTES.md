@@ -1,75 +1,116 @@
-## HANDOFF (2026-11-07, session 22) — start here: the block is 32 tiles, not one
+## HANDOFF (2026-11-08, session 23) — GOAL: one llama forward step, end to end
 
-**What landed.** `tt_zero_iteration_vars` now treats `Op::Unroll` as a leaf
-(alongside `Const`/`Range`/`Param`). It was only a leaf when `lanes` was
-`true`; with `lanes = false` it fell through to `_ => return None`, which is
-exactly why the KV-fill store cone (`r25 = r14 + r23`, containing the two
-unrolls) could not canonicalize. Kernel 1 now runs `tt_add_movers` to the gate.
+**The goal, verbatim: one forward step of llama-3.2-3B on `Dev::TT(0)` (ttsim),
+end to end, checked against CPU. Correctness only. It may take 10 s (0.1 tok/s).
+Depth 1, no double buffering. Depth > 1 is an optimization for later (it is
+what took tt_gemm to 14.444 TFLOPS at `a8fa78b9`), not part of this goal.**
 
-**Kernel 1's exit IR at the gate now** (`/tmp/opencode/g4.txt`):
+Everything below is the design that gets there. The old handoffs further down
+are history; where they contradict this section, they are wrong (see "Wrong in
+the previous notes").
 
-- Reader section empty (store-only kernel), `storage cb, len=1024`.
-- Compute store: `store r32[r130] = r26`, with
-  `r130 = r120*1024 + r122*32 + r124`, `r120 = (r106/8)*4 + r104/32`,
-  `r102 = r12 + r28*1024`, `r12`/`r28` the two lane unrolls. With the group
-  ranges bound to zero this is canonical (tile, row, col) — and the
-  **group ranges are no longer in the compute index**.
-- Drain: `copy r7[r90] = r32[0]`.
+### State
 
-**What is still wrong with kernel 1** — two things, and they are the same
-thing:
+- `cef08d59` — `tt_tile` splits an oversized group into a loop: factor = the
+  smallest divisor of the length whose outer part fits
+  `max_global_work_dims[axis]`. `[1024,256]` becomes group(0) `0..=7`,
+  group(1) `0..=7`, `Loop(4)`.
+- `6e886636` — per-iteration traffic at ring slot 0: CB len 1024 (not
+  `trips*1024`); reader copy `cb[0] = dram[addr(loop)]`; drain
+  `dram[addr(loop)] = cb[0]`; compute index canonical with **loop and group
+  bound out**, i.e. `row*32 + col` of its own tile (max 1023).
+- `bef4fa7a` — `large_elementwise` (`[1024,256]`, NEG vs host) in
+  `23_tt_lowering`; red at the gate, on purpose.
+- `tt_add_movers` still ends in the gate `todo!()`. That stays until the IR is
+  right.
 
-1. **The block is not one tile.** Per core the store covers
-   `{4*k*1024 + lane0 : k in 0..32, lane0 in 0..32}`: 32 tile slots, each
-   holding one 32-element row (the logical stride between lane iterations is
-   1024 elements = 4 tiles, because a tile in this tensor is 32 cols x 8 rows).
-   The CB is `len=1024`, so 31 of the 32 slots are out of bounds, and the
-   single drain `r32[0]` would copy one tile's worth of mostly-unwritten L1.
-   The write pattern is right (canonical, lanes kept); the CB size and the
-   drain count are wrong.
-2. **The grid is `1024 x 4`** against the device's `10 x 14`.
+### The design (tt-metal `hw/inc`, plus our own pre-native implementation)
 
-Both are fixed by the same piece: a loop over the block's tiles, one tile of
-traffic per iteration, CB depth fixed (not `trips * 1024`), drain loop at the
-tail. That is the credit ring. **The loop does not exist yet** (the work is
-still 32 wide unroll lanes), so this is not "unwrap the existing loop": the
-lane axis that enumerates tiles has to become the loop.
+1. **CB = fixed-depth ring, independent of the loop.** tt-metal's kernels loop
+   over `n_tiles` and the CB is `tiles_per_cb` pages; the trip count never
+   sizes it. Depth 1 now, so the ring slot is `(iter % depth)*1024 = 0`.
+2. **Counters, one producer and one consumer per CB.** `received` (pushes) and
+   `acked` (pops); `reserve_back` waits `depth-(received-acked) >= n`,
+   `wait_front` waits `received-acked >= n`; push/pop advance the pointers and
+   wrap only at the fifo limit. Only one thread pushes a CB, only one pops it.
+3. **Four endpoints.** Reader (B) reserve/push on Input; unpack (T0) wait/pop
+   on Input; pack (T2) reserve/push on Output; writer (NC) wait/pop on Output.
+4. **Where each half runs.** The reader/writer halves are `dm::op::CB` entries
+   in their mover lists (`dm::Entry::Buffer`, `dm` error codes, capacity
+   < 0x8000). The unpack/pack halves run in the role runner, which already
+   implements the streamed program: `[VERSION, batches, capacity, role]` +
+   `[body_addr, body_len, 0, 0]` per batch, with `Wait`/`Pop` on Input (T0) and
+   `Reserve`/`Push` on Output (T2) around each batch body and `retire_batch`
+   between batches (`firmware/tt-firmware/src/corpus.rs:846`). Batch bodies
+   must be resident programs in `l1::PROGRAM_CACHE`; `(0,0)` is an empty body.
+5. **Loops live in the kernel, one tile per iteration, in all three roles.**
+   `tt_tile` creates the grid loop (group above max → `split`). The tile axis
+   must be a loop, never unroll lanes: one iteration = one tile, one batch,
+   one credit pair.
+6. **Indexing.** Compute sees only its own tile (`row*32 + col`); the reader
+   and writer resolve the DRAM address from the loop; the CB side is slot 0.
+7. **64-byte congruence is ours** (not tt-metal's): each mover entry's DRAM and
+   L1 offsets must agree mod 64, else `dm` error 4. The canonical transform
+   adds the *same* datum offset on both sides, so whole tiles and rows are
+   congruent; a move below the mover's granularity or with mismatched sides is
+   a compile error, never a silent skip.
+8. **Launch: submit both lists, run the roles, join.** Today `execute()`
+   (`backend/tenstorrent/ttsim.rs:480`) runs the B list to completion, then the
+   roles, then NC, and `mover_list` always waits. With per-iteration credits at
+   depth 1 the second `Reserve` blocks forever, so the launch must submit B and
+   NC without waiting, run the roles, then join both. Split `mover_list` into
+   submit (`OP=LEN/SEQ`) and `wait_done`.
 
-**Protocol facts checked this session (they correct the previous handoff):**
+### Restore, do not reinvent
 
-- The ISA has no `TTOp` for CB sync, by design (`ops.rs`, `TTOp` doc: the
-  native builders carry their own semaphores and slots). `CbState`/
-  `CbTransactions`/`tt_cb_plan` still have no callers.
-- The **mover firmware does implement it**: `Entry::Buffer`
-  (`metalium-rs/crates/tt-firmware/src/mover.rs`, `dm::op::CB = 0x42`) calls
-  `tt_firmware::dataflow::buffer`, which is in our own
-  `firmware/tt-firmware/src/dataflow.rs`: `Reserve`/`Wait`/`Push`/`Pop`, one
-  credit per call, counters at `dataflow::INPUT` (producer Reader=B,
-  consumer Unpack=T0) and `dataflow::OUTPUT` (producer Pack=T2, consumer
-  Writer=NC), capacity < 0x8000.
-- The **role runner is already streamed-capable**: a role program whose length
-  word carries `dataflow::STREAMED` is `[VERSION, batches, capacity, role]` +
-  `[body_addr, body_len, 0, 0]` per batch, and each batch does
-  `Wait`/`Pop` on Input (T0) or `Reserve`/`Push` on Output (T2) around its
-  body (`firmware/tt-firmware/src/corpus.rs`).
-- Our renderer does not use any of that: `TTRoleProgram` is a flat word list
-  plus `loops`, the reader and writer lists are static one-shot `DmRead`/
-  `DmWrite` pages whose DRAM addresses are per-grid-point tables fixed at
-  compile time, and the launch runs one list of reads, one role run, one list
-  of writes. Per-iteration DRAM addresses therefore need either (a) a
-  streamed segment (batch per iteration) or (b) compile-time expansion of the
-  trip count into list entries. `LIST_MAX` is 512 entries per role per core.
+`dc9a1e3d^` is the pre-native implementation that drove the TT path, including
+`tt_gemm` (14.444 TFLOPS, bad 0, M5120 N11264 K1024, `a8fa78b9`, depth 2):
 
-**Order of work, unchanged in substance:** (1) decide/implement how the loop
-becomes per-iteration traffic (streamed batches vs list expansion — this is a
-data-shape change and needs the user's word), (2) then enable the `tt_tile`
-group split so the grid fits, (3) re-inspect kernel 1's IR at the gate.
+- `TTOp::{ReserveBack, PushBack, WaitFront, PopFront}` and
+  `{MathLock, MathUnlock, PackLock, PackUnlock}`.
+- `tt_sync_cbs` (577 lines): places the four syncs, single-tile per iteration
+  when `trip > depth`, block only when the block fits the CB; rejects a slot
+  index that is neither the loop counter nor 0.
+- `tt_place_pops`: places pops on the wait-carrying IR, rebases windowed slots.
+- `tt_fifo_check`: per-CB reserve/wait balance at each section end,
+  `pushed == popped`, producer-past-depth (the deadlock guard), symbolic-loop
+  traffic rejected.
+- `fifo_check_copy`: 64-byte congruence per variable stride; unprovable index
+  is a loud rejection.
+- `tt_verify`: DST lock firewall.
+- Its pipeline: `tt_tile` → `tt_lower_llks` → `tt_lock_dst` →
+  `tt_dedup_pushes` → `tt_init_math` → `tt_sync_cbs` → `tt_place_pops` →
+  `verify` → CSE → DCE → `tt_verify`.
+- `588110a9` is the same mechanism one generation earlier
+  (`CBState`/`CBBatch`/`CBEvent`/`CBEmitter`, batching pre-pass).
 
-**Definitions that do not move:** a group range over the device max is
-invalid; loops must be handled correctly; **streaming CBs and unrolled loops are
-invalid**; a non-canonical tile access inside compute is invalid;
-`tt_dataflow_select` only pattern-matches and lowers to the native ISA — it must
-never work out an index or a tile.
+### Wrong in the previous notes (deleted, do not repeat)
+
+- "The block is 32 tiles, not one": that was the defect in the IR, not the
+  target. One iteration is one tile.
+- The `LIST_MAX` "does not fit" arithmetic: wrong per-iteration granularity,
+  retracted.
+- "Streamed batches vs list expansion needs the user's word": settled — the
+  streamed role program.
+- "CB sized from the loop" (`trips*1024`): forbidden, replaced by the depth.
+- "`ReserveBack`/`PushBack`/`WaitFront`/`PopFront` are tt-metal API and do not
+  exist here": wrong; they are the sync representation the emitter and the
+  checker use.
+
+### Order of work to the goal
+
+1. Restore the four CB ops, `tt_sync_cbs`/`tt_place_pops`,
+   `tt_fifo_check`/`fifo_check_copy` and `tt_verify` from `dc9a1e3d^`,
+   adapted to today's traffic form (`Op::Copy`/`Op::Store` on `Circular`, which
+   is what those ops already are).
+2. Emit the credits in `tt_add_movers` at depth 1, per iteration; keep the gate
+   until the IR is right.
+3. Codegen: `dm::op::CB` entries in the B/NC lists; streamed role program with
+   batch bodies placed in `l1::PROGRAM_CACHE`; launch submit/join.
+4. `tt_fifo_check` + `fifo_check_copy` must pass on the IR.
+5. Then the model's own kernels, in order, each `24_tt` approximation replaced
+   by the real kernel, until all 16 lower.
+6. One forward step of llama on ttsim, compared against CPU.
 
 ## HANDOFF (2026-11-07, session 21) — the gate always fires; bails are loud
 
@@ -5989,6 +6030,12 @@ The host boundary also stays:
 - TT -> TT copies stay tile bytes.
 
 ## What is deleted
+
+> **WRONG — superseded by session 23 (top of this file).** The four CB-sync
+> variants and `tt_sync_cbs`/`tt_place_pops` are the representation the emitter
+> and `tt_fifo_check` use; they were restored, not replaced by semaphores.
+> `MathLock`/`PackLock` are the DST lock firewall `tt_verify` checks. Read the
+> table below as history of one port decision, not as the design.
 
 These `TTOp` variants are tt-metal API, not Tensix instructions. They are
 removed, together with the passes that only inserted them:
