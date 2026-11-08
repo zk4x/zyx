@@ -427,6 +427,32 @@ Path prefix `~/Dev/rust/metalium-rs`.
 - `PROGRAM_MAX = 8192` words, `PROGRAM_SLOT = 0x8000`.
 - `bf16::{expand, repack*}` and `fp16::expand` are `pub(crate)`.
 
+## Reduces, rank-1 layout and the shape cone
+
+- `TileDim` names the **result**, not the folded axis: `Row` = one value per
+  row, carried in the result tile's first **column**; `Col` = one value per
+  column, carried in the first **row**. `tt_reduce_program`: `Row` ->
+  `accumulate(op, Axis::Cols)`, `Col` -> `accumulate(op, Axis::Rows)`.
+- A rank-1 `[N]` is a **column** of values (element `i` = row `i`, lane 0).
+  `tilize_transfer`/`untilize_transfer` take rank-1 that way, and the reduce
+  emitter writes it that way. A `[N,1]` keepdim value uses the same column
+  layout.
+- `sum([0,1])` and `sum_all()` fold one axis at a time, so the chain is a `Row`
+  kernel then a `Col` kernel; `TileDim::Scalar` is structurally unreachable
+  (`Op::Reduce` carries one axis).
+- `Op::Param.shape` is kept through `linearize` on a tiled device; the shape is
+  an operand and its cone must be hoisted ahead of the params by `toposort`,
+  `instruction_schedule`, `move_constants_to_beginning`, and exempted in
+  `verify`'s declared-before-use phase. Without those the cone lands after the
+  params and passes panic.
+- `tt_reindex`'s stride classification (when it rewrites): a term that is a
+  multiple of the plane is the outer slice; a multiple of `32 * cols` is a tile
+  row; a multiple of the row width is a row; a multiple of 32 is a tile column;
+  anything else is a lane.
+- `tt_tile`'s nested-loop fold must require the outer coefficient to be
+  exactly `il` and rebuild the composition as `(acc - flat*il) + flat`; the
+  invariant part of the index (a row base) must survive.
+
 ## Test ladder
 
 Every case below is unproven until it runs green on ttsim:
