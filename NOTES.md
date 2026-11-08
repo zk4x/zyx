@@ -36,23 +36,35 @@ Commits this session:
   `zk4x/tt-isa`, Apache-2.0, credited to the metalium-rs authors, transfer on
   request). `zyx` itself is **not** published.
 
-Where things stand (2026-11-09):
+Where things stand (2026-11-10, end of session):
 
-- **Uncommitted tree.** Everything below is in the working tree, not in a
-  commit.
-- A debugging gate `todo!()` sits at the **start of `tt_dataflow_select`**. Every
-  TT compile stops there on purpose: the IR at that boundary must show the CB
-  syncs (reserve/wait/push/pop) before the gate is removed for that kernel. When
-  a kernel does not pass, the gate is put back, the IR is checked, and only when
-  it is good is the gate removed and the later passes debugged.
-- **Step 1 (CB ops) is in the tree:** the four constructors, `tt_sync_cbs`,
-  `tt_dedup_pushes`, `tt_place_pops`, `tt_fifo_check`/`fifo_check_copy`, wired in
-  `device_epilogue` after `tt_add_movers` in the recorded order.
-  `cargo build` clean; `cargo test --lib` 129 pass, 1 fail (the gate);
-  `ir_contract` is mid-rewrite: the gather fixture never reaches
-  `tt_add_movers`, so the earlier frozen boundary had no CB traffic; the
-  tile-copy fixture written after that is dodging (see "No dodging") and the
-  test is red until the scalar row gather's ideal IR is in place.
+- **Committed tree**, last commits `5c4a4eda` and `b2583226`.
+- **No debugging gate.** It was removed; both the gather's and the elementwise
+  kernel's boundary IR are frozen and good.
+- **`cargo build` clean; `AGENT=1 ZYX_DEV=cpu cargo test --lib`: 138 passed,
+  1 ignored.** The ignored test is `gather_kernel_runs_through_the_backend`
+  (the hand-built kernel through the pool), blocked because that transfer
+  addresses raw row-major DRAM while the pool stores tiled images.
+- **CUDA is the oracle and it is green:** `ZYX_DEV=cuda:0 cargo test --test
+  07_indexing gather_` (18 pass) and `index_select` pass on the RTX 2060. The
+  gather semantics and expected values are settled; only the TT lowering fails.
+- **The acceptance `23_tt_lowering::gather`** now reaches the compute lowering
+  of `index_select`'s index-expand kernel and fails at its store into a
+  32-datum row CB page (`section 1: OpId(53) is not fully lowered`): the CB
+  store is lowered as a *pack*, and the packer is tile-sized, so it cannot pack
+  a row page. **The two ways out are undecided by the user:** mover broadcast
+  for the expand, or the gather reads the compact index so the expand never
+  exists.
+- **What was added and kept this session:** `tt_add_transfer_body` (a pure copy
+  kernel is one mover program, no sections/CBs/syncs), `boundary.rs` (reader and
+  writer sections as RISC-V, proven on ttsim), `render_transfer`, the launch's
+  `ttsim::Transfer` path, `merge_ranges` row-major decomposition, the row store
+  page = `lanes` for a contiguous vector store, `Bool -> I32` identity cast, and
+  `render` rendering only the compute section so the reader/writer are boundary
+  programs.
+- **What must not be repeated:** the old state bullets below are history; the
+  "Failure modes" section is the operative one. Read it before touching
+  anything.
 - **The gather is the current task, not out of scope.** The scalar row gather is
   in the tree and its ideal IR is frozen: `weight.gather(0, indices)` shape, rows
   of 16 F32 = 64 B. `tt_add_movers` now has a row-traffic body: every Global
@@ -155,18 +167,20 @@ What exists now:
 ## Session start
 
 1. Read this file end to end. Do not grep it for a keyword.
-2. `cd zyx && cargo build`; `cargo test --lib` (the gate failure is the only
-   expected red); `cargo test --test 24_tt --no-run`.
-3. Run the emitter anchor:
+2. `cd zyx && cargo build`; `AGENT=1 ZYX_DEV=cpu cargo test --lib` — expect
+   **138 passed, 1 ignored** (the ignored one is
+   `gather_kernel_runs_through_the_backend`, blocked on tiled addressing).
+3. Run the CUDA oracle for the gather:
+   `ZYX_DEV=cuda:0 cargo test --test 07_indexing gather_` (18 pass) and
+   `... index_select`. That is the reference the TT result must match.
+4. Run the emitter anchors:
    `TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so cargo test
-   --lib backend::tenstorrent::ttsim::tests::gather_writeback_runs_on_riscv_b -- --exact`.
-   `ir_contract` is red by design while it is rewritten to the scalar row
-   gather's ideal IR; do not treat it as an anchor until it is green for that
-   reason.
-4. Settle the open questions below in order, one at a time. Do not implement
-   ahead of an unanswered question.
-5. Then work the `Next` list. Do not scope it down: the target is the full
-   Tenstorrent backend, one complete step at a time.
+   --lib backend::tenstorrent::ttsim` (9 pass) and the ideal-IR contract.
+5. Run the acceptance with one pinned candidate:
+   `ZYX_DEBUG=256 ZYX_TT_IR=1 TT_TTSIM_LIB=... cargo test --test 23_tt_lowering
+   gather -- --nocapture`. Read that one IR; never compare across candidates.
+6. Work the `Next` list. No custom fixtures as acceptance, no graph-level
+   changes, no progress reported as success.
 
 ## Pipeline
 
@@ -647,23 +661,48 @@ same thing repeatedly. They are process failures, not knowledge gaps.
     user said the one-hot is optimized away. `fold_loops`' `replace_gather_loop`
     is the intended lowering (`acc = source[index]`), producing the compute-free
     loopback; the index expansion is a separate, earlier kernel.
+11. **Proposed a graph-level change, was told it is crazy, withdrew it, then
+    re-proposed it.** No graph-level changes. The kernel IR is the input.
+12. **Called an IR "malformed" with no reference run.** The claim came from
+    comparing two debug dumps — which were different autotune candidates. Run
+    the reference (CUDA) or pin one candidate before drawing a conclusion.
+13. **Kept fixing kernels that are not the gather** (the index expand) instead
+    of making the gather the acceptance. Report the acceptance's failure, not a
+    neighbouring kernel's progress as if it were the target.
 
 What the next session must know, concretely:
 
-- `23_tt_lowering::gather` is the acceptance. It compiles several kernels; the
-  first is `index_select`'s index expand (`out[i][j] = idx[i] + (idx[i] < 0)*V`),
-  which is a compute kernel. The gather kernel after `fold_loops` is
-  `acc = source[index]` — a pure transfer/loopback, which the transfer path in
-  this tree already lowers and runs on ttsim.
-- The index expand being a separate kernel is why the acceptance still fails
-  before the gather. The gather must read the compact index directly (fold the
-  expand into the gather, or run the fold before kernelization), so that no
-  compute kernel exists on the path. That is the next real change, and it is in
-  the graph/kernelizer lowering, not in `tt_add_movers`.
-- Fixed this session and kept: `merge_ranges` now decomposes the flat index
-  **row-major** (last axis low), so vector lanes can be contiguous; the row
-  body pages a contiguous vector store as `lanes` datums with the lane offset as
-  its page index; `Bool -> I32` cast is an identity (raw 1/0 word).
+- **Never propose a graph-level change here.** One was proposed, called crazy,
+  withdrawn, and then re-proposed — the worst sequence possible. The kernel IR
+  is the input; the work is in the TT passes.
+- **Use CUDA as the oracle.** The machine has an RTX 2060: `ZYX_DEV=cuda:0
+  cargo test --test 07_indexing gather_` → 18 pass, and `index_select` passes.
+  So the gather/index_select semantics and the expected values are settled; the
+  TT failure is lowering only.
+- **Pin one autotune candidate before reading IR.** The `ZYX_DEBUG=4` /
+  `ZYX_TT_IR=1` prints are per candidate; comparing a pre-search block with a
+  later candidate produced the false "512 elements into a 64-element buffer"
+  claim. Use `ZYX_DEBUG=256` (NoSearch) plus `ZYX_TT_IR=1` and read one kernel.
+- **Acceptance:** `23_tt_lowering::gather` on ttsim, compared to the host/CUDA
+  result. The hand-built kernel and the transfer program tests are unit-level
+  only; they are not the acceptance.
+- **State at the end of this session** (commits `5c4a4eda`, `b2583226`):
+  `render` now renders only the compute section into the T0/T1/T2 streams, and
+  `render_tt` emits `TTOp::Reader`/`Writer` from `boundary` for a kernel with a
+  row page (< one tile), skipping the page-op mover lists. The acceptance now
+  reaches the compute lowering of `index_select`'s index-expand kernel and stops
+  at a store into a **32-datum row CB page**:
+  `tenstorrent section 1: OpId(53) is not fully lowered (SSA remains)`.
+  `tt_dataflow_select` lowers a CB store as a *pack*, and the packer is
+  tile-sized; it cannot pack a row page.
+- **The two ways out, still undecided by the user:** make the index expand a
+  data-movement broadcast (the mover writes the repeated row, no pack), or make
+  the gather read the compact index so the expand never exists. Do not pick one
+  without the user.
+- **Fixed this session and kept:** `merge_ranges` decomposes the fused flat axis
+  row-major (last axis low), so vectorised lanes can be contiguous; the row body
+  pages a contiguous vector store as `lanes` datums indexed by the lane offset;
+  `Bool -> I32` is an identity cast; CUDA confirms the reference.
 
 ## Debugging
 
@@ -1126,6 +1165,15 @@ nothing is to be done in a reduced form.
    (steps 3-5): the CB interface table in L1, the per-parameter DRAM addresses
    and the grid point as launch arguments, then run the whole gather kernel
    (reader + writer on their cores, compute still pending).
+2a. **Current step: the acceptance `23_tt_lowering::gather`.** It now reaches
+   the compute lowering of `index_select`'s index-expand kernel and stops at
+   `section 1: OpId(53) is not fully lowered`: a `store vec32` into a 32-datum
+   row CB page, which `tt_dataflow_select` lowers as a *pack*, and the packer is
+   tile-sized. **The user must decide** between (a) lowering the row-page store
+   without the packer (the expand becomes a data-movement broadcast) and (b)
+   making the gather read the compact index so the expand kernel does not exist.
+   Do not choose one unilaterally. Then continue to the gather kernel itself and
+   compare against the CUDA oracle.
 2. **Reader/writer programs from codegen.** Emit `TTOp::Reader`/`Writer` from
    the kernel IR instead of `DmRead`/`DmWrite` lists: one loop per boundary
    loop, no unrolling; the index expression lowered as written (loads,
