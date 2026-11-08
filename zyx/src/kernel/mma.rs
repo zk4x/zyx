@@ -132,6 +132,8 @@ impl Optimization for Tensorize {
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_tensorize apply");
         let config = config as usize;
         if config >= self.regions.len() {
             if let Some(t) = self.tiled.get(config - self.regions.len()) {
@@ -551,6 +553,8 @@ impl Kernel {
     /// scalar matmul regions, one config per region the device can
     /// accelerate. Never mutates.
     pub fn opt_tensorize(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_tensorize");
         self.tensorize_impl(false)
     }
 

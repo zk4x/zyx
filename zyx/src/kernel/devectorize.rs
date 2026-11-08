@@ -363,7 +363,7 @@ impl Kernel {
                         let slots_packed = (!conditional(a) || one_fragment(self, a))
                             && (!conditional(b) || one_fragment(self, b));
                         if !conditional(c) && slots_packed && (conditional(a) || conditional(b)) {
-                            let mut pack = |k: &mut Self, operand: OpId| {
+                            let pack = |k: &mut Self, operand: OpId| {
                                 let mut ops = Vec::with_capacity(len as usize);
                                 ops.push(operand);
                                 if let Some(clones) = remaps.get(&operand) {

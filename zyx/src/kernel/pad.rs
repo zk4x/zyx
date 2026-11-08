@@ -44,6 +44,8 @@ impl Optimization for PadIndex {
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_pad apply");
         // A config id is only meaningful for the state it was enumerated on;
         // the sequence is replayed on a rebuilt kernel, so an id can outlive
         // its instance (e.g. after the state changed under it). Out of range
@@ -333,6 +335,8 @@ impl Kernel {
     /// Loops are scanned only on Tenstorrent (tile loops must run
     /// full-tile trip counts); elsewhere loop bounds are never extended.
     pub fn opt_pad(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_pad");
         let tt = self.dev.is_tt_layout();
         // A staged tile pins the thread decomposition: padding a range or a
         // local axis would move threads the tile was filled for. Refuse (see

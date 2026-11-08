@@ -42,6 +42,8 @@ impl Optimization for Merge {
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_merge apply");
         let Some(chain) = self.groups.get(config as usize) else {
             return;
         };
@@ -292,6 +294,8 @@ impl Kernel {
     /// Make the `Merge` optimization: each config merges one nested loop
     /// chain or one range pair into a single flat axis.
     pub fn opt_merge(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_merge");
         // A staged tile pins the thread decomposition: fusing ranges or local
         // pairs would move threads the tile was filled for. Refuse (see
         // `local_staging`).

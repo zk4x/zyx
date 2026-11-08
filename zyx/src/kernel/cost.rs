@@ -19,7 +19,7 @@
 use super::predict_cost::predict_time_us;
 use crate::{
     DType, Map, Set,
-    kernel::{IDX_T, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, TTOp},
+    kernel::{IDX_T, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind},
     shape::Dim,
 };
 
@@ -53,202 +53,11 @@ impl Kernel {
 
         let dev_info = self.dev_info();
 
-        // First pass: compute reference counts and dtypes for register estimation
-        let mut rcs: Map<OpId, u32> = Map::default();
-        let mut dtypes: Map<OpId, (DType, Vec<Dim>)> = Map::default();
-        {
-            let mut op_id = self.head;
-            while !op_id.is_null() {
-                match self.ops[op_id].op {
-                    Op::Asm { ref ops, .. } => {
-                        // Same rule as compute_dtypes_and_rcs: result takes
-                        // ops[0]'s dtype/layout, ops are consumed operands.
-                        // Operand-free Asm/LLK is an effect-only call: no
-                        // value, no entry.
-                        if !ops.is_empty() {
-                            let (dtype, shape) = dtypes[&ops[0]].clone();
-                            dtypes.insert(op_id, (dtype, shape));
-                            for &x in ops.iter() {
-                                *rcs.entry(x).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                    Op::TT(TTOp::Unpacr { src, .. }) => {
-                        // Unpack: the source CB's dtype and shape, one use.
-                        let (dtype, shape) = dtypes[&src].clone();
-                        dtypes.insert(op_id, (dtype, shape));
-                        *rcs.entry(src).or_insert(0) += 1;
-                    }
-                    Op::TT(TTOp::Setrwc { dst }) => {
-                        // Accumulator row of an existing Register storage.
-                        dtypes.insert(op_id, dtypes[&dst].clone());
-                        *rcs.entry(dst).or_insert(0) += 1;
-                    }
-                    Op::Expand { .. }
-                    | Op::Permute { .. }
-                    | Op::Flip { .. }
-                    | Op::Narrow { .. }
-                    | Op::Reshape { .. }
-                    | Op::Pad { .. } => {
-                        unreachable!()
-                    }
-                    Op::Reduce { x, reduce_axis, .. } => {
-                        // Lane-space reduce: the reduce's own value shape comes
-                        // from the shared shape machinery (the reduced
-                        // lanes leave the shape); x and the axis
-                        // expression are consumed operands.
-                        dtypes.insert(op_id, (dtypes[&x].0, self.shape(op_id)));
-                        *rcs.entry(x).or_insert(0) += 1;
-                        *rcs.entry(reduce_axis).or_insert(0) += 1;
-                    }
-                    Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
-                        unreachable!()
-                    }
-                    // Graph-only marker, erased at kernelization: never present.
-                    Op::Detach { .. } => {
-                        unreachable!()
-                    }
-                    Op::Stack { ref ops } => {
-                        let dtype = dtypes[&ops[0]].0;
-                        dtypes.insert(op_id, (dtype, vec![ops.len() as Dim]));
-                        for &x in ops.iter() {
-                            *rcs.entry(x).or_insert(0) += 1;
-                        }
-                    }
-                    Op::Index { vec, .. } => {
-                        let dtype = dtypes[&vec].0;
-                        let mut shape = dtypes[&vec].1.clone();
-                        debug_assert!(!shape.is_empty(), "cost: Index of scalar");
-                        if !shape.is_empty() {
-                            shape.remove(0);
-                        }
-                        dtypes.insert(op_id, (dtype, shape));
-                        *rcs.entry(vec).or_insert(0) += 1;
-                    }
-                    Op::Const(x) => {
-                        dtypes.insert(op_id, (x.dtype(), Vec::new()));
-                    }
-                    Op::Unroll { len, .. } => {
-                        dtypes.insert(op_id, (IDX_T, vec![len as Dim]));
-                    }
-                    Op::Param { dtype, .. } => {
-                        dtypes.insert(op_id, (dtype, Vec::new()));
-                    }
-                    Op::Storage { dtype, .. } => {
-                        dtypes.insert(op_id, (dtype, Vec::new()));
-                    }
-                    Op::Wmma { c, a, b, .. } => {
-                        dtypes.insert(op_id, (DType::F32, vec![4]));
-                        *rcs.entry(a).or_insert(0) += 1;
-                        *rcs.entry(b).or_insert(0) += 1;
-                        *rcs.entry(c).or_insert(0) += 1;
-                    }
-                    Op::Load { src, .. } => {
-                        dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
-                    }
-                    Op::Store { dst, dst_idx, src: x } => {
-                        dtypes.insert(op_id, dtypes[&x].clone());
-                        *rcs.entry(dst).or_insert(0) += 1;
-                        if !dst_idx.is_null() {
-                            *rcs.entry(dst_idx).or_insert(0) += 1;
-                        }
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
-                    Op::Copy { src, src_idx, dst, dst_idx } => {
-                        dtypes.insert(op_id, (dtypes[&src].0, self.shape(op_id)));
-                        *rcs.entry(src).or_insert(0) += 1;
-                        *rcs.entry(dst).or_insert(0) += 1;
-                        for &o in &[src_idx, dst_idx] {
-                            if !o.is_null() {
-                                *rcs.entry(o).or_insert(0) += 1;
-                            }
-                        }
-                    }
-                    Op::Cast { x, dtype } => {
-                        dtypes.insert(op_id, (dtype, dtypes[&x].1.clone()));
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
-                    Op::Bitcast { x, dtype } => {
-                        dtypes.insert(op_id, (dtype, dtypes[&x].1.clone()));
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
-                    Op::Unary { x, .. } => {
-                        dtypes.insert(op_id, dtypes[&x].clone());
-                        *rcs.entry(x).or_insert(0) += 1;
-                    }
-                    Op::Binary { x, y, bop } => {
-                        // Value shape is the lane algebra's answer, computed
-                        // canonically (scalar broadcast, union by lane axis).
-                        let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x].0 };
-                        dtypes.insert(op_id, (dtype, self.shape(op_id)));
-                        *rcs.entry(x).or_insert(0) += 1;
-                        *rcs.entry(y).or_insert(0) += 1;
-                    }
-                    Op::Select { cond, if_true, if_false } => {
-                        let dtype = dtypes[&if_true].0;
-                        dtypes.insert(op_id, (dtype, self.shape(op_id)));
-                        *rcs.entry(cond).or_insert(0) += 1;
-                        *rcs.entry(if_true).or_insert(0) += 1;
-                        *rcs.entry(if_false).or_insert(0) += 1;
-                    }
-                    Op::Range { .. } => {
-                        dtypes.insert(op_id, (DType::U32, Vec::new()));
-                    }
-                    Op::Loop { len } => {
-                        dtypes.insert(op_id, (DType::U32, Vec::new()));
-                        // Boolean length = the old `If` condition: live
-                        // across the body, so it keeps its refcount.
-                        // Counted-loop lengths were never refcounted here.
-                        if self.dtype(len) == DType::Bool {
-                            *rcs.entry(len).or_insert(0) += 1;
-                        }
-                    }
-                    Op::TT(ref ttop) => match ttop {
-                        TTOp::Unpacr { src, .. } => {
-                            dtypes.insert(op_id, dtypes[src].clone());
-                            *rcs.entry(*src).or_insert(0) += 1;
-                        }
-                        TTOp::Setrwc { dst } => {
-                            dtypes.insert(op_id, dtypes[dst].clone());
-                            *rcs.entry(*dst).or_insert(0) += 1;
-                        }
-                        TTOp::Sfpu { a, b, slot, .. } => {
-                            dtypes.insert(op_id, dtypes[a].clone());
-                            for f in [a, b, slot] {
-                                if !f.is_null() {
-                                    *rcs.entry(*f).or_insert(0) += 1;
-                                }
-                            }
-                        }
-                        TTOp::Copy { src, src_idx, dst, dst_idx, .. } => {
-                            // Traffic effect: no value, but the buffer
-                            // and index operands stay live.
-                            for f in [src, src_idx, dst, dst_idx] {
-                                *rcs.entry(*f).or_insert(0) += 1;
-                            }
-                        }
-                        _ => {}
-                    },
-                    Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
-                    Op::PTX(ref p) => match p.as_ref() {
-                        PTXOp::Bytes(_) => todo!(),
-                        // A shared-memory fragment load: both operands stay
-                        // live; the traffic is already counted on the staging
-                        // storage itself.
-                        PTXOp::LdMatrix { frags, src, addr, .. } => {
-                            // Same value rule as the canonical pass: `frags`
-                            // 32-bit registers, i.e. `frags * 2` f16 lanes.
-                            let n = Dim::from(i64::from(*frags) * 2);
-                            dtypes.insert(op_id, (DType::F16, vec![n]));
-                            *rcs.entry(*src).or_insert(0) += 1;
-                            *rcs.entry(*addr).or_insert(0) += 1;
-                        }
-                    },
-                    Op::Barrier | Op::EndLoop => {}
-                }
-                op_id = self.next_op(op_id);
-            }
-        }
+        // Dtypes, shapes and reference counts: the canonical single pass.
+        // `Self::shape` walks an op's entire dependency cone, so calling it
+        // per op here (as this pass used to) made the feature pass quadratic
+        // in the IR size and duplicated `compute_dtypes_and_rcs`.
+        let (dtypes, rcs) = self.compute_dtypes_and_rcs();
 
         // Second pass: instruction counting + register allocation simulation
         let mut wi_compute_ops = 0;
@@ -449,7 +258,7 @@ impl Kernel {
                 | Op::TT { .. }
                 | Op::Asm { .. } => {}
                 Op::Load { src, src_idx: index, .. } => {
-                    let access_shape = self.shape(op_id);
+                    let access_shape = dtypes[&op_id].1.clone();
                     wi_ops += loop_mult;
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult;
@@ -538,7 +347,7 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst, dst_idx: index, .. } => {
-                    let access_shape = self.shape(op_id);
+                    let access_shape = dtypes[&op_id].1.clone();
                     let n_elements = concrete_len(&access_shape);
                     wi_ops += loop_mult * 3;
                     if !indexing_ops.contains(&op_id) {
@@ -636,7 +445,7 @@ impl Kernel {
                     if !indexing_ops.contains(&op_id) {
                         wi_compute_ops += loop_mult * 2;
                     }
-                    let n_elements = concrete_len(&self.shape(op_id));
+                    let n_elements = concrete_len(&dtypes[&op_id].1);
                     for (side, is_read) in [(src, true), (dst, false)] {
                         let bits = loop_mult / lane_mult * n_elements * dtypes[&side].0.bit_size() as i64;
                         let slot = match mem_scope(&self.ops[side].op) {

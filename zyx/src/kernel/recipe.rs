@@ -123,6 +123,8 @@ impl Optimization for TensorRecipe {
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("tensor_recipe apply");
         let Some(&(m, n, k, m_lanes, n_lanes, k_lanes)) = self.configs.get(config as usize) else {
             return;
         };
@@ -156,6 +158,8 @@ impl Kernel {
     /// Make the tensor recipe: one config per `(m lanes, n lanes, k lanes)`
     /// tile grid the device's instructions allow. Never mutates.
     pub fn opt_tensor_recipe(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_tensor_recipe");
         /// Lane multipliers on the instruction tile.
         const MULT: &[u16] = &[8, 4, 2, 1];
         /// No config may emit more instructions than this.
@@ -274,6 +278,8 @@ impl Kernel {
     /// there is nothing for staging to deduplicate across the new lanes).
     /// Never mutates.
     pub fn opt_recipe(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_recipe");
         let mut configs: Vec<(OpId, u16)> = Vec::new();
 
         // A recipe is a known-good sequence *from a plain kernel*: lanes,
@@ -355,6 +361,8 @@ impl Kernel {
     /// The combination is pruned until the emitted IR stays under 10k ops,
     /// the same bound the coarsen-era pass used. Never mutates.
     pub fn opt_register_tiling(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_register_tiling");
         /// Per-site factors, largest first.
         const FACTORS: &[u32] = &[16, 8, 4, 2];
         /// No emitted config may grow the IR past this.
@@ -574,6 +582,8 @@ impl Kernel {
     /// bound, and that some load ignores the lane range (staging's dedup
     /// target). Never mutates.
     pub fn opt_tile_and_stage(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_tile_and_stage");
         /// Threads along the lane range.
         const LANES: &[u16] = &[32, 16, 8, 4];
         /// Per-thread outputs along each range.
