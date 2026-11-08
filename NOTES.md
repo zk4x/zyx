@@ -484,6 +484,66 @@ Every case below is unproven until it runs green on ttsim:
   overflow their 10 KiB L1 slots.
 - A shared global `target-dir`: a second checkout can shadow the test binaries.
 
+## Open questions (unclear, to settle one by one)
+
+### Tiling and loops
+
+1. Kernel 1's tile axis is `Unroll(32)` and one iteration covers 32 tile rows.
+   Must that unroll become a `Loop`, or must the TT search stop vectorizing the
+   tile axis? In which pass?
+2. If a group length has no divisor whose outer part fits `max_global_work_dims`
+   (a prime above the max), what is the IR: a tail loop, an over-allocated
+   outer with masking, or a loud rejection?
+3. With both a grid-split loop and a tile loop present, which loop is the batch
+   loop? (The current answer is the tile loop, one tile per batch.)
+4. Does `tt_tile` ever fold an existing lane split back into a loop, and under
+   what condition?
+5. Are the two group axes split independently, and may their loop trip counts
+   differ?
+
+### CB and credits
+
+6. Who places a batch body in `l1::PROGRAM_CACHE`, and who owns that region?
+7. Is that placement compile-time (an image) or launch-time (a mover write)?
+8. Must T0/T1/T2 have identical batch counts? (T1 does no credit action but is
+   synchronized by `retire_batch`.)
+9. May `Reserve n` / `Push n` with `n > 1` be the default so a list fits
+   `LIST_MAX`, and how does the slot advance per push then?
+10. Is one list per mover per launch fixed, or may the launch feed several
+    lists as credits free?
+11. May the NC list be submitted before the roles run (it starts with a
+    `Wait` on Output) and joined after?
+12. Is `tt_place_pops` needed at all at depth 1, where every slot is 0?
+13. Is an explicit `CbDeclare` needed, or is the depth just
+    `storage.len / 1024`?
+14. Does the pack's baked L1 destination need the ring slot at depth > 1, and
+    does it therefore have to stop carrying the loop at depth 1 only?
+
+### Launch and execution
+
+15. Does ttsim advance the movers and the roles together under `tick` when a
+    list is submitted without waiting?
+16. Can the B mover load a program while a reader list is outstanding on it?
+17. Is the order `load programs -> submit B -> submit NC -> run roles -> join`
+    valid, or must program loading happen after the lists are drained?
+18. If a mover refuses an entry while the roles are running, how is the error
+    surfaced and how are the roles stopped?
+
+### The model and the 16 kernels
+
+19. What is the exact list of the model's 16 kernels (ops, shapes, order)?
+20. Are all 16 reached at `seq_len = 1` decode, given that CPU prefill crashes?
+21. What counts as one kernel: one compiled `Kernel` per fused op group, with
+    repeated invocations sharing it?
+22. Does `24_tt` get replaced one-for-one by the 16, or extended?
+
+### Correctness details
+
+23. When a per-iteration DRAM step is not a multiple of 64 bytes, is the answer
+    per-entry chunking or a whole-tile move?
+24. Is `sum_drop_col`'s orientation needed for llama at `seq_len = 1` (attention
+    over one key is `v`), and is its shape the one the model actually uses?
+
 ## Next
 
 1. Restore the four CB ops, `tt_sync_cbs`/`tt_place_pops`,
