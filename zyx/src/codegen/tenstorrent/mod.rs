@@ -323,7 +323,22 @@ impl Kernel {
 
         // The DRAM boundary: one move per reader publish and per writer drain,
         // in program order. `render_tt` splits each into page ops.
-        let (reader, writer) = tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?;
+        // A kernel with a row page (a CB shorter than one tile) is driven by
+        // the RISC-V boundary programs instead: its traffic is spans, not whole
+        // tiles, and the page-op list cannot express it.
+        let row_traffic =
+            k.iter_unordered().any(|(_, op)| matches!(op, Op::Storage { scope: MemScope::Circular, len, .. } if *len < 1024));
+        let (reader, writer) = if row_traffic {
+            (Vec::new(), Vec::new())
+        } else {
+            tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?
+        };
+        let empty_l1: Map<OpId, u32> = Map::default();
+        let (reader_words, writer_words) = if row_traffic {
+            (boundary::reader(k, &cbs, &param_ordinal_of, &empty_l1), boundary::writer(k, &cbs, &param_ordinal_of, &empty_l1))
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         let program = TTProgram { reader_src, compute_src, writer_src, roles, loops, reader, writer, sems };
 
@@ -410,6 +425,18 @@ impl Kernel {
             }
         }
         rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
+        if !reader_words.is_empty() {
+            rendered.push_back(Op::TT(TTOp::Reader(Box::new(crate::kernel::TTRoleProgram {
+                words: reader_words.into_boxed_slice(),
+                loops: Box::new([]),
+            }))));
+        }
+        if !writer_words.is_empty() {
+            rendered.push_back(Op::TT(TTOp::Writer(Box::new(crate::kernel::TTRoleProgram {
+                words: writer_words.into_boxed_slice(),
+                loops: Box::new([]),
+            }))));
+        }
         Ok(rendered)
     }
 }
@@ -2418,7 +2445,9 @@ fn render(
                 _ => {}
             }
         }
-        render_section(&mut sec, &sections[s])?;
+        if s == 1 {
+            render_section(&mut sec, &sections[s])?;
+        }
         match s {
             0 => sec.out.push_str("  noc_async_read_barrier();\n"),
             2 => sec.out.push_str("  noc_async_write_barrier();\n"),
