@@ -516,8 +516,17 @@ impl BeamSearch {
             let mut rng = Rng::seed_from_u64(3_498_203_498);
             let mut exhausted = Set::default();
             let mut i = 0;
+            // Temporary: which phase of the tune this kernel is in, and how
+            // long each search step takes. Removed after the hang diagnosis.
+            let search_start = std::time::Instant::now();
             while forced.is_none() && i < self.n_total_opts && !items.is_empty() {
                 i += 1;
+                let best = items.iter().map(|s| s.cost).min().unwrap_or(u64::MAX);
+                eprintln!(
+                    "[search] i={i} items={} best={best} t={}ms",
+                    items.len(),
+                    search_start.elapsed().as_millis()
+                );
                 let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else {
                     break;
                 };
@@ -567,6 +576,11 @@ impl BeamSearch {
             // Keep trying past a candidate that fails to compile/launch (an
             // invalid optimization variant) until `n_launches` successes have
             // been measured.
+            eprintln!(
+                "[search] done i={i} items={} t={}ms",
+                items.len(),
+                search_start.elapsed().as_millis()
+            );
             items.sort_by_key(|seq| seq.cost);
             let mut launched = Set::default();
             let mut measured = 0usize;
@@ -574,8 +588,15 @@ impl BeamSearch {
             while measured < self.n_launches && next < items.len() {
                 let opt_seq = &items[next];
                 next += 1;
+                eprintln!(
+                    "[measure] {next}/{} measured={measured} seq={:?} t={}ms",
+                    items.len(),
+                    opt_seq.opts,
+                    search_start.elapsed().as_millis()
+                );
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
+                eprintln!("[measure] applied ops={}", kernel.ops.len().0);
                 // Hardware lowering runs once here, right before timed
                 // launches — never inside the search loop above. A candidate
                 // whose lowering refuses to produce a renderable kernel (an
@@ -586,25 +607,38 @@ impl BeamSearch {
                     last_error = Some(e);
                     continue;
                 }
+                eprintln!("[measure] lowered ops={}", kernel.ops.len().0);
+                // The resolved grid: computed before the launch so a launch
+                // that hangs still names its extents.
+                let grid = {
+                    let gws = gws_from_kernel(&kernel, &kernel.dev_info().max_global_work_dims)
+                        .expect("grid expression of a lowered kernel");
+                    let mut dims: [Dim; 3] = [1, 1, 1];
+                    let mut dim = |ordinal: usize| match &args[ordinal] {
+                        LaunchArg::Variable(c) => c.as_dim().expect("gws param is not a dim"),
+                        LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
+                    };
+                    for (axis, g) in gws.iter().enumerate().take(3) {
+                        dims[axis] = g.eval(&mut dim);
+                    }
+                    dims
+                };
+                eprintln!("[measure] grid={grid:?}");
+                // Temporary: dump the lowered IR of one named candidate.
+                if std::env::var("ZYX_DUMP_SEQ").ok().is_some_and(|spec| {
+                    spec.split(',')
+                        .filter(|pair| !pair.is_empty())
+                        .map(|pair| {
+                            let (opt, config) = pair.split_once(':').expect("ZYX_DUMP_SEQ entries are `opt:config`");
+                            (opt.parse().expect("ZYX_DUMP_SEQ opt id"), config.parse().expect("ZYX_DUMP_SEQ config id"))
+                        })
+                        .eq(opt_seq.opts.iter().copied())
+                }) {
+                    kernel.debug();
+                }
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(args, dev, debug) {
                         Ok((program_id, time)) => {
-                            // The resolved grid exists only here: the group
-                            // lengths are `Param` expressions over `args`, so
-                            // the same IR gives different extents per launch.
-                            let grid = {
-                                let gws = gws_from_kernel(&kernel, &kernel.dev_info().max_global_work_dims)
-                                    .expect("grid expression of a kernel that launched");
-                                let mut dims: [Dim; 3] = [1, 1, 1];
-                                let mut dim = |ordinal: usize| match &args[ordinal] {
-                                    LaunchArg::Variable(c) => c.as_dim().expect("gws param is not a dim"),
-                                    LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
-                                };
-                                for (axis, g) in gws.iter().enumerate().take(3) {
-                                    dims[axis] = g.eval(&mut dim);
-                                }
-                                dims
-                            };
                             record_measurement(&kernel, opt_seq, seed_id, self.n_launches, Some(time), Some(grid), "measured");
                             programs.push(program_id);
                             measured += 1;

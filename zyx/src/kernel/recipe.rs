@@ -27,7 +27,7 @@
 //! memory or a fused matmul mean another pass already ran and the sequence's
 //! assumptions no longer hold.
 
-use super::{BOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, autotune::Optimization, split::SplitMode};
+use super::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind, autotune::Optimization, split::SplitMode};
 use crate::shape::Dim;
 
 /// Local factors a lane recipe tries, largest first.
