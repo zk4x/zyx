@@ -23,7 +23,7 @@
 //! twice. No `resolve_const` on this path.
 
 use crate::{
-    Set,
+    Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, RangeKind},
     shape::Dim,
@@ -81,18 +81,11 @@ impl Kernel {
         // Padding an axis whose loads are vector accesses would extend the
         // range and leave those lanes unguarded, so out-of-bounds lanes read
         // far outside the buffer. Refuse to pad here instead.
-        {
-            let mut scan = self.next_op(axis);
-            while !scan.is_null() {
-                if let Op::Load { src_idx, .. } = self.ops[scan].op
-                    && !self.shape(src_idx).is_empty()
-                    && self.depends_on(src_idx, axis, &mut Set::default())
-                {
-                    return;
-                }
-                scan = self.next_op(scan);
-            }
-        }
+        // A padded range gets guards on the loads and stores that depend on
+        // it (below). A lane-shaped index is not special: the guard condition
+        // names the padded *axis*, which is scalar, and `Select` broadcasts a
+        // scalar condition over a shaped value, so a vector access is guarded
+        // by the same instruction as a scalar one.
         match self.ops[axis].op {
             Op::Range { axis: range_axis, kind } => {
                 // 1. Extend the index length to the next multiple.
@@ -155,6 +148,13 @@ impl Kernel {
                 // (rewritable) index, so wrapping is exact per thread and
                 // later index rewrites cannot detach it.
                 let mut op_id = self.next_op(axis);
+                // Guarded loads are rewritten in one batched pass at the end:
+                // a single `remap_params` over the kernel with the whole
+                // old -> new map, instead of a full-kernel scan per guarded
+                // load (which made padding quadratic on vectorized kernels:
+                // thousands of loads times thousands of ops).
+                let mut guarded: Map<OpId, OpId> = Map::default();
+                let mut replaced: Vec<OpId> = Vec::new();
                 while !op_id.is_null() {
                     let next = self.next_op(op_id);
 
@@ -188,23 +188,34 @@ impl Kernel {
                     // value op (no conditional scope for later passes to
                     // reason about); OOB threads load element 0 and their
                     // garbage never reaches memory (stores stay guarded).
+                    // The condition is scalar (the padded axis), and Select
+                    // broadcasts it over a lane-shaped index, so a vector
+                    // access is guarded by the same instruction.
                     if let Op::Load { src, src_idx: load_idx } = self.ops[op_id].op.clone() {
-                        if !self.shape(load_idx).is_empty() {
-                            // non-scalar accesses stay scalar-guardable only
-                            op_id = next;
-                            continue;
-                        }
                         if self.depends_on(load_idx, axis, &mut Set::default()) {
                             let cond = self.insert_before(op_id, Op::Binary { x: axis, y: limit, bop: BOp::Cmplt });
                             let zero = self.insert_before(op_id, Op::Const(Constant::idx(0)));
                             let safe_idx = self.insert_before(op_id, Op::Select { cond, if_true: load_idx, if_false: zero });
                             let safe_load = self.insert_before(op_id, Op::Load { src, src_idx: safe_idx });
-                            self.remap(op_id, safe_load);
-                            self.remove_op(op_id);
+                            guarded.insert(op_id, safe_load);
+                            replaced.push(op_id);
                         }
                     }
 
                     op_id = next;
+                }
+
+                // One batched rewrite for every guarded load (the map, not a
+                // full-kernel scan per load), then drop the originals.
+                if !guarded.is_empty() {
+                    let mut scan = self.head;
+                    while !scan.is_null() {
+                        self.ops[scan].op.remap_params(&guarded);
+                        scan = self.next_op(scan);
+                    }
+                    for op in replaced {
+                        self.remove_op(op);
+                    }
                 }
             }
             Op::Loop { .. } => {

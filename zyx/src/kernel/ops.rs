@@ -1565,189 +1565,156 @@ impl SlabId for OpId {
     }
 }
 
-impl Op {
-    // TODO use custom non allocating iterator instead of allocating a vec
-    #[allow(clippy::match_same_arms)]
-    pub(crate) fn parameters(&self) -> impl DoubleEndedIterator<Item = OpId> {
-        match self {
-            Op::Const { .. } | Op::Storage { .. } | Op::EndLoop | Op::Barrier => {
-                vec![]
-            }
-            &Op::Param { shape, .. } => {
-                // Shape is null after linearize
-                if shape.is_null() { vec![] } else { vec![shape] }
-            }
-            &Op::Range { kind, .. } => match kind {
-                RangeKind::Group(len) => vec![len],
-                RangeKind::Local(_) => vec![],
-            },
-            &Op::Loop { len, .. } => vec![len],
-            &Op::Reshape { x, shape, .. } | &Op::Expand { x, shape } => {
-                // Null shape = scalar (see `shape_class`): no shape operand,
-                // same as `Param` below.
-                if shape.is_null() { vec![x] } else { vec![x, shape] }
-            }
-            &Op::Permute { x, .. } | &Op::Flip { x, .. } => vec![x],
-            &Op::Pad { x, lp, len, .. } => vec![x, lp, len],
-            &Op::Narrow { x, start, len, .. } => vec![x, start, len],
-            Op::Reduce { x, reduce_axis, .. } => vec![*x, *reduce_axis],
-            Op::Unroll { .. } => vec![],
+/// Non-allocating iterator over an op's param slots: the op and the index of
+/// the next slot, nothing else.
+pub(crate) struct Params<'a> {
+    op: &'a Op,
+    idx: usize,
+}
 
-            // dst/src are NEVER null (whole-view stores spell the bare
-            // Param); only dst_idx can be null.
-            &Op::Store { dst, dst_idx, src } => {
-                if dst_idx.is_null() {
-                    vec![dst, src]
-                } else {
-                    vec![dst, dst_idx, src]
-                }
-            }
-            &Op::Copy { src, src_idx, dst, dst_idx } => {
-                debug_assert!(!src_idx.is_null());
-                vec![src, src_idx, dst, dst_idx]
-            }
-            Op::Cast { x, .. } => vec![*x],
-            Op::Bitcast { x, .. } => vec![*x],
-            Op::Unary { x, .. } => vec![*x],
-            &Op::Binary { x, y, .. } => vec![x, y],
-            &Op::Select { cond, if_true, if_false } => vec![cond, if_true, if_false],
-            // src_idx is NEVER null: every load names its element.
-            &Op::Load { src, src_idx } => vec![src, src_idx],
-            Op::Asm { ops, .. } => ops.iter().copied().collect(),
-            &Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
-            &Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
-            &Op::TT(TTOp::Setrwc { dst }) => vec![dst],
-            Op::TT(TTOp::Setadczw { .. })
-            | Op::TT(TTOp::Setadcx { .. })
-            | Op::TT(TTOp::Zeroacc { .. })
-            | Op::TT(TTOp::Mvmul { .. })
-            | Op::TT(TTOp::Setc16 { .. })
-            | Op::TT(TTOp::Setcfg { .. })
-            | Op::TT(TTOp::Post { .. })
-            | Op::TT(TTOp::Wait { .. })
-            | Op::TT(TTOp::WaitBelowMax { .. })
-            | Op::TT(TTOp::DmRead(_))
-            | Op::TT(TTOp::DmWrite(_))
-            | Op::TT(TTOp::DmReadTransposed(_))
-            | Op::TT(TTOp::DmReadBroadcastCol(_))
-            | Op::TT(TTOp::DmFill(_))
-            | Op::TT(TTOp::DmCopyWords(_))
-            | Op::TT(TTOp::DmIndexPick(_))
-            | Op::TT(TTOp::DmKernel(_))
-            | Op::TT(TTOp::DmWait)
-            | Op::TT(TTOp::SfpConst(_))
-            | Op::TT(TTOp::Sfp(_))
-            | Op::TT(TTOp::Replay { .. })
-            | Op::TT(TTOp::Semset { .. }) => vec![],
-            &Op::TT(TTOp::SfpLoad(ref load)) => vec![load.slot],
-            &Op::TT(TTOp::SfpStore(ref store)) => vec![store.slot],
-            &Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
-                if b.is_null() {
-                    vec![a, slot]
-                } else {
-                    vec![a, b, slot]
-                }
-            }
-            Op::Stack { ops } => ops.to_vec(),
-            &Op::Index { vec, .. } => vec![vec],
-            &Op::Wmma { a, b, c, .. } => vec![a, b, c],
-            Op::TT(TTOp::EndReader)
-            | Op::TT(TTOp::EndCompute)
-            | Op::TT(TTOp::TensixGrid(_))
-            | Op::TT(TTOp::Unpack(_))
-            | Op::TT(TTOp::Math(_))
-            | Op::TT(TTOp::Pack(_)) => {
-                vec![]
-            }
-            Op::After { x, dep } => vec![*x, *dep],
-            Op::ToDevice { x, .. } => vec![*x],
-            Op::Contiguous { x } => vec![*x],
-            Op::Detach { x } => vec![*x],
-            Op::Source(_) | Op::Program { .. } | Op::Kernel(_) | Op::GPU(_) => {
-                vec![]
-            }
-            Op::Spirv(_) => vec![],
-            Op::PTX(p) => match p.as_ref() {
-                PTXOp::Bytes(_) => vec![],
-                PTXOp::LdMatrix { src, addr, .. } => vec![*src, *addr],
-            },
+impl Iterator for Params<'_> {
+    type Item = OpId;
+
+    fn next(&mut self) -> Option<OpId> {
+        let param = self.op.param_at(self.idx)?;
+        self.idx += 1;
+        Some(param)
+    }
+}
+
+/// Mutable counterpart of [`Params`].
+/// Mutable counterpart of [`Params`], allocation-free by being an enum over
+/// the fixed-shape standard iterators: each arm splits the `&mut Op` once
+/// into disjoint fields, so no slot is ever borrowable twice.
+pub(crate) enum ParamsMut<'a> {
+    Empty,
+    One(OnceMut<'a>),
+    Two(TwoMut<'a>),
+    Three(ThreeMut<'a>),
+    Four(FourMut<'a>),
+    Slice(std::slice::IterMut<'a, OpId>),
+}
+
+pub(crate) type OnceMut<'a> = std::iter::Once<&'a mut OpId>;
+pub(crate) type TwoMut<'a> = std::iter::Chain<OnceMut<'a>, OnceMut<'a>>;
+pub(crate) type ThreeMut<'a> = std::iter::Chain<TwoMut<'a>, OnceMut<'a>>;
+pub(crate) type FourMut<'a> = std::iter::Chain<ThreeMut<'a>, OnceMut<'a>>;
+
+impl<'a> Iterator for ParamsMut<'a> {
+    type Item = &'a mut OpId;
+
+    fn next(&mut self) -> Option<&'a mut OpId> {
+        match self {
+            ParamsMut::Empty => None,
+            ParamsMut::One(it) => it.next(),
+            ParamsMut::Two(it) => it.next(),
+            ParamsMut::Three(it) => it.next(),
+            ParamsMut::Four(it) => it.next(),
+            ParamsMut::Slice(it) => it.next(),
         }
-        .into_iter()
+    }
+}
+
+impl Op {
+    /// Non-allocating iterator over an op's param slots.
+    ///
+    /// It holds only the op and the current index; [`Op::param_at`] resolves
+    /// the slot. The previous form built a `Vec<OpId>` per op, so every
+    /// full-kernel walk — and `remap`, which walks the kernel — paid an
+    /// allocator round-trip per op, which the profile showed as ~15% of a
+    /// prefill tune in malloc/free.
+    pub(crate) fn parameters(&self) -> Params<'_> {
+        Params { op: self, idx: 0 }
     }
 
-    #[allow(clippy::match_same_arms)]
-    pub(crate) fn parameters_mut(&mut self) -> impl DoubleEndedIterator<Item = &mut OpId> {
+    /// Mutable counterpart of [`Op::parameters`].
+    pub(crate) fn parameters_mut(&mut self) -> ParamsMut<'_> {
         match self {
-            Op::Kernel(_)
-            | Op::Program { .. }
-            | Op::Source(_)
-            | Op::GPU(_)
-            | Op::Const { .. }
+            Op::Const { .. }
             | Op::Storage { .. }
             | Op::EndLoop
-            | Op::Barrier => vec![],
-            Op::Contiguous { x, .. } => vec![x],
-            Op::Detach { x, .. } => vec![x],
-            Op::Spirv(_) => vec![],
-            Op::PTX(p) => match p.as_mut() {
-                PTXOp::Bytes(_) => vec![],
-                PTXOp::LdMatrix { src, addr, .. } => vec![src, addr],
-            },
-            Op::ToDevice { x, .. } => vec![x],
-            Op::After { x, dep } => vec![x, dep],
+            | Op::Barrier
+            | Op::Unroll { .. }
+            | Op::Source(_)
+            | Op::GPU(_)
+            | Op::Spirv(_)
+            | Op::Kernel(_)
+            | Op::Program { .. } => ParamsMut::Empty,
             Op::Param { shape, .. } => {
                 // Shape is null after linearize
-                if shape.is_null() { vec![] } else { vec![shape] }
-            }
-            Op::Range { kind, .. } => match kind {
-                RangeKind::Group(len) => vec![len],
-                RangeKind::Local(_) => vec![],
-            },
-            Op::Loop { len, .. } => vec![len],
-            Op::Reshape { x, shape, .. } | Op::Expand { x, shape } => {
-                // Null shape = scalar (see `shape_class`): no shape operand,
-                // same as `Param` below.
-                if shape.is_null() { vec![x] } else { vec![x, shape] }
-            }
-            Op::Permute { x, .. } | Op::Flip { x, .. } => vec![x],
-            Op::Pad { x, lp, len, .. } => vec![x, lp, len],
-            Op::Narrow { x, start, len, .. } => vec![x, start, len],
-            Op::Reduce { x, reduce_axis, .. } => vec![x, reduce_axis],
-            Op::Store { dst, dst_idx, src: x } => {
-                if dst_idx.is_null() {
-                    vec![dst, x]
+                if shape.is_null() {
+                    ParamsMut::Empty
                 } else {
-                    vec![dst, dst_idx, x]
+                    ParamsMut::One(std::iter::once(shape))
                 }
             }
-            Op::Copy { src, src_idx, dst, dst_idx } => {
-                debug_assert!(!src_idx.is_null());
-                vec![src, src_idx, dst, dst_idx]
+            Op::Range { kind, .. } => match kind {
+                RangeKind::Group(len) => ParamsMut::One(std::iter::once(len)),
+                RangeKind::Local(_) => ParamsMut::Empty,
+            },
+            Op::Loop { len, .. } => ParamsMut::One(std::iter::once(len)),
+            Op::Reshape { x, shape, .. } | Op::Expand { x, shape } => {
+                if shape.is_null() {
+                    ParamsMut::One(std::iter::once(x))
+                } else {
+                    ParamsMut::Two(std::iter::once(x).chain(std::iter::once(shape)))
+                }
             }
-            Op::Cast { x, .. } => vec![x],
-            Op::Bitcast { x, .. } => vec![x],
-            Op::Unary { x, .. } => vec![x],
-            Op::Binary { x, y, .. } => vec![x, y],
-            Op::Select { cond, if_true, if_false } => vec![cond, if_true, if_false],
-            // src_idx is NEVER null: every load names its element.
-            Op::Load { src, src_idx } => vec![src, src_idx],
-            Op::Stack { ops } => ops.iter_mut().collect(),
-            Op::Unroll { .. } => vec![],
-            Op::Index { vec, .. } => vec![vec],
-            Op::Wmma { a, b, c, .. } => vec![a, b, c],
+            Op::Permute { x, .. } | Op::Flip { x, .. } => ParamsMut::One(std::iter::once(x)),
+            Op::Pad { x, lp, len, .. } => {
+                ParamsMut::Three(std::iter::once(x).chain(std::iter::once(lp)).chain(std::iter::once(len)))
+            }
+            Op::Narrow { x, start, len, .. } => {
+                ParamsMut::Three(std::iter::once(x).chain(std::iter::once(start)).chain(std::iter::once(len)))
+            }
+            Op::Reduce { x, reduce_axis, .. } => ParamsMut::Two(std::iter::once(x).chain(std::iter::once(reduce_axis))),
+            Op::Store { dst, dst_idx, src } => {
+                if dst_idx.is_null() {
+                    ParamsMut::Two(std::iter::once(dst).chain(std::iter::once(src)))
+                } else {
+                    ParamsMut::Three(std::iter::once(dst).chain(std::iter::once(dst_idx)).chain(std::iter::once(src)))
+                }
+            }
+            Op::Copy { src, src_idx, dst, dst_idx } => ParamsMut::Four(
+                std::iter::once(src).chain(std::iter::once(src_idx)).chain(std::iter::once(dst)).chain(std::iter::once(dst_idx)),
+            ),
+            Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => ParamsMut::One(std::iter::once(x)),
+            Op::Binary { x, y, .. } => ParamsMut::Two(std::iter::once(x).chain(std::iter::once(y))),
+            Op::Select { cond, if_true, if_false } => {
+                ParamsMut::Three(std::iter::once(cond).chain(std::iter::once(if_true)).chain(std::iter::once(if_false)))
+            }
+            Op::Load { src, src_idx } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(src_idx))),
+            Op::Asm { ops, .. } => ParamsMut::Slice(ops.iter_mut()),
+            Op::Stack { ops } => ParamsMut::Slice(ops.iter_mut()),
+            Op::Index { vec, .. } => ParamsMut::One(std::iter::once(vec)),
+            Op::Wmma { a, b, c, .. } => ParamsMut::Three(std::iter::once(a).chain(std::iter::once(b)).chain(std::iter::once(c))),
+            Op::After { x, dep } => ParamsMut::Two(std::iter::once(x).chain(std::iter::once(dep))),
+            Op::ToDevice { x, .. } | Op::Contiguous { x } | Op::Detach { x } => ParamsMut::One(std::iter::once(x)),
+            Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => ParamsMut::Four(
+                std::iter::once(src).chain(std::iter::once(src_idx)).chain(std::iter::once(dst)).chain(std::iter::once(dst_idx)),
+            ),
+            Op::TT(TTOp::Unpacr { src, .. }) => ParamsMut::One(std::iter::once(src)),
+            Op::TT(TTOp::Setrwc { dst }) => ParamsMut::One(std::iter::once(dst)),
+            Op::TT(TTOp::SfpLoad(load)) => ParamsMut::One(std::iter::once(&mut load.slot)),
+            Op::TT(TTOp::SfpStore(store)) => ParamsMut::One(std::iter::once(&mut store.slot)),
+            Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                if b.is_null() {
+                    ParamsMut::Two(std::iter::once(a).chain(std::iter::once(slot)))
+                } else {
+                    ParamsMut::Three(std::iter::once(a).chain(std::iter::once(b)).chain(std::iter::once(slot)))
+                }
+            }
+            Op::PTX(p) => match p.as_mut() {
+                PTXOp::Bytes(_) => ParamsMut::Empty,
+                PTXOp::LdMatrix { src, addr, .. } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(addr))),
+            },
             Op::TT(TTOp::EndReader)
             | Op::TT(TTOp::EndCompute)
             | Op::TT(TTOp::TensixGrid(_))
             | Op::TT(TTOp::Unpack(_))
             | Op::TT(TTOp::Math(_))
-            | Op::TT(TTOp::Pack(_)) => {
-                vec![]
-            }
-            Op::Asm { ops, .. } => ops.iter_mut().collect(),
-            Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
-            Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
-            Op::TT(TTOp::Setrwc { dst }) => vec![dst],
-            Op::TT(TTOp::Setadczw { .. })
+            | Op::TT(TTOp::Pack(_))
+            | Op::TT(TTOp::Setadczw { .. })
             | Op::TT(TTOp::Setadcx { .. })
             | Op::TT(TTOp::Zeroacc { .. })
             | Op::TT(TTOp::Mvmul { .. })
@@ -1768,18 +1735,114 @@ impl Op {
             | Op::TT(TTOp::SfpConst(_))
             | Op::TT(TTOp::Sfp(_))
             | Op::TT(TTOp::Replay { .. })
-            | Op::TT(TTOp::Semset { .. }) => vec![],
-            &mut Op::TT(TTOp::SfpLoad(ref mut load)) => vec![&mut load.slot],
-            &mut Op::TT(TTOp::SfpStore(ref mut store)) => vec![&mut store.slot],
-            Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
-                if b.is_null() {
-                    vec![a, slot]
+            | Op::TT(TTOp::Semset { .. }) => ParamsMut::Empty,
+        }
+    }
+
+    /// The `i`-th param slot, or `None` past the end.
+    ///
+    /// Null slots are not exposed (a `Param`'s shape after linearize, a
+    /// `Store`'s index for a whole-view store), exactly as the allocated-list
+    /// version skipped them.
+    #[allow(clippy::match_same_arms)]
+    fn param_at(&self, i: usize) -> Option<OpId> {
+        match self {
+            Op::Const { .. }
+            | Op::Storage { .. }
+            | Op::EndLoop
+            | Op::Barrier
+            | Op::Unroll { .. }
+            | Op::Source(_)
+            | Op::GPU(_)
+            | Op::Spirv(_)
+            | Op::Kernel(_)
+            | Op::Program { .. } => None,
+            Op::Param { shape, .. } => {
+                // Shape is null after linearize
+                if shape.is_null() { None } else { [*shape].get(i).copied() }
+            }
+            Op::Range { kind, .. } => match kind {
+                RangeKind::Group(len) => [*len].get(i).copied(),
+                RangeKind::Local(_) => None,
+            },
+            Op::Loop { len, .. } => [*len].get(i).copied(),
+            Op::Reshape { x, shape, .. } | Op::Expand { x, shape } => {
+                // Null shape = scalar (see `shape_class`): no shape operand.
+                if shape.is_null() {
+                    [*x].get(i).copied()
                 } else {
-                    vec![a, b, slot]
+                    [*x, *shape].get(i).copied()
                 }
             }
+            Op::Permute { x, .. } | Op::Flip { x, .. } => [*x].get(i).copied(),
+            Op::Pad { x, lp, len, .. } => [*x, *lp, *len].get(i).copied(),
+            Op::Narrow { x, start, len, .. } => [*x, *start, *len].get(i).copied(),
+            Op::Reduce { x, reduce_axis, .. } => [*x, *reduce_axis].get(i).copied(),
+            // dst/src are NEVER null (whole-view stores spell the bare Param);
+            // only dst_idx can be null.
+            Op::Store { dst, dst_idx, src } => {
+                if dst_idx.is_null() {
+                    [*dst, *src].get(i).copied()
+                } else {
+                    [*dst, *dst_idx, *src].get(i).copied()
+                }
+            }
+            Op::Copy { src, src_idx, dst, dst_idx } => [*src, *src_idx, *dst, *dst_idx].get(i).copied(),
+            Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => [*x].get(i).copied(),
+            Op::Binary { x, y, .. } => [*x, *y].get(i).copied(),
+            Op::Select { cond, if_true, if_false } => [*cond, *if_true, *if_false].get(i).copied(),
+            Op::Load { src, src_idx } => [*src, *src_idx].get(i).copied(),
+            Op::Asm { ops, .. } => ops.get(i).copied(),
+            Op::Stack { ops } => ops.get(i).copied(),
+            Op::Index { vec, .. } => [*vec].get(i).copied(),
+            Op::Wmma { a, b, c, .. } => [*a, *b, *c].get(i).copied(),
+            Op::After { x, dep } => [*x, *dep].get(i).copied(),
+            Op::ToDevice { x, .. } | Op::Contiguous { x } | Op::Detach { x } => [*x].get(i).copied(),
+            Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => [*src, *src_idx, *dst, *dst_idx].get(i).copied(),
+            Op::TT(TTOp::Unpacr { src, .. }) => [*src].get(i).copied(),
+            Op::TT(TTOp::Setrwc { dst }) => [*dst].get(i).copied(),
+            Op::TT(TTOp::SfpLoad(load)) => [load.slot].get(i).copied(),
+            Op::TT(TTOp::SfpStore(store)) => [store.slot].get(i).copied(),
+            Op::TT(TTOp::Sfpu { a, b, slot, .. }) => {
+                if b.is_null() {
+                    [*a, *slot].get(i).copied()
+                } else {
+                    [*a, *b, *slot].get(i).copied()
+                }
+            }
+            Op::PTX(p) => match p.as_ref() {
+                PTXOp::Bytes(_) => None,
+                PTXOp::LdMatrix { src, addr, .. } => [*src, *addr].get(i).copied(),
+            },
+            Op::TT(TTOp::EndReader)
+            | Op::TT(TTOp::EndCompute)
+            | Op::TT(TTOp::TensixGrid(_))
+            | Op::TT(TTOp::Unpack(_))
+            | Op::TT(TTOp::Math(_))
+            | Op::TT(TTOp::Pack(_))
+            | Op::TT(TTOp::Setadczw { .. })
+            | Op::TT(TTOp::Setadcx { .. })
+            | Op::TT(TTOp::Zeroacc { .. })
+            | Op::TT(TTOp::Mvmul { .. })
+            | Op::TT(TTOp::Setc16 { .. })
+            | Op::TT(TTOp::Setcfg { .. })
+            | Op::TT(TTOp::Post { .. })
+            | Op::TT(TTOp::Wait { .. })
+            | Op::TT(TTOp::WaitBelowMax { .. })
+            | Op::TT(TTOp::DmRead(_))
+            | Op::TT(TTOp::DmWrite(_))
+            | Op::TT(TTOp::DmReadTransposed(_))
+            | Op::TT(TTOp::DmReadBroadcastCol(_))
+            | Op::TT(TTOp::DmFill(_))
+            | Op::TT(TTOp::DmCopyWords(_))
+            | Op::TT(TTOp::DmIndexPick(_))
+            | Op::TT(TTOp::DmKernel(_))
+            | Op::TT(TTOp::DmWait)
+            | Op::TT(TTOp::SfpConst(_))
+            | Op::TT(TTOp::Sfp(_))
+            | Op::TT(TTOp::Replay { .. })
+            | Op::TT(TTOp::Semset { .. }) => None,
         }
-        .into_iter()
     }
 
     /// Check if this operation is a constant.
