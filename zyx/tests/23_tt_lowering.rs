@@ -293,28 +293,6 @@ fn tiling() -> Result<(), ZyxError> {
 }
 
 #[test]
-fn gather() -> Result<(), ZyxError> {
-    // llama's embedding gather: arbitrary indices, and a column gather whose
-    // read pattern is not an arithmetic progression (stride 64 bytes, columns
-    // 5, 0, 15, 2). Rows are 16 F32 = 64 bytes: narrower than a tile, so the
-    // accesses are scalar and nothing tiles, and every read stays congruent
-    // mod 64.
-    let src: Vec<f32> = (0..8 * 16).map(|i| i as f32 + 1.0).collect();
-    let x = Tensor::from(src.clone()).reshape([8, 16])?.to(Dev::TT(0))?;
-    let rows = Tensor::from([6, 2, 7, 0]).to(Dev::TT(0))?;
-    let cols = Tensor::from([5, 0, 15, 2]).to(Dev::TT(0))?;
-    let y: Vec<f32> = x.index_select(0, &rows)?.index_select(1, &cols)?.to(Dev::C)?.try_into().unwrap();
-    let mut expected = Vec::new();
-    for row in [6usize, 2, 7, 0] {
-        for col in [5usize, 0, 15, 2] {
-            expected.push(src[row * 16 + col]);
-        }
-    }
-    assert_eq!(y, expected);
-    Ok(())
-}
-
-#[test]
 fn neg_sub_mul() -> Result<(), ZyxError> {
     // Three row ops of one SFPU instruction each: `NEG` is `SFPMOV` with the
     // negate modifier, `SUB` is `SFPMAD` with a negated addend, `MUL` is

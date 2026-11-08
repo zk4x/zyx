@@ -2995,15 +2995,19 @@ impl Kernel {
             bin(k, at, x, cc, BOp::Mod)
         }
 
-        let mut prologue = self.head;
+        // The page is a local storage, and the verifier requires every param
+        // (read-only, then read-write) before any local storage. Put it right
+        // after the last param, which still dominates every use.
+        let mut prologue = OpId::NULL;
+        let mut header = self.head;
         for _ in 0..250_000 {
-            if prologue.is_null() {
+            if header.is_null() {
                 break;
             }
-            match self.ops[prologue].op {
-                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
-                _ => break,
+            if matches!(self.ops[header].op, Op::Param { .. }) {
+                prologue = self.next_op(header);
             }
+            header = self.next_op(header);
         }
         // The store whose value each load is.
         let mut store_of: Map<OpId, OpId> = Map::default();
@@ -3032,6 +3036,9 @@ impl Kernel {
                     }
                     match k.at(e) {
                         Op::Const(_) | Op::Unroll { .. } | Op::Load { .. } | Op::Param { .. } | Op::Range { .. } => Some(0),
+                        // A loop counter is iteration arithmetic, never the lane
+                        // variable: it contributes a base, not a lane stride.
+                        Op::Loop { .. } => Some(0),
                         Op::Binary { x, y, bop } => match bop {
                             BOp::Add => Some(lane_stride(k, *x, lane)? + lane_stride(k, *y, lane)?),
                             BOp::Sub => Some(lane_stride(k, *x, lane)? - lane_stride(k, *y, lane)?),
@@ -3077,12 +3084,19 @@ impl Kernel {
                         Some(1),
                         "tt_add_movers: transfer load {scan:?} lanes are not contiguous"
                     );
-                    assert!(lanes * el <= 64, "tt_add_movers: transfer load {scan:?} lanes exceed one 64-byte span");
+                    // tt-metal moves a row with one `noc_async_read` of the
+                    // page's byte size (`embeddings.cpp`: `noc_async_read(
+                    // src_noc_addr + chunk_offset, l1_write_addr,
+                    // current_chunk_size)`), so a contiguous lane run is one
+                    // copy of `lanes` datums, wider than 64 bytes.
                 }
                 let Op::Param { dtype, .. } = self.ops[base].op else {
                     unreachable!("tt_add_movers: a Global load's base is a param")
                 };
-                let page = Op::Storage { dtype, scope: MemScope::Local, len: span, id: 0 };
+                // The page is what the access moves: one contiguous run of
+                // `lanes` datums, or one 64-byte span for a scalar access.
+                let page_len = if lanes > 1 { lanes } else { span };
+                let page = Op::Storage { dtype, scope: MemScope::Local, len: page_len, id: 0 };
                 let page = if prologue.is_null() {
                     self.push_back(page)
                 } else {
@@ -3126,8 +3140,11 @@ impl Kernel {
                         next = store_next;
                     }
                 } else {
-                    // The gather's index: read into the page, pick in L1.
-                    let within = rem(self, scan, off, span);
+                    // The gather's index: read into the page, pick in L1. The
+                    // page starts at the 64-byte-rounded run base, so the pick
+                    // is the datum offset from that base.
+                    let base_datum = div(self, scan, span_base, el);
+                    let within = bin(self, scan, off, base_datum, BOp::Sub);
                     self.ops[scan].op = Op::Load { src: page, src_idx: within };
                 }
             }
