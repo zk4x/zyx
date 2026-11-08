@@ -331,6 +331,21 @@ impl Kernel {
         if info.local_mem_size <= 0 {
             return Box::new(LocalStaging { staged });
         }
+        // `devectorize` unfolds every existing lane, so the emitted IR is the
+        // op count times the cumulative unroll factor. Staging is applied in
+        // sequence steps, and each step's own factor bound would otherwise
+        // accept a state the next step pushes past the work ceiling.
+        let ops_len = self.ops.len().0 as Dim;
+        let lanes: Dim = self
+            .iter_unordered()
+            .filter_map(|(_, op)| match op {
+                Op::Unroll { len, .. } => Some(Dim::from(i64::from(*len))),
+                _ => None,
+            })
+            .product();
+        if ops_len.saturating_mul(lanes) > 10_000 {
+            return Box::new(LocalStaging { staged });
+        }
 
         // Local axes, one entry per axis, ascending: the hardware threads.
         let mut local: Vec<(u32, OpId, u32)> = Vec::new();

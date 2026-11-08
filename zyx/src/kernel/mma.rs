@@ -47,6 +47,14 @@ struct Region {
     variant: MMAVariant,
     init_store: OpId,
     final_store: OpId,
+    /// The scalar accumulator this region accumulates into.
+    acc: OpId,
+    /// The update store inside the K loop that writes `acc + prod`.
+    update: OpId,
+    /// Every output store that reads `acc` through a cast chain, with the
+    /// store's destination and that chain (outermost cast first). Collected by
+    /// the scan so `apply` never has to look at the IR again.
+    epilogue: Vec<(OpId, OpId, Vec<crate::DType>)>,
 
     a_src: OpId,
     a_m: Dim,
@@ -271,49 +279,10 @@ impl Optimization for Tensorize {
             }
         });
 
-        // Every store after the loop whose value traces back to the
-        // accumulator is a C output: the matched final store plus any
-        // duplicate of the same value (e.g. `f32(f16(acc))`, a cast copy that
-        // is still live elsewhere). Each is scattered per fragment slot with
-        // its own cast chain. The update store inside the loop never matches:
-        // its source is the `add`, not a cast of an accumulator load.
-        // The seed's accumulator: the init store's destination. `acc` below is
-        // the fresh fragment storage `apply` just built.
-        let old_acc = match kernel.at(r.init_store) {
-            Op::Store { dst, .. } => *dst,
-            _ => unreachable!("tensorize: init store is not a store"),
-        };
-        let mut epilogue: Vec<(OpId, Vec<crate::DType>)> = Vec::new();
-        let mut extra_stores: Vec<OpId> = Vec::new();
-        {
-            let mut op_id = kernel.head;
-            while !op_id.is_null() {
-                if let Op::Store { dst, src, .. } = kernel.at(op_id) {
-                    let mut chain: Vec<crate::DType> = Vec::new();
-                    let mut value = *src;
-                    loop {
-                        match kernel.at(value) {
-                            Op::Cast { x, dtype } | Op::Bitcast { x, dtype } => {
-                                chain.push(*dtype);
-                                value = *x;
-                            }
-                            Op::Load { src: s, .. } if *s == old_acc => {
-                                if op_id != r.final_store {
-                                    extra_stores.push(op_id);
-                                }
-                                epilogue.push((*dst, chain));
-                                break;
-                            }
-                            _ => break,
-                        }
-                    }
-                }
-                op_id = kernel.next_op(op_id);
-            }
-        }
         // Scatter the accumulator: each lane writes its own fragment slots,
-        // once per C output.
-        for (dst, chain) in &epilogue {
+        // once per C output. The stores and cast chains come from the scan
+        // that accepted the region; nothing is derived here.
+        for (_, dst, chain) in &r.epilogue {
             for i in 0..c_slots {
                 let at = kernel.const_idx(i as u32);
                 let mut elem = kernel.load(acc, at);
@@ -326,25 +295,16 @@ impl Optimization for Tensorize {
             }
         }
 
-        // Drop the scalar region: `Store` and `Loop` are DCE roots, so the
-        // old accumulation never dies on its own. `final_store` is inside the
-        // span; any duplicate epilogue store sits after it and is removed on
-        // its own.
-        let mut doomed: Vec<OpId> = Vec::new();
-        let mut op_id = r.init_store;
-        while !op_id.is_null() {
-            doomed.push(op_id);
-            if op_id == r.final_store {
-                break;
-            }
-            op_id = kernel.next_op(op_id);
+        // The scalar accumulation is obsolete: the scatter above writes the
+        // wmma values. Delete the stores that rooted it — the init, the loop
+        // update, and the epilogue stores just replaced — and let DCE take the
+        // accumulator reads, slot arithmetic and the storage itself. Deleting
+        // the whole init..final span by hand would also delete another
+        // region's storage when two matmuls interleave in the IR.
+        for store in r.epilogue.iter().map(|(store, _, _)| *store).chain([r.init_store, r.update]) {
+            kernel.remove_op(store);
         }
-        for op_id in doomed.into_iter().rev() {
-            kernel.remove_op(op_id);
-        }
-        for op_id in extra_stores.into_iter().rev() {
-            kernel.remove_op(op_id);
-        }
+        kernel.dead_code_elimination();
         kernel.verify();
     }
 }
@@ -585,6 +545,13 @@ impl Kernel {
                 op_id = self.next_op(op_id);
             }
         }
+        // Consumers of every op, for the accumulator gate below.
+        let mut users: Map<OpId, Vec<OpId>> = Map::default();
+        for &id in &order {
+            for p in self.at(id).parameters().filter(|p| !p.is_null()) {
+                users.entry(p).or_default().push(id);
+            }
+        }
 
         let mut seen: Set<OpId> = Set::default();
         for (idx, &update) in order.iter().enumerate() {
@@ -702,6 +669,78 @@ impl Kernel {
                 }
             }
             if final_store.is_null() {
+                continue;
+            }
+            // Every store that reads the accumulator through a cast chain is
+            // one C output this region rewrites. Collect them here so `apply`
+            // never rescans the IR. Refuse the region when the accumulator has
+            // any other reader: a fused `silu(acc)` (the swiglu kernel)
+            // consumes the scalar value outside that chain, and `apply` would
+            // leave it reading a storage whose stores it deletes.
+            let mut epilogue: Vec<(OpId, OpId, Vec<crate::DType>)> = Vec::new();
+            let mut epi_loads: Vec<OpId> = Vec::new();
+            for &id in &order {
+                let Op::Store { dst, src, .. } = self.at(id) else {
+                    continue;
+                };
+                let mut chain: Vec<crate::DType> = Vec::new();
+                let mut val = *src;
+                loop {
+                    match self.at(val) {
+                        Op::Cast { x, dtype } | Op::Bitcast { x, dtype } => {
+                            chain.push(*dtype);
+                            val = *x;
+                        }
+                        Op::Load { src: s, .. } if *s == acc => {
+                            epilogue.push((id, *dst, chain));
+                            if !epi_loads.contains(&val) {
+                                epi_loads.push(val);
+                            }
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            if epilogue.is_empty() {
+                continue;
+            }
+            // The epilogue stores may share one accumulator load (the llama
+            // seed stores `f16(a)` and `f32(f16(a))`), so count distinct loads.
+            let n_loads = order
+                .iter()
+                .filter(|&&id| matches!(self.at(id), Op::Load { src, .. } if *src == acc))
+                .count();
+            if n_loads != epi_loads.len() + 1 {
+                continue;
+            }
+            // Every consumer reachable from an epilogue load must be a cast or
+            // one of the epilogue stores; anything else (e.g. `silu(acc)`)
+            // still needs the scalar value after the stores are gone.
+            let stores: Set<OpId> = epilogue.iter().map(|(store, _, _)| *store).collect();
+            let mut store_only = true;
+            for &load in &epi_loads {
+                let mut stack = users.get(&load).cloned().unwrap_or_default();
+                let mut seen: Set<OpId> = Set::default();
+                while let Some(u) = stack.pop() {
+                    if !seen.insert(u) {
+                        continue;
+                    }
+                    if stores.contains(&u) {
+                        continue;
+                    }
+                    if matches!(self.at(u), Op::Cast { .. } | Op::Bitcast { .. }) {
+                        stack.extend(users.get(&u).cloned().unwrap_or_default());
+                    } else {
+                        store_only = false;
+                        break;
+                    }
+                }
+                if !store_only {
+                    break;
+                }
+            }
+            if !store_only {
                 continue;
             }
             let &Op::Store { dst: c_src, dst_idx: c_idx, .. } = self.at(final_store) else {
@@ -822,6 +861,9 @@ impl Kernel {
                     variant: variant.clone(),
                     init_store,
                     final_store,
+                    acc,
+                    update,
+                    epilogue: epilogue.clone(),
                     a_src,
                     a_m: a_map[&m_range].1,
                     a_k: a_map[&k_loop].1,

@@ -17,8 +17,8 @@ pub fn bench() -> Result<(), ZyxError> {
     for seq in SIZES {
         let x = Tensor::rand([1, HEADS, seq, HEAD_DIM], DType::F16)?.to(dev)?;
         println!("llama rope [1x{HEADS}x{seq}x{HEAD_DIM}]");
-        let c = cos.narrow(0, 0, seq)?;
-        let s = sin.narrow(0, 0, seq)?;
+        let c = cos.narrow(0, 0i64, seq)?;
+        let s = sin.narrow(0, 0i64, seq)?;
         run(x.rope(c, s)?)?;
     }
     Ok(())

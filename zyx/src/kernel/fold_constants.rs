@@ -649,7 +649,11 @@ impl Kernel {
 
         let mut params = Vec::new();
         let mut visited = Set::default();
-        // We go backward from Stores and gather all needed ops, but we can't remove Loop, Param and Storage ops
+        // We go backward from Stores and gather all needed ops. Loop, EndLoop,
+        // Param and the effect ops are roots: they exist without a reader.
+        // Storage is not a root — a storage with no live load/store is dead,
+        // and a live one is reached as an operand of the load/store that uses
+        // it.
         for (op_id, op) in self.iter_unordered() {
             if matches!(
                 op,
@@ -657,7 +661,6 @@ impl Kernel {
                     | Op::Copy { .. }
                     | Op::TT(_)
                     | Op::Param { .. }
-                    | Op::Storage { .. }
                     | Op::Wmma { .. }
                     | Op::Asm { .. }
                     | Op::Barrier
@@ -680,7 +683,7 @@ impl Kernel {
         }
         while let Some(op_id) = params.pop() {
             if visited.insert(op_id) {
-                params.extend(self.at(op_id).parameters());
+                params.extend(self.at(op_id).parameters().filter(|p| !p.is_null()));
             }
         }
         //self.ops.retain(|op_id| visited.contains(op_id));

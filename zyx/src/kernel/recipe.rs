@@ -220,6 +220,7 @@ impl Kernel {
         };
         ranges.sort_by_key(|&(_, axis, _)| axis);
         let ((m_range, _, m), (n_range, _, n)) = (ranges[0], ranges[1]);
+        let ops_len = self.ops.len().0 as Dim;
 
         for variant in &info.mma_variants {
             // Same dtype gate `opt_tensorize_tiled` applies when it matches a
@@ -252,6 +253,14 @@ impl Kernel {
                         }
                         let tiles = (m_lanes / fm) * (n_lanes / fn_) * (k_lanes / fk);
                         if tiles > MAX_TILES {
+                            continue;
+                        }
+                        // Every emitted fragment is unfolded into scalar ops by
+                        // `devectorize`, so the final IR grows with the square
+                        // of the tile count. Bound the emitted size, not just
+                        // the tile count: a 47-tile recipe on a 40-op kernel
+                        // becomes ~90k ops, which is minutes per launch.
+                        if ops_len.saturating_mul(tiles).saturating_mul(tiles) > 50_000 {
                             continue;
                         }
                         let (Ok(m_lanes), Ok(n_lanes), Ok(k_lanes)) =
@@ -597,6 +606,16 @@ impl Kernel {
         }
         let used = self.threads_in_use();
         let ops_len = self.ops.len().0 as Dim;
+        // Same cumulative lane factor as `opt_local_staging`: the recipe is
+        // applied in sequence steps, so the bound must include the lanes
+        // already in the IR, not just this step's tile.
+        let existing_lanes: Dim = self
+            .iter_unordered()
+            .filter_map(|(_, op)| match op {
+                Op::Unroll { len, .. } => Some(Dim::from(i64::from(*len))),
+                _ => None,
+            })
+            .product();
 
         // The two output ranges; one per axis is the shape this recipe models.
         let mut groups: Vec<(OpId, u32, Dim)> = Vec::new();
@@ -639,7 +658,7 @@ impl Kernel {
                         if other_len % Dim::from(tile_other) != 0 {
                             continue;
                         }
-                        if block * Dim::from(tile_other) * ops_len > 10_000 {
+                        if block * Dim::from(tile_other) * ops_len * existing_lanes > 10_000 {
                             continue;
                         }
                         configs.push(TileStage { lane, lane_axis, lane_len, lanes, tile_lane, tile_other, other });
