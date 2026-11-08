@@ -83,13 +83,27 @@ Where things stand (2026-11-09):
   section), so the row programs fuse and `activations_are_one_row_body` is green
   again (`135` lib tests pass). The acceptance rule stands; the lowering was
   right.
-- **The gather's boundary IR** (frozen, hash `0x5120_b57a_3464_9069`): index CB
-  `len=8` (one 64-byte span of i64), row CB `len=256` (16 lanes × 16 datums),
-  output CB `len=16` (one 64-byte row span). Reader: `reserve/copy/push` the
-  index span, `wait/load`, the token's cone, then `reserve/copy/push` the 16
-  per-lane row spans and the index `pop`; compute: `wait/load` at
-  `lane*16 + within`, `reserve/store/push` the row at `lane`; writer:
-  `wait/copy/pop` the row span.
+- **Pure copy kernels are transfers (user, 2026-11-10): `tt_add_movers` must not
+  split them into sections.** A kernel whose every Global store writes a Global
+  load's value has no compute: following tt-metal's DRAM loopback it is one
+  mover program with plain L1 pages, no circular buffers, no four syncs, no
+  `EndReader`/`EndCompute`, no writer role. In the tree: `tt_add_transfer_body`
+  builds that IR (Local pages, the index read/pick, the row read and write);
+  `boundary::reader` lowers it; `render_tt` emits only `TTOp::Reader`; the launch
+  builds a `ttsim::Transfer` (words + args: grid point, tile high address,
+  per-parameter DRAM address) and `execute` runs it through `exec_b`. Green: the
+  transfer program runs on ttsim and writes the gathered row.
+  **Blocker found:** the transfer addresses raw row-major DRAM (`token*64`,
+  `s*64`), while `Pool::TT` stores tensors as tiled images
+  (`TILE_SLOT`/`TILE_DATA` face layout). The end-to-end kernel test
+  (`gather_kernel_runs_through_the_backend`) is therefore `#[ignore]`d: the
+  transfer must compute canonical tiled addresses (`tt_canonical_tile`) for its
+  reads and writes. That is the next step.
+- **The gather's boundary IR** (frozen, hash `0xbad0_5a0d_2a40_4353`): two Local
+  pages, `len=8` (the 64-byte index span) and `len=16` (the 64-byte row span).
+  One section, no CBs: `copy idx_page[0] = idx[0]`, `load idx_page[s]` (the
+  token picked in L1), `copy row_page[0] = weight[token*64]`, and
+  `copy out[s*64] = row_page[0]`. No compute, no writer, no syncs.
 - `tt_tile` no longer pads a group range into lanes when the access already
   carries a lane axis: the group *is* the grid axis (padding it made the gather's
   `idx[s]` a masked lane and guarded the pack, which no writer could match).

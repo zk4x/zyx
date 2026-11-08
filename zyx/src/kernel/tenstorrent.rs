@@ -1843,9 +1843,9 @@ impl Kernel {
         }
         let out = match op {
             Op::Const(_) | Op::Range { .. } | Op::Unroll { .. } | Op::Loop { .. } | Op::Param { .. } => idx,
-            // A load already rewritten to its own CB (the gather's index) is a
-            // leaf here: its value is read in the program.
-            Op::Load { src, .. } if self.is_circular(src) => idx,
+            // A load already rewritten to its own L1 page (the gather's index)
+            // is a leaf here: its value is read in the program.
+            Op::Load { src, .. } if matches!(self.ops[src].op, Op::Storage { .. }) => idx,
             Op::Binary { x, y, bop } => {
                 let x = self.tt_zero_iteration_vars(x, before, keep, loops, groups, lanes, memo)?;
                 let y = self.tt_zero_iteration_vars(y, before, keep, loops, groups, lanes, memo)?;
@@ -2069,12 +2069,34 @@ impl Kernel {
                 }
             }
         }
+        // A **pure transfer** (a copy kernel: every Global store writes exactly
+        // a Global load's value) has no compute and is not split into
+        // reader/compute/writer sections. One mover program reads into an L1
+        // page and writes it out, as tt-metal's DRAM loopback example does:
+        // no CBs and no four syncs either.
+        let mut stores = 0usize;
+        let mut pure = true;
+        for (_, op) in self.iter_unordered() {
+            if let Op::Store { dst, src, .. } = *op
+                && matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. })
+            {
+                stores += 1;
+                if !matches!(self.ops[src].op, Op::Load { src: base, .. }
+                    if matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }))
+                {
+                    pure = false;
+                }
+            }
+        }
+        if stores > 0 && pure {
+            self.tt_add_transfer_body();
+            return;
+        }
         if row {
             assert!(!tiled, "tt_add_movers: a kernel mixes tile and row boundary traffic");
             self.tt_add_row_movers_body();
             return;
-        }
-        // CB Storage definitions live in the prologue (past leading
+        } // CB Storage definitions live in the prologue (past leading
         // params/storages, before everything else).
         let mut prologue = self.head;
         for _ in 0..250_000 {
@@ -2554,7 +2576,8 @@ impl Kernel {
                     if src_cb {
                         self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: src, n: 1 }));
                     }
-                    debug_assert!(src_cb || dst_cb, "tt_sync_cbs: copy {op_id:?} touches no CB");
+                    // A copy with no CB side moves an L1 page (a pure transfer):
+                    // there is no ring to synchronise.
                 }
                 Op::TT(TTOp::Copy { src, dst, .. }) => {
                     let src_cb = self.is_circular(src);
@@ -2946,6 +2969,173 @@ impl Kernel {
         }
     }
 
+    /// A pure copy kernel: one mover program, plain L1 pages, no sections and
+    /// no circular buffers (tt-metal's DRAM loopback shape). Each Global load
+    /// reads the 64-byte span its lanes occupy into an L1 page; an auxiliary
+    /// load (the gather's index) is read into its own page and picked in L1;
+    /// each Global store writes the page out. A store's value load and the
+    /// store itself are replaced by that write.
+    fn tt_add_transfer_body(&mut self) {
+        fn cst(k: &mut Kernel, at: OpId, v: i64) -> OpId {
+            k.insert_const_idx_before(at, v)
+        }
+        fn bin(k: &mut Kernel, at: OpId, x: OpId, y: OpId, op: BOp) -> OpId {
+            k.insert_before(at, Op::Binary { x, y, bop: op })
+        }
+        fn mul(k: &mut Kernel, at: OpId, x: OpId, c: i64) -> OpId {
+            let cc = cst(k, at, c);
+            bin(k, at, x, cc, BOp::Mul)
+        }
+        fn div(k: &mut Kernel, at: OpId, x: OpId, c: i64) -> OpId {
+            let cc = cst(k, at, c);
+            bin(k, at, x, cc, BOp::Div)
+        }
+        fn rem(k: &mut Kernel, at: OpId, x: OpId, c: i64) -> OpId {
+            let cc = cst(k, at, c);
+            bin(k, at, x, cc, BOp::Mod)
+        }
+
+        let mut prologue = self.head;
+        for _ in 0..250_000 {
+            if prologue.is_null() {
+                break;
+            }
+            match self.ops[prologue].op {
+                Op::Param { .. } | Op::Storage { .. } => prologue = self.ops[prologue].next,
+                _ => break,
+            }
+        }
+        // The store whose value each load is.
+        let mut store_of: Map<OpId, OpId> = Map::default();
+        for (id, op) in self.iter_unordered() {
+            if let Op::Store { dst, src, .. } = *op
+                && matches!(self.ops[dst].op, Op::Param { kind: ParamKind::GlobalMut, .. })
+            {
+                store_of.insert(src, id);
+            }
+        }
+        let mut scan = self.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            let mut next = self.next_op(scan);
+            if let Op::Load { src: base, src_idx: off } = self.ops[scan].op
+                && matches!(self.ops[base].op, Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. })
+            {
+                /// The coefficient of `lane` in an affine index expression. A
+                /// data-dependent subterm (a loaded token) is an opaque atom
+                /// with coefficient zero: it cannot name the lane variable.
+                fn lane_stride(k: &Kernel, e: OpId, lane: OpId) -> Option<i64> {
+                    if e == lane {
+                        return Some(1);
+                    }
+                    match k.at(e) {
+                        Op::Const(_) | Op::Unroll { .. } | Op::Load { .. } | Op::Param { .. } | Op::Range { .. } => Some(0),
+                        Op::Binary { x, y, bop } => match bop {
+                            BOp::Add => Some(lane_stride(k, *x, lane)? + lane_stride(k, *y, lane)?),
+                            BOp::Sub => Some(lane_stride(k, *x, lane)? - lane_stride(k, *y, lane)?),
+                            BOp::Mul => {
+                                let c = |o: OpId| match k.at(o) {
+                                    Op::Const(c) => c.as_dim(),
+                                    _ => None,
+                                };
+                                match (c(*x), c(*y)) {
+                                    (Some(c), _) => Some(c * lane_stride(k, *y, lane)?),
+                                    (_, Some(c)) => Some(c * lane_stride(k, *x, lane)?),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        },
+                        Op::Unary { x, .. } | Op::Cast { x, .. } => lane_stride(k, *x, lane),
+                        _ => None,
+                    }
+                }
+                let el = i64::from(self.dtype(base).bit_size()) / 8;
+                assert!(el > 0 && 64 % el == 0, "tt_add_movers: transfer load {scan:?} has no 64-byte span");
+                let span = 64 / el;
+                let lanes: i64 = self.shape(off).iter().map(|d| *d as i64).product::<i64>().max(1);
+                if lanes > 1 {
+                    let mut lane = OpId::NULL;
+                    let mut stack = vec![off];
+                    for _ in 0..250_000 {
+                        let Some(n) = stack.pop() else { break };
+                        match self.ops[n].op {
+                            Op::Unroll { .. } => lane = n,
+                            Op::Binary { x, y, .. } => {
+                                stack.push(x);
+                                stack.push(y);
+                            }
+                            Op::Unary { x, .. } | Op::Cast { x, .. } => stack.push(x),
+                            _ => {}
+                        }
+                    }
+                    assert!(!lane.is_null(), "tt_add_movers: transfer load {scan:?} has lanes but no Unroll var");
+                    assert_eq!(
+                        lane_stride(self, off, lane),
+                        Some(1),
+                        "tt_add_movers: transfer load {scan:?} lanes are not contiguous"
+                    );
+                    assert!(lanes * el <= 64, "tt_add_movers: transfer load {scan:?} lanes exceed one 64-byte span");
+                }
+                let Op::Param { dtype, .. } = self.ops[base].op else {
+                    unreachable!("tt_add_movers: a Global load's base is a param")
+                };
+                let page = Op::Storage { dtype, scope: MemScope::Local, len: span, id: 0 };
+                let page = if prologue.is_null() {
+                    self.push_back(page)
+                } else {
+                    self.insert_before(prologue, page)
+                };
+                // The read: the span containing lane 0 (all lanes are inside it).
+                let mut memo: Map<OpId, OpId> = Map::default();
+                let Some(flat0) = self.tt_zero_iteration_vars(off, scan, OpId::NULL, false, false, true, &mut memo) else {
+                    todo!("tt_add_movers: transfer load {scan:?} index {off} is not iteration arithmetic")
+                };
+                let byte0 = mul(self, scan, flat0, el);
+                let blocks = div(self, scan, byte0, 64);
+                let span_base = mul(self, scan, blocks, 64);
+                let slot = cst(self, scan, 0);
+                self.insert_before(scan, Op::Copy { src: base, src_idx: span_base, dst: page, dst_idx: slot });
+                if let Some(&store) = store_of.get(&scan) {
+                    let store_next = self.next_op(store);
+                    let Op::Store { dst: out, dst_idx: out_idx, .. } = self.ops[store].op else {
+                        unreachable!("tt_add_movers: a recorded store is a Store")
+                    };
+                    assert_eq!(
+                        self.shape(out_idx),
+                        self.shape(off),
+                        "tt_add_movers: transfer load {scan:?} and store {store:?} differ in access shape"
+                    );
+                    let out_el = i64::from(self.dtype(out).bit_size()) / 8;
+                    assert_eq!(out_el, el, "tt_add_movers: transfer load {scan:?} and store {store:?} differ in dtype");
+                    let mut memo: Map<OpId, OpId> = Map::default();
+                    let Some(out0) = self.tt_zero_iteration_vars(out_idx, store, OpId::NULL, false, false, true, &mut memo)
+                    else {
+                        todo!("tt_add_movers: transfer store {store:?} index {out_idx} is not iteration arithmetic")
+                    };
+                    let obyte = mul(self, store, out0, out_el);
+                    let oblocks = div(self, store, obyte, 64);
+                    let obase = mul(self, store, oblocks, 64);
+                    let oslot = cst(self, store, 0);
+                    self.insert_before(store, Op::Copy { src: page, src_idx: oslot, dst: out, dst_idx: obase });
+                    self.remove_op(store);
+                    self.remove_op(scan);
+                    if next == store {
+                        next = store_next;
+                    }
+                } else {
+                    // The gather's index: read into the page, pick in L1.
+                    let within = rem(self, scan, off, span);
+                    self.ops[scan].op = Op::Load { src: page, src_idx: within };
+                }
+            }
+            scan = next;
+        }
+        self.default_epilogue();
+    }
+
     /// Row-gather boundary traffic: every Global load moves the 64-byte span
     /// containing each of its lanes, one span per lane, concatenated into the
     /// CB page; every Global store moves the row span it writes. The reader
@@ -3105,6 +3295,12 @@ impl Kernel {
     #[allow(unreachable_code)]
     pub fn tt_dataflow_select(&mut self) {
         if !self.device_info().tenstorrent {
+            return;
+        }
+        // A pure transfer has no sections and no compute: `tt_add_movers`
+        // already left its final form (L1 pages and the copies that fill and
+        // drain them).
+        if !self.iter_unordered().any(|(_, op)| matches!(op, Op::TT(TTOp::EndReader))) {
             return;
         }
         // The gate that used to sit here is removed: the gather's and the
@@ -3647,6 +3843,10 @@ impl Kernel {
         // replaced (an accumulator load, its index math) are dead. This DCE
         // runs after phase 3, unlike the phase-2 one, which still saw the
         // store as a root.
+        if std::env::var_os("ZYX_TT_IR").is_some() {
+            eprintln!("=== IR before the post-phase-3 DCE ===");
+            self.debug();
+        }
         self.dead_code_elimination();
         // No generic `verify` here: the phase boundary has been crossed. The
         // lowered IR is not generic SSA — a value is a DST tile, a `[32]`
@@ -7435,6 +7635,12 @@ impl Kernel {
     /// copies never do. `Op::Barrier` is a host barrier, never a TT
     /// instruction.
     pub fn tt_verify(&self) {
+        // A pure transfer has no sections: `tt_add_movers` produced its final
+        // form (L1 pages and the copies around them), and there is no compute
+        // program to check.
+        if !self.iter_unordered().any(|(_, op)| matches!(op, Op::TT(TTOp::EndReader))) {
+            return;
+        }
         let mut seen_reader = false;
         let mut seen_compute = false;
         let mut section = 0u8;
@@ -9213,6 +9419,6 @@ mod ir_contract {
 
     const ENTRY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r3: i64 = 4\n r4: i64 = group_range(0) over r3    // 0..=3\n r5: i64 = 16\n r6: i64[16] = unroll axis0 lanes 16\n r7: i64 = load r1[r4]    // 0..=3\n r8: i64 = r7 * r5\n r9: i64[16] = r8 + r6\n r10: f32[16] = load vec16 r0[r9]    // 0..=0\n r11: i64 = r4 * r5    // 0..=48\n r12: i64[16] = r11 + r6    // 0..=63\n store vec16 r2[r12] = r10    // 0..=63\n\n";
     const ENTRY_HASH: u64 = 0x9565_bc91_42e3_feb2;
-    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r15: i64 = storage cb, len=8\n r25: f32 = storage cb, len=256\n r39: f32 = storage cb, len=16\n r3: i64 = 4\n r5: i64 = 16\n r21: i64 = 0\n r28: i64 = 64\n r6: i64[16] = unroll axis0 lanes 16\n r4: i64 = group_range(0) over r3    // 0..=3\n r37: i64[16] = r6 * r5    // 0..=240\n r38: i64[16] = r37 + r6    // 0..=255\n r42: i64 = r4 * r5    // 0..=48\n r46: i64 = r42 * r3    // 0..=192\n r48: i64 = r46 / r28    // 0..=3\n r50: i64 = r48 * r28    // 0..=192\n reserve_back r15, 1\n copy r15[r21] = r1[r21]\n push_back r15, 1\n wait_front r15, 1\n r7: i64 = load r15[r4]    // 0..=3\n r8: i64 = r5 * r7\n r9: i64[16] = r8 + r6\n r27: i64[16] = r9 * r3\n r29: i64[16] = r27 / r28\n r31: i64[16] = r29 * r28\n reserve_back r25, 1\n copy vec16 r25[r21] = r0[r31]\n pop_front r15, 1\n push_back r25, 1\n end_reader\n wait_front r25, 1\n r10: f32[16] = load vec16 r25[r38]    // 0..=255\n reserve_back r39, 1\n store vec16 r39[r6] = r10    // 0..=15\n pop_front r25, 1\n push_back r39, 1\n end_compute\n wait_front r39, 1\n copy r2[r50] = r39[r21]\n pop_front r39, 1\n\n";
-    const BOUNDARY_HASH: u64 = 0x5120_b57a_3464_9069;
+    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r15: i64 = storage local, len=8\n r25: f32 = storage local, len=16\n r3: i64 = 4\n r5: i64 = 16\n r21: i64 = 0\n r31: i64 = 64\n r4: i64 = group_range(0) over r3    // 0..=3\n r37: i64 = r4 * r5    // 0..=48\n r41: i64 = r37 * r3    // 0..=192\n r43: i64 = r41 / r31    // 0..=3\n r45: i64 = r43 * r31    // 0..=192\n copy r15[r21] = r1[r21]\n r7: i64 = load r15[r4]    // 0..=3\n r26: i64 = r5 * r7\n r30: i64 = r26 * r3\n r32: i64 = r30 / r31\n r34: i64 = r32 * r31\n copy r25[r21] = r0[r34]\n copy r2[r45] = r25[r21]\n\n";
+    const BOUNDARY_HASH: u64 = 0xbad0_5a0d_2a40_4353;
 }

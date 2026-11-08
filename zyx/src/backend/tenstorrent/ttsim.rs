@@ -92,6 +92,16 @@ pub(crate) struct NativeRun {
     /// Semaphore initial states. Empty runs the roles in order without any
     /// synchronisation (`Schedule::InOrder`).
     pub(crate) sems: Vec<SemaphoreInit>,
+    /// A pure transfer: one mover program and its launch arguments. When set,
+    /// there are no role programs, no reads and no writes: the program itself
+    /// moves DRAM through its L1 pages.
+    pub(crate) transfer: Option<Transfer>,
+}
+
+/// One pure-transfer program: its words and the `u32` args array.
+pub(crate) struct Transfer {
+    pub(crate) words: Vec<u32>,
+    pub(crate) args: Vec<u32>,
 }
 
 /// What each core's program slot holds, per tile: `(image, generation)` when a
@@ -577,6 +587,31 @@ fn execute(
     resident: &mut HashMap<(u8, u8), Ledger>,
     run: &NativeRun,
 ) -> Result<NativeOutcome, String> {
+    if let Some(t) = &run.transfer {
+        // One mover program moves the whole boundary: stage it and its args,
+        // boot the executor and run one generation. The DRAM is the pool's, so
+        // nothing is staged or read back here.
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let args_at = program_at + 0x2000;
+        let mut l1 = vec![
+            (program_at, t.words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()),
+            (args_at, t.args.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()),
+        ];
+        let mut control = Vec::new();
+        for word in [program_at, t.words.len() as u32, args_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+        let out = execute_exec(
+            dev,
+            window,
+            &ExecRun { tile: run.tile, dram: Vec::new(), l1, read_back: Vec::new(), l1_read_back: Vec::new() },
+        )?;
+        if out.error != 0 {
+            return Err(format!("the transfer program's error word is {:#x}", out.error));
+        }
+        return Ok(NativeOutcome { l1: Vec::new(), dst: Vec::new() });
+    }
     if std::env::var_os("ZYX_TT_DUMP").is_some() {
         for (thread, program) in run.programs.iter().enumerate() {
             if let Some(p) = program {
@@ -885,6 +920,178 @@ mod tests {
         assert_eq!(out.dram[0], data, "round trip");
     }
 
+    /// The pure-transfer gather on ttsim: one B program, no CB, no compute, no
+    /// writer. Reads the index span, picks the token in L1, reads the weight
+    /// row, writes it to the output row (tt-metal's loopback with an index).
+    #[test]
+    fn gather_transfer_program_runs_on_riscv_b() {
+        use crate::codegen::tenstorrent::boundary;
+        use crate::kernel::{MemScope, Op};
+        if ensure_open().is_err() {
+            eprintln!("gather_transfer_program_runs_on_riscv_b: no simulator, skipped");
+            return;
+        }
+        let (k, cbs, params) = gather_pipeline(false);
+        assert!(cbs.is_empty(), "a pure transfer has no circular buffers");
+        // Place the L1 pages, 64-byte aligned.
+        let mut l1_at = 0x1_0000u32;
+        let mut pages = Map::default();
+        let mut id = k.head;
+        while !id.is_null() {
+            if let Op::Storage { scope: MemScope::Local, dtype, len, .. } = k.at(id) {
+                pages.insert(id, l1_at);
+                l1_at += u32::try_from(*len).unwrap() * (dtype.bit_size() as u32 / 8);
+                l1_at = (l1_at + 63) & !63;
+            }
+            id = k.next_op(id);
+        }
+        let words = boundary::reader(&k, &cbs, &params, &pages);
+
+        const WEIGHT: u64 = 0x1000;
+        const INDICES: u64 = 0x2000;
+        const OUT: u64 = 0x3000;
+        const S: u32 = 3;
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+        let channel = Dram::FULL.channel(0).expect("channel 0");
+        let w_range = channel.range(WEIGHT, 4 * 64).expect("weight");
+        let i_range = channel.range(INDICES, 4 * 8).expect("indices");
+        let o_range = channel.range(OUT, 4 * 64).expect("output");
+        let endpoint = channel.endpoint(Niu::Noc0, 0).expect("endpoint");
+        let hi = Endpoint { x: endpoint.x(), y: endpoint.y(), addr: 0 }.hi();
+        let me_hi = Endpoint { x, y, addr: 0 }.hi();
+        let mut weight = Vec::new();
+        for r in 0..4u32 {
+            for _ in 0..16 {
+                weight.extend((r as f32 + 1.0).to_le_bytes());
+            }
+        }
+        let mut indices = Vec::new();
+        for i in [1i64, 0, 3, 2] {
+            indices.extend(i.to_le_bytes());
+        }
+        let mut args = Vec::new();
+        for w in [S, 0, 0, me_hi, WEIGHT as u32, hi, INDICES as u32, hi, OUT as u32, hi] {
+            args.extend(w.to_le_bytes());
+        }
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let args_at = program_at + 0x2000;
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        l1.push((args_at, args));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, args_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+        let run = exec(ExecRun {
+            tile: (x, y),
+            dram: vec![(w_range, weight), (i_range, indices)],
+            l1,
+            read_back: vec![o_range],
+            l1_read_back: vec![],
+        })
+        .expect("the transfer program runs");
+        assert_eq!(run.error, 0, "executor error word");
+        // idx[3] = 2, so row 3 becomes weight row 2 (all 3.0).
+        let mut expected = vec![0u8; 4 * 64];
+        for v in 0..16 {
+            expected[3 * 64 + v * 4..3 * 64 + v * 4 + 4].copy_from_slice(&3.0f32.to_le_bytes());
+        }
+        assert_eq!(run.dram[0], expected, "the gathered row");
+    }
+
+    /// The gather through the pass after the gate: `tt_dataflow_select` and the
+    /// rest of the device epilogue. What the gather still needs shows up here.
+    #[test]
+    fn gather_passes_dataflow_select() {
+        let (mut k, _, _) = gather_pipeline(false);
+        k.tt_dataflow_select();
+        k.tt_sfpu_fusion();
+        k.tt_lreg_alloc();
+        k.tt_dst_reuse();
+        k.tt_reg_sync();
+        k.tt_verify();
+        if std::env::var_os("ZYX_ACCEPT_DUMP").is_some() {
+            k.debug();
+        }
+    }
+
+    /// A pure transfer renders as one mover program: no roles, no DmRead/
+    /// DmWrite lists, no CB interface.
+    #[test]
+    fn gather_transfer_renders_as_one_program() {
+        use crate::kernel::{Op, TTOp};
+        let (k, _, _) = gather_pipeline(false);
+        let rendered = k.render_tt().expect("a transfer renders");
+        let (mut reader, mut dm, mut roles) = (None, 0usize, 0usize);
+        let mut id = rendered.head;
+        while !id.is_null() {
+            match rendered.at(id) {
+                Op::TT(TTOp::Reader(p)) => reader = Some(p.words.to_vec()),
+                Op::TT(TTOp::DmRead(_) | TTOp::DmWrite(_)) => dm += 1,
+                Op::TT(TTOp::Unpack(_) | TTOp::Math(_) | TTOp::Pack(_)) => roles += 1,
+                _ => {}
+            }
+            id = rendered.next_op(id);
+        }
+        assert!(reader.is_some_and(|w| !w.is_empty()), "the transfer program exists");
+        assert_eq!(dm, 0, "no boundary lists");
+        assert_eq!(roles, 0, "no role programs");
+    }
+
+    /// End to end: the custom gather kernel compiles on `Dev::TT(0)`, the
+    /// backend runs its transfer program, and the output tensor holds the
+    /// gathered rows.
+    #[test]
+    #[ignore = "transfer addressing must use the tiled device storage, not row-major DRAM (see NOTES)"]
+    fn gather_kernel_runs_through_the_backend() {
+        use crate::kernel::{Dev, Kernel, Op};
+        use crate::{DType, Tensor};
+        if ensure_open().is_err() {
+            eprintln!("gather_kernel_runs_through_the_backend: no simulator, skipped");
+            return;
+        }
+        let dev = Dev::TT(0);
+        if dev.info().is_err() {
+            return;
+        }
+        let mut k = Kernel::new(dev);
+        let weight = k.param(DType::F32);
+        let idx = k.param(DType::I64);
+        let out = k.param_mut(DType::F32);
+        let rows = k.const_idx(4i64);
+        let s = k.group_range(0, rows);
+        let short = k.const_idx(16i64);
+        let h = k.push_back(Op::Unroll { axis: 0, len: 16 });
+        let token = k.load(idx, s);
+        let row = k.mul(token, short);
+        let at = k.add(row, h);
+        let v = k.load(weight, at);
+        let out_row = k.mul(s, short);
+        let out_at = k.add(out_row, h);
+        k.store(out, v, out_at);
+        let compiled = k.compile().expect("the gather compiles");
+
+        let mut w = Vec::new();
+        for r in 0..4u32 {
+            for _ in 0..16 {
+                w.push(r as f32 + 1.0);
+            }
+        }
+        let wt = Tensor::from(w).reshape([4i64, 16i64]).expect("weight").to(dev).expect("upload");
+        let it = Tensor::from(vec![1i64, 0, 3, 2]).reshape([4i64]).expect("indices").to(dev).expect("upload");
+        let y = compiled.forward(&[&wt, &it], vec![[4i64, 16i64]]).expect("the gather runs").remove(0);
+        let got: Vec<f32> = y.to(Dev::C).expect("read back").try_into().expect("f32");
+        let mut expected = Vec::new();
+        for r in [1usize, 0, 3, 2] {
+            for _ in 0..16 {
+                expected.push(r as f32 + 1.0);
+            }
+        }
+        assert_eq!(got, expected, "the gathered rows");
+    }
+
     /// The writer program emitted from the gather's boundary IR: the CB page
     /// written to the output row the grid point names. Runs on NCRISC.
     #[test]
@@ -895,8 +1102,8 @@ mod tests {
             eprintln!("gather_writer_program_runs_on_riscv_b: no simulator, skipped");
             return;
         }
-        let (k, cbs, params) = gather_pipeline();
-        let words = boundary::writer(&k, &cbs, &params);
+        let (k, cbs, params) = gather_pipeline(true);
+        let words = boundary::writer(&k, &cbs, &params, &Map::default());
 
         const OUT: u64 = 0x3000;
         const ROW0: u32 = 0x1_0000;
@@ -959,7 +1166,7 @@ mod tests {
 
     /// The gather kernel brought to the boundary IR, with its parameters and
     /// circular buffers numbered.
-    fn gather_pipeline() -> (Kernel, Map<OpId, u32>, Map<OpId, u32>) {
+    fn gather_pipeline(square: bool) -> (Kernel, Map<OpId, u32>, Map<OpId, u32>) {
         use crate::kernel::{Dev, Kernel, MemScope, Op, OpId};
         let mut k = Kernel::new(Dev::Auto);
         k.dev_info = Some(std::sync::Arc::new(crate::backend::DeviceInfo {
@@ -995,6 +1202,10 @@ mod tests {
         let row = k.mul(token, short);
         let at = k.add(row, h);
         let v = k.load(weight, at);
+        // `square` makes the store's value a computed one, so the boundary is
+        // the row/CB path (reader publishes into a CB, compute, writer drains)
+        // instead of the pure transfer. `v * v` never folds to `v`.
+        let v = if square { k.mul(v, v) } else { v };
         let out_row = k.mul(s, short);
         let out_at = k.add(out_row, h);
         k.store(out, v, out_at);
@@ -1037,7 +1248,9 @@ mod tests {
             eprintln!("gather_reader_program_runs_on_riscv_b: no simulator, skipped");
             return;
         }
-        // The fixture of `ir_contract`: out[s, h] = weight[idx[s], h].
+        // The row/CB fixture of `ir_contract`: out[s, h] = weight[idx[s], h],
+        // squared so the store's value is computed and the boundary is the
+        // reader/compute/writer path, not a pure transfer.
         let mut k = Kernel::new(Dev::Auto);
         k.dev_info = Some(std::sync::Arc::new(crate::backend::DeviceInfo {
             compute: 1_000_000,
@@ -1072,6 +1285,7 @@ mod tests {
         let row = k.mul(token, short);
         let at = k.add(row, h);
         let v = k.load(weight, at);
+        let v = k.mul(v, v);
         let out_row = k.mul(s, short);
         let out_at = k.add(out_row, h);
         k.store(out, v, out_at);
@@ -1100,7 +1314,7 @@ mod tests {
             }
             id = k.next_op(id);
         }
-        let words = boundary::reader(&k, &cbs, &params);
+        let words = boundary::reader(&k, &cbs, &params, &Map::default());
         if std::env::var_os("ZYX_TT_DUMP").is_some() {
             eprintln!("reader program: {} words", words.len());
             for (i, w) in words.iter().enumerate() {

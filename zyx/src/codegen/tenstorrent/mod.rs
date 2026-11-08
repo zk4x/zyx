@@ -176,6 +176,68 @@ impl Kernel {
     /// goes through here, including hand-built custom kernels (raw IR
     /// lowers exactly once; kernels already holding a `Source` pass
     /// through untouched in `render` and never reach this).
+    /// Render a pure transfer: parameters, the grid, and one mover program.
+    /// No roles, no boundary lists, no circular buffers.
+    fn render_transfer(k: &Kernel, param_ordinal_of: &Map<OpId, u32>) -> Result<Kernel, BackendError> {
+        // Plain L1 pages, placed at `≡0 mod 64`: congruent with the raw DRAM
+        // span each holds.
+        let mut pages: Map<OpId, u32> = Map::default();
+        let mut at = tt_isa::l1::DATA.base;
+        let mut scan = k.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            if let Op::Storage { dtype, len, .. } = k.at(scan)
+                && matches!(k.at(scan), Op::Storage { scope: MemScope::Local, .. })
+            {
+                let bytes = u64::try_from(*len)
+                    .map_err(|_| tt_err(format!("tenstorrent: page {scan} has negative length")))?
+                    .checked_mul(dtype.bit_size() as u64 / 8)
+                    .ok_or_else(|| tt_err(format!("tenstorrent: page {scan} size overflows")))?;
+                let base = (at + 63) & !63;
+                if base + bytes > tt_isa::l1::DATA.end {
+                    return Err(tt_err(format!(
+                        "tenstorrent: L1 data arena exhausted: page {scan} needs {bytes} bytes at {base:#x}"
+                    )));
+                }
+                pages.insert(
+                    scan,
+                    u32::try_from(base).map_err(|_| tt_err("tenstorrent: page address overflows u32".to_string()))?,
+                );
+                at = base + bytes;
+            }
+            scan = k.next_op(scan);
+        }
+        let cbs: Map<OpId, u32> = Map::default();
+        let words = boundary::reader(k, &cbs, param_ordinal_of, &pages);
+        let gws_vec = gws_from_kernel(k, &k.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 2 {
+            return Err(tt_err(format!("tenstorrent render: grid rank {} exceeds 2D", gws_vec.len())));
+        }
+        let mut grid = [GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            grid[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut id = k.head;
+        while !id.is_null() {
+            if let Op::Param { kind, .. } = k.at(id) {
+                params.push(*kind);
+            }
+            id = k.next_op(id);
+        }
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: k.dev, dev_info: k.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
+        rendered.push_back(Op::TT(TTOp::Reader(Box::new(crate::kernel::TTRoleProgram {
+            words: words.into_boxed_slice(),
+            loops: Box::new([]),
+        }))));
+        Ok(rendered)
+    }
+
     pub(crate) fn render_tt(&self) -> Result<Kernel, BackendError> {
         // Render-only: lowering lives in `device_epilogue` (which
         // verifies the lowered IR); this consumes the result 1:1.
@@ -203,6 +265,12 @@ impl Kernel {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent: param scan did not finish in 50000 steps".into(),
             });
+        }
+
+        // A pure transfer has no sections: one mover program, plain L1 pages,
+        // and no roles, no boundary lists, no CBs. tt-metal's DRAM loopback.
+        if !k.iter_unordered().any(|(_, op)| matches!(op, Op::TT(TTOp::EndReader))) {
+            return Self::render_transfer(k, &param_ordinal_of);
         }
 
         // CB allocation: first touch over loads/stores/copies of

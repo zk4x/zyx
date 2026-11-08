@@ -1157,8 +1157,48 @@ impl TTDevice {
                         .into(),
                     })
                 };
-                {
+                let transfer = {
                     let tpool = super::lock(self.memory_pool, tpool);
+                    // A pure transfer runs one program that moves DRAM itself:
+                    // its args carry the grid point, this tile's high address
+                    // word and each parameter's DRAM address.
+                    let transfer = if prog.reader_program.is_empty() {
+                        None
+                    } else {
+                        let me_hi = tt_isa::noc::niu::Endpoint { x, y, addr: 0 }.hi();
+                        let mut args: Vec<u32> = vec![gidx0, gidx1, 0, me_hi];
+                        let params = usize::try_from(prog.n_inputs + prog.n_outputs).unwrap_or(0);
+                        for ordinal in 0..params {
+                            let chunk = chunks[ordinal].ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("transfer parameter {ordinal} has no buffer arg").into(),
+                            })?;
+                            let range = tpool
+                                .ranges(chunk, 0, 1)
+                                .map_err(|e| BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("transfer parameter {ordinal}: {e}").into(),
+                                })?
+                                .first()
+                                .map(|(r, _)| *r)
+                                .ok_or_else(|| BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("transfer parameter {ordinal} has no DRAM range").into(),
+                                })?;
+                            let channel = range.channel();
+                            let port = channel.port_for(tt_isa::noc::niu::Niu::Noc0, 0);
+                            let ep = channel.endpoint(tt_isa::noc::niu::Niu::Noc0, port).ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("transfer parameter {ordinal} has no NOC0 endpoint").into(),
+                            })?;
+                            args.push(u32::try_from(range.offset()).map_err(|_| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: "transfer parameter address overflows u32".into(),
+                            })?);
+                            args.push(tt_isa::noc::niu::Endpoint { x: ep.x(), y: ep.y(), addr: 0 }.hi());
+                        }
+                        Some(ttsim::Transfer { words: prog.reader_program.to_vec(), args })
+                    };
                     for mv in prog.reader.iter() {
                         let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
                             status: ErrorStatus::KernelLaunch,
@@ -1193,7 +1233,8 @@ impl TTDevice {
                             narrows.push((mv.param, chunk, off, u64::from(mv.l1), mv.bytes as usize, mv.narrow));
                         }
                     }
-                }
+                    transfer
+                };
                 let read_back: Vec<(u64, usize)> = narrows.iter().map(|(_, _, _, l1, bytes, _)| (*l1, *bytes)).collect();
                 let run = NativeRun {
                     tile: (x, y),
@@ -1203,6 +1244,7 @@ impl TTDevice {
                     writes,
                     read_back,
                     sems: prog.sems.clone(),
+                    transfer,
                 };
                 let outcome = run_native(run)
                     .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: e.into_boxed_str() })?;

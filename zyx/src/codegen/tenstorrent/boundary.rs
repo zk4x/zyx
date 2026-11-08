@@ -41,8 +41,8 @@ pub const ARG_PARAM: u32 = 4;
 
 /// Emit the reader program (B): every `Copy` into a CB and everything that
 /// computes its address, up to `EndReader`.
-pub fn reader(k: &Kernel, cbs: &Map<OpId, u32>, params: &Map<OpId, u32>) -> Vec<u32> {
-    let mut e = Emitter::new(k, cbs, params, true);
+pub fn reader(k: &Kernel, cbs: &Map<OpId, u32>, params: &Map<OpId, u32>, l1: &Map<OpId, u32>) -> Vec<u32> {
+    let mut e = Emitter::new(k, cbs, params, true, l1);
     e.preamble();
     let mut id = k.head;
     while !id.is_null() {
@@ -56,8 +56,8 @@ pub fn reader(k: &Kernel, cbs: &Map<OpId, u32>, params: &Map<OpId, u32>) -> Vec<
 }
 
 /// Emit the writer program (NC): from `EndCompute` to the end.
-pub fn writer(k: &Kernel, cbs: &Map<OpId, u32>, params: &Map<OpId, u32>) -> Vec<u32> {
-    let mut e = Emitter::new(k, cbs, params, false);
+pub fn writer(k: &Kernel, cbs: &Map<OpId, u32>, params: &Map<OpId, u32>, l1: &Map<OpId, u32>) -> Vec<u32> {
+    let mut e = Emitter::new(k, cbs, params, false, l1);
     e.preamble();
     let mut writing = false;
     let mut id = k.head;
@@ -76,6 +76,8 @@ struct Emitter<'a> {
     k: &'a Kernel,
     cbs: &'a Map<OpId, u32>,
     params: &'a Map<OpId, u32>,
+    /// L1 address of each locally placed page.
+    l1: &'a Map<OpId, u32>,
     reader: bool,
     a: Assembler,
     /// Registers available to an expression, and the next free one.
@@ -87,13 +89,14 @@ struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    fn new(k: &'a Kernel, cbs: &'a Map<OpId, u32>, params: &'a Map<OpId, u32>, reader: bool) -> Self {
-        Self { k, cbs, params, reader, a: Assembler::new(), free: Vec::new(), pinned: Vec::new(), lane: None }
+    fn new(k: &'a Kernel, cbs: &'a Map<OpId, u32>, params: &'a Map<OpId, u32>, reader: bool, l1: &'a Map<OpId, u32>) -> Self {
+        Self { k, cbs, params, l1, reader, a: Assembler::new(), free: Vec::new(), pinned: Vec::new(), lane: None }
     }
 
     fn preamble(&mut self) {
         // a0 = args, a6 = CB interface base, a7 = NOC initiator, a5 = this
-        // tile's address-high word.
+        // tile's address-high word. A pure transfer has no CB interface; the
+        // load is harmless.
         self.a.push(riscv::lw(reg::A6, reg::A0, ARG_IFACE as i32 * 4));
         self.a.push(riscv::lw(reg::A5, reg::A0, ARG_ME_HI as i32 * 4));
         noc::open(&mut self.a, reg::A7, Niu::Noc0);
@@ -188,38 +191,46 @@ impl<'a> Emitter<'a> {
     /// One traffic op: a reader publish (DRAM -> CB) or a writer drain
     /// (CB -> DRAM). A vector index is one span per lane.
     fn traffic(&mut self, id: OpId, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId, bytes: Option<u32>) {
-        let src_cb = matches!(self.k.at(src), Op::Storage { scope: MemScope::Circular, .. });
-        let dst_cb = matches!(self.k.at(dst), Op::Storage { scope: MemScope::Circular, .. });
-        let (param, idx, cb, cb_idx, publish) = match (src_cb, dst_cb) {
-            (false, true) => (src, src_idx, dst, dst_idx, true),
-            (true, false) => (dst, dst_idx, src, src_idx, false),
-            _ => panic!("tenstorrent boundary: copy {id:?} is not DRAM<->CB"),
+        let is_storage = |o: OpId| matches!(self.k.at(o), Op::Storage { .. });
+        let is_global = |o: OpId| matches!(self.k.at(o), Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
+        let (param, idx, page, page_idx, publish) = if is_global(src) && is_storage(dst) {
+            (src, src_idx, dst, dst_idx, true)
+        } else if is_storage(src) && is_global(dst) {
+            (dst, dst_idx, src, src_idx, false)
+        } else {
+            panic!("tenstorrent boundary: copy {id:?} is not a DRAM<->L1 page move")
         };
-        if self.reader != publish {
+        let circular = matches!(self.k.at(page), Op::Storage { scope: MemScope::Circular, .. });
+        if circular && self.reader != publish {
             panic!(
                 "tenstorrent boundary: a {} section holds a {} copy",
                 if self.reader { "reader" } else { "writer" },
                 if publish { "publish" } else { "drain" }
             );
         }
-        let cb_id = self.cb_id(cb);
-        let page_datums = match self.k.at(cb) {
-            Op::Storage { len, .. } => u64::try_from(*len).expect("negative CB length"),
+        let page_datums = match self.k.at(page) {
+            Op::Storage { len, .. } => u64::try_from(*len).expect("negative page length"),
             _ => unreachable!(),
         };
-        let el = self.k.dtype(cb).bit_size() as u64 / 8;
+        let el = self.k.dtype(page).bit_size() as u64 / 8;
         let lanes: u64 = self.k.shape(idx).iter().map(|d| *d as u64).product::<u64>().max(1);
-        assert_eq!(page_datums % lanes, 0, "tenstorrent boundary: CB page {page_datums} is not {lanes} whole spans");
+        assert_eq!(page_datums % lanes, 0, "tenstorrent boundary: page {page_datums} is not {lanes} whole spans");
         let span = u32::try_from(page_datums / lanes * el).expect("span too large");
         if let Some(bytes) = bytes {
             assert_eq!(u64::from(bytes), page_datums * el, "tenstorrent boundary: copy {id:?} bytes disagree with its page");
         }
-        // The L1 side of the move: the CB's write pointer (publish) or read
-        // pointer (drain). The slot is 0 at depth 1.
+        // The L1 side of the move: a CB's write/read pointer, or the placed
+        // address of a plain L1 page. Slot 0 at depth 1.
         let ptr = self.alloc();
         self.pin(ptr);
-        let field = if publish { cb::WR_PTR } else { cb::RD_PTR };
-        self.a.push(riscv::lw(ptr, reg::A6, (cb_id * cb::STRIDE) as i32 + field));
+        if circular {
+            let cb_id = self.cb_id(page);
+            let field = if publish { cb::WR_PTR } else { cb::RD_PTR };
+            self.a.push(riscv::lw(ptr, reg::A6, (cb_id * cb::STRIDE) as i32 + field));
+        } else {
+            let at = *self.l1.get(&page).unwrap_or_else(|| panic!("tenstorrent boundary: page {page} is not placed"));
+            self.a.li(ptr, at);
+        }
         // The DRAM side: the parameter's low word.
         let p =
             *self.params.get(&param).unwrap_or_else(|| panic!("tenstorrent boundary: parameter {param} is not in the launch"));
@@ -230,10 +241,10 @@ impl<'a> Emitter<'a> {
         self.pin(hi);
         self.a.push(riscv::lw(hi, reg::A0, (ARG_PARAM + 2 * p + 1) as i32 * 4));
         // A slot index other than 0 is a second page in the ring: not at depth 1.
-        if let Some(slot) = self.k.resolve_const(cb_idx).and_then(|c| c.as_dim())
+        if let Some(slot) = self.k.resolve_const(page_idx).and_then(|c| c.as_dim())
             && slot != 0
         {
-            panic!("tenstorrent boundary: copy {id:?} uses CB slot {slot} on a depth-1 ring");
+            panic!("tenstorrent boundary: copy {id:?} uses page slot {slot} on a depth-1 ring");
         }
         if lanes == 1 {
             let dram = self.value(idx);
@@ -347,14 +358,22 @@ impl<'a> Emitter<'a> {
             }
             Op::Load { src, src_idx } => {
                 assert!(
-                    matches!(self.k.at(*src), Op::Storage { scope: MemScope::Circular, .. }),
-                    "tenstorrent boundary: an index load is not from a CB"
+                    matches!(self.k.at(*src), Op::Storage { .. }),
+                    "tenstorrent boundary: an index load is not from an L1 page"
                 );
-                let cb = self.cb_id(*src);
                 let el = self.k.dtype(*src).bit_size() as i32 / 8;
                 let idx = self.value_into(*src_idx);
                 let rd = self.alloc();
-                self.a.push(riscv::lw(rd, reg::A6, (cb * cb::STRIDE) as i32 + cb::RD_PTR));
+                match self.k.at(*src) {
+                    Op::Storage { scope: MemScope::Circular, .. } => {
+                        let cb = self.cb_id(*src);
+                        self.a.push(riscv::lw(rd, reg::A6, (cb * cb::STRIDE) as i32 + cb::RD_PTR));
+                    }
+                    _ => {
+                        let at = *self.l1.get(src).unwrap_or_else(|| panic!("tenstorrent boundary: page {src} is not placed"));
+                        self.a.li(rd, at);
+                    }
+                }
                 let scaled = self.alloc();
                 self.a.li(scaled, el as u32);
                 self.a.push(riscv::mul(scaled, scaled, idx));
