@@ -131,6 +131,28 @@ impl Kernel {
                     writeln!(f, "{indent}{blue}pack{reset} {} words, {} loops", program.words.len(), program.loops.len())
                         .unwrap();
                 }
+                Op::TT(TTOp::Reader(ref program)) => {
+                    writeln!(f, "{indent}{blue}reader{reset} {} words", program.words.len()).unwrap();
+                }
+                Op::TT(TTOp::Writer(ref program)) => {
+                    writeln!(f, "{indent}{blue}writer{reset} {} words", program.words.len()).unwrap();
+                }
+                Op::TT(TTOp::ReserveBack { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}reserve_back{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::PushBack { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}push_back{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::WaitFront { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}wait_front{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::PopFront { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}pop_front{reset} r{cb}, {n}").unwrap();
+                }
                 Op::TT(TTOp::DmRead(ref page)) => {
                     writeln!(
                         f,

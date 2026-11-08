@@ -380,7 +380,13 @@ impl Kernel {
                 | Op::TT(TTOp::Replay { .. })
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {}
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_))
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => {}
                 Op::TT(TTOp::SfpLoad(ref load)) => {
                     check(op_id, load.slot, &stack);
                     dtypes.insert(op_id, dtypes[&load.slot]);
@@ -592,10 +598,7 @@ impl Kernel {
                         // not a value the kernel computes, so it is exempt
                         // from the declared-before-use check; its own cone is
                         // still checked in its own order.
-                        debug_assert!(
-                            self.ops.contains_id(shape),
-                            "param {op_id} names a deleted shape {shape}"
-                        );
+                        debug_assert!(self.ops.contains_id(shape), "param {op_id} names a deleted shape {shape}");
                     }
                 }
                 Op::Storage { dtype, scope, len, .. } => {

@@ -62,9 +62,10 @@ tiny_http = { version = "0.12.0", optional = true } # MIT
 # Tenstorrent. The device, kernel and simulator layers live in
 # `src/backend/tenstorrent/` (in-tree), and the RISC-V firmware images are
 # built from `firmware/tt-firmware` by `build.rs`. `tt-isa` is the hardware
-# definition crate (instruction encoders, register maps, coordinate spaces),
-# published as `tt-isa` on crates.io.
-tt-isa = "0.1.0"
+# definition crate (instruction encoders, register maps, coordinate spaces).
+# Path dependency while the crate is edited in the tree; the crates.io version
+# follows once the surface settles.
+tt-isa = { path = "../../tt-isa" }
 
 # `libc` for the simulator's fork isolation, `libm` for the SFPU op programs'
 # host-side approximations.
@@ -75,7 +76,7 @@ libm = { version = "0.2.11", default-features = false }
 matrixmultiply = "0.3"
 
 [build-dependencies]
-tt-isa = "0.1.0"
+tt-isa = { path = "../../tt-isa" }
 
 [lib]
 crate-type = ["lib"]

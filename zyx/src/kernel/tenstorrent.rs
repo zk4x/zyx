@@ -869,6 +869,48 @@ impl Kernel {
         self.push_back(Op::TT(TTOp::EndCompute))
     }
 
+    /// CB sync constructor: `cb.reserve_back(n)` — open `n` back slots
+    /// of circular buffer `cb` for writing.
+    pub fn tt_reserve_back(&mut self, cb: OpId, n: u8) -> OpId {
+        debug_assert!(
+            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
+            "tt_reserve_back: cb {cb} is not a Circular storage"
+        );
+        debug_assert!(n != 0, "tt_reserve_back: n must be positive");
+        self.push_back(Op::TT(TTOp::ReserveBack { cb, n }))
+    }
+
+    /// CB sync constructor: `cb.push_back(n)` — publish `n` written slots.
+    pub fn tt_push_back(&mut self, cb: OpId, n: u8) -> OpId {
+        debug_assert!(
+            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
+            "tt_push_back: cb {cb} is not a Circular storage"
+        );
+        debug_assert!(n != 0, "tt_push_back: n must be positive");
+        self.push_back(Op::TT(TTOp::PushBack { cb, n }))
+    }
+
+    /// CB sync constructor: `cb.wait_front(n)` — block until `n` front
+    /// slots hold data.
+    pub fn tt_wait_front(&mut self, cb: OpId, n: u8) -> OpId {
+        debug_assert!(
+            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
+            "tt_wait_front: cb {cb} is not a Circular storage"
+        );
+        debug_assert!(n != 0, "tt_wait_front: n must be positive");
+        self.push_back(Op::TT(TTOp::WaitFront { cb, n }))
+    }
+
+    /// CB sync constructor: `cb.pop_front(n)` — release `n` consumed
+    /// slots.
+    pub fn tt_pop_front(&mut self, cb: OpId, n: u8) -> OpId {
+        debug_assert!(
+            matches!(self.at(cb), Op::Storage { scope: MemScope::Circular, .. }),
+            "tt_pop_front: cb {cb} is not a Circular storage"
+        );
+        self.push_back(Op::TT(TTOp::PopFront { cb, n }))
+    }
+
     /// Tenstorrent tiling: pad to multiples of 32 and unroll loops
     /// and group ranges to multiples of 32. No special tiling or
     /// vectorization passes: the 32-wide `Unroll` lanes plus composed
@@ -1962,10 +2004,9 @@ impl Kernel {
         Some((dram, l1))
     }
 
-    /// The gate. Every TT compile stops here, at the pass's exit, so the IR is
-    /// inspected kernel by kernel: `debug()` at entry, one body run, `debug()`
-    /// at exit, then `todo!()`. A body that bails early still hits the gate —
-    /// a bail is exactly the IR that is not good yet.
+    /// The reader/writer traffic pass. `debug()` at entry and exit; the
+    /// debugging gate now sits at the start of `tt_dataflow_select`, where the
+    /// CB syncs must be visible in the IR.
     pub fn tt_add_movers(&mut self) {
         if !self.device_info().tenstorrent {
             return;
@@ -1973,7 +2014,6 @@ impl Kernel {
         self.debug();
         self.tt_add_movers_body();
         self.debug();
-        todo!("no removing this todo until the f*cking IR is good looking");
     }
 
     /// Materialise the circular-buffer plan as ordinary SSA before the phase
@@ -2317,13 +2357,540 @@ impl Kernel {
         self.default_epilogue();
     }
 
+    /// Place the four CB syncs on the reader/writer traffic.
+    ///
+    /// A publisher is a `Copy` into a `Circular` storage (the reader's
+    /// DRAM→CB move) or a `Store` into one (the pack). Both fill whole pages,
+    /// and a run of publishes that together fills whole pages of one CB is
+    /// bracketed by one `ReserveBack` before the run and one `PushBack` after
+    /// it, `n` = the pages the run fills. The run is scoped to one loop body:
+    /// at depth 1 the sync must execute once per iteration (tt-metal's
+    /// `for i { reserve; read; push }`), never be hoisted across the loop.
+    ///
+    /// A consumer is a `Load` from a CB (the unpack) or a `Copy` out of one
+    /// (the writer's drain); each gets a `WaitFront` immediately before it.
+    /// `n` is in pages throughout, as in `cb_reserve_back`/`cb_push_back`.
+    pub fn tt_sync_cbs(&mut self) {
+        if !self.device_info().tenstorrent {
+            return;
+        }
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Frame {
+            Trip(u64),
+            Symbolic,
+            Conditional,
+        }
+        // Datums moved by a publish op. A `Copy` into a CB moves whole pages:
+        // one per iteration when it sits in a loop, the CB's whole page count
+        // when it is straight-line (`tt_dataflow_select` computes the same
+        // transfer: `1024 * el` in a loop, `len * el` otherwise). The index
+        // shape is the address expression, not the transfer.
+        let publish_datums = |k: &Kernel, id: OpId, in_loop: bool| -> u64 {
+            match k.at(id) {
+                Op::Store { src, dst, .. } if k.is_circular(*dst) => {
+                    let datums: u64 = k.shape(*src).iter().map(|d| *d as u64).product();
+                    datums.max(1)
+                }
+                Op::Copy { src, dst, .. } if k.is_circular(*dst) && !k.is_circular(*src) => {
+                    if in_loop {
+                        1024
+                    } else {
+                        match k.at(*dst) {
+                            Op::Storage { len, .. } => u64::try_from(*len)
+                                .unwrap_or_else(|_| panic!("tt_sync_cbs: CB {dst:?} has negative length {len}")),
+                            other => panic!("tt_sync_cbs: copy {id:?} targets {other:?}, not a storage"),
+                        }
+                    }
+                }
+                _ => 0,
+            }
+        };
+        // One run per (section, innermost loop, CB).
+        let mut open: Map<OpId, (OpId, OpId, u64)> = Map::default();
+        let mut tallies: Vec<(OpId, OpId, OpId, u8)> = Vec::new();
+        let mut stack: Vec<(OpId, Frame)> = Vec::new();
+        let mut section = 0u8;
+        let mut scope = (0u8, OpId::NULL);
+        // Close every open run of the previous scope.
+        let flush = |open: &mut Map<OpId, (OpId, OpId, u64)>, tallies: &mut Vec<(OpId, OpId, OpId, u8)>| {
+            for (cb, (first, last, datums)) in open.drain() {
+                if datums == 0 || datums % 1024 != 0 {
+                    panic!("tt_sync_cbs: CB{cb:?} publish run fills {datums} datums, not whole pages");
+                }
+                let pages = datums / 1024;
+                let Ok(n) = u8::try_from(pages) else {
+                    panic!("tt_sync_cbs: CB{cb:?} publish run fills {pages} pages, more than u8")
+                };
+                tallies.push((first, last, cb, n));
+            }
+        };
+        let mut scan = self.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            match self.ops[scan].op {
+                Op::TT(TTOp::EndReader) => {
+                    flush(&mut open, &mut tallies);
+                    section = 1;
+                    scope = (section, stack.last().map_or(OpId::NULL, |(op, _)| *op));
+                }
+                Op::TT(TTOp::EndCompute) => {
+                    flush(&mut open, &mut tallies);
+                    section = 2;
+                    scope = (section, stack.last().map_or(OpId::NULL, |(op, _)| *op));
+                }
+                Op::Loop { len } => {
+                    flush(&mut open, &mut tallies);
+                    let frame = if let Op::Const(c) = self.at(len) {
+                        match c.as_dim() {
+                            Some(t) if t > 0 => Frame::Trip(t as u64),
+                            Some(t) => panic!("tt_sync_cbs: loop {scan:?} has non-positive trip count {t}"),
+                            None => Frame::Symbolic,
+                        }
+                    } else if self.dtype(len) == DType::Bool {
+                        Frame::Conditional
+                    } else {
+                        Frame::Symbolic
+                    };
+                    stack.push((scan, frame));
+                    scope = (section, scan);
+                }
+                Op::EndLoop => {
+                    flush(&mut open, &mut tallies);
+                    stack.pop().unwrap_or_else(|| panic!("tt_sync_cbs: EndLoop without Loop at {scan:?}"));
+                    scope = (section, stack.last().map_or(OpId::NULL, |(op, _)| *op));
+                }
+                _ => {
+                    let in_loop = !stack.is_empty();
+                    let datums = publish_datums(self, scan, in_loop);
+                    if datums == 0 {
+                        scan = self.next_op(scan);
+                        continue;
+                    }
+                    // The run's per-body count multiplies the trips of the
+                    // loops *outside* the innermost one; the innermost loop's
+                    // own trips are the body executions the run lives in.
+                    let mut mult = 1u64;
+                    for (_, frame) in stack.iter().take(stack.len().saturating_sub(1)) {
+                        match frame {
+                            Frame::Trip(t) => {
+                                mult = mult.checked_mul(*t).unwrap_or_else(|| panic!("tt_sync_cbs: trip product overflows"))
+                            }
+                            Frame::Symbolic => {
+                                panic!("tt_sync_cbs: CB publish {scan:?} under a symbolic enclosing loop")
+                            }
+                            Frame::Conditional => {}
+                        }
+                    }
+                    let datums = mult.checked_mul(datums).unwrap_or_else(|| panic!("tt_sync_cbs: page count overflows"));
+                    let cb = match self.ops[scan].op {
+                        Op::Store { dst, .. } | Op::Copy { dst, .. } => dst,
+                        _ => unreachable!("tt_sync_cbs: a publish is a Store or Copy"),
+                    };
+                    if scope != (section, stack.last().map_or(OpId::NULL, |(op, _)| *op)) {
+                        flush(&mut open, &mut tallies);
+                        scope = (section, stack.last().map_or(OpId::NULL, |(op, _)| *op));
+                    }
+                    let entry = open.entry(cb).or_insert((scan, scan, 0));
+                    entry.1 = scan;
+                    entry.2 =
+                        entry.2.checked_add(datums).unwrap_or_else(|| panic!("tt_sync_cbs: CB{cb:?} publish total overflows"));
+                }
+            }
+            scan = self.next_op(scan);
+        }
+        flush(&mut open, &mut tallies);
+        for (first, last, cb, n) in tallies {
+            self.insert_before(first, Op::TT(TTOp::ReserveBack { cb, n }));
+            self.insert_after(last, Op::TT(TTOp::PushBack { cb, n }));
+        }
+        // Consumer waits.
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            match self.ops[op_id].op {
+                Op::Copy { src, dst, .. } => {
+                    let src_cb = self.is_circular(src);
+                    let dst_cb = self.is_circular(dst);
+                    if src_cb && dst_cb {
+                        panic!("tt_sync_cbs: CB-to-CB copy {op_id:?} has no page plan");
+                    }
+                    if src_cb {
+                        self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: src, n: 1 }));
+                    }
+                    debug_assert!(src_cb || dst_cb, "tt_sync_cbs: copy {op_id:?} touches no CB");
+                }
+                Op::TT(TTOp::Copy { src, dst, .. }) => {
+                    let src_cb = self.is_circular(src);
+                    let dst_cb = self.is_circular(dst);
+                    if src_cb && dst_cb {
+                        panic!("tt_sync_cbs: CB-to-CB copy {op_id:?} has no page plan");
+                    }
+                    if src_cb {
+                        self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: src, n: 1 }));
+                    }
+                }
+                Op::Load { src, .. } if self.is_circular(src) => {
+                    self.insert_before(op_id, Op::TT(TTOp::WaitFront { cb: src, n: 1 }));
+                }
+                _ => {}
+            }
+            op_id = next;
+        }
+        self.verify();
+    }
+
+    /// Merge adjacent `PushBack`s on one CB: two consecutive publishes of the
+    /// same buffer are one publish of their sum.
+    pub fn tt_dedup_pushes(&mut self) {
+        let mut scan = self.head;
+        while !scan.is_null() {
+            let next = self.next_op(scan);
+            if let Op::TT(TTOp::PushBack { cb, n }) = self.ops[scan].op {
+                let prev = self.prev_op(scan);
+                if !prev.is_null()
+                    && let Op::TT(TTOp::PushBack { cb: pcb, n: pn }) = self.ops[prev].op
+                    && pcb == cb
+                {
+                    let Some(sum) = pn.checked_add(n) else {
+                        panic!("tt_dedup_pushes: CB{cb:?} push count overflows u8")
+                    };
+                    self.ops[prev].op = Op::TT(TTOp::PushBack { cb, n: sum });
+                    self.remove_op(scan);
+                }
+            }
+            scan = next;
+        }
+    }
+
+    /// Place `PopFront` after the last read of each consumed CB page: after
+    /// the last same-section use of a `Load` from a CB, after the `Load`
+    /// itself when it has no user, and after a `Copy` whose source is a CB
+    /// (the writer's drain, one page per copy).
+    ///
+    /// The CB address a kernel computes is relative to the CB's current read
+    /// pointer (`get_read_ptr`, tt-metal `writer.cpp`), so a pop moves the
+    /// window and no index is rebased.
+    pub fn tt_place_pops(&mut self) {
+        let mut users: Map<OpId, Vec<OpId>> = Map::default();
+        let mut section: Map<OpId, u8> = Map::default();
+        let mut cur = 0u8;
+        let mut pos: Map<OpId, usize> = Map::default();
+        let mut order = 0usize;
+        let mut scan = self.head;
+        while !scan.is_null() {
+            if matches!(self.ops[scan].op, Op::TT(TTOp::EndReader)) {
+                cur = 1;
+            } else if matches!(self.ops[scan].op, Op::TT(TTOp::EndCompute)) {
+                cur = 2;
+            }
+            section.insert(scan, cur);
+            pos.insert(scan, order);
+            order += 1;
+            for p in self.at(scan).parameters() {
+                if !p.is_null() {
+                    users.entry(p).or_default().push(scan);
+                }
+            }
+            scan = self.next_op(scan);
+        }
+        // Last same-section user per CB load.
+        let mut last_use: Map<OpId, OpId> = Map::default();
+        for (load, us) in users.iter() {
+            if !matches!(self.ops[*load].op, Op::Load { src, .. } if self.is_circular(src)) {
+                continue;
+            }
+            let lsec = section[load];
+            let mut best: Option<OpId> = None;
+            for u in us {
+                if section[u] != lsec {
+                    continue;
+                }
+                if best.is_none_or(|b| pos[u] > pos[&b]) {
+                    best = Some(*u);
+                }
+            }
+            if let Some(b) = best {
+                last_use.insert(*load, b);
+            }
+        }
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            let mut pops: Vec<OpId> = Vec::new();
+            match self.ops[op_id].op {
+                Op::Copy { src, .. } | Op::TT(TTOp::Copy { src, .. }) if self.is_circular(src) => {
+                    pops.push(src);
+                }
+                Op::Load { src, .. } if self.is_circular(src) => {
+                    if !users.contains_key(&op_id) {
+                        pops.push(src);
+                    }
+                }
+                _ => {}
+            }
+            for (load, user) in last_use.iter() {
+                if *user == op_id {
+                    let Op::Load { src, .. } = self.ops[*load].op else {
+                        unreachable!("tt_place_pops: last use of a non-load")
+                    };
+                    pops.push(src);
+                }
+            }
+            for cb in pops {
+                self.insert_after(op_id, Op::TT(TTOp::PopFront { cb, n: 1 }));
+            }
+            op_id = next;
+        }
+    }
+
+    /// 64-byte congruence for one DRAM-touching copy: the board crashes on
+    /// incongruent NOC addresses. A read needs the DRAM and L1 addresses
+    /// congruent mod 64, a write mod 16. A DRAM index is a byte address; a CB
+    /// index is in datums, and a CB is placed at `≡16 mod 64` (where a tile
+    /// image's datum block lives). A non-affine index is unprovable and is a
+    /// loud rejection, never silently skipped.
+    fn fifo_check_copy(&self, op_id: OpId, src: OpId, src_idx: OpId, dst: OpId, dst_idx: OpId) {
+        let is_dram = |base: OpId| matches!(self.at(base), Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. });
+        let src_dram = is_dram(src);
+        let dst_dram = is_dram(dst);
+        if !(src_dram || dst_dram) {
+            return;
+        }
+        let align: i64 = if src_dram { 64 } else { 16 };
+        let elem = |base: OpId| match self.at(base) {
+            Op::Param { dtype, .. } | Op::Storage { dtype, .. } => {
+                let bits = dtype.bit_size();
+                if bits % 8 != 0 {
+                    panic!("tt_fifo_check: copy {op_id:?} side {base:?} has sub-byte dtype {dtype:?}");
+                }
+                (bits / 8) as i64
+            }
+            other => panic!("tt_fifo_check: copy {op_id:?} side {base:?} is not a buffer: {other:?}"),
+        };
+        // Byte offset of one index on `base`: a DRAM index is already bytes, a
+        // CB index is datums, and the CB's datum block starts at 16.
+        let decompose = |idx: OpId, base: OpId| -> (i64, Map<OpId, i64>) {
+            let base_off = if is_dram(base) { 0 } else { tt_isa::dm::TILE_DATA as i64 };
+            let scale = if is_dram(base) { 1 } else { elem(base) };
+            if idx.is_null() {
+                return (base_off, Map::default());
+            }
+            let strides =
+                self.get_strides(idx).unwrap_or_else(|| panic!("tt_fifo_check: copy {op_id:?} has unprovable index {idx:?}"));
+            let mut vars: Map<OpId, i64> = Map::default();
+            let mut base_bytes = base_off;
+            for (var, (_, stride)) in strides {
+                if var.is_null() {
+                    base_bytes += stride * scale;
+                } else {
+                    vars.insert(var, stride * scale);
+                }
+            }
+            (base_bytes, vars)
+        };
+        let (bs, sm) = decompose(src_idx, src);
+        let (bd, dm) = decompose(dst_idx, dst);
+        let check = |what: &str, a: i64, b: i64| {
+            if (a - b).rem_euclid(align) != 0 {
+                panic!("tt_fifo_check: copy {op_id:?} is {align}-byte incongruent at {what}: {a} vs {b}");
+            }
+        };
+        for (v, ss) in sm.iter() {
+            check(&std::format!("{v:?}"), *ss, dm.get(v).copied().unwrap_or(0));
+        }
+        for (v, ds) in dm.iter() {
+            if sm.contains_key(v) {
+                continue;
+            }
+            check(&std::format!("{v:?}"), 0, *ds);
+        }
+        check("base", bs, bd);
+    }
+
+    /// FIFO simulation over the placed sync ops: per-CB reserve/wait balance at
+    /// section ends, pushed == popped program-wide per CB, producer-past-depth
+    /// (the deadlock guard, a compile error), and the symbolic-loop traffic
+    /// error. Loop trip counts multiply straight-line counts; boolean loops
+    /// (conditionals) do not; a non-const non-bool loop length is symbolic and
+    /// rejects sync traffic under it. Read-only; panics loudly, never launches
+    /// a stalled kernel.
+    pub(crate) fn tt_fifo_check(&self) {
+        #[derive(Default)]
+        struct Fifo {
+            reserved: u64,
+            avail: u64,
+            waited: u64,
+            pushed: u64,
+            popped: u64,
+        }
+        let mut fifos: Map<OpId, Fifo> = Map::default();
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Frame {
+            Trip(u64),
+            Symbolic,
+            Conditional,
+        }
+        let mut mult: u64 = 1;
+        let mut stack: Vec<Frame> = Vec::new();
+        let mut sym_loops: u32 = 0;
+        let mut run_cb: Option<OpId> = None;
+        let mut run_tiles: u64 = 0;
+        let depth_of = |kernel: &Kernel, cb: OpId| -> u64 {
+            match kernel.at(cb) {
+                Op::Storage { len, .. } => (*len as u64) / 1024,
+                other => panic!("tt_fifo_check: CB {cb:?} is not a storage op, got {other:?}"),
+            }
+        };
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.ops[op_id].op {
+                Op::TT(TTOp::EndReader) | Op::TT(TTOp::EndCompute) => {
+                    for (cb, f) in fifos.iter() {
+                        if f.reserved != 0 {
+                            panic!("tt_fifo_check: CB{cb:?} reserve open at section end");
+                        }
+                        if f.waited != 0 {
+                            panic!("tt_fifo_check: CB{cb:?} wait open at section end");
+                        }
+                    }
+                    if let Some(prev) = run_cb {
+                        if run_tiles > depth_of(self, prev) {
+                            panic!(
+                                "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {}) before any other CB",
+                                depth_of(self, prev)
+                            );
+                        }
+                        run_cb = None;
+                        run_tiles = 0;
+                    }
+                }
+                Op::Loop { len } => {
+                    if let Op::Const(c) = self.at(len) {
+                        match c.as_dim() {
+                            Some(t) => {
+                                mult *= t as u64;
+                                stack.push(Frame::Trip(t as u64));
+                            }
+                            None => panic!("tt_fifo_check: negative loop length under {op_id:?}"),
+                        }
+                    } else if self.dtype(len) == DType::Bool {
+                        stack.push(Frame::Conditional);
+                    } else {
+                        sym_loops += 1;
+                        stack.push(Frame::Symbolic);
+                    }
+                }
+                Op::EndLoop => match stack.pop() {
+                    Some(Frame::Trip(t)) => mult /= t,
+                    Some(Frame::Symbolic) => sym_loops -= 1,
+                    Some(Frame::Conditional) => {}
+                    None => panic!("tt_fifo_check: EndLoop without Loop at {op_id:?}"),
+                },
+                Op::TT(TTOp::ReserveBack { cb, n }) => {
+                    if sym_loops != 0 {
+                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                    }
+                    let f = fifos.entry(cb).or_default();
+                    if f.reserved != 0 || f.waited != 0 {
+                        panic!("tt_fifo_check: reserve CB{cb:?} with open transaction at {op_id:?}");
+                    }
+                    f.reserved = u64::from(n) * mult;
+                }
+                Op::TT(TTOp::PushBack { cb, n }) => {
+                    if sym_loops != 0 {
+                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                    }
+                    let need = u64::from(n) * mult;
+                    let f = fifos.entry(cb).or_default();
+                    if f.reserved < need {
+                        panic!("tt_fifo_check: push CB{cb:?} with {} reserved at {op_id:?}", f.reserved);
+                    }
+                    f.reserved -= need;
+                    f.avail += need;
+                    f.pushed += need;
+                    if run_cb != Some(cb) {
+                        if let Some(prev) = run_cb {
+                            if run_tiles > depth_of(self, prev) {
+                                panic!(
+                                    "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {}) before any other CB",
+                                    depth_of(self, prev)
+                                );
+                            }
+                        }
+                        run_cb = Some(cb);
+                        run_tiles = 0;
+                    }
+                    run_tiles += u64::from(n);
+                }
+                Op::TT(TTOp::WaitFront { cb, n }) => {
+                    if sym_loops != 0 {
+                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                    }
+                    let need = u64::from(n) * mult;
+                    let f = fifos.entry(cb).or_default();
+                    if f.avail < need {
+                        panic!("tt_fifo_check: wait CB{cb:?} with {} available at {op_id:?}", f.avail);
+                    }
+                    f.waited += need;
+                    f.avail -= need;
+                }
+                Op::TT(TTOp::PopFront { cb, n }) => {
+                    if sym_loops != 0 {
+                        panic!("tt_fifo_check: FIFO traffic under a symbolic loop at {op_id:?}");
+                    }
+                    let need = u64::from(n) * mult;
+                    let f = fifos.entry(cb).or_default();
+                    if f.waited < need {
+                        panic!("tt_fifo_check: pop CB{cb:?} with {} waited at {op_id:?}", f.waited);
+                    }
+                    f.waited -= need;
+                    f.popped += need;
+                }
+                Op::Copy { src, src_idx, dst, dst_idx, .. } => {
+                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx);
+                }
+                Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => {
+                    self.fifo_check_copy(op_id, src, src_idx, dst, dst_idx);
+                }
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+        if !stack.is_empty() {
+            panic!("tt_fifo_check: kernel ends inside a loop");
+        }
+        if let Some(prev) = run_cb {
+            if run_tiles > depth_of(self, prev) {
+                panic!(
+                    "tt_fifo_check: producer pushes {run_tiles} tiles to CB{prev:?} (depth {}) before any other CB",
+                    depth_of(self, prev)
+                );
+            }
+        }
+        for (cb, f) in fifos.iter() {
+            if f.pushed != f.popped {
+                panic!("tt_fifo_check: CB{cb:?} pushed {} but popped {}", f.pushed, f.popped);
+            }
+        }
+    }
+
     /// Lower the remaining plain ops of a TT kernel to their `TTOp` form:
     /// elementwise/select to SFPU programs, copes to L1 moves, and the
     /// phase sections around the reader and compute roles.
+    // The debugging gate below makes the rest of this function unreachable on
+    // purpose while a kernel is being brought up.
+    #[allow(unreachable_code)]
     pub fn tt_dataflow_select(&mut self) {
         if !self.device_info().tenstorrent {
             return;
         }
+        // Debugging gate. A kernel that does not pass stops here, so its IR can
+        // be checked for manually visible reserve/wait/push/pop before this pass
+        // runs. Remove this `todo!()` for that kernel only once its IR at this
+        // boundary is good; then this pass and the ones after it are debugged.
+        todo!("tt_dataflow_select: the IR here must show reserve/wait/push/pop; remove this todo once it is good");
         // A **broadcast operand** is a value with fewer tile axes than the op
         // it feeds (`exp(x - max)`: the `[32]` max row against a `[32,32]`
         // tile). Re-materialise the `Op::Expand` the frontend wrote and
@@ -8381,4 +8948,63 @@ mod acceptance {
         }
         assert!(bad.is_empty(), "expected one row body, one load, one store; got {bad:?}");
     }
+}
+
+#[cfg(test)]
+mod ir_contract {
+    use super::acceptance::tt_kernel;
+    use super::*;
+
+    /// A gather with arbitrary indices: the row index is loaded from a tensor,
+    /// so the source address is not an arithmetic progression. Scalar accesses
+    /// (no tile lanes), which is where the emitter starts.
+    fn gather_fixture() -> Kernel {
+        let mut k = tt_kernel();
+        let src = k.param(DType::F32);
+        let idx = k.param(DType::I64);
+        let dst = k.param_mut(DType::F32);
+        let rows = k.const_idx(64i64);
+        k.loop_over(rows, |k, i| {
+            let row = k.load(idx, i);
+            let stride = k.const_idx(64i64);
+            let base = k.binary(row, stride, BOp::Mul);
+            let lane = k.const_idx(0i64);
+            let at = k.binary(base, lane, BOp::Add);
+            let x = k.load(src, at);
+            k.store(dst, x, at);
+        });
+        k
+    }
+
+    /// The IR the gather must have at each boundary: textual, as the debug
+    /// printer writes it, plus the kernel hash. An exact contract, updated
+    /// deliberately when a pass changes shape.
+    #[test]
+    fn gather_pipeline_ir_is_frozen() {
+        let mut k = gather_fixture();
+        let entry = format!("{k}");
+        let entry_hash = k.get_hash();
+
+        k.tt_tile();
+        k.tt_unfold();
+        k.tt_reindex();
+        k.default_epilogue();
+        k.tt_add_movers();
+        k.tt_sync_cbs();
+        k.tt_dedup_pushes();
+        k.tt_place_pops();
+        k.tt_fifo_check();
+        let boundary = format!("{k}");
+        let boundary_hash = k.get_hash();
+
+        assert_eq!(entry, ENTRY_IR, "tt_tile entry IR");
+        assert_eq!(entry_hash, ENTRY_HASH, "tt_tile entry hash");
+        assert_eq!(boundary, BOUNDARY_IR, "tt_dataflow_select entry IR");
+        assert_eq!(boundary_hash, BOUNDARY_HASH, "tt_dataflow_select entry hash");
+    }
+
+    const ENTRY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r3: i64 = 64\n for r4 in 0..r3 {    // 0..=63\n   r5: i64 = load r1[r4]    // 0..=63\n   r6: i64 = 64\n   r7: i64 = r5 * r6\n   r8: i64 = 0\n   r9: i64 = r7 + r8\n   r10: f32 = load r0[r9]    // 0..=0\n   store r2[r9] = r10    // 0..=0\n }\n\n";
+    const ENTRY_HASH: u64 = 0xf50f_4928_19d0_184f;
+    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r3: i64 = 64\n for r4 in 0..r3 {    // 0..=63\n   r5: i64 = load r1[r4]    // 0..=63\n   r7: i64 = r3 * r5\n   r10: f32 = load r0[r7]    // 0..=0\n   store r2[r7] = r10    // 0..=0\n }\n\n";
+    const BOUNDARY_HASH: u64 = 0x360d_ffdd_cc85_80dd;
 }

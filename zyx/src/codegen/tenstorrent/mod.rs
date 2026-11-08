@@ -42,6 +42,7 @@ pub mod l1;
 pub mod loops;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub mod matmul;
+pub mod riscv;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub mod sfpu;
 

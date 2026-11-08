@@ -3,6 +3,20 @@
 This file is the current design, state and next steps. History is in git; do not
 append session logs here. If something here is wrong, fix or delete it.
 
+## Governing rule (user, 2026-11-09)
+
+**Follow tt-metal unless there is a reason not to do the same thing.** A
+deviation states its reason in the same place the deviation is described.
+
+**The hardware limit is 64-byte congruence, hence whole-row reads.** A gather
+works at **scalar granularity**: by default the kernel loads a whole row for
+**each** scalar it names. Everything beyond that — row or tile granularity, one
+transfer covering several scalars — is an **optimization**, never a precondition
+and never something the sync, the CB page or the lowering may assume.
+
+This rule governs every hardware decision below (page size, the four syncs,
+launch, firmware, addressing). It is not an example; it is the rule.
+
 ## Goal
 
 One forward step of llama-3.2-3B on `Dev::TT(0)` (ttsim), end to end, all 28
@@ -36,30 +50,82 @@ Commits this session:
   `zk4x/tt-isa`, Apache-2.0, credited to the metalium-rs authors, transfer on
   request). `zyx` itself is **not** published.
 
-Where things stand:
+Where things stand (2026-11-09):
 
-- `tt_add_movers` ends in a gate `todo!()`. Every TT compile stops there on
-  purpose. Do not remove it until the IR at the pass exit is right.
-- No TT kernel has ever executed end to end; the model has never run.
+- **Uncommitted tree.** Everything below is in the working tree, not in a
+  commit.
+- A debugging gate `todo!()` sits at the **start of `tt_dataflow_select`**. Every
+  TT compile stops there on purpose: the IR at that boundary must show the CB
+  syncs (reserve/wait/push/pop) before the gate is removed for that kernel. When
+  a kernel does not pass, the gate is put back, the IR is checked, and only when
+  it is good is the gate removed and the later passes debugged.
+- **Step 1 (CB ops) is in the tree:** the four constructors, `tt_sync_cbs`,
+  `tt_dedup_pushes`, `tt_place_pops`, `tt_fifo_check`/`fifo_check_copy`, wired in
+  `device_epilogue` after `tt_add_movers` in the recorded order.
+  `cargo build` clean; `cargo test --lib` 129 pass, 1 fail (the gate);
+  `ir_contract` green with the four passes run before the boundary snapshot.
+- **The tensor gather does not reach the gate:** `tt_sync_cbs` panics at its
+  pack store — `CB(142) publish run fills 32 datums, not whole pages`. Its
+  traffic is 32-datum vectors while `tt_add_movers` gives every CB a 1024-datum
+  (tile) page, and the same mismatch makes its reader copy transfer
+  `len * el = 4 KiB` from a 512-byte tensor. Page size versus non-tile traffic
+  is the open question below.
+- **One TT program has executed end to end:** the gather writeback on RISCV B,
+  through the emitted RISC-V and the `exec_b` firmware (see below). No
+  tensor-level kernel has run yet; the model has never run.
 - `24_tt.rs` holds llama-shaped op groups, not the model's real 16 kernels yet.
 - `cargo build`: clean, no warnings.
-- `cargo test --lib`: 120 pass, 1 fail —
+- `cargo test --lib`: 129 pass, 1 fail —
   `kernel::tenstorrent::acceptance::activations_are_one_row_body` panics at the
   gate. Expected while the gate stands.
+- `cargo test --test 23_tt_lowering`: all gates stop at the same gate except the
+  new `gather` test, which stops in `tt_sync_cbs` (partial-page publish).
 - `cargo test --test 24_tt --no-run`: compiles.
-- `cargo package`: verifies from the packaged sources (172 files, 5.7 MiB,
-  1.3 MiB compressed). Cargo warns that `05_misc`, `14_tenstorrent_single`,
-  `15_tenstorrent_multi`, `18_tenstorrent_passes`, `23_tt_lowering`, `24_tt`
-  and `mnist` are not in the package (they are not in `include`); harmless.
+- `cargo package`: was verified earlier (172 files, 1.3 MiB compressed); it will
+  not verify now because `tt-isa` is a path dependency.
+
+What exists now:
+
+- `src/codegen/tenstorrent/riscv.rs`: RV32I encoders and `Assembler`
+  (labels/branch fixup), inline NOC issue/wait/drain, and `Gather::program` (row
+  gather, then sequential writeback, one loop). 7 unit tests.
+- `firmware/tt-firmware/src/bin/exec_b.rs`: executes a staged program on RISCV B
+  through `tt_isa::mailbox::exec` — poll `SEQ`, validate, invalidate the
+  I-cache, call with `a0` = args, publish `RET`/`DONE`. `ttinsn::call_with` is
+  the call. The image is built and instruction-gated.
+- `ttsim::exec`: the owner-thread command that stages L1 blocks, boots `EXEC_B`,
+  runs one generation and reads DRAM back.
+- Green test: `backend::tenstorrent::ttsim::tests::gather_writeback_runs_on_riscv_b`
+  — four 64-byte rows read in the order 2, 0, 3, 1, checked against the host.
+- IR contract test: `kernel::tenstorrent::ir_contract::gather_pipeline_ir_is_frozen`
+  — the gather fixture (custom kernel API: loop, index loaded from a param,
+  address `index*64`) asserted as printed IR plus `get_hash()` at the `tt_tile`
+  entry (`0xf50f_4928_19d0_184f`) and at the `tt_dataflow_select` entry
+  (`0x360d_ffdd_cc85_80dd`). The boundary strings are frozen as they are now and
+  are updated when `tt_sync_cbs` lands.
+- `TTOp::Reader(Box<TTRoleProgram>)` and `TTOp::Writer(...)` exist in the IR,
+  with debug printing; nothing emits them yet.
+- `TTOp::{ReserveBack, PushBack, WaitFront, PopFront}` (`{ cb: OpId, n: u8 }`)
+  exist as variants, with debug printing and parameter/effect arms; their
+  constructors and the passes that place them are in the tree (see "Step 1"
+  above and the loop-shape evidence under "Restore sources").
+- `tt-isa` is a path dependency (`../../tt-isa`) while it is edited; the
+  firmware manifest uses an absolute path to it (`tt-firmware/Cargo.toml.in`),
+  which must become the published version before packaging.
 
 ## Session start
 
 1. Read this file end to end. Do not grep it for a keyword.
 2. `cd zyx && cargo build`; `cargo test --lib` (the gate failure is the only
    expected red); `cargo test --test 24_tt --no-run`.
-3. Settle the open questions below in order, one at a time. Do not implement
+3. Run the two green tests that anchor the emitter:
+   `TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so cargo test
+   --lib backend::tenstorrent::ttsim::tests::gather_writeback_runs_on_riscv_b -- --exact`
+   and `cargo test --lib kernel::tenstorrent::ir_contract`.
+4. Settle the open questions below in order, one at a time. Do not implement
    ahead of an unanswered question.
-4. Then work the `Next` list.
+5. Then work the `Next` list. Do not scope it down: the target is the full
+   Tenstorrent backend, one complete step at a time.
 
 ## Pipeline
 
@@ -69,7 +135,11 @@ tt_tile          normalize tiling: one tile axis + one 32-lane axis; grid split
 tt_unfold        Exp2/Log2/Sin/Cos -> IR
 tt_reindex       logical index -> tile-datum units (single-reduce template)
 default_epilogue fold/LICM/algebra/CSE/DCE
-tt_add_movers    reader/writer CB traffic + sections (device epilogue)
+tt_add_movers    reader/writer CB traffic + EndReader/EndCompute section markers
+tt_sync_cbs      place ReserveBack/PushBack/WaitFront/PopFront (restored)
+tt_dedup_pushes  merge adjacent PushBack
+tt_place_pops    place PopFront after the last read
+tt_fifo_check    CB balance and depth check: an overfill is a compile error
 tt_dataflow_select  tiled SSA -> typed TTOp (row programs, matmul, copy), no
                     indexing, no tile layout knowledge
 tt_sfpu_fusion   merge row programs into cones (virtual lane registers)
@@ -82,9 +152,94 @@ tt_verify        post-allocation invariants
 `device_epilogue` runs once per candidate. Only the search passes are optional;
 everything above is non-optional and must be loud on failure.
 
-Codegen (`codegen/tenstorrent/`) is the encoder and the renderer. The backend
-(`backend/tenstorrent/`) is transport plus dispatch; it decodes nothing and
-decides nothing.
+`tt_dataflow_select` is the **SSA → machine-IR boundary**: its input is tiled,
+canonical SSA with the CB plan and the section markers; its output is typed
+native ops with no SSA left. That is why the debugging gate sits at its start.
+
+Codegen (`codegen/tenstorrent/`, with `riscv.rs` for the machine-code emitter) is
+the encoder and the renderer. The backend (`backend/tenstorrent/`) is transport
+plus dispatch; it decodes nothing and decides nothing.
+
+## Role programs are RISC-V code
+
+zyx emits the RISC-V itself. A program is RISC-V code at a fixed address, called
+by its firmware and returning with `ret`; the Tensix words are inline `.ttinsn`
+constants in that stream. This replaces the staged word list, `run_stream`/
+`Pusher`, the loop table, the streamed-batch protocol and MOP/REPLAY loop
+lowering.
+
+### The hardware, and what tt-metal does
+
+- Five RISC-V cores per Tensix tile: BRISC (B) and NCRISC (NC) move data,
+  TRISC0/1/2 (T0/T1/T2) drive Tensix threads 0/1/2 (unpack/math/pack). All five
+  run RV32IM; they differ by memory window, reset PC and what they may issue. The
+  Tensix engine is a separate ISA (unpack, math, SFPU, pack) and has no branches.
+  Every loop is a RISC-V branch, and every loop-varying address is computed in
+  RISC-V registers.
+- tt-metal compiles one kernel per core, links it against the resident firmware
+  with `-Wl,--just-symbols=<firmware>.elf` (`tt_metal/jit_build/build.cpp:628`)
+  so firmware symbols resolve to absolute addresses, and places it at
+  `__kernel_text_start = __fw_export_text_end` from the kernel link script — a
+  fixed address chosen by the firmware layout, not by the kernel.
+- The firmware calls the kernel as a function:
+  `reinterpret_cast<uint32_t (*)()>(kernel_lma)()` (`trisc.cc:215`). Arguments
+  are an L1 array: the firmware computes the base
+  (`rta_l1_base = kernel_config_base + rta_offset`, `firmware_common.h:147`) and
+  the kernel reads it with `get_arg_val` → `lw` (`dataflow_api.h:108-152`).
+- BRISC invalidates the I-cache for all five cores after the kernels are loaded
+  and before `run_triscs` (`brisc.cc:239-241`, `:448-451`). The host cannot do
+  it; the register is on the tile.
+- At depth 1 the compute loop body is loop-invariant: the CB slot is fixed and
+  `cb_reserve_back`/`cb_push_back`/`cb_wait_front`/`cb_pop_front` move the CB
+  interface pointers and counters in L1, not the instruction words
+  (`dataflow_api.h:207/259/404/474`). That is why inline `.ttinsn` constants are
+  correct inside a loop.
+- The four CB ops are `FORCE_INLINE` in tt-metal, so no callable symbols exist.
+  The compiled reader's `wait_front` poll is five instructions —
+  `lbu`/`beq`/`fence`/`lbu`/`bne` (`ncrisc.elf`, 0x609c) — and on Blackhole
+  `invalidate_l1_cache()` is `fence` (`risc_common.h:153`).
+- The three TRISCs run the same compute source with different
+  `UCK_CHLKC_UNPACK/MATH/PACK` (`chlkc_list.h`), so T0/T1/T2 have identical trip
+  counts by construction; the CB waits carry the cross-thread pacing.
+
+### What zyx emits
+
+- One RISC-V program per role (T0/T1/T2) and per mover (B/NC), emitted by
+  `codegen/tenstorrent/riscv.rs`: encoders, labels and branch fixup, loop
+  counters, and the inline Tensix/CB/(for movers) NOC sequences. The result is
+  still a flat `Box<[u32]>` (`TTRoleProgram.words`); `loops` is deleted. Mixed
+  Tensix and RISC-V words are both 32-bit; a disassembler is the debug tool
+  (like the SPIR-V text dump), not a typed stream.
+- Registers: caller-saved only, `t0–t6` and `a0–a7`; never `sp`, `gp`, `tp`,
+  `ra`, `s0–s11`. A program is a leaf: no calls, no stack, ends with `ret`.
+  Arguments: `a0` is the base of this launch's `u32` args array in L1; the
+  program copies what it needs into `t*`. Constants are materialized with
+  `lui`/`addi`.
+- Tensix words are inline (the `.ttinsn` operand form), one word each. The CB ops
+  and the NOC ops are inline sequences from the same emitter. No push into
+  `INSTRN_BUF`, no push window, no MOP config, no per-run replay.
+- Placement: allocated once at first compile in `l1::PROGRAM_CACHE`
+  (`0x144000..0x180000`, 240 KiB) and never moved; monotonic allocation, no
+  relocation. Addresses are final from first compile, so absolute addressing and
+  a direct `jalr` need no fixup. The 16 llama kernels are 16 × 3 = 48 role
+  programs and fit (today's programs are tens of words: `sfpu/mod.rs:900`,
+  `loops.rs:430/517/538`; the staging slots are 4 × 32 KiB).
+- Entry: the firmware reads the program address, length and args base from
+  `tt_isa::mailbox::exec`, validates the address, invalidates the I-cache, and
+  calls the program with `a0` = args. The executor image is `exec_b`
+  (`firmware/tt-firmware/src/bin/exec_b.rs`); `ttinsn::call_with` is the call
+  and `ret` the return. The host writes `PROGRAM`/`LEN`/`ARGS`, then `SEQ`; the
+  executor publishes `ERROR`, `RET` and `DONE`. The first test of the whole
+  path is the gather writeback (`ttsim::exec`).
+- `dm` is gone: the reader and writer are programs on B and NC. `KERNEL`,
+  `LAUNCH`, `KERNEL_WAIT`, `BARRIER`, `CALL`, `POKE`, `WAIT` are dispatch
+  constructs that belong to a command queue (tt-metal keeps them on dispatch
+  cores and host traces), not to the worker movers; nothing emits them now.
+- The CB ops and sync passes are restored from `dc9a1e3d^`: `TTOp::{ReserveBack,
+  PushBack, WaitFront, PopFront}` (each `{ cb: OpId, n: u8 }`), placed by
+  `tt_sync_cbs`, deduplicated by `tt_dedup_pushes`, closed by `tt_place_pops`,
+  and proven by `tt_fifo_check`/`fifo_check_copy`. `tt_lock_dst` does not come
+  back: DST is `tt_dst_reuse` by liveness plus `tt_reg_sync` at role seams.
 
 ## Memory model
 
@@ -114,8 +269,8 @@ DRAM   device memory      only kernel inputs/outputs
 
 ## Hard invariant: no DRAM round-trip inside a kernel
 
-One zyx `Kernel` is one program: one reader list, one compute role set, one
-writer list, launched once.
+One zyx `Kernel` is one program: one reader program, one compute role set, one
+writer program, launched once.
 
 - DRAM is touched only at the boundary: reads of `Param Global`/`GlobalMut` by
   the reader, writes of `Param GlobalMut` by the writer.
@@ -151,20 +306,15 @@ writer list, launched once.
   divisor leaves an outer part within the max, the split is a loud rejection;
   the later form is `pad_to` the group to a multiple of the grid max, then
   split.
-- **`tt_tile` chooses the tiling (user, 2026-11-08): whatever is easiest to
-  lower.** The easiest form is: **one loop iteration = one tile**, so every
-  access is `grid group(s) + Loop(tiles) + Unroll(32 within the tile)` and a
-  group/lane never enumerates elements when a tile is the unit. Concretely:
-  - a group/lane whose step is a whole tile (a multiple of 1024 datums) is the
-    tile axis and becomes the `Loop`;
-  - the grid is over tile ordinals and is capped by the split above;
-  - the within-tile row/col lanes stay `Unroll(32)`.
-  Why it is easiest: the CB ring is one tile deep, the traffic is one whole
-  tile per iteration (a congruent `TILE_SLOT` image), the compute index is the
-  tile's own `row*32+col`, and `LIST_MAX` is satisfied by construction. Kernel 1
-  (`[4096,8,128]`): 16384 tiles, 140 cores → ~117 tiles per core, 117 write
-  entries, versus the current 32-tile-lane form whose 4096 per core rows cannot
-  fit one list.
+- **`tt_tile` completes the tiling; it assumes nothing about the page.** The
+  default movement unit is the traffic the index names: a scalar access moves
+  its whole row (64-byte congruence is the hardware limit), and each scalar
+  access gets its own row load. Row- or tile-granular movement (one iteration =
+  one tile, a congruent `TILE_SLOT` image) is an **optimization** the search may
+  choose, never a precondition: `tt_tile`, `tt_add_movers`, `tt_sync_cbs`, the CB
+  page and the emitter follow whatever the access actually moves. The earlier
+  "one loop iteration = one tile, the traffic is one whole tile per iteration"
+  text here was the agent's invention and is deleted.
 
 ## Boundary indexing: `tt_canonical_tile`
 
@@ -207,14 +357,16 @@ l1    = tile*1024 + (row % 32)*32 + (col % 32)
   index naming a `Param { Variable }` cannot be tabled (compile-time need):
   `llama_kv_cache_assign_*` is that case.
 
-## CB ring and credits
+## CB ring and the four syncs
 
 tt-metal is the reference (`~/Dev/cpp/tt-metal/tt_metal/hw/inc`).
 
-- **A CB is a fixed-depth ring, independent of the loop.** tt-metal's kernels
-  loop over `n_tiles`; the CB is `tiles_per_cb` pages and the trip count never
-  sizes it. The operands are per-page. Depth 1 now; the slot is
-  `(iter % depth) * 1024`, i.e. 0.
+- **A CB is a fixed-depth ring, independent of the loop.** Depth 1 now, slot 0.
+  The page is the amount of traffic the access moves: by default a whole
+  congruent row per scalar access, and a tile only when the search has tiled the
+  kernel. `n` in the four syncs counts those pages, exactly as tt-metal's
+  configured `page_size` does (`num_pages * fifo_page_size`,
+  `dataflow_api.h:209`).
 - **Two counters per CB**, `received` (pushes) and `acked` (pops).
   `reserve_back` waits `depth - (received - acked) >= n`; `wait_front` waits
   `received - acked >= n`; both poll and do not advance pointers. `push_back`
@@ -223,47 +375,42 @@ tt-metal is the reference (`~/Dev/cpp/tt-metal/tt_metal/hw/inc`).
   cycle must equal the depth.
 - **One producer and one consumer per CB.** Only one thread pushes a CB, only
   one pops it.
-- **Four endpoints** (`tt_isa::dataflow`):
-  reader (B) `Reserve`/`Push` on Input; unpack (T0) `Wait`/`Pop` on Input;
-  pack (T2) `Reserve`/`Push` on Output; writer (NC) `Wait`/`Pop` on Output.
-  Capacity < 0x8000.
-- **Where each half runs.** The reader/writer halves are `dm::op::CB` entries
-  (`dm::Entry::Buffer`) in their mover lists. The unpack/pack halves run in the
-  role runner, which already implements the streamed program:
-  `[VERSION, batches, capacity, role]` + `[body_addr, body_len, 0, 0]` per
-  batch, with `Wait`/`Pop` (T0) or `Reserve`/`Push` (T2) around each batch body
-  and `retire_batch` between batches
-  (`zyx/firmware/tt-firmware/src/corpus.rs`). Batch bodies must be resident
-  programs in `l1::PROGRAM_CACHE`; a `(0,0)` batch is an empty body.
-- **The loop lives in the kernel**, one tile per iteration, in all three roles:
+- **Four endpoints**: reader (B) `Reserve`/`Push` on Input; unpack (T0)
+  `Wait`/`Pop` on Input; pack (T2) `Reserve`/`Push` on Output; writer (NC)
+  `Wait`/`Pop` on Output. Capacity < 0x8000.
+- **The loop lives in the kernel**, one page per iteration, in every role:
   `for i { reserve; read; push }` (reader), `for i { wait; compute; pop;
   reserve; pack; push }` (compute), `for i { wait; write; pop }` (writer).
-- **Launch order.** Today `execute()` runs the B list to completion, then the
-  roles, then the NC list, and `mover_list` always waits. With per-iteration
-  credits at depth 1 the second `Reserve` blocks forever. The launch must
-  submit the B and NC lists without waiting, run the roles, then join both.
-  Split `mover_list` into submit (`OP`/`LEN`/`SEQ`) and `wait_done`.
-- **Caps.** `dm::LIST_MAX = 512` entries per role per core; the entry count is
-  stream shape, so it is checked at compile time (`tt_verify`), never split at
-  launch. A kernel that does not fit is a loud error.
+- **Where each half runs**: in the RISC-V program of its own core, as inline
+  sequences emitted by codegen from `TTOp::{ReserveBack, PushBack, WaitFront,
+  PopFront}`. They are not data, not list entries and not pushes.
+  `tt_sync_cbs` places them, `tt_dedup_pushes` merges adjacent pushes,
+  `tt_place_pops` places the pops, and `tt_fifo_check` proves the balance before
+  codegen.
+- **No credits, no batches, no `retire_batch`.** With a real loop the four ops
+  are the synchronization. The credit machinery in earlier notes existed only
+  because a mover list could not block inside an entry.
+- **Launch order**: the reader and writer must run concurrently with compute, or
+  a depth-1 `Reserve` blocks forever. The host starts all five cores (a
+  generation per mailbox) and joins them; no list is submitted.
+- **Caps**: `tt_fifo_check` checks depth at compile time; a producer past depth
+  is a compile error.
 - A slot index in a transaction must be the loop counter or 0; anything else is
   a compile error.
 
 ## 64-byte congruence
 
-The mover validates every entry: a `READ`/`WRITE` needs
-`dram_offset % 64 == l1 % 64` for reads (`% 16` for writes), else error 4.
+This was the `dm` mover's validation: `dram_offset % 64 == l1 % 64` for reads
+(`% 16` for writes), else error 4. With `dm` dropped, the NOC transactions are
+emitted by the mover programs themselves, so the check is no longer a mover gate;
+what replaces it is part of the open questions.
 
 - The canonical transform adds the same datum offset on both sides, so whole
-  tiles and rows are congruent.
+  tiles and rows stay congruent.
 - CB bases are placed at `≡16 mod 64` (`tt_place_cbs`), where a tile image's
   datum block lives; a tile slot is `TILE_SLOT = 4160` with a 16-byte header.
-- A move below the mover's granularity, or whose two sides disagree, is a
-  compile error. The fix for a partial move is per-entry chunking: round the
-  DRAM address down to 64 bytes and shift the L1 address by the same delta,
-  with the CB side in datum units (`tile*1024 + datum`).
-- `fifo_check_copy` is the proof: per-variable stride congruence; an unprovable
-  index is a loud rejection.
+- `fifo_check_copy` proves per-variable stride congruence at compile time; an
+  unprovable index is a loud rejection. It comes back with `tt_fifo_check`.
 
 ## Compilation, images, dispatch
 
@@ -271,65 +418,101 @@ Compilation ends at codegen. What runs is the images, not the `Kernel`.
 
 - `Image { core, address, len }` per core's bytes in device DRAM; `TTProgram`
   holds a `sequence` of `ImageId`s plus `lens`, `gws`, param counts.
+- Images are uploaded to DRAM once. Each program is written once into its
+  permanent `l1::PROGRAM_CACHE` address: monotonic allocation, never moved, no
+  relocation. The 16 llama kernels (16 × 3 role programs) fit in the 240 KiB
+  region; eviction has no case at this workload.
 - Residency is per `(tile, core)` over five slots (B, NC, T0, T1, T2), keyed by
   `(ImageId, generation)`; a miss is a NoC load from the image's DRAM copy.
-  Mover firmware is an image; boot is its first residency miss.
-- A launch binds arguments and issues: chunk addresses, variable values, grid
-  size, the sequence/generation words. It adds, removes, reorders or encodes
-  nothing, and computes no strides.
+- A launch binds arguments and issues: program address, args base (`a0`), grid
+  size, generation. It adds, removes, reorders or encodes nothing, and computes
+  no strides.
 - Grid dispatch is a launch loop over the grid points (dense order); the
   program is tile-uniform and only the DRAM slice differs.
-- `Pool::TT` is device DRAM; host staging is upload/readback only. The
-  DRAM↔L1 boundary belongs to the movers, never the host. A 16-bit output's
+- `Pool::TT` is device DRAM; host staging is upload/readback only. The DRAM↔L1
+  boundary belongs to the mover programs, never the host. A 16-bit output's
   narrowing is the host's only because the pinned ttsim refuses the packer's
   format conversion (`pack_fmt_conv_mode=0x105`); silicon does it on the card.
-- `TTDmMove`, role programs (`TTOp::Unpack`/`Math`/`Pack` with
-  `TTRoleProgram { words, loops }`), `DmRead`/`DmWrite` pages and the section
-  markers are the rendered IR; `compile` collects them, it does not decide.
+- Rendered IR: `TTOp::Unpack`/`Math`/`Pack` with `TTRoleProgram { words }` (a
+  flat mixed Tensix/RISC-V word stream), the reader/writer programs, and the
+  `EndReader`/`EndCompute` section markers. `compile` collects them; it does not
+  decide.
 
 ## Loops
 
-- The Tensix coprocessor has no branch. Loop control is `REPLAY` (a body that
-  fits its buffer: 32 words) or the mailbox loop table
-  (`code::Loop { start, len, count }`, at most 4 per role, `count <= 128`).
-- Trip counts must fold to `Const`; a `Param`-backed count is a loud TT compile
-  error.
+- A loop is RISC-V control flow: a counter in a caller-saved register, the body,
+  a decrement and a backward branch. There is no loop table, no REPLAY/MOP loop
+  lowering and no unrolled loop body.
+- `Item::Repeat` becomes that loop. Loop-level replay and `Item::Shared` (the
+  matmul face-block replay) are deleted with it. The SFPU builder's own `REPLAY`
+  stays: it repeats recorded instructions inside a math program, which is an
+  op-level hardware feature, not loop control flow.
+- One iteration = one tile (`tt_tile`). At depth 1 the body's Tensix words are
+  loop-invariant, so they are inline constants.
+- A trip count may be a launch argument: it is loaded once from the args array
+  (`a0` base) before the loop. It does not have to fold to a constant.
+- Nesting: the grid split wraps the tile loop, two levels now. The emitter is
+  built so deeper nesting is a counter stack rather than a rewrite.
 - Unrolling is a search decision before the device epilogue, never a backend
   choice.
-- A role program whose body is longer than the replay buffer is stored once and
-  repeated through the loop table; `start` indexes the role program including
-  its preamble (mask `LOOPED`/`STREAMED` wherever a length is used as a count).
-- `TTRoleProgram` is a flat word list plus `loops` today. The per-batch streamed
-  form above is what per-iteration credits need.
 
 ## Restore sources (do not reinvent)
 
 - `dc9a1e3d^` (pre-native emitter) is the reference implementation of the CB
   mechanics, and it drove the TT path including tt_gemm:
-  - `TTOp::{ReserveBack, PushBack, WaitFront, PopFront}` and
-    `{MathLock, MathUnlock, PackLock, PackUnlock}`.
-  - `tt_sync_cbs` (577 lines): places the four syncs; one tile per iteration
-    when `trip > depth`, a block only when the block fits the CB; rejects a slot
-    that is neither the loop counter nor 0.
-  - `tt_place_pops`: places pops on the wait-carrying IR; rebases windowed
-    slots.
-  - `tt_fifo_check`: reserve/wait balance at each section end,
-    `pushed == popped`, producer-past-depth (deadlock guard), symbolic-loop
-    traffic rejected.
+  - `TTOp::{ReserveBack, PushBack, WaitFront, PopFront}`, each
+    `{ cb: OpId, n: u8 }`, with the `tt_reserve_back`/`tt_push_back`/
+    `tt_wait_front`/`tt_pop_front` constructors. They are emitted by
+    `tt_sync_cbs`, not by `tt_add_movers`.
+  - `tt_sync_cbs` (577 lines): places the four syncs. Port **only the relevant
+    sections**: its window batching applies to an indexed read at a slot other
+    than 0, which the new tiling never produces (slot 0), and its arms name
+    `TTOp::LLK`/`LLKBcast`/`ReduceTile`/`MatmulTiles`/`SigmoidTile`/`SiluTile`,
+    none of which exist today; re-express those against `Copy`/`Unpack`/`Math`/
+    `Pack`/`Unpacr`. Section insertion and the publish tally stay.
+  - `tt_place_pops` and `tt_dedup_pushes`: shrink to what the per-iteration form
+    still needs. `tt_place_pops` places `PopFront` after the last read;
+    `tt_dedup_pushes` merges adjacent `PushBack`.
+  - `tt_fifo_check`: reserve/wait balance at each section end, `pushed ==
+    popped`, producer-past-depth (deadlock guard), symbolic-loop traffic
+    rejected. This is the gate that prevents board hangs and must pass.
   - `fifo_check_copy`: 64-byte congruence per variable stride.
-  - `tt_verify`: DST lock firewall.
+  - `tt_verify`: the post-allocation firewall, back in the pipeline.
+  - `tt_lock_dst` does **not** come back: DST is `tt_dst_reuse` (liveness) plus
+    `tt_reg_sync` (role seams), as today.
   - Pipeline there: `tt_tile -> tt_lower_llks -> tt_lock_dst ->
     tt_dedup_pushes -> tt_init_math -> tt_sync_cbs -> tt_place_pops -> verify
-    -> CSE -> DCE -> tt_verify`.
+    -> CSE -> DCE -> tt_verify`. The current order is in "Pipeline" above;
+    `tt_dedup_pushes` now runs after `tt_sync_cbs`.
 - `588110a9` is the same mechanism one generation earlier
   (`CBState`/`CBBatch`/`CBEvent`/`CBEmitter`, batching pre-pass), where
   `t > config[cb]` stayed streaming and the verifier made an overfill a compile
   error.
 - `a8fa78b9`: 14.444 TFLOPS, bad 0, M5120 N11264 K1024 with depth 2.
-- `~/Dev/cpp/tt-metal` is the hardware reference for CB semantics and the
-  `tiles_per_cb`/`cb_reserve_back`/`cb_push_back`/`cb_wait_front`/`cb_pop_front`
-  shape. `examples/qwen3.8-27b/tenstorrent_debugging.md` (git history) is the
-  five-core / reserve-push-wait-pop reference.
+- `~/Dev/cpp/tt-metal` is the hardware reference for CB semantics and for the
+  compiled-kernel shape: `dataflow_api.h` (`cb_reserve_back`, `cb_push_back`,
+  `cb_wait_front`, `cb_pop_front`, `get_arg_val`), `brisc.cc`/`trisc.cc`/
+  `ncrisc.cc` (call, args, I-cache invalidation), `ckernel_ops.h` (`.ttinsn`),
+  `matmul_multi_core/kernels/` (loops). `examples/qwen3.8-27b/
+  tenstorrent_debugging.md` (git history) is the five-core /
+  reserve-push-wait-pop reference.
+- **The per-role loop shape is tt-metal's, read from the kernels:**
+  `tt_metal/kernels/dataflow/reader_unary.cpp` is `for i { reserve_back(1);
+  noc_async_read; barrier; push_back(1); }`;
+  `programming_examples/sfpu_eltwise_chain/kernels/dataflow/writer.cpp` is
+  `wait_front(1); get_read_ptr; noc_async_write; barrier; pop_front(1)`; its
+  `compute/compute.cpp` is `wait_front; copy_tile…; reserve_back(out);
+  pack_tile; pop_front(in); push_back(out)`. So the four syncs sit **inside the
+  loop body, once per iteration**, `n` is in pages (`cb_push_back` multiplies it
+  by `fifo_page_size`), and the consumer addresses the CB through
+  `get_read_ptr`/`get_write_ptr` (the current pointer), so no index is rebased
+  when a pop advances it.
+- **`programming_examples/loopback/kernels/loopback_dram_copy.cpp`** is the
+  writeback proof: `for i { noc_async_read_page(i, in0, l1); barrier;
+  noc_async_write_page(i, out0, l1); barrier; }` over a plain one-page L1 buffer
+  — no CB at all, one page per iteration. That is the shape of the green
+  gather-writeback test, and it shows a page is whatever the host configured
+  (`fifo_page_size`/L1 page), not necessarily a 32×32 tile.
 
 ## Invariants that do not move
 
@@ -364,7 +547,7 @@ an activation.
 | `llama_embedding_one_hot` | `cast U32 -> F32 has no native row-op program` |
 | `llama_kv_cache_assign_*` | boundary index names `Param { Variable }` (not evaluable at compile time) |
 | `llama_rms_norm` | `to_device: host-staged tensor has no buffer` |
-| `llama_rope` | `B mover refused list 2: error 4` (64-byte congruence) |
+| `llama_rope` | `B mover refused list 2: error 4` (a `dm` mover error; re-check once the movers are programs) |
 | `23_tt_lowering::sum_drop_col` | scalar-per-column store lands at `row*32`, not the face slot |
 
 `24_tt` must be replaced by the model's real 16 kernels, one test each, in the
@@ -393,12 +576,21 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
 - `ZYX_DEBUG=256` NoSearch (seed kernel only); `ZYX_DEBUG=264` (256+8) is the
   post-epilogue TT dump; `ZYX_DEBUG=8` alone prints nothing on the autotune
   path.
-- `ZYX_TT_DUMP=1` prints the mover lists and role byte counts; `ZYX_DST_DUMP=1`
+- `ZYX_TT_DUMP=1` prints the rendered reader/writer traffic and role byte
+  counts (the program dumps replace this once `dm` is dropped); `ZYX_DST_DUMP=1`
   sets `dump_rows = 16` and prints `Outcome.dst`; `ZYX_MOVE_DUMP=1` prints the
   moves.
 - The DST dump covers rows 0..15 only (`mailbox::DUMP_MAX_ROWS = 16`).
 - A test that vanishes with no failure line is a `libttsim` BAR violation: the
   library calls `_Exit`.
+- **A bug first gets the unit test that isolates its half of the chain**, then
+  debugging continues. The IR contract test
+  (`kernel::tenstorrent::ir_contract::gather_pipeline_ir_is_frozen`) is that
+  test for the passes: it builds the gather fixture with the custom kernel API
+  and asserts the printed IR and kernel hash at the `tt_tile` entry and at the
+  `tt_dataflow_select` entry, calling the passes directly so the gate does not
+  fire. The boundary strings are frozen as they are now and updated when
+  `tt_sync_cbs` lands.
 - Run `cargo fmt`; format a single file with
   `rustfmt --config skip_children=true <file>`.
 - `TT_DRAM_PAGE_BYTES = 4096`; `TT_TTSIM_LIB` must point at the vendor pin
@@ -408,19 +600,20 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
 
 - A tile is 32x32 datums; a DST row is 16 datums, so a tile is 64 DST rows
   (32 rows for 16-bit tiles).
-- Data-mover entries are `[u32; 8]`: `[op, channel, port, offset, l1, len, 0, 0]`.
-  `dm::op::{READ=1, WRITE=2, LIST=3, READ_TRANSPOSED=4, FILL=5, KERNEL=6,
-  WAIT=7, READ_BROADCAST_COL=8, BARRIER=9, CALL=10, CB=0x42}`.
-- `dm::LIST = 0x1_4000`, `LIST_MAX = 512`, `ENTRY_BYTES = 32`,
-  `TILE_SLOT = 4160`, `TILE_DATA = 16`, `LIST`/`SCRATCH` per mover, NC has its
-  own list.
-- `tt_isa::dataflow`: `VERSION = 1`, `STEP_WORDS = 4`,
-  `STREAMED = 1 << 30`, `LOOPED = 1 << 31`, counters at `INPUT`/`OUTPUT`/
-  `TRANSFER`, `Action::{Reserve, Wait, Push, Pop}`,
-  `Stream::{Input, Output, Transfer}`, `Endpoint::{Reader, Unpack, Pack,
-  Writer}`.
-- `mailbox::PROGRAM_MAX = 8192` words, four program slots,
-  `loops::MAX = 4`.
+- `dm` (the mover list, `dm::op::*`, `dm::LIST`, `LIST_MAX`, `ENTRY_BYTES`,
+  `KERNEL`/`BARRIER`/`CALL`/`POKE`/`WAIT`) is dropped with the list; the reader
+  and writer are RISC-V programs. `TILE_SLOT = 4160` and `TILE_DATA = 16` stay
+  (the tile image layout).
+- `tt_isa::dataflow`'s streamed program (`VERSION = 1`, `STEP_WORDS = 4`,
+  `STREAMED`, `LOOPED`) is dropped with the staged-word runner. The CB counters
+  and `Action`/`Stream`/`Endpoint` names stay as the description of the ring.
+- `mailbox::PROGRAM_MAX = 8192` words, four program slots (4 × 32 KiB),
+  `l1::PROGRAM_CACHE = 0x144000..0x180000` (240 KiB).
+- The I-cache invalidate primitive is `ttinsn::invalidate_icache(last_written,
+  mask)` (`firmware/tt-firmware/src/ttinsn.rs:298`), mask = one bit per core.
+  The corpus `translate` path already uses it after writing code.
+- RISC-V words and Tensix words are both 32-bit and share the stream; the
+  Tensix word is the `.ttinsn` operand form (`tt_isa::isa::Instruction`).
 - Semaphores: 8, values 0..15, one per `(producer, consumer)` edge. `SEMWAIT`
   is a level test, not a reservation; `SEMGET` must not follow a zero counter.
   `tt_reg_sync` assigns one semaphore per ordered edge.
@@ -502,15 +695,24 @@ Path prefix `~/Dev/rust/metalium-rs`.
 
 Every case below is unproven until it runs green on ttsim:
 
-1. `transfer_roundtrip` — host <-> DRAM, no compute.
-2. `copy` kernel — reader + writer only.
-3. `sigmoid` — SFPU path, CB plan, pack.
-4. `matmul` — Matrix Unit path.
-5. `sum` — reduce path.
-6. Loop/grid — block repeats and the grid split.
-7. Multi-op DST chain — two compute ops with a DST intermediate, no DRAM and
-   no CB round-trip.
-8. One llama forward step, compared against CPU.
+1. ~~**Single mover writeback**~~ — **green on ttsim**
+   (`backend::tenstorrent::ttsim::tests::gather_writeback_runs_on_riscv_b`): one
+   program on RISCV B, inline NOC read/write, one gather loop, four 64-byte rows
+   in the order 2, 0, 3, 1, checked against the host. The emitter, the executor
+   image and `ttsim::exec` are what it proves.
+2. **Reader program** — DRAM → CB with the inline CB ops; the host reads the CB
+   back. The second emitter proof.
+3. **`large_elementwise`** — reader, the T0/T1/T2 roles, writer, checked against
+   the host.
+4. `transfer_roundtrip` — host <-> DRAM, no compute.
+5. `copy` kernel — reader and writer programs together.
+6. `sigmoid` — SFPU path, CB plan, pack.
+7. `matmul` — Matrix Unit path.
+8. `sum` — reduce path.
+9. Loop/grid — nested loops (the grid split wrapping the tile loop).
+10. Multi-op DST chain — two compute ops with a DST intermediate, no DRAM and
+    no CB round-trip.
+11. One llama forward step, compared against CPU.
 
 ## Measured dead ends (do not retry)
 
@@ -524,7 +726,8 @@ Every case below is unproven until it runs green on ttsim:
   failure.
 - `opt_register_tiling` without the TT gate: breaks reduce/matmul lowering.
 - `Op::Expand` before `tt_tile`: breaks `split`'s accumulator pattern.
-- Unrolling IR loops inside `render_section`: hangs; use the loop table.
+- Unrolling IR loops inside `render_section`: hangs; use a RISC-V backward
+  branch.
 - Pinning a root `rust-toolchain.toml` at 1.88.0: the firmware role images
   overflow their 10 KiB L1 slots.
 - A shared global `target-dir`: a second checkout can shadow the test binaries.
@@ -544,6 +747,32 @@ Every case below is unproven until it runs green on ttsim:
   `zyx/firmware/tt-firmware`.
 - metalium-rs was only ever an assembly reference. Do not preserve its
   structure, its abstractions or its dead code.
+- **Follow tt-metal unless there is a good reason not to.** Hardware behaviour,
+  kernel shape, launch shape, CB setup and the order work is proven all follow
+  tt-metal. A deviation is stated with its reason in the same place the
+  deviation is described.
+- **Indexing is arbitrary; affine and tiled addressing are optimizations.** A
+  kernel accesses rows and columns by indices computed from data, in any order:
+  a gather is the case, not an exception. The reader and writer lower the index
+  expression as written (loads, arithmetic, loops, branches); they never assume
+  a constant step, never reject a non-affine step, and never recover a loop by
+  unrolling. Tile indexing and affine steps are forms the compiler may exploit
+  when they happen to hold, never a precondition for lowering. A test that only
+  exercises an affine step proves nothing about the gather path: the gather
+  test uses arbitrary indices and a non-affine read pattern.
+- **No scoping down.** The target is the full Tenstorrent backend, and each step
+  is completed in full. No reduced versions, no "minimal" substitutes, no
+  deferring part of a step because it is large.
+- **Flattening (general direction, applied when it bites).** One layer between
+  the kernel and the hardware: every type and name corresponds to something the
+  spec or ISA has. When an issue lands in an abstraction that only renames,
+  groups, schedules or guards what the hardware already says, it is flattened
+  then: the abstraction is removed and the two real users (host, firmware) say
+  what they need directly. Never design around a bad abstraction. Shared facts
+  (addresses, sizes, register values) may stay where both sides need them; what
+  must not stay is a contract module that turns them into a protocol. This is a
+  direction, not a work item: it is applied only where a concrete problem
+  exposes the layer.
 
 ## Dependency and firmware layout (2026-11-08)
 
@@ -561,86 +790,169 @@ Every case below is unproven until it runs green on ttsim:
   packaged crate's `build.rs` rebuilds the firmware from the packaged sources.
   `zyx` itself is not published.
 
-## Open questions (unclear, to settle one by one)
+## Decisions (2026-11-08, user)
 
-### Tiling and loops
+- Loops are RISC-V branches in the compiled program, as in tt-metal. No flat
+  body lists, no loop table, no compile-time entry addresses.
+- A program is called by its firmware and returns with `ret`; its address is
+  fixed at first compile. Arguments arrive as an L1 `u32` array whose base is in
+  `a0`. The program uses caller-saved registers only and is a leaf.
+- Tensix words are inline `.ttinsn` constants; CB ops and NOC ops are emitted
+  inline by codegen (5–15 words each). No `INSTRN_BUF` push, no push window, no
+  MOP config.
+- Programs live in `PROGRAM_CACHE` at a fixed address: allocated once, never
+  moved, no relocation and no eviction. The 16 llama kernels (48 role programs)
+  fit in 240 KiB.
+- `dm` is dropped. Reader and writer are programs; `KERNEL`/`LAUNCH`/`BARRIER`/
+  `CALL`/`POKE`/`WAIT` are dispatch concepts, not mover work.
+- The debugging gate is a `todo!()` at the start of `tt_dataflow_select` (moved
+  from the end of `tt_add_movers`). It is added back whenever a kernel does not
+  pass and removed only once that kernel's IR at the boundary is good.
+- `TTOp::{ReserveBack, PushBack, WaitFront, PopFront}` (`{ cb, n }`) are
+  restored and emitted by `tt_sync_cbs`; `tt_add_movers` only builds the
+  reader/writer blocks and canonicalizes the compute segment.
+- Pass order: `tt_tile, tt_add_movers, tt_sync_cbs, tt_dedup_pushes,
+  tt_place_pops, tt_fifo_check, tt_dataflow_select, ...`. `tt_fifo_check` is the
+  gate against board deadlocks and is crucial.
+- `tt_sync_cbs` is ported in its relevant sections only; `tt_place_pops` and
+  `tt_dedup_pushes` are shrunk to what is needed; `tt_lock_dst` stays out (DST is
+  `tt_dst_reuse` + `tt_reg_sync`).
+- Loop-level replay and `Item::Shared` are deleted; the SFPU builder's op-level
+  `REPLAY` stays.
+- The word stream stays flat (`Box<[u32]>`). A disassembler is the debug tool,
+  like the SPIR-V text dump; no check on the emitted stream for now.
+- `EndReader`/`EndCompute` stay and are emitted by `tt_add_movers`; no reason to
+  delete them.
+- Emitter loop nesting: **two levels now** (grid split wrapping the tile loop),
+  with the emitter structured so arbitrary nesting is a counter stack later, not
+  a rewrite.
+- Start/join follows tt-metal: the firmware starts and joins the cores from the
+  launch descriptor; the host posts the launch and does not drive generations
+  itself.
+- CB interface setup follows tt-metal: firmware writes `fifo_addr`,
+  `fifo_size`, `fifo_num_pages`, the pointers and the counters before calling
+  the program.
+- First proof order follows tt-metal's examples: **a single mover kernel that
+  writes back first**, then the reader and writer programs, then compute. The
+  role-only `large_elementwise` proof is superseded.
+- The emitter lives in `codegen/tenstorrent/riscv.rs`.
+- The 16-kernel list is not needed for the emitter.
+- **The writeback reference is tt-metal's DRAM loopback example**
+  (`tt_metal/programming_examples/loopback`, `docs/.../dram_loopback.rst`): one
+  data-movement kernel moves a DRAM page into L1 and back out, looped over
+  pages. The gather variant reads each page at an arbitrary index; it is not a
+  tiled matmul dressed up as a mover.
+- **The gather test is a real tensor op** on `Dev::TT(0)`: arbitrary
+  out-of-order indexing, scalar loads, no 32×32 tiling. Its unit counterpart is
+  a hand-built `Kernel` through the custom kernel API (`fold_loops.rs`'s
+  style), not a tensor op.
+- **Test shapes and index values are the agent's choice.** Choosing a tensor
+  shape in a test is not a design decision and is not to be asked about.
+- **IR tests are textual and exact.** `format!("{k}")` must equal the expected
+  string and `Kernel::get_hash()` the expected `u64`; both are literals in the
+  test. They live under `#[cfg(test)]` in `kernel/tenstorrent.rs`, call the
+  passes directly so the debugging gate never fires, and are frozen now and
+  updated when `tt_sync_cbs` lands.
+- **`tt-isa` is our crate to edit at will.** It is a path dependency while it is
+  edited and the published version later. Modules that we would have to change
+  anyway move into zyx instead of being designed around.
+- **Mailboxes follow tt-metal**: one mailbox block per tile with per-core sync
+  words and the launch descriptor, not a per-core trio.
+- **`tt_tile` never folds a lane split back into a loop.** Unwanted splits are
+  prevented at the splitting passes (`opt_split`, `opt_register_tiling`) by the
+  Tenstorrent gate, before `tt_tile` runs.
+- **The two group axes are split independently**, and their trip counts may
+  differ.
+- **DRAM alignment**: a read needs the DRAM and L1 addresses congruent mod 64,
+  a write mod 16; a gather is per-row at computed addresses (never a chunked
+  whole-tile move), and a row stride that is a multiple of 64 makes every access
+  congruent by construction.
+- **NoC initialisation is firmware's**, following tt-metal (`noc_init` and
+  `noc_local_state_init` in `brisc.cc`); the emitted program only writes the
+  initiator registers and triggers.
+- **The four CB syncs sit inside the loop body, once per iteration**, as in
+  tt-metal's `reader_unary.cpp`/`sfpu_eltwise_chain`: `for i { reserve; read;
+  push }` and `for i { wait; compute; pop; reserve; pack; push }`. `n` is in
+  pages. A publish run never crosses a `Loop`/`EndLoop` boundary, so nothing is
+  hoisted across a depth-1 ring.
+- **CB addressing is pointer-relative.** Readers/writers use the CB's current
+  read/write pointer (`get_read_ptr`/`get_write_ptr` in
+  `dataflow_api.h`/`writer.cpp`), so a `PopFront` advancing the pointer never
+  rebases a kernel index; `tt_place_pops` places pops only.
 
-1. Kernel 1's tile axis is `Unroll(32)` and one iteration covers 32 tile rows.
-   **Answered (2026-11-08): `tt_tile` may choose any tiling that is easiest to
-   lower; the chosen rule is one iteration = one tile (see "Tiling").** The
-   change is to turn a tile-stepping `Unroll` into the `Loop`.
-2. If a group length has no divisor whose outer part fits `max_global_work_dims`
-   (a prime above the max), what is the IR: a tail loop, an over-allocated
-   outer with masking, or a loud rejection?
-   **Answered (2026-11-08): loud rejection for now. Later, `pad_to` the group to
-   a multiple of the grid max and split afterwards.**
-3. With both a grid-split loop and a tile loop present, which loop is the batch
-   loop? (The current answer is the tile loop, one tile per batch.)
-4. Does `tt_tile` ever fold an existing lane split back into a loop, and under
-   what condition?
-5. Are the two group axes split independently, and may their loop trip counts
-   differ?
-
-### CB and credits
-
-6. Who places a batch body in `l1::PROGRAM_CACHE`, and who owns that region?
-7. Is that placement compile-time (an image) or launch-time (a mover write)?
-8. Must T0/T1/T2 have identical batch counts? (T1 does no credit action but is
-   synchronized by `retire_batch`.)
-9. May `Reserve n` / `Push n` with `n > 1` be the default so a list fits
-   `LIST_MAX`, and how does the slot advance per push then?
-10. Is one list per mover per launch fixed, or may the launch feed several
-    lists as credits free?
-11. May the NC list be submitted before the roles run (it starts with a
-    `Wait` on Output) and joined after?
-12. Is `tt_place_pops` needed at all at depth 1, where every slot is 0?
-13. Is an explicit `CbDeclare` needed, or is the depth just
-    `storage.len / 1024`?
-14. Does the pack's baked L1 destination need the ring slot at depth > 1, and
-    does it therefore have to stop carrying the loop at depth 1 only?
-
-### Launch and execution
-
-15. Does ttsim advance the movers and the roles together under `tick` when a
-    list is submitted without waiting?
-16. Can the B mover load a program while a reader list is outstanding on it?
-17. Is the order `load programs -> submit B -> submit NC -> run roles -> join`
-    valid, or must program loading happen after the lists are drained?
-18. If a mover refuses an entry while the roles are running, how is the error
-    surfaced and how are the roles stopped?
+## Open questions
 
 ### The model and the 16 kernels
 
-19. What is the exact list of the model's 16 kernels (ops, shapes, order)?
-20. Are all 16 reached at `seq_len = 1` decode, given that CPU prefill crashes?
-21. What counts as one kernel: one compiled `Kernel` per fused op group, with
-    repeated invocations sharing it?
-22. Does `24_tt` get replaced one-for-one by the 16, or extended?
+1. What is the exact list of the model's 16 kernels (ops, shapes, order)?
+2. Are all 16 reached at `seq_len = 1` decode, given that CPU prefill crashes?
+3. What counts as one kernel: one compiled `Kernel` per fused op group, with
+   repeated invocations sharing it?
+4. Does `24_tt` get replaced one-for-one by the 16, or extended?
 
-### Correctness details
+### Correctness
 
-23. When a per-iteration DRAM step is not a multiple of 64 bytes, is the answer
-    per-entry chunking or a whole-tile move?
-24. Is `sum_drop_col`'s orientation needed for llama at `seq_len = 1` (attention
-    over one key is `v`), and is its shape the one the model actually uses?
+5. Is `sum_drop_col`'s orientation needed for llama at `seq_len = 1` (attention
+   over one key is `v`), and is its shape the one the model actually uses?
+   **Re-ask now that the gather writeback is green.**
+6. **CB page size for non-tile traffic.** `tt_add_movers` gives every CB a
+   1024-datum (one tile) page. The tensor gather's traffic is 32-datum vectors:
+   its pack store fills 32 of 1024 datums, so `tt_sync_cbs` refuses the partial
+   page, and its reader copy would move `len * el = 4 KiB` from a 512-byte
+   tensor. tt-metal makes the page whatever the host configures
+   (`fifo_page_size`; the loopback example's page is the host's L1 page). Should
+   a CB's page be the traffic's unit for a non-tile access (gather page = 32
+   datums, depth counted in those pages), or must every kernel's traffic be a
+   whole 32×32 tile image even when the tensor is not tiled?
+
+Nothing about launch, firmware, mailboxes, NoC init or the `tt-isa` surface is
+open: those follow tt-metal and the decisions above. `exec_nc` for the writer is
+work, not a question.
 
 ## Next
 
-0. Open questions #3–#24 are still open (1 and 2 are answered). Settle them one
-   at a time; the next one is #3: can one section need two nested loops, given
-   that the role program is a flat list of entry bodies?
-1. Restore the four CB ops, `tt_sync_cbs`/`tt_place_pops`,
-   `tt_fifo_check`/`fifo_check_copy` and `tt_verify` from `dc9a1e3d^`, adapted
-   to today's traffic (`Op::Copy`/`Op::Store` on `Circular`).
-2. Emit credits in `tt_add_movers` at depth 1, per iteration; keep the gate
-   until the IR is right.
-3. Codegen: `dm::op::CB` entries in the B/NC lists; streamed role program with
-   batch bodies in `l1::PROGRAM_CACHE`; launch submit/join (the current
-   sequential launch deadlocks depth-1 credits).
-4. `tt_fifo_check` + `fifo_check_copy` must pass on the IR.
-5. Make `tt_tile` produce the chosen tiling (question 1's answer): one loop
-   iteration = one tile; a tile-stepping `Unroll` becomes the `Loop`, the
-   within-tile lanes stay `Unroll(32)`.
-6. Replace `24_tt` with the model's 16 real kernels, in model order, until they
-   lower.
-7. One forward step of llama on ttsim, compared against CPU.
+The full backend, one complete step at a time. Nothing here is optional and
+nothing is to be done in a reduced form.
+
+0. Settle the open questions as each step reaches them.
+1. **CB ops: done in the tree.** The four constructors and
+   `tt_sync_cbs`/`tt_dedup_pushes`/`tt_place_pops`/`tt_fifo_check`/
+   `fifo_check_copy` are wired after `tt_add_movers`. The publish tally is kept
+   but scoped to one loop body (a run never crosses `Loop`/`EndLoop`), publishes
+   are counted in pages (`Copy` = the page(s) it moves: one per iteration in a
+   loop, the CB length straight-line; `Store` = its datum count), waits precede
+   every CB `Load`/`Copy` source, and pops follow the last same-section read.
+   The boundary contract test now runs the four passes before its snapshot.
+   Remaining from this step: the tensor gather is refused by the partial-page
+   rule (open question 6) and the gate is therefore still in place.
+2. **Reader/writer programs from codegen.** Emit `TTOp::Reader`/`Writer` from
+   the kernel IR instead of `DmRead`/`DmWrite` lists: one loop per boundary
+   loop, no unrolling; the index expression lowered as written (loads,
+   arithmetic, branches) — arbitrary, non-affine indexing is the case, affine
+   and tiled are optimizations; inline NOC issue/wait/drain; inline
+   `ReserveBack`/`PushBack`/`WaitFront`/`PopFront`; parameters read from the
+   `a0` args array; end with `ret`. Prove the reader program next, then the
+   tensor `gather` test through the pipeline, then `large_elementwise`.
+3. **Role programs as RISC-V.** The T0/T1/T2 programs follow the same emitter:
+   loop counters as branches, Tensix words inline as `.ttinsn`, CB ops inline,
+   caller-saved registers only, two loop levels (built for a counter stack).
+   Delete loop-level replay, `Item::Shared`, the loop table, MOP config and the
+   streamed program form.
+4. **Firmware, tt-metal style.** Firmware sets up the CB interfaces from the
+   launch descriptor, starts and joins the cores, calls each program at its
+   fixed address with `a0` = args, and invalidates the I-cache before the run.
+   Delete `run_stream`/`Pusher` and the `STREAMED`/`LOOPED` length flags. Add
+   the NC executor (`exec_nc`) for the writer.
+5. **Backend launch.** Replace the `dm` lists with the programs: stage each into
+   `PROGRAM_CACHE` once, boot the executor on its core, run reader and roles
+   concurrently (a depth-1 `Reserve` blocks otherwise), then the writer; join
+   all five. Delete `dm` from the backend, `ttsim`'s `mover_list`, and
+   `tt-isa` (`dm`, the streamed `dataflow`, the list regions), moving the shared
+   constants to `mailbox`/`l1`.
+6. Make `tt_tile` produce the chosen tiling: one loop iteration = one tile; a
+   tile-stepping `Unroll` becomes the `Loop`, the within-tile lanes stay
+   `Unroll(32)`.
+7. Replace `24_tt` with the model's 16 real kernels, in model order, until they
+   run; every one stops at the debugging gate and is checked before the gate is
+   removed for it.
+8. One forward step of llama on ttsim, compared against CPU.

@@ -172,6 +172,18 @@ impl Kernel {
                 eprintln!("=== IR after tt_add_movers ===");
                 self.debug();
             }
+            // The four CB syncs over that traffic: reserve/push around every
+            // published page run, wait before every consumer, pop after the
+            // last read, then the balance and depth proof that keeps a
+            // deadlocked kernel off the board.
+            self.tt_sync_cbs();
+            self.tt_dedup_pushes();
+            self.tt_place_pops();
+            self.tt_fifo_check();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_fifo_check ===");
+                self.debug();
+            }
             self.tt_dataflow_select();
             if std::env::var_os("ZYX_TT_IR").is_some() {
                 eprintln!("=== IR after tt_dataflow_select ===");

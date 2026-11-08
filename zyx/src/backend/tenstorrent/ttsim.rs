@@ -108,8 +108,36 @@ pub(crate) struct NativeOutcome {
     pub(crate) dst: Vec<u32>,
 }
 
+/// A staged-program run on RISCV B: DRAM in, L1 blocks (program, indices,
+/// control), and DRAM back out.
+#[allow(dead_code)] // the pipeline movers are the first non-test caller
+
+pub(crate) struct ExecRun {
+    /// The tile that runs the program.
+    pub(crate) tile: (u8, u8),
+    /// DRAM segments to write before the run.
+    pub(crate) dram: Vec<(DramRange, Vec<u8>)>,
+    /// L1 blocks to write before the run: `(address, bytes)`.
+    pub(crate) l1: Vec<(u32, Vec<u8>)>,
+    /// DRAM segments to read after the run, in order.
+    pub(crate) read_back: Vec<DramRange>,
+}
+
+/// What a staged-program run produced.
+#[allow(dead_code)]
+pub(crate) struct ExecResult {
+    /// One buffer per [`ExecRun::read_back`] range.
+    pub(crate) dram: Vec<Vec<u8>>,
+    /// The value the program left in `a0`.
+    pub(crate) ret: u32,
+    /// The executor's error word, zero on a clean run.
+    pub(crate) error: u32,
+}
+
 enum Cmd {
     Run(Box<NativeRun>, Sender<Result<NativeOutcome, String>>),
+    #[allow(dead_code)]
+    Exec(Box<ExecRun>, Sender<Result<ExecResult, String>>),
     /// Write each range from its gathered bytes, in order.
     DramWrite(Vec<(DramRange, Vec<u8>)>, Sender<Result<(), String>>),
     /// Read each range, in order.
@@ -134,10 +162,6 @@ pub(crate) fn run(run: NativeRun) -> Result<NativeOutcome, String> {
 }
 
 /// Write host bytes into the card's DRAM, one segment per channel run.
-///
-/// Each segment carries the range and the bytes that go there, already
-/// gathered in channel-offset order. They go out in order on the owner
-/// thread, which is the only holder of the device.
 pub(crate) fn dram_write(segments: Vec<(DramRange, Vec<u8>)>) -> Result<(), String> {
     let (reply, reply_rx) = channel();
     let sent = {
@@ -156,6 +180,20 @@ pub(crate) fn dram_read(segments: Vec<DramRange>) -> Result<Vec<Vec<u8>>, String
     let sent = {
         let owner = owner()?.lock().unwrap_or_else(|p| p.into_inner());
         owner.send(Cmd::DramRead(segments, reply))
+    };
+    if sent.is_err() {
+        return Err("the Tenstorrent owner thread is gone".to_string());
+    }
+    reply_rx.recv().map_err(|_| "the Tenstorrent owner thread dropped the reply".to_string())?
+}
+
+/// Run a staged program on RISCV B and read DRAM back.
+#[allow(dead_code)]
+pub(crate) fn exec(run: ExecRun) -> Result<ExecResult, String> {
+    let (reply, reply_rx) = channel();
+    let sent = {
+        let owner = owner()?.lock().unwrap_or_else(|p| p.into_inner());
+        owner.send(Cmd::Exec(Box::new(run), reply))
     };
     if sent.is_err() {
         return Err("the Tenstorrent owner thread is gone".to_string());
@@ -229,6 +267,9 @@ fn serve(rx: Receiver<Cmd>, ready: Sender<Result<(), String>>) {
         match cmd {
             Cmd::Run(run, reply) => {
                 let _ = reply.send(execute(&mut dev, &window, &mut movers, &mut resident, &run));
+            }
+            Cmd::Exec(run, reply) => {
+                let _ = reply.send(execute_exec(&mut dev, &window, &run));
             }
             Cmd::DramWrite(segments, reply) => {
                 let _ = reply.send(execute_dram_write(&mut dev, &window, &segments));
@@ -483,6 +524,42 @@ fn execute_dram_read(
 /// loaded from the device's cache on a miss, the B mover brings the operands
 /// in, the roles compute, the NC mover writes the results out, and only what
 /// the host must narrow is read back.
+/// Write the run's DRAM and L1 blocks, boot the executor on RISCV B, run one
+/// generation, then read DRAM back.
+fn execute_exec(dev: &mut Device<sim::LibTtsim<'_>>, window: &super::dev::Window, run: &ExecRun) -> Result<ExecResult, String> {
+    let tile =
+        NocCoord::<Noc0>::new(run.tile.0, run.tile.1).ok_or_else(|| format!("{:?} is not a Tensix coordinate", run.tile))?;
+    for (range, bytes) in &run.dram {
+        dev.dram_write(window, *range, bytes).map_err(|e| e.to_string())?;
+    }
+    for (at, bytes) in &run.l1 {
+        dev.l1_write(window, tile, u64::from(*at), bytes).map_err(|e| e.to_string())?;
+    }
+    let (core, image, base) = firmware_images::EXEC_B;
+    assert_eq!(core, Core::B, "the staged-program executor runs on RISCV B");
+    dev.load_and_start(window, tile, core, image, base).map_err(|e| format!("cannot start the executor: {e}"))?;
+    // The image publishes RUNNING from its trampoline before it reads SEQ.
+    let status_at = mailbox::MAILBOX_BASE + mailbox::offset::STATUS;
+    let panic_at = mailbox::MAILBOX_BASE + mailbox::offset::PANIC_CODE;
+    dev.wait_for_mailbox(window, tile, status_at, panic_at, BUDGET, |s| s == status::RUNNING)
+        .map_err(|e| format!("the executor: {e}"))?
+        .map_err(|e| format!("the executor: {e:?}"))?;
+    // One generation; the protocol skips zero.
+    dev.write32(window, tile, mailbox::exec::SEQ, 1).map_err(|e| e.to_string())?;
+    dev.wait_for_mailbox(window, tile, mailbox::exec::DONE, panic_at, BUDGET, |d| d == 1)
+        .map_err(|e| format!("the staged program: {e}"))?
+        .map_err(|e| format!("the staged program: {e:?}"))?;
+    let ret = dev.read32(window, tile, mailbox::exec::RET).map_err(|e| e.to_string())?;
+    let error = dev.read32(window, tile, mailbox::exec::ERROR).map_err(|e| e.to_string())?;
+    let mut dram = Vec::with_capacity(run.read_back.len());
+    for range in &run.read_back {
+        let mut buf = vec![0u8; range.len() as usize];
+        dev.dram_read(window, *range, &mut buf).map_err(|e| e.to_string())?;
+        dram.push(buf);
+    }
+    Ok(ExecResult { dram, ret, error })
+}
+
 fn execute(
     dev: &mut Device<sim::LibTtsim<'_>>,
     window: &super::dev::Window,
@@ -614,4 +691,81 @@ fn execute(
         mover_list(dev, window, tile, state, NC, &run.writes, false)?;
     }
     Ok(NativeOutcome { l1: out.l1, dst: out.dst })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codegen::tenstorrent::riscv::Gather;
+    use tt_isa::noc::niu::{Endpoint, Niu, TxnId};
+
+    /// One row-per-64-bytes gather: `dst[i] = src[index[i]]`.
+    ///
+    /// The first staged-program run: RISCV B executes code zyx emitted, with no
+    /// interpreter in between. The rows are 64 bytes so every read is congruent
+    /// mod 64; the indices are out of order; nothing is tiled.
+    #[test]
+    fn gather_writeback_runs_on_riscv_b() {
+        if ensure_open().is_err() {
+            eprintln!("gather_writeback_runs_on_riscv_b: no simulator, skipped");
+            return;
+        }
+        const ROW: u32 = 64;
+        const ROWS: u32 = 4;
+        const SRC: u64 = 0x1000;
+        const DST: u64 = 0x4000;
+        let channel = Dram::FULL.channel(0).expect("channel 0");
+        let src = channel.range(SRC, u64::from(ROW * ROWS)).expect("source range");
+        let dst = channel.range(DST, u64::from(ROW * ROWS)).expect("destination range");
+        let endpoint = channel.endpoint(Niu::Noc0, 0).expect("channel 0 endpoint");
+        let hi = Endpoint { x: endpoint.x(), y: endpoint.y(), addr: 0 }.hi();
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+
+        // Four distinguishable rows.
+        let mut src_bytes = Vec::new();
+        for row in 0..ROWS {
+            src_bytes.extend((0..ROW).map(|i| (row * 16 + i / 4) as u8));
+        }
+        // Read them in this order: 2, 0, 3, 1.
+        let order: [u32; ROWS as usize] = [2, 0, 3, 1];
+
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let page = program_at + 0x1000;
+        let idx_at = program_at + 0x2000;
+        let gather = Gather {
+            niu: Niu::Noc0,
+            txn: TxnId::new(0).expect("transaction 0"),
+            src: SRC as u32,
+            dst: DST as u32,
+            src_hi: hi,
+            dst_hi: hi,
+            me_hi: Endpoint { x, y, addr: 0 }.hi(),
+            page,
+            idx: idx_at,
+            count: ROWS,
+            stride_shift: ROW.trailing_zeros(),
+            row_bytes: ROW,
+            tag: 0,
+        };
+        let words = gather.program();
+
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        l1.push((idx_at, order.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>()));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, idx_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+
+        let out = exec(ExecRun { tile: (x, y), dram: vec![(src, src_bytes.clone())], l1, read_back: vec![dst] })
+            .expect("the gather program runs");
+        assert_eq!(out.error, 0, "executor error word");
+        let mut expected = Vec::new();
+        for row in order {
+            expected.extend_from_slice(&src_bytes[row as usize * ROW as usize..(row as usize + 1) * ROW as usize]);
+        }
+        assert_eq!(out.dram[0], expected, "gathered rows");
+    }
 }

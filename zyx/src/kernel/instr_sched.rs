@@ -78,9 +78,8 @@ impl Kernel {
 
         let sorted_rest = self.schedule_rest(&rest);
 
-        let mut order = Vec::with_capacity(
-            shape_meta.len() + global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len(),
-        );
+        let mut order =
+            Vec::with_capacity(shape_meta.len() + global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
         order.extend(shape_meta);
         order.extend(global_ro);
         order.extend(global_rw);
@@ -156,7 +155,9 @@ impl Kernel {
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_)) => {
                     structural[i] = true;
                     barrier[i] = true;
                 }
@@ -269,7 +270,13 @@ impl Kernel {
                 | Op::TT(TTOp::Replay { .. })
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {}
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_))
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => {}
                 Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)

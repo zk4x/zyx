@@ -34,10 +34,10 @@ path = "src/bin/ttinsn_t1.rs"
 required-features = ["ttinsn-experiment"]
 
 [dependencies]
-tt-isa = "0.1.0"
+tt-isa = { path = "/home/x/Dev/rust/tt-isa" }
 
 [build-dependencies]
-tt-isa = "0.1.0"
+tt-isa = { path = "/home/x/Dev/rust/tt-isa" }
 
 [profile.release]
 # Code size, not speed: every role image is linked into a 10 KiB L1 slot, and

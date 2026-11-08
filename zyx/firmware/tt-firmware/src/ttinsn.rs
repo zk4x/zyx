@@ -330,6 +330,19 @@ pub unsafe fn call(buffer: u64) -> u32 {
     f()
 }
 
+/// Call the code at `buffer` with `a0 = arg` (a function taking one pointer,
+/// returning `a0`).
+///
+/// # Safety
+///
+/// `buffer` holds valid RV32IM code ending in a return, and its cache lines are
+/// current (`invalidate_icache`).
+pub unsafe fn call_with(buffer: u64, arg: u32) -> u32 {
+    // The C ABI puts the first argument in `a0`; `ret` returns `a0`.
+    let f: extern "C" fn(*const u32) -> u32 = unsafe { core::mem::transmute(buffer as usize) };
+    f(arg as *const u32)
+}
+
 /// `a0 = value; ret`: the smallest code with an observable result, for the
 /// invalidation self-test.
 ///

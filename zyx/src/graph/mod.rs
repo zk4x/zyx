@@ -2473,8 +2473,11 @@ impl Runtime {
                                             [c] => (*c, 1),
                                             [] => (1, 1),
                                         };
-                                        let outer: Dim =
-                                            if dims.len() >= 2 { dims[..dims.len() - 2].iter().product() } else { 1 };
+                                        let outer: Dim = if dims.len() >= 2 {
+                                            dims[..dims.len() - 2].iter().product()
+                                        } else {
+                                            1
+                                        };
                                         let pr = ((rows + 31) / 32) * 32;
                                         let pc = ((cols + 31) / 32) * 32;
                                         (outer * pr * pc) / 1024 * tt_isa::dm::TILE_SLOT as Dim

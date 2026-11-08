@@ -462,7 +462,13 @@ impl Kernel {
                 | Op::TT(TTOp::Replay { .. })
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {}
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_))
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => {}
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => todo!("Detach in ordered kernel"),
                 // Movement ops carry their output shape in their

@@ -885,8 +885,6 @@ dependencies = [
 [[package]]
 name = "tt-isa"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c142bfa56d2906ba668444c613290c6515ae4d916b000e7e0a8f16a27f33c58f"
 
 [[package]]
 name = "unicode-ident"

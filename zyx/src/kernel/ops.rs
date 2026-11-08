@@ -756,6 +756,41 @@ pub enum TTOp {
     Math(Box<TTRoleProgram>),
     /// The compute core's T2 program. See [`TTOp::Unpack`].
     Pack(Box<TTRoleProgram>),
+    /// The reader's program on RISCV B: RV32IM words, emitted by codegen,
+    /// ending in a return. The loop is a branch in the code; the address is
+    /// computed from the loop at run time. Boxed to keep `Op` in budget.
+    Reader(Box<TTRoleProgram>),
+    /// The writer's program on RISCV NC: see [`TTOp::Reader`].
+    Writer(Box<TTRoleProgram>),
+    /// CB sync, producer side: open `n` back slots of `cb` for writing. Placed
+    /// by `tt_sync_cbs`; effect-only, like [`TTOp::EndReader`].
+    ReserveBack {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to open.
+        n: u8,
+    },
+    /// CB sync, producer side: publish `n` written slots.
+    PushBack {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to publish.
+        n: u8,
+    },
+    /// CB sync, consumer side: block until `n` front slots hold data.
+    WaitFront {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to wait for.
+        n: u8,
+    },
+    /// CB sync, consumer side: release `n` consumed slots.
+    PopFront {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to release.
+        n: u8,
+    },
     /// TT copy: DRAM<->CB traffic, CB->DRAM drain, and the CB->DST
     /// unpack. Both indices are lane-invariant bases (unrolls stripped
     /// at lowering); the size carries the transfer, never the index
@@ -1581,6 +1616,10 @@ impl Op {
             Op::Asm { ops, .. } => ops.iter().copied().collect(),
             &Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             &Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
+            &Op::TT(TTOp::ReserveBack { cb, .. })
+            | &Op::TT(TTOp::PushBack { cb, .. })
+            | &Op::TT(TTOp::WaitFront { cb, .. })
+            | &Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
             &Op::TT(TTOp::Setrwc { dst }) => vec![dst],
             Op::TT(TTOp::Setadczw { .. })
             | Op::TT(TTOp::Setadcx { .. })
@@ -1621,7 +1660,9 @@ impl Op {
             | Op::TT(TTOp::TensixGrid(_))
             | Op::TT(TTOp::Unpack(_))
             | Op::TT(TTOp::Math(_))
-            | Op::TT(TTOp::Pack(_)) => {
+            | Op::TT(TTOp::Pack(_))
+            | Op::TT(TTOp::Reader(_))
+            | Op::TT(TTOp::Writer(_)) => {
                 vec![]
             }
             Op::After { x, dep } => vec![*x, *dep],
@@ -1697,12 +1738,18 @@ impl Op {
             | Op::TT(TTOp::TensixGrid(_))
             | Op::TT(TTOp::Unpack(_))
             | Op::TT(TTOp::Math(_))
-            | Op::TT(TTOp::Pack(_)) => {
+            | Op::TT(TTOp::Pack(_))
+            | Op::TT(TTOp::Reader(_))
+            | Op::TT(TTOp::Writer(_)) => {
                 vec![]
             }
             Op::Asm { ops, .. } => ops.iter_mut().collect(),
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => vec![src, src_idx, dst, dst_idx],
             Op::TT(TTOp::Unpacr { src, .. }) => vec![src],
+            Op::TT(TTOp::ReserveBack { cb, .. })
+            | Op::TT(TTOp::PushBack { cb, .. })
+            | Op::TT(TTOp::WaitFront { cb, .. })
+            | Op::TT(TTOp::PopFront { cb, .. }) => vec![cb],
             Op::TT(TTOp::Setrwc { dst }) => vec![dst],
             Op::TT(TTOp::Setadczw { .. })
             | Op::TT(TTOp::Setadcx { .. })
