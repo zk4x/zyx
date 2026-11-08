@@ -854,14 +854,8 @@ mod tests {
         }
         l1.push((tt_isa::mailbox::exec::BASE as u32, control));
 
-        let out = exec(ExecRun {
-            tile: (x, y),
-            dram: vec![(src, data.clone())],
-            l1,
-            read_back: vec![dst],
-            l1_read_back: vec![],
-        })
-        .expect("the move program runs");
+        let out = exec(ExecRun { tile: (x, y), dram: vec![(src, data.clone())], l1, read_back: vec![dst], l1_read_back: vec![] })
+            .expect("the move program runs");
         assert_eq!(out.error, 0, "executor error word");
         assert_eq!(out.dram[0], data, "128 bytes out");
     }
@@ -1100,7 +1094,6 @@ mod tests {
     /// backend runs its transfer program, and the output tensor holds the
     /// gathered rows.
     #[test]
-    #[ignore = "transfer addressing must use the tiled device storage, not row-major DRAM (see NOTES)"]
     fn gather_kernel_runs_through_the_backend() {
         use crate::kernel::{Dev, Kernel, Op};
         use crate::{DType, Tensor};

@@ -104,7 +104,18 @@ struct OpenLoop {
 
 impl<'a> Emitter<'a> {
     fn new(k: &'a Kernel, cbs: &'a Map<OpId, u32>, params: &'a Map<OpId, u32>, reader: bool, l1: &'a Map<OpId, u32>) -> Self {
-        Self { k, cbs, params, l1, reader, a: Assembler::new(), free: Vec::new(), pinned: Vec::new(), lane: None, loops: Vec::new() }
+        Self {
+            k,
+            cbs,
+            params,
+            l1,
+            reader,
+            a: Assembler::new(),
+            free: Vec::new(),
+            pinned: Vec::new(),
+            lane: None,
+            loops: Vec::new(),
+        }
     }
 
     fn preamble(&mut self) {
@@ -396,7 +407,7 @@ impl<'a> Emitter<'a> {
     fn value_into(&mut self, id: OpId) -> u8 {
         match &self.k.ops[id].op {
             Op::Const(c) => {
-                let v = c.as_dim().unwrap_or_else(|| panic!("tenstorrent boundary: non-integer const {id:?}"));
+                let v = c.as_integer().unwrap_or_else(|| panic!("tenstorrent boundary: non-integer const {id:?}"));
                 let r = self.alloc();
                 self.a.li(r, v as u32);
                 r

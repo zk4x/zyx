@@ -2784,6 +2784,107 @@ impl Kernel {
             }
             (base_bytes, vars)
         };
+        // A tiled move's address is not affine: the face split and the 64-byte
+        // rounding put `Div`/`Mod`/`BitAnd` in it, so `get_strides` cannot see
+        // it. The congruence is structural — `x & !63` is a multiple of 64,
+        // whatever `x` is, so the face-row base
+        // `((dram - TILE_DATA) & !63) + TILE_DATA` is `≡ TILE_DATA (mod 64)`,
+        // and the L1 page is placed at that same residue. Prove the residues
+        // mod `align` instead of the strides. This holds only while the other
+        // side is a constant offset from its datum block: a variable there
+        // would need its own matching stride, which is the affine path below.
+        if self.get_strides(dram_idx).is_none() {
+            let mut res: Map<OpId, Option<i64>> = Map::default();
+            let mut work = vec![dram_idx];
+            for _ in 0..250_000 {
+                let Some(id) = work.pop() else { break };
+                if id.is_null() {
+                    res.insert(id, Some(0));
+                    continue;
+                }
+                if res.contains_key(&id) {
+                    continue;
+                }
+                match self.at(id) {
+                    Op::Const(c) => {
+                        res.insert(id, c.as_integer().map(|v| v.rem_euclid(align)));
+                    }
+                    Op::Binary { x, y, bop } => {
+                        let (x, y) = (*x, *y);
+                        let ready = res.contains_key(&x) && res.contains_key(&y);
+                        if !ready {
+                            work.push(id);
+                            if !res.contains_key(&x) {
+                                work.push(x);
+                            }
+                            if !res.contains_key(&y) {
+                                work.push(y);
+                            }
+                            continue;
+                        }
+                        let rx = res.get(&x).copied().flatten();
+                        let ry = res.get(&y).copied().flatten();
+                        let r = match bop {
+                            BOp::Add => match (rx, ry) {
+                                (Some(a), Some(b)) => Some((a + b).rem_euclid(align)),
+                                _ => None,
+                            },
+                            BOp::Sub => match (rx, ry) {
+                                (Some(a), Some(b)) => Some((a - b).rem_euclid(align)),
+                                _ => None,
+                            },
+                            BOp::Mul => match (rx, ry) {
+                                (Some(0), _) | (_, Some(0)) => Some(0),
+                                (Some(a), Some(b)) => Some((a * b).rem_euclid(align)),
+                                _ => None,
+                            },
+                            // `x % c` is a multiple of the unit when both `x`
+                            // and `c` are (`x = q*c + r`, and `r` is the
+                            // remainder).
+                            BOp::Mod => match (rx, ry) {
+                                (Some(0), Some(0)) => Some(0),
+                                _ => None,
+                            },
+                            // `x & m` clears every low bit of `m`; a mask that
+                            // is a multiple of the unit has its low bits zero,
+                            // so the result is a multiple of the unit.
+                            BOp::BitAnd => {
+                                let mask = |o: OpId| match self.at(o) {
+                                    Op::Const(c) => c.as_integer(),
+                                    _ => None,
+                                };
+                                if mask(x).is_some_and(|m| m.rem_euclid(align) == 0)
+                                    || mask(y).is_some_and(|m| m.rem_euclid(align) == 0)
+                                {
+                                    Some(0)
+                                } else {
+                                    None
+                                }
+                            }
+                            _ => None,
+                        };
+                        res.insert(id, r);
+                    }
+                    _ => {
+                        res.insert(id, None);
+                    }
+                }
+            }
+            let dram_res = res
+                .get(&dram_idx)
+                .copied()
+                .flatten()
+                .unwrap_or_else(|| panic!("tt_fifo_check: copy {op_id:?} has unprovable index {dram_idx:?}"));
+            let (l1_base, l1_idx) = if src_dram { (dst, dst_idx) } else { (src, src_idx) };
+            let (l1_off, l1_vars) = decompose(l1_idx, l1_base);
+            if !l1_vars.is_empty() {
+                panic!("tt_fifo_check: copy {op_id:?} has unprovable index {dram_idx:?} against variable L1 offsets {l1_vars:?}");
+            }
+            if (dram_res - l1_off).rem_euclid(align) != 0 {
+                panic!("tt_fifo_check: copy {op_id:?} is {align}-byte incongruent at base: {dram_res} vs {l1_off}");
+            }
+            return;
+        }
         let (bs, sm) = decompose(src_idx, src);
         let (bd, dm) = decompose(dst_idx, dst);
         let check = |what: &str, a: i64, b: i64| {
@@ -3140,14 +3241,16 @@ impl Kernel {
                     let Some((src_dram, _)) = self.tt_canonical_tile(base, off_k, scan) else {
                         todo!("tt_add_movers: transfer load {scan:?} has no canonical tile address")
                     };
-                    // The face row's base: the image's faces start at
-                    // `TILE_DATA ≡ 16 mod 64`, so the 64-byte rounding is done
-                    // on `dram - TILE_DATA` and put back.
+                    // The face row's base: a row is 16 datums, `16 * el` bytes,
+                    // and the image's first face starts at `TILE_DATA`.
+                    // Rounding is done on `dram - TILE_DATA` and put back, so
+                    // the base is the face row the access names.
+                    let row_bytes = 16 * el;
                     let hdr = cst(self, scan, tt_isa::dm::TILE_DATA as i64);
                     let minus_hdr = cst(self, scan, -(tt_isa::dm::TILE_DATA as i64));
-                    let mask = cst(self, scan, !63);
                     let shifted = bin(self, scan, src_dram, minus_hdr, BOp::Sub);
-                    let aligned = bin(self, scan, shifted, mask, BOp::BitAnd);
+                    let blocks = div(self, scan, shifted, row_bytes);
+                    let aligned = mul(self, scan, blocks, row_bytes);
                     let base_row = bin(self, scan, aligned, hdr, BOp::Add);
                     let page = Op::Storage { dtype, scope: MemScope::Local, len: 16, id: 0 };
                     let page = if prologue.is_null() {
@@ -9557,8 +9660,10 @@ mod ir_contract {
     }
 
     /// The ideal IR at each boundary: textual, as the debug printer writes it,
-    /// plus the kernel hash. Written from the design (four syncs around each
-    /// publisher/consumer, one page per CB), never captured from a run.
+    /// plus the kernel hash. Written from the design (a pure transfer has no
+    /// CB and no syncs: the index face row is read and the token picked in L1,
+    /// then the weight's face row is moved to the output's face row), never
+    /// captured from a run.
     #[test]
     fn gather_pipeline_ir_is_ideal() {
         let mut k = gather_fixture();
@@ -9585,6 +9690,6 @@ mod ir_contract {
 
     const ENTRY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r3: i64 = 4\n r4: i64 = group_range(0) over r3    // 0..=3\n r5: i64 = 16\n r6: i64[16] = unroll axis0 lanes 16\n r7: i64 = load r1[r4]    // 0..=3\n r8: i64 = r7 * r5\n r9: i64[16] = r8 + r6\n r10: f32[16] = load vec16 r0[r9]    // 0..=0\n r11: i64 = r4 * r5    // 0..=48\n r12: i64[16] = r11 + r6    // 0..=63\n store vec16 r2[r12] = r10    // 0..=63\n\n";
     const ENTRY_HASH: u64 = 0x9565_bc91_42e3_feb2;
-    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r15: i64 = storage local, len=8\n r26: f32 = storage local, len=16\n r3: i64 = 4\n r5: i64 = 16\n r21: i64 = 0\n r32: i64 = 64\n r4: i64 = group_range(0) over r3    // 0..=3\n r38: i64 = r4 * r5    // 0..=48\n r42: i64 = r38 * r3    // 0..=192\n r44: i64 = r42 / r32    // 0..=3\n r46: i64 = r44 * r32    // 0..=192\n copy r15[r21] = r1[r21]\n r7: i64 = load r15[r4]    // 0..=3\n r27: i64 = r5 * r7\n r31: i64 = r27 * r3\n r33: i64 = r31 / r32\n r35: i64 = r33 * r32\n copy r26[r21] = r0[r35]\n copy r2[r46] = r26[r21]\n\n";
-    const BOUNDARY_HASH: u64 = 0x1df8_586a_4bc6_dcea;
+    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r60: i64 = storage local, len=16\n r134: f32 = storage local, len=16\n r3: i64 = 4\n r5: i64 = 16\n r49: i64 = 8\n r53: i64 = -16\n r55: i64 = 128\n r61: i64 = 0\n r119: i64 = 4160\n r129: i64 = 64\n r143: i64 = 32\n r167: i64 = 256\n r4: i64 = group_range(0) over r3    // 0..=3\n r50: i64 = r4 * r49    // 0..=24\n r51: i64 = r5 + r50    // 16..=40\n r54: i64 = r51 - r53\n r56: i64 = r54 / r55\n r58: i64 = r56 * r55\n r59: i64 = r58 + r5\n r63: i64 = r51 - r59\n r65: i64 = r63 / r49\n r69: i64 = r4 * r5    // 0..=48\n r144: i64 = r69 / r143    // 0..=1\n r146: i64 = r69 % r143    // 0..=31\n r156: i64 = r146 / r5    // 0..=1\n r159: i64 = r61 + r156    // 0..=1\n r163: i64 = r69 % r5    // 0..=15\n r165: i64 = r144 * r5    // 0..=16\n r166: i64 = r165 + r163    // 0..=31\n r168: i64 = r159 * r167    // 0..=256\n r169: i64 = r168 + r166    // 0..=287\n r175: i64 = r169 * r3    // 0..=1148\n r176: i64 = r5 + r175    // 16..=1164\n copy r60[r61] = r1[r59]\n r7: i64 = load r60[r65]    // 0..=0\n r66: i64 = r5 * r7\n r120: i64 = r66 * r119\n r122: i64 = r120 + r5\n r128: i64 = r122 - r53\n r130: i64 = r128 / r129\n r132: i64 = r130 * r129\n r133: i64 = r132 + r5\n copy r134[r61] = r0[r133]\n copy r2[r176] = r134[r61]\n\n";
+    const BOUNDARY_HASH: u64 = 0x0dea_6d0c_a3c6_67d6;
 }

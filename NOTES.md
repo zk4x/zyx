@@ -27,41 +27,43 @@ one program).
 `tt-isa 0.1.0` is published on crates.io (repo `zk4x/tt-isa`, Apache-2.0,
 credited to the metalium-rs authors); `zyx` itself is **not** published.
 
-Where things stand (2026-11-10, end of session 3):
+Where things stand (2026-11-11):
 
-- **Commits**: `ee3a1d40` (NOTES: layout decision), `45f38f2d` (the transfer's
-  DRAM side is the tiled face row), `8d01de49` (disassembler + loop emission),
-  `a79f5286` (128-byte NOC probe), and the transfer-body work before them.
-- **`cargo build` clean; `AGENT=1 ZYX_DEV=cpu cargo test --lib`: 137 passed,
-  3 failed, 1 ignored.** The three reds are all the same thing and are listed
-  under "Next": `tt_fifo_check` cannot prove congruence for the canonical
-  (non-affine) tiled index — `copy OpId(N) has unprovable index`. They are
-  `ttsim::tests::gather_passes_dataflow_select`,
-  `ttsim::tests::gather_transfer_renders_as_one_program` and
-  `ir_contract::gather_pipeline_ir_is_ideal`. The ignored test is
-  `gather_kernel_runs_through_the_backend`.
+- **Commits**: `6d264167` (NOTES), `45f38f2d` (the transfer's DRAM side is the
+  tiled face row), `ee3a1d40` (layout decision), `8d01de49` (disassembler +
+  loop emission), `a79f5286` (128-byte NOC probe). The `tt_fifo_check` proof and
+  the tiled fixtures below are uncommitted in the tree.
+- **`cargo build` clean; `AGENT=1 ZYX_DEV=cpu cargo test --lib` with
+  `TT_TTSIM_LIB` set: 141 passed, 0 failed, 0 ignored.**
+- **`embedding_gather_small` is green on ttsim**: `Embedding::forward` on
+  `Dev::TT(0)`, `weight [128, 32]`, `ids [1, 1]`, output equal to the host row.
+  `llama_embedding` (`weight [128256, 3072]`, 1.58 GiB upload) does not finish
+  inside 10 s on ttsim; it is the acceptance still to time.
+- **`tt_fifo_check` proves the tiled page.** When the DRAM index is not affine
+  the check tests the index's residue mod the congruence unit — `Const`, `Add`,
+  `Sub`, `Mul`, `Mod` of two multiples, and `BitAnd` with a mask that is a
+  multiple of the unit (which gives 0) — and requires the L1 side to be a
+  constant offset from its datum block. The face-row rounding is
+  `((dram - TILE_DATA) / (16*el)) * (16*el) + TILE_DATA`: the unit is a face row
+  of `16*el` bytes, which is 128 for the I64 ids and 64 for the F32 weight.
+- **The boundary emitter reads signed constants** (`as_integer`), so the
+  canonical address's `-TILE_DATA` and mask constants compile.
+- **`gather_kernel_runs_through_the_backend` is un-ignored and green** (pool
+  upload, transfer program, the gathered rows read back).
 - **The acceptance is `zyx-nn/tests/embedding_tt.rs`**: `llama_embedding` is
-  `Embedding::forward` with `LlamaConfig::default` shapes (`weight
-  [128256, 3072]`, `ids [1, 1]`); `embedding_gather_small` is the same at
-  `[128, 32]`, with a diagnostic that reports which row came back.
+  `Embedding::forward` with `LlamaConfig::default` shapes; `embedding_gather_small`
+  is the same at `[128, 32]` with a diagnostic naming the row that came back.
 - **`fold_loops` folds the llama one-hot chain**, but only when `Embedding`'s
   `arange` stays on the host: a device-side arange turns the mask into a load
   and the fold never matches. With the arange on the host the kernel is
   `token = ids[0]; row = weight[token*cols + col]`; CUDA runs it in **3.9 µs**
-  (36 ms as a one-hot reduce). Moving the arange to the device was my bug.- **CUDA is the oracle and is green:** `ZYX_DEV=cuda:0 cargo test --test
+  (36 ms as a one-hot reduce). Moving the arange to the device was my bug.
+- **CUDA is the oracle and is green:** `ZYX_DEV=cuda:0 cargo test --test
   embedding_tt llama_embedding` passes (exact f32 against the host row).
 - **DRAM is tile-major, measured:** every tensor's chunk starts with 16 bytes of
-  `TILE_DATA` header (`param 0 dram[0..32] = 00×16, 07,00,00,00`; `param 1 =
-  00×16, 72,37,e3,3e` = `0.4437824` = `weight[0]`), so flat row-major addressing
-  read the header as the token. Fixed in `45f38f2d` with `tt_canonical_tile` +
-  a 16-datum face row per move and L1 pages at `≡16 mod 64`.
-- **The gather is the current task.** Under tile-major storage it is no longer a
-  compute-free loopback: a row inside a tile must be selected in-die (see
-  "Layout: tile-major, forever").
-- **What was added and kept**: `codegen/tenstorrent/disasm.rs` (RV32IM + Tensix
-  `.ttinsn`, printed by `ZYX_DEBUG=16`), RISC-V loop emission in `boundary`
-  (iteration index, constant trip count costs no register), the `TtCopy::Transfer`
-  kind, the 128-byte NOC probe, and the canonical face-row move.
+  `TILE_DATA` header (`param 0 dram[0..32] = 00×16, 07,00,00,00`), so flat
+  row-major addressing read the header as the token. The transfer now moves a
+  face row at `tt_canonical_tile`'s address and picks the datum in L1.
 - **What must not be repeated:** the "Failure modes" section is the operative
   one. Read it before touching anything.
 - `24_tt.rs` holds llama-shaped op groups, not the model's real 16 kernels yet.
@@ -71,19 +73,15 @@ Where things stand (2026-11-10, end of session 3):
 ## Session start
 
 1. Read this file end to end. Do not grep it for a keyword.
-2. `cd zyx && cargo build`; `AGENT=1 ZYX_DEV=cpu cargo test --lib` — expect
-   **137 passed, 3 failed, 1 ignored**: the three reds are the
-   `tt_fifo_check` congruence proof for the canonical tiled index (see `Next`
-   step 1), and the ignored one is `gather_kernel_runs_through_the_backend`.
-3. Run the CUDA oracle:
+2. `cd zyx && cargo build`; `TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so AGENT=1 ZYX_DEV=cpu cargo test --lib` — expect
+   **141 passed, 0 failed, 0 ignored**.
+3. Run the acceptance on ttsim:
+   `cd zyx-nn && TT_TTSIM_LIB=... cargo test --test embedding_tt -- --exact
+   embedding_gather_small --nocapture` (green) and `llama_embedding` (needs
+   more than 10 s: the 1.58 GiB upload).
+4. Run the CUDA oracle:
    `cd zyx-nn && ZYX_DEV=cuda:0 cargo test --test embedding_tt llama_embedding`
-   (passes, ~3.9 µs kernel) and `... embedding_gather_small`. That is the
-   reference the TT result must match.
-4. Run the TT anchors:
-   `TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so cargo test
-   --lib backend::tenstorrent::ttsim` and the `disasm` tests; then the
-   acceptance `cd zyx-nn && TT_TTSIM_LIB=... cargo test --test embedding_tt
-   -- --exact embedding_gather_small --nocapture`.
+   (passes, ~3.9 µs kernel), the reference the TT result must match.
 5. `ZYX_DEBUG=16` prints the emitted program as **disassembly** (RV32IM and
    inline Tensix); `ZYX_TT_IR=1` dumps the IR per stage. Pin one candidate
    (`ZYX_DEBUG=256`) before reading IR.
@@ -961,39 +959,34 @@ The full backend, one complete step at a time. Nothing here is optional and
 nothing is to be done in a reduced form.
 
 0. Settle the open questions as each step reaches them.
-1. **Tiled congruence in `tt_fifo_check` (current blocker).** The transfer now
-   moves a tiled access at `tt_canonical_tile`'s address, split at 16-datum face
-   rows; `get_strides` cannot decompose the `Div`/`Mod`/`BitAnd` in that address
-   and the check refuses with `copy OpId(N) has unprovable index`. The move *is*
-   congruent by construction (both sides carry the same within-row `*el`, both
-   bases are `≡16 mod 64`, `TILE_SLOT` and the face stride are multiples of 64),
-   so teach the check that proof rather than weakening it, then update the three
-   red fixtures (`gather_passes_dataflow_select`,
-   `gather_transfer_renders_as_one_program`, `ir_contract`) to the tiled page.
-   Acceptance after that: `zyx-nn/tests/embedding_tt.rs::embedding_gather_small`,
-   then `llama_embedding`.
-2. **The embedding gather as a tile-row kernel.** Storage is tile-major forever,
-   so the gather is not a compute-free loopback: the reader brings the token's
-   face rows (pages of 64 B at `≡16 mod 64`), the compute section selects row
-   `token % 32` out of each tile (two 16-datum halves, `SFPULOAD`/`SFPSTORE` into
-   the output tile's row 0) and packs, and the writer drains the output tiles.
-   A pure copy is only a transfer when its DRAM side is a *page*; a tile row is
-   not one.
-3. **Reader/writer programs from codegen: done for the transfer, pending for
+1. ~~**Tiled congruence in `tt_fifo_check`.**~~ **done**: the check proves the
+   residue mod the congruence unit for a non-affine DRAM index (`Const`, `Add`,
+   `Sub`, `Mul`, `Mod`, `BitAnd`-with-a-multiple-of-the-unit), requiring a
+   constant offset on the L1 side; the three fixtures are on the tiled page.
+   `embedding_gather_small` is green.
+2. **Time `llama_embedding` on ttsim** (weight `[128256, 3072]` = 1.58 GiB).
+   It exceeds 10 s today; find where the time goes (upload, compile, or the
+   transfer loop) before calling the acceptance green.
+3. **A face row wider than the 64-byte congruence unit.** `16 * el` bytes is
+   the unit; for `el ≥ 4` the base is `≡ TILE_DATA mod 64`, but a 16-bit datum
+   (`el = 2`) makes face rows 32 B and the residues alternate 16/48, so a raw
+   poke of one face row is not congruent. That case needs the wider span (two
+   face rows) or an unpack-side untilize; do not let it pass silently.
+4. **Reader/writer programs from codegen: done for the transfer, pending for
    sections.** What is left is the CB interface table in L1 and the concurrent
    start of reader/roles/writer for a depth-1 ring.
-3. **Role programs as RISC-V.** T0/T1/T2 through the same emitter: loop counters
+5. **Role programs as RISC-V.** T0/T1/T2 through the same emitter: loop counters
    as branches, Tensix words inline as `.ttinsn`, CB ops inline, caller-saved
    registers only. Delete loop-level replay, `Item::Shared`, the loop table, MOP
    config and the streamed program form.
-4. **Firmware, tt-metal style.** CB interfaces from the launch descriptor, start
+6. **Firmware, tt-metal style.** CB interfaces from the launch descriptor, start
    and join the cores, call each program at its fixed address with `a0` = args,
    invalidate the I-cache. Delete `run_stream`/`Pusher` and the `STREAMED`/
    `LOOPED` flags. Add the NC executor (`exec_nc`).
-5. **Backend launch.** Replace the `dm` lists with the programs; run reader and
+7. **Backend launch.** Replace the `dm` lists with the programs; run reader and
    roles concurrently; join all five. Delete `dm` from the backend, `ttsim`'s
    `mover_list` and `tt-isa`.
-6. `tt_tile` completes the tiling without assuming a page: the access names the
+8. `tt_tile` completes the tiling without assuming a page: the access names the
    traffic, the search chooses the tiled form.
-7. Replace `24_tt` with the model's 16 real kernels, in model order.
-8. One forward step of llama on ttsim, compared against CPU.
+9. Replace `24_tt` with the model's 16 real kernels, in model order.
+10. One forward step of llama on ttsim, compared against CPU.
