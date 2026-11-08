@@ -22,16 +22,44 @@ Non-goals: a separate Metalium IR; `match_graph`/AOT shortcuts; TT feature
 flags; LOC or op-count as progress; one `Session` per op (a whole zyx kernel is
 one program).
 
-## State (2026-11-08)
+## State (2026-11-08, end of session)
+
+Commits this session:
 
 - `cef08d59` — `tt_tile` splits an oversized group into a loop.
 - `6e886636` — per-iteration traffic at ring slot 0; CB len 1024; compute index
   with loop and group bound out.
 - `bef4fa7a` — `large_elementwise` (`[1024,256]`, NEG vs host) in `23_tt_lowering`.
+- `85591f5d` — firmware sources inside `zyx`; `tt-isa` from crates.io; the
+  `tt-firmware-images` crate deleted.
+- `tt-isa 0.1.0` published on crates.io (published by `zk4x`, repo
+  `zk4x/tt-isa`, Apache-2.0, credited to the metalium-rs authors, transfer on
+  request). `zyx` itself is **not** published.
+
+Where things stand:
+
 - `tt_add_movers` ends in a gate `todo!()`. Every TT compile stops there on
   purpose. Do not remove it until the IR at the pass exit is right.
 - No TT kernel has ever executed end to end; the model has never run.
 - `24_tt.rs` holds llama-shaped op groups, not the model's real 16 kernels yet.
+- `cargo build`: clean, no warnings.
+- `cargo test --lib`: 120 pass, 1 fail —
+  `kernel::tenstorrent::acceptance::activations_are_one_row_body` panics at the
+  gate. Expected while the gate stands.
+- `cargo test --test 24_tt --no-run`: compiles.
+- `cargo package`: verifies from the packaged sources (172 files, 5.7 MiB,
+  1.3 MiB compressed). Cargo warns that `05_misc`, `14_tenstorrent_single`,
+  `15_tenstorrent_multi`, `18_tenstorrent_passes`, `23_tt_lowering`, `24_tt`
+  and `mnist` are not in the package (they are not in `include`); harmless.
+
+## Session start
+
+1. Read this file end to end. Do not grep it for a keyword.
+2. `cd zyx && cargo build`; `cargo test --lib` (the gate failure is the only
+   expected red); `cargo test --test 24_tt --no-run`.
+3. Settle the open questions below in order, one at a time. Do not implement
+   ahead of an unanswered question.
+4. Then work the `Next` list.
 
 ## Pipeline
 
@@ -520,7 +548,7 @@ Every case below is unproven until it runs green on ttsim:
 ## Dependency and firmware layout (2026-11-08)
 
 - `zyx` has no local path dependencies. `tt-isa = "0.1.0"` comes from crates.io
-  (also a `[build-dependencies]`, because `build.rs` reads `tt_isa::tensorm`).
+  (also a `[build-dependencies]`, because `build.rs` reads `tt_isa::tensix`).
 - The RISC-V firmware sources are inside the crate at
   `zyx/firmware/tt-firmware`; the manifest is `Cargo.toml.in` because cargo does
   not package a nested package. `zyx/build.rs` copies the tree into `OUT_DIR`,
@@ -598,14 +626,21 @@ Every case below is unproven until it runs green on ttsim:
 
 ## Next
 
+0. Open questions #3–#24 are still open (1 and 2 are answered). Settle them one
+   at a time; the next one is #3: can one section need two nested loops, given
+   that the role program is a flat list of entry bodies?
 1. Restore the four CB ops, `tt_sync_cbs`/`tt_place_pops`,
    `tt_fifo_check`/`fifo_check_copy` and `tt_verify` from `dc9a1e3d^`, adapted
    to today's traffic (`Op::Copy`/`Op::Store` on `Circular`).
 2. Emit credits in `tt_add_movers` at depth 1, per iteration; keep the gate
    until the IR is right.
 3. Codegen: `dm::op::CB` entries in the B/NC lists; streamed role program with
-   batch bodies in `l1::PROGRAM_CACHE`; launch submit/join.
+   batch bodies in `l1::PROGRAM_CACHE`; launch submit/join (the current
+   sequential launch deadlocks depth-1 credits).
 4. `tt_fifo_check` + `fifo_check_copy` must pass on the IR.
-5. Replace `24_tt` with the model's 16 real kernels, in model order, until they
+5. Make `tt_tile` produce the chosen tiling (question 1's answer): one loop
+   iteration = one tile; a tile-stepping `Unroll` becomes the `Loop`, the
+   within-tile lanes stay `Unroll(32)`.
+6. Replace `24_tt` with the model's 16 real kernels, in model order, until they
    lower.
-6. One forward step of llama on ttsim, compared against CPU.
+7. One forward step of llama on ttsim, compared against CPU.
