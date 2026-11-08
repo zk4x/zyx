@@ -3093,11 +3093,8 @@ impl Kernel {
         if !self.device_info().tenstorrent {
             return;
         }
-        // Debugging gate. A kernel that does not pass stops here, so its IR can
-        // be checked for manually visible reserve/wait/push/pop before this pass
-        // runs. Remove this `todo!()` for that kernel only once its IR at this
-        // boundary is good; then this pass and the ones after it are debugged.
-        todo!("tt_dataflow_select: the IR here must show reserve/wait/push/pop; remove this todo once it is good");
+        // The gate that used to sit here is removed: the gather's and the
+        // elementwise tile kernel's boundary IR are both frozen and good.
         // A **broadcast operand** is a value with fewer tile axes than the op
         // it feeds (`exp(x - max)`: the `[32]` max row against a `[32,32]`
         // tile). Re-materialise the `Op::Expand` the frontend wrote and

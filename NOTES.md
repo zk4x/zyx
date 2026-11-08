@@ -62,6 +62,27 @@ Where things stand (2026-11-09):
   `ir_contract::gather_pipeline_ir_is_ideal` asserts the entry IR and the
   boundary IR and is green. What is left is the reader/writer programs and the
   launch, i.e. steps 2 and 5 below.
+- **The reader and writer programs are emitted and run on ttsim.** New on
+  2026-11-10: `codegen/tenstorrent/boundary.rs` lowers the reader section (head
+  .. `EndReader`) and the writer section (after `EndCompute`) to RISC-V over the
+  boundary IR: index expressions as written (const, grid coordinate, lane loop,
+  arithmetic, a CB load), one span per lane for a vector copy, inline NOC and CB
+  ops. `riscv.rs` gained `lhu`/`sh`, RV32M, `bltu`/`bgeu`, `cb::{reserve_back,
+  wait_front, push_back, pop_front}` over tt-metal's `LocalCBInterface`, and
+  `noc::issue_addr` (high address words from registers). Green on ttsim: the four
+  CB syncs, RV32M, NOC with register highs, the gather's reader program (index
+  span -> token in L1 -> 16 per-lane row spans), and the writer program. What is
+  left is wiring them into `render_tt`/the launch (steps 3-5) so the compiled
+  kernel uses them instead of the `dm` lists.
+- **The `tt_dataflow_select` gate is removed** (both the gather's and the
+  elementwise tile kernel's boundary IR are frozen and good). Consequence: the
+  post-`tt_dataflow_select` pipeline now runs for the acceptance elementwise
+  kernel, and `acceptance::activations_are_one_row_body` fails with **two row
+  bodies** per activation (e.g. sigmoid `(2,2,2)`) instead of one: an unpack
+  `tt_copy` CB -> Register storage, a 3-word replay with `sfp_load`/`sfp_store`
+  copying the input to a DST slot, then the math replay loading it again. The
+  acceptance rule in this file says one row body, one `SFPLOAD`, one `SFPSTORE`.
+  That is the open question below.
 - **The gather's boundary IR** (frozen, hash `0xe03d_24f3_d177_cf2c`): index CB
   `len=8` (one 64-byte span of i64), row CB `len=256` (16 lanes × 16 datums),
   output CB `len=16` (one 64-byte row span). Reader: `reserve/copy/push` the
@@ -987,9 +1008,15 @@ Every case below is unproven until it runs green on ttsim:
 
 ### Correctness
 
-5. Is `sum_drop_col`'s orientation needed for llama at `seq_len = 1` (attention
-   over one key is `v`), and is its shape the one the model actually uses?
-   **Re-ask now that the gather writeback is green.**
+5. **Is `tt_dataflow_select`'s phase-2 value lowering right, or is the
+   acceptance rule?** After the gate was removed, a pure elementwise kernel
+   lowers to two row bodies: an unpack `tt_copy` CB -> Register storage and a
+   3-word replay copying the input to a DST slot, then the math replay loading
+   that slot again. `acceptance::activations_are_one_row_body` (and this file's
+   "Acceptance of an SFPU kernel") requires one row body, one `SFPLOAD` from the
+   input tile and one `SFPSTORE` to the output tile. Either the lowering must
+   read the SFPU operand straight from the CB tile (no intermediate Register
+   copy), or the acceptance rule is outdated and must be rewritten. Which one?
 
 Nothing about launch, firmware, mailboxes, NoC init or the `tt-isa` surface is
 open: those follow tt-metal and the decisions above. `exec_nc` for the writer is
@@ -1028,7 +1055,10 @@ nothing is to be done in a reduced form.
    `tt_add_movers` has the row body (per-lane spans, index CB, row writes);
    `fifo_check_copy` accepts a `multiple-of-64/16` address as congruence by
    construction, and a row CB's base is `≡0 mod 64` (a tile CB's is `≡16`).
-   **Next:** the reader/writer programs for this IR (step 2), then launch (5).
+   **Next:** wire the reader and writer programs into `render_tt` and the launch
+   (steps 3-5): the CB interface table in L1, the per-parameter DRAM addresses
+   and the grid point as launch arguments, then run the whole gather kernel
+   (reader + writer on their cores, compute still pending).
 2. **Reader/writer programs from codegen.** Emit `TTOp::Reader`/`Writer` from
    the kernel IR instead of `DmRead`/`DmWrite` lists: one loop per boundary
    loop, no unrolling; the index expression lowered as written (loads,

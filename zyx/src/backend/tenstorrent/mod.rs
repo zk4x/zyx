@@ -700,6 +700,9 @@ struct TTProgram {
     /// the grid point's offsets, deciding nothing (NOTES §2).
     reader: Box<[TTDmMove]>,
     writer: Box<[TTDmMove]>,
+    /// The reader and writer sections as RISC-V programs (the movers' code).
+    reader_program: Box<[u32]>,
+    writer_program: Box<[u32]>,
     sems: Vec<SemaphoreInit>,
     /// Global param count (inputs) and GlobalMut count (outputs).
     n_inputs: u32,
@@ -744,6 +747,8 @@ impl TTDevice {
         let rendered = kernel.render()?;
         let mut reader: Vec<TTDmMove> = Vec::new();
         let mut writer: Vec<TTDmMove> = Vec::new();
+        let mut reader_program: Vec<u32> = Vec::new();
+        let mut writer_program: Vec<u32> = Vec::new();
         let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut math_loops: Vec<[u32; 3]> = Vec::new();
         let mut unpack_loops: Vec<[u32; 3]> = Vec::new();
@@ -808,6 +813,8 @@ impl TTDevice {
                     narrow: page.narrow,
                     offsets: page.offsets.clone(),
                 }),
+                Op::TT(TTOp::Reader(program)) => reader_program = program.words.to_vec(),
+                Op::TT(TTOp::Writer(program)) => writer_program = program.words.to_vec(),
                 Op::TT(TTOp::Semset { sem, value }) => {
                     semset.push(TTSemaphoreInit { index: *sem, value: *value, max: tt_isa::sync::MAX_VALUE })
                 }
@@ -888,6 +895,8 @@ impl TTDevice {
             lens: lens.into_boxed_slice(),
             reader: reader.into_boxed_slice(),
             writer: writer.into_boxed_slice(),
+            reader_program: reader_program.into_boxed_slice(),
+            writer_program: writer_program.into_boxed_slice(),
             sems,
             n_inputs,
             n_outputs,
