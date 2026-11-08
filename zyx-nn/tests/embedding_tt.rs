@@ -37,31 +37,39 @@ fn llama_embedding() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/// The same gather at a size that lets the output be read by hand: a ramp
-/// weight, so every datum names its own position.
+/// The same gather large enough that **both** grid axes exceed the device
+/// maximum (the card's `10x11`, the simulator's `10x14`): `12` rows and
+/// `512 / 32 = 16` column tiles. `tt_tile` must then split each group into an
+/// outer grid the device can dispatch and a `Loop` over the rest, so the
+/// launch exercises the grid-loop path rather than a single grid point.
 #[test]
 fn embedding_gather_small() -> Result<(), ZyxError> {
     const VOCAB: i64 = 128;
-    const HIDDEN: i64 = 32;
-    const TOKEN: u32 = 7;
+    const HIDDEN: i64 = 512;
+    const ROWS: i64 = 12;
 
     let dev: Dev = std::env::var("ZYX_DEV").ok().and_then(|s| s.parse().ok()).unwrap_or(Dev::TT(0));
     let weight = Tensor::rand([VOCAB, HIDDEN], DType::F32)?;
-    let expected: Vec<f32> = weight.narrow(0, i64::from(TOKEN), 1i64)?.reshape([HIDDEN])?.try_into()?;
+    let tokens: Vec<u32> = (0..ROWS).map(|r| ((r * 37 + 7) % VOCAB) as u32).collect();
+    let mut expected: Vec<f32> = Vec::new();
+    for &t in tokens.iter() {
+        let row: Vec<f32> = weight.narrow(0, i64::from(t), 1i64)?.reshape([HIDDEN])?.try_into()?;
+        expected.extend(row);
+    }
 
     let mut embedding = Embedding::from_params(weight.clone())?;
     embedding.weight = embedding.weight.to(dev)?;
-    let ids = Tensor::from([TOKEN]).reshape([1i64, 1i64])?.to(dev)?;
+    let ids = Tensor::from(tokens.clone()).reshape([ROWS, 1i64])?.to(dev)?;
     let got: Vec<f32> = embedding.forward(ids)?.to(Dev::C)?.try_into()?;
     if got != expected {
         let mut hits: Vec<i64> = Vec::new();
         for r in 0..VOCAB {
             let row: Vec<f32> = weight.narrow(0, r, 1i64)?.reshape([HIDDEN])?.try_into()?;
-            if row == got {
+            if row == got[..(HIDDEN as usize)] {
                 hits.push(r);
             }
         }
-        panic!("the gather returned row(s) {hits:?}, expected row {TOKEN}");
+        panic!("the gather returned row(s) {hits:?} first, expected row {}", tokens[0]);
     }
     Ok(())
 }
