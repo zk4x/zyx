@@ -26,7 +26,7 @@
 //! A DRAM address is `[hi:lo]` of the NOC address of the parameter's first
 //! byte; the program adds the index (already a byte offset) and issues.
 
-use super::riscv::{self, Assembler, cb, noc, reg};
+use super::riscv::{self, Assembler, Label, cb, noc, reg};
 use crate::Map;
 use crate::kernel::{BOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, TTOp};
 use tt_isa::noc::niu::{Niu, TxnId};
@@ -86,11 +86,14 @@ struct Emitter<'a> {
     pinned: Vec<u8>,
     /// The lane loop's variable, while inside a vector copy.
     lane: Option<(OpId, u8)>,
+    /// Open loops: the `Loop` op's id, its iteration register, the remaining
+    /// trip count, and the top label.
+    loops: Vec<(OpId, u8, u8, Label)>,
 }
 
 impl<'a> Emitter<'a> {
     fn new(k: &'a Kernel, cbs: &'a Map<OpId, u32>, params: &'a Map<OpId, u32>, reader: bool, l1: &'a Map<OpId, u32>) -> Self {
-        Self { k, cbs, params, l1, reader, a: Assembler::new(), free: Vec::new(), pinned: Vec::new(), lane: None }
+        Self { k, cbs, params, l1, reader, a: Assembler::new(), free: Vec::new(), pinned: Vec::new(), lane: None, loops: Vec::new() }
     }
 
     fn preamble(&mut self) {
@@ -110,6 +113,9 @@ impl<'a> Emitter<'a> {
     // -- registers ---------------------------------------------------------
 
     fn reset(&mut self) {
+        // A loop counter lives across statements, so it is never handed out
+        // again while the loop is open.
+        let held: Vec<u8> = self.loops.iter().flat_map(|(_, i, r, _)| [*i, *r]).collect();
         self.free = vec![
             reg::T0,
             reg::T1,
@@ -122,7 +128,10 @@ impl<'a> Emitter<'a> {
             reg::A2,
             reg::A3,
             reg::A4,
-        ];
+        ]
+        .into_iter()
+        .filter(|r| !held.contains(r))
+        .collect();
         self.pinned.clear();
     }
 
@@ -167,6 +176,30 @@ impl<'a> Emitter<'a> {
                 self.reset();
                 let cb = self.cb_id(*cb);
                 cb::pop_front(&mut self.a, reg::A6, cb, u32::from(*n), [reg::T0, reg::T1, reg::T2, reg::T3]);
+            }
+            Op::Loop { len } => {
+                self.reset();
+                let count = self.value_into(*len);
+                let remain = self.alloc();
+                self.a.push(riscv::addi(remain, count, 0));
+                self.release(count);
+                // The loop variable is the iteration index 0..len-1, as the
+                // kernel IR uses it, so it counts up while the remaining
+                // count counts down.
+                let index = self.alloc();
+                self.a.li(index, 0);
+                let top = self.a.label();
+                self.a.bind(top);
+                self.loops.push((id, index, remain, top));
+            }
+            Op::EndLoop => {
+                let Some((_, index, remain, top)) = self.loops.pop() else {
+                    panic!("tenstorrent boundary: EndLoop without a loop");
+                };
+                self.reset();
+                self.a.push(riscv::addi(index, index, 1));
+                self.a.push(riscv::addi(remain, remain, -1));
+                self.a.bne(remain, reg::ZERO, top);
             }
             Op::Copy { src, src_idx, dst, dst_idx } => {
                 self.reset();
@@ -332,6 +365,10 @@ impl<'a> Emitter<'a> {
             Op::Unroll { .. } => match self.lane {
                 Some((var, r)) if var == id => r,
                 _ => panic!("tenstorrent boundary: unroll {id:?} outside its lane loop"),
+            },
+            Op::Loop { .. } => match self.loops.iter().rev().find(|(v, _, _, _)| *v == id) {
+                Some((_, r, _, _)) => *r,
+                None => panic!("tenstorrent boundary: loop counter {id:?} outside its loop"),
             },
             Op::Binary { x, y, bop } => {
                 let a = self.value_into(*x);
