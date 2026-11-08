@@ -28,16 +28,16 @@ Two numbers per row, because the two phases stress different limits:
 | prefill (seq 128) | llama.cpp `c6824a9e4` (ggml CUDA, f16) | 1.2288 ms | 20.97 | 175 |
 | prefill (seq 128) | torch 2.11.0+cu130 (cuBLAS) | 1.3037 ms | 19.77 | 165 |
 | prefill (seq 128) | tinygrad 0.11.0 (CUDA, `BEAM=1`, `TinyJit`) | 2.5213 ms | 10.22 | 85 |
-| prefill (seq 128) | zyx 0.18-dev (CUDA, 20 launches) | 2.7662 ms | 9.32 | 78 |
+| prefill (seq 128) | zyx 0.18-dev (CUDA, 20 launches) | 2.7529 ms | 9.36 | 78 |
 | decode (seq 1 + lm_head) | torch 2.11.0+cu130 (cuBLAS) | 3.2532 ms | 0.30 | 304 |
 | decode (seq 1 + lm_head) | llama.cpp `c6824a9e4` (ggml CUDA, f16) | 3.3702 ms | 0.29 | 294 |
 | decode (seq 1 + lm_head) | tinygrad 0.11.0 (CUDA, `BEAM=1`, `TinyJit`) | 3.2803 ms | 0.30 | 302 |
-| decode (seq 1 + lm_head) | zyx 0.18-dev (CUDA, 20 launches) | 3.2611 ms | 0.30 | 303 |
+| decode (seq 1 + lm_head) | zyx 0.18-dev (CUDA, 20 launches) | 3.2628 ms | 0.30 | 303 |
 
 Decode is bandwidth-bound: all four reach ~90% of the card's 336 GB/s (torch
 304, zyx 303, tinygrad 302, llama.cpp 294), and TFLOP/s is small by
 construction. Prefill is compute-bound: llama.cpp and torch sit at ~20
-TFLOP/s, tinygrad at 10.2 and zyx at 9.3 — none of them is limited by a wall.
+TFLOP/s, tinygrad at 10.2 and zyx at 9.4 — none of them is limited by a wall.
 
 tinygrad is measured with `BEAM=1`, its own recommended kernel search, not at
 the `BEAM=0` default: at `BEAM=0` the same script reports 3.7942 ms prefill
@@ -51,31 +51,31 @@ the `BEAM=0` default: at `BEAM=0` the same script reports 3.7942 ms prefill
 | `q_proj` | [128x3072]x[3072x3072] | llama.cpp | 0.1205 | 20.05 | 170 |
 | `q_proj` | [128x3072]x[3072x3072] | torch | 0.1485 | 16.27 | 138 |
 | `q_proj` | [128x3072]x[3072x3072] | tinygrad | 0.3158 | 7.65 | 65 |
-| `q_proj` | [128x3072]x[3072x3072] | zyx | 0.2786 | 8.67 | 73 |
+| `q_proj` | [128x3072]x[3072x3072] | zyx | 0.2668 | 9.06 | 77 |
 | `k_proj` | [128x3072]x[3072x1024] | llama.cpp | 0.0560 | 14.38 | 131 |
 | `k_proj` | [128x3072]x[3072x1024] | torch | 0.0552 | 14.59 | 133 |
 | `k_proj` | [128x3072]x[3072x1024] | tinygrad | 0.1363 | 5.91 | 54 |
-| `k_proj` | [128x3072]x[3072x1024] | zyx | 0.1561 | 5.16 | 47 |
+| `k_proj` | [128x3072]x[3072x1024] | zyx | 0.1536 | 5.24 | 48 |
 | `v_proj` | [128x3072]x[3072x1024] | llama.cpp | 0.0568 | 14.18 | 129 |
 | `v_proj` | [128x3072]x[3072x1024] | torch | 0.0547 | 14.72 | 134 |
 | `v_proj` | [128x3072]x[3072x1024] | tinygrad | 0.1364 | 5.90 | 54 |
-| `v_proj` | [128x3072]x[3072x1024] | zyx | 0.1561 | 5.16 | 47 |
+| `v_proj` | [128x3072]x[3072x1024] | zyx | 0.1536 | 5.24 | 48 |
 | `o_proj` | [128x3072]x[3072x3072] | llama.cpp | 0.1200 | 20.13 | 170 |
 | `o_proj` | [128x3072]x[3072x3072] | torch | 0.1507 | 16.03 | 136 |
 | `o_proj` | [128x3072]x[3072x3072] | tinygrad | 0.2828 | 8.54 | 72 |
-| `o_proj` | [128x3072]x[3072x3072] | zyx | 0.2786 | 8.67 | 73 |
+| `o_proj` | [128x3072]x[3072x3072] | zyx | 0.2668 | 9.06 | 77 |
 | `gate_proj` | [128x3072]x[3072x8192] | llama.cpp | 0.3185 | 20.23 | 167 |
 | `gate_proj` | [128x3072]x[3072x8192] | torch | 0.2927 | 22.01 | 182 |
 | `gate_proj` | [128x3072]x[3072x8192] | tinygrad | 0.5385 | 11.96 | 99 |
-| `gate_proj` | [128x3072]x[3072x8192] | zyx | 0.6289 | 10.24 | 85 |
+| `gate_proj` | [128x3072]x[3072x8192] | zyx | 0.6439 | 10.01 | 83 |
 | `up_proj` | [128x3072]x[3072x8192] | llama.cpp | 0.3163 | 20.37 | 168 |
 | `up_proj` | [128x3072]x[3072x8192] | torch | 0.2936 | 21.94 | 181 |
 | `up_proj` | [128x3072]x[3072x8192] | tinygrad | 0.5365 | 12.01 | 99 |
-| `up_proj` | [128x3072]x[3072x8192] | zyx | 0.6289 | 10.24 | 85 |
+| `up_proj` | [128x3072]x[3072x8192] | zyx | 0.6439 | 10.01 | 83 |
 | `down_proj` | [128x8192]x[8192x3072] | llama.cpp | 0.2407 | 26.77 | 221 |
 | `down_proj` | [128x8192]x[8192x3072] | torch | 0.3083 | 20.90 | 173 |
 | `down_proj` | [128x8192]x[8192x3072] | tinygrad | 0.5749 | 11.21 | 93 |
-| `down_proj` | [128x8192]x[8192x3072] | zyx | 0.6390 | 10.08 | 83 |
+| `down_proj` | [128x8192]x[8192x3072] | zyx | 0.6243 | 10.32 | 85 |
 
 ### Decode, per projection
 
@@ -84,19 +84,19 @@ the `BEAM=0` default: at `BEAM=0` the same script reports 3.7942 ms prefill
 | `q_proj` | [1x3072]x[3072x3072] | torch | 0.0656 | 0.29 | 288 |
 | `q_proj` | [1x3072]x[3072x3072] | llama.cpp | 0.0746 | 0.25 | 253 |
 | `q_proj` | [1x3072]x[3072x3072] | tinygrad | 0.0644 | 0.29 | 293 |
-| `q_proj` | [1x3072]x[3072x3072] | zyx | 0.0655 | 0.29 | 288 |
+| `q_proj` | [1x3072]x[3072x3072] | zyx | 0.0656 | 0.29 | 288 |
 | `k_proj` | [1x3072]x[3072x1024] | torch | 0.0241 | 0.26 | 261 |
 | `k_proj` | [1x3072]x[3072x1024] | llama.cpp | 0.0327 | 0.19 | 193 |
 | `k_proj` | [1x3072]x[3072x1024] | tinygrad | 0.0401 | 0.16 | 157 |
-| `k_proj` | [1x3072]x[3072x1024] | zyx | 0.0254 | 0.25 | 248 |
+| `k_proj` | [1x3072]x[3072x1024] | zyx | 0.0252 | 0.25 | 250 |
 | `v_proj` | [1x3072]x[3072x1024] | torch | 0.0245 | 0.26 | 257 |
 | `v_proj` | [1x3072]x[3072x1024] | llama.cpp | 0.0328 | 0.19 | 192 |
 | `v_proj` | [1x3072]x[3072x1024] | tinygrad | 0.0405 | 0.16 | 156 |
-| `v_proj` | [1x3072]x[3072x1024] | zyx | 0.0254 | 0.25 | 248 |
+| `v_proj` | [1x3072]x[3072x1024] | zyx | 0.0252 | 0.25 | 250 |
 | `o_proj` | [1x3072]x[3072x3072] | torch | 0.0649 | 0.29 | 291 |
 | `o_proj` | [1x3072]x[3072x3072] | llama.cpp | 0.0743 | 0.25 | 254 |
 | `o_proj` | [1x3072]x[3072x3072] | tinygrad | 0.0646 | 0.29 | 292 |
-| `o_proj` | [1x3072]x[3072x3072] | zyx | 0.0655 | 0.29 | 288 |
+| `o_proj` | [1x3072]x[3072x3072] | zyx | 0.0656 | 0.29 | 288 |
 | `gate_proj` | [1x3072]x[3072x8192] | torch | 0.1672 | 0.30 | 301 |
 | `gate_proj` | [1x3072]x[3072x8192] | llama.cpp | 0.1887 | 0.27 | 267 |
 | `gate_proj` | [1x3072]x[3072x8192] | tinygrad | 0.1673 | 0.30 | 301 |
@@ -108,11 +108,11 @@ the `BEAM=0` default: at `BEAM=0` the same script reports 3.7942 ms prefill
 | `down_proj` | [1x8192]x[8192x3072] | torch | 0.1683 | 0.30 | 299 |
 | `down_proj` | [1x8192]x[8192x3072] | llama.cpp | 0.1807 | 0.28 | 279 |
 | `down_proj` | [1x8192]x[8192x3072] | tinygrad | 0.1676 | 0.30 | 300 |
-| `down_proj` | [1x8192]x[8192x3072] | zyx | 0.1694 | 0.30 | 297 |
+| `down_proj` | [1x8192]x[8192x3072] | zyx | 0.1698 | 0.30 | 297 |
 | `lm_head` | [1x3072]x[3072x128256] | torch | 2.5707 | 0.31 | 307 |
 | `lm_head` | [1x3072]x[3072x128256] | llama.cpp | 2.5979 | 0.30 | 303 |
 | `lm_head` | [1x3072]x[3072x128256] | tinygrad | 2.5684 | 0.31 | 307 |
-| `lm_head` | [1x3072]x[3072x128256] | zyx | 2.5725 | 0.31 | 306 |
+| `lm_head` | [1x3072]x[3072x128256] | zyx | 2.5740 | 0.31 | 306 |
 
 ### Reproduce
 
@@ -142,16 +142,17 @@ is the path its f16 prefill takes.
 Budget: **20 timed launches per kernel** (`autotune.n_launches = 20` in
 `~/.config/zyx/config.json`) — the default a user gets, and roughly the point
 where tuning cost stops being noticeable: the whole prefill set tuned in
-~2 minutes, decode in under 1. It is a cap, not a fixed cost: the search stops
-earlier when candidates collapse onto kernels it has already timed. A seed
-shared by two projections is tuned once per projection, so the run above
-logged 41 launches each for `q`/`o` and `gate`/`up`, 20 for `k`/`v` and
-`down`, and 20 for every decode kernel. The table entry is the fastest
-candidate measured within that budget, on the device.
+~1 minute, decode in under 1. It is a cap, not a fixed cost: the search stops
+earlier when candidates collapse onto kernels it has already timed. The seven
+projections fall into four distinct shapes, and the runtime reuses a tuned
+kernel for the second projection of a shape, so the run above measured 20
+candidates for each of `q`/`o`, `k`/`v`, `gate`/`up` and `down` (and 20 for
+every decode kernel). The table entry is the fastest candidate measured within
+that budget, on the device.
 
 For scale, the same search at 1000 launches reached 2.687 ms / 9.59 TFLOP/s
 for prefill and 3.260 ms for decode on the earlier code; that run has not been
-repeated since. At 20 launches the phase total above is 2.7662 ms / 9.32
+repeated since. At 20 launches the phase total above is 2.7529 ms / 9.36
 TFLOP/s, i.e. within 3% of it, so the budget is no longer what limits the
 result — the numbers above are the ones a user actually gets.
 
@@ -166,10 +167,11 @@ AGENT=1 ZYX_DEV=cuda ZYX_QUIET_INPUT_COPIES=1 ./target/release/zyx-bench llama d
 Every candidate is written to `zyx-bench/bench.db` (`llama/prefill_gemm`,
 `llama/decode_gemm`) with its device time, `grid`, `n_launches`, kernel IR and
 `code_version`; the rows above are the minimum `nanos` per seed at
-`n_launches=20`, `code_version=a13f5338+dirty` (tensor recipe, packed mma fragments, dense
-staging decode, `std` runtime lock, and the cost model retrained on 19,321
-rows by `regression.py`). The tree was dirty because this table's own changes
-were not committed yet; the run is reproducible from it once they land.
+`n_launches=20`, `code_version=d13947a4` (the cost model trained on the
+pre-`device_epilogue` IR the search actually ranks, 5,250 rows in
+`bench.db`; tensor recipe, packed mma fragments, dense staging decode, `std`
+runtime lock). The tree was clean at that commit, so the run reproduces from
+it exactly.
 
 ## Training Step Time
 
