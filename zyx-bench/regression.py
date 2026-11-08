@@ -20,7 +20,12 @@ BENCH_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bench.db')
 
 def load_bench():
     """Measurements as a DataFrame: flat `Kernel::features` columns, one row per
-    timed candidate. `variant_hash` groups the candidates of one seed kernel."""
+    timed candidate. `variant_hash` groups the candidates of one seed kernel.
+
+    Only `schema >= 2` rows train the model: those record the candidate
+    *before* `device_epilogue`, which is the form the search costs. Older rows
+    carry post-lowering features and would teach the model the wrong stage.
+    """
     if not os.path.exists(BENCH_DB):
         sys.exit(f"missing {BENCH_DB}: run `cargo run --release` in zyx-bench first")
     con = sqlite3.connect(f"file:{BENCH_DB}?mode=ro", uri=True)
@@ -38,11 +43,12 @@ def load_bench():
             " FROM measurements m"
             " LEFT JOIN kernel_features kf ON kf.hash = m.kernel"
             " WHERE m.status = 'measured' AND m.nanos IS NOT NULL"
+            "   AND m.schema >= 2"
         )
     else:
         sql = (
             "SELECT dev, seed, kernel, nanos, features FROM measurements"
-            " WHERE status = 'measured' AND nanos IS NOT NULL"
+            " WHERE status = 'measured' AND nanos IS NOT NULL AND schema >= 2"
         )
     df = pd.read_sql_query(sql, con)
     con.close()

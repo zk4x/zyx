@@ -598,13 +598,18 @@ impl BeamSearch {
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
                 eprintln!("[measure] applied ops={}", kernel.ops.len().0);
+                // The cost model runs before `device_epilogue`, so its training
+                // data is this candidate, not the lowered one: record the
+                // pre-lowering kernel. Lowering `kernel` below still produces
+                // the artifact that is launched.
+                let candidate = kernel.clone();
                 // Hardware lowering runs once here, right before timed
                 // launches — never inside the search loop above. A candidate
                 // whose lowering refuses to produce a renderable kernel (an
                 // oversized devectorization) is a rejected candidate, not a
                 // broken run: record it and move on.
                 if let Err(e) = kernel.device_epilogue() {
-                    record_measurement(&kernel, opt_seq, seed_id, self.n_launches, None, None, "failed");
+                    record_measurement(&candidate, opt_seq, seed_id, self.n_launches, None, None, "failed");
                     last_error = Some(e);
                     continue;
                 }
@@ -640,7 +645,7 @@ impl BeamSearch {
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(args, dev, debug) {
                         Ok((program_id, time)) => {
-                            record_measurement(&kernel, opt_seq, seed_id, self.n_launches, Some(time), Some(grid), "measured");
+                            record_measurement(&candidate, opt_seq, seed_id, self.n_launches, Some(time), Some(grid), "measured");
                             programs.push(program_id);
                             measured += 1;
                             if time < best_time {
@@ -653,7 +658,7 @@ impl BeamSearch {
                             // be matched to its `bench.db` row. Removed after
                             // the diagnosis.
                             eprintln!("autotune: candidate seq={:?} failed: {e:?}", opt_seq.opts);
-                            record_measurement(&kernel, opt_seq, seed_id, self.n_launches, None, None, "failed");
+                            record_measurement(&candidate, opt_seq, seed_id, self.n_launches, None, None, "failed");
                             last_error = Some(e.into());
                         }
                     }
@@ -711,10 +716,16 @@ pub struct Measurement {
     pub grid: Option<[Dim; 3]>,
     /// `"measured"` or `"failed"`.
     pub status: &'static str,
-    /// The cost-model feature vector of the final kernel.
+    /// The cost-model feature vector of the measured candidate.
+    ///
+    /// Captured *before* `device_epilogue`: the search ranks candidates in
+    /// that form, so the model must be trained on it. The lowered IR is a
+    /// different program and would train the model on features it never sees.
     pub features: Features,
-    /// The final kernel's serialized IR (`SerBin`). Stored so features stay
-    /// re-derivable after a feature or cost-model change.
+    /// The measured candidate's serialized IR (`SerBin`), before lowering.
+    /// Stored so features stay re-derivable after a feature or cost-model
+    /// change. This is the kernel the model ranks; it is not the lowered
+    /// artifact that ran.
     pub ir: Vec<u8>,
 }
 
