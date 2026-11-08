@@ -293,11 +293,6 @@ impl<'a> Emitter<'a> {
         let lanes: u64 = self.k.shape(idx).iter().map(|d| *d as u64).product::<u64>().max(1);
         assert_eq!(page_datums % lanes, 0, "tenstorrent boundary: page {page_datums} is not {lanes} whole spans");
         let span = u32::try_from(page_datums / lanes * el).expect("span too large");
-        if std::env::var_os("ZYX_TT_DUMP").is_some() {
-            eprintln!(
-                "[tt boundary] copy {id:?} page={page:?} page_datums={page_datums} lanes={lanes} span={span} bytes={bytes:?} publish={publish}"
-            );
-        }
         if let Some(bytes) = bytes {
             assert_eq!(u64::from(bytes), page_datums * el, "tenstorrent boundary: copy {id:?} bytes disagree with its page");
         }

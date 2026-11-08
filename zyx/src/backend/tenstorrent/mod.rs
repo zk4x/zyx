@@ -1218,9 +1218,6 @@ impl TTDevice {
                             })?);
                             args.push(tt_isa::noc::niu::Endpoint { x: ep.x(), y: ep.y(), addr: 0 }.hi());
                         }
-                        if std::env::var_os("ZYX_TT_DUMP").is_some() {
-                            eprintln!("[tt transfer] grid=({gidx0},{gidx1}) args={args:?}");
-                        }
                         Some(ttsim::Transfer { words: prog.reader_program.to_vec(), args })
                     };
                     for mv in prog.reader.iter() {

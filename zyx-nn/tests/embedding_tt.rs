@@ -46,16 +46,22 @@ fn embedding_gather_small() -> Result<(), ZyxError> {
     const TOKEN: u32 = 7;
 
     let dev: Dev = std::env::var("ZYX_DEV").ok().and_then(|s| s.parse().ok()).unwrap_or(Dev::TT(0));
-    let ramp: Vec<f32> = (0..VOCAB * HIDDEN).map(|i| i as f32).collect();
-    let weight = Tensor::from(ramp).reshape([VOCAB, HIDDEN])?;
+    let weight = Tensor::rand([VOCAB, HIDDEN], DType::F32)?;
     let expected: Vec<f32> = weight.narrow(0, i64::from(TOKEN), 1i64)?.reshape([HIDDEN])?.try_into()?;
 
-    let mut embedding = Embedding::from_params(weight)?;
+    let mut embedding = Embedding::from_params(weight.clone())?;
     embedding.weight = embedding.weight.to(dev)?;
-    let mut ids_host = vec![0u32; 16];
-    ids_host[0] = TOKEN;
-    let ids = Tensor::from(ids_host).reshape([1i64, 16i64])?.to(dev)?;
+    let ids = Tensor::from([TOKEN]).reshape([1i64, 1i64])?.to(dev)?;
     let got: Vec<f32> = embedding.forward(ids)?.to(Dev::C)?.try_into()?;
-    assert_eq!(got, expected);
+    if got != expected {
+        let mut hits: Vec<i64> = Vec::new();
+        for r in 0..VOCAB {
+            let row: Vec<f32> = weight.narrow(0, r, 1i64)?.reshape([HIDDEN])?.try_into()?;
+            if row == got {
+                hits.push(r);
+            }
+        }
+        panic!("the gather returned row(s) {hits:?}, expected row {TOKEN}");
+    }
     Ok(())
 }

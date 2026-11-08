@@ -809,8 +809,64 @@ mod tests {
         assert_eq!(got, vec![PAGE, FIFO + PAGE, PAGE, 1, FIFO, FIFO, (1 << 16) | 1, 0], "CB interface after one page");
     }
 
-    /// RV32M on the executor's core: `a0 = 3 * 5`.
+    /// One NOC read into L1 and one NOC write back, at a size that is a whole
+    /// number of 64-byte NOC words: the transfer path's shape, without a kernel
+    /// in between. `N = 128` is two words — the case a page wider than one
+    /// word exercises.
     #[test]
+    fn a_128_byte_move_round_trips() {
+        use crate::codegen::tenstorrent::riscv::{self, Assembler, noc, reg};
+        if ensure_open().is_err() {
+            eprintln!("a_128_byte_move_round_trips: no simulator, skipped");
+            return;
+        }
+        const N: u32 = 128;
+        const SRC: u64 = 0x1000;
+        const DST: u64 = 0x4000;
+        let channel = Dram::FULL.channel(0).expect("channel 0");
+        let src = channel.range(SRC, u64::from(N)).expect("source range");
+        let dst = channel.range(DST, u64::from(N)).expect("destination range");
+        let endpoint = channel.endpoint(Niu::Noc0, 0).expect("channel 0 endpoint");
+        let hi = Endpoint { x: endpoint.x(), y: endpoint.y(), addr: 0 }.hi();
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+        let me_hi = Endpoint { x, y, addr: 0 }.hi();
+
+        let data: Vec<u8> = (0..N).map(|i| (i * 7) as u8).collect();
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let page = program_at + 0x1000;
+        let args_at = program_at + 0x2000;
+
+        let mut a = Assembler::new();
+        noc::open(&mut a, reg::A7, Niu::Noc0);
+        noc::issue(&mut a, reg::A7, noc::Addr::Imm(SRC as u32), hi, noc::Addr::Imm(page), me_hi, 0, N, false, reg::T0);
+        noc::drain(&mut a, reg::A7, TxnId::new(0).expect("transaction 0"), reg::T1);
+        noc::issue(&mut a, reg::A7, noc::Addr::Imm(page), me_hi, noc::Addr::Imm(DST as u32), hi, 0, N, true, reg::T0);
+        noc::drain(&mut a, reg::A7, TxnId::new(0).expect("transaction 0"), reg::T1);
+        a.push(riscv::RET);
+        let words = a.finish();
+
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, args_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+
+        let out = exec(ExecRun {
+            tile: (x, y),
+            dram: vec![(src, data.clone())],
+            l1,
+            read_back: vec![dst],
+            l1_read_back: vec![],
+        })
+        .expect("the move program runs");
+        assert_eq!(out.error, 0, "executor error word");
+        assert_eq!(out.dram[0], data, "128 bytes out");
+    }
+
+    /// RV32M on the executor's core: `a0 = 3 * 5`.    #[test]
     fn rv32m_multiply_runs_on_riscv_b() {
         use crate::codegen::tenstorrent::riscv::{self, Assembler, reg};
         if ensure_open().is_err() {
