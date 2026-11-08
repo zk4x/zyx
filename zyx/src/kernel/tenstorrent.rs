@@ -3136,6 +3136,35 @@ impl Kernel {
         self.default_epilogue();
     }
 
+    /// The coefficient of `lane` in an affine index expression. A loaded token
+    /// (a data-dependent subterm) is an opaque atom with coefficient zero.
+    fn tt_lane_stride(&self, e: OpId, lane: OpId) -> Option<i64> {
+        if e == lane {
+            return Some(1);
+        }
+        match self.at(e) {
+            Op::Const(_) | Op::Unroll { .. } | Op::Load { .. } | Op::Param { .. } | Op::Range { .. } => Some(0),
+            Op::Binary { x, y, bop } => match bop {
+                BOp::Add => Some(self.tt_lane_stride(*x, lane)? + self.tt_lane_stride(*y, lane)?),
+                BOp::Sub => Some(self.tt_lane_stride(*x, lane)? - self.tt_lane_stride(*y, lane)?),
+                BOp::Mul => {
+                    let c = |o: OpId| match self.at(o) {
+                        Op::Const(c) => c.as_dim(),
+                        _ => None,
+                    };
+                    match (c(*x), c(*y)) {
+                        (Some(c), _) => Some(c * self.tt_lane_stride(*y, lane)?),
+                        (_, Some(c)) => Some(c * self.tt_lane_stride(*x, lane)?),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            },
+            Op::Unary { x, .. } | Op::Cast { x, .. } => self.tt_lane_stride(*x, lane),
+            _ => None,
+        }
+    }
+
     /// Row-gather boundary traffic: every Global load moves the 64-byte span
     /// containing each of its lanes, one span per lane, concatenated into the
     /// CB page; every Global store moves the row span it writes. The reader
@@ -3254,10 +3283,50 @@ impl Kernel {
                     } else {
                         self.insert_before(prologue, storage)
                     };
-                    // The store index inside the row span; the whole row is
-                    // what the writer moves.
-                    let within = rem(self, scan, off, span);
-                    self.ops[scan].op = Op::Store { dst: cb, dst_idx: within, src: value };
+                    // The page is what the store moves. A vector store whose
+                    // lanes are contiguous (stride 1) moves `lanes` datums —
+                    // whole rows, and the page holds them; a scalar store moves
+                    // its row span. The index inside the page is the lane's
+                    // offset from the first lane.
+                    let lanes: i64 = self.shape(off).iter().map(|d| *d as i64).product::<i64>().max(1);
+                    let mut contiguous = false;
+                    if lanes > 1 {
+                        let mut lane = OpId::NULL;
+                        let mut stack = vec![off];
+                        for _ in 0..250_000 {
+                            let Some(n) = stack.pop() else { break };
+                            match self.ops[n].op {
+                                Op::Unroll { .. } => lane = n,
+                                Op::Binary { x, y, .. } => {
+                                    stack.push(x);
+                                    stack.push(y);
+                                }
+                                Op::Unary { x, .. } | Op::Cast { x, .. } => stack.push(x),
+                                _ => {}
+                            }
+                        }
+                        assert!(!lane.is_null(), "tt_add_movers: row store {scan:?} has lanes but no Unroll var");
+                        contiguous = self.tt_lane_stride(off, lane) == Some(1);
+                    }
+                    if contiguous {
+                        let page = lanes;
+                        if let Op::Storage { len, .. } = &mut self.ops[cb].op {
+                            *len = page;
+                        }
+                        let mut memo: Map<OpId, OpId> = Map::default();
+                        let Some(flat0) = self.tt_zero_iteration_vars(off, scan, OpId::NULL, false, false, true, &mut memo)
+                        else {
+                            todo!("tt_add_movers: row store {scan:?} index {off} is not iteration arithmetic")
+                        };
+                        let within = bin(self, scan, off, flat0, BOp::Sub);
+                        self.ops[scan].op = Op::Store { dst: cb, dst_idx: within, src: value };
+                    } else {
+                        // A scattered store has no contiguous run: only its row
+                        // span is addressable. The whole row is what the writer
+                        // moves.
+                        let within = rem(self, scan, off, span);
+                        self.ops[scan].op = Op::Store { dst: cb, dst_idx: within, src: value };
+                    }
                     // Drain: the row span base of lane 0, at the tail.
                     let mut memo: Map<OpId, OpId> = Map::default();
                     let Some(flat0) = self.tt_zero_iteration_vars(off, self.tail, OpId::NULL, false, false, true, &mut memo)
@@ -4035,6 +4104,12 @@ impl Kernel {
                 }
                 let slot = self.tt_new_dst(dtype, lower.prologue);
                 let mut ops = match (src, dtype) {
+                    // A `Bool` is a raw 1/0 word and `I32` is a raw integer tile:
+                    // the cast moves no bits.
+                    (DType::Bool, DType::I32) => {
+                        lower.materialized.insert(id, a);
+                        return Some((dtype, a));
+                    }
                     (DType::I32 | DType::Bool, DType::F32) => self.tt_sfp_cast_i32_f32(a, slot),
                     (DType::F32, DType::I32) => self.tt_sfp_cast_f32_i32(a, slot),
                     _ => todo!("cast {src:?} -> {dtype:?} has no native row-op program (tile {from:?})"),

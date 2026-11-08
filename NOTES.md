@@ -610,6 +610,61 @@ order the model compiles them (the order comes from `ZYX_DEBUG=4` on the model,
 not from the test file). Each real kernel replaces one approximation as its IR
 comes right.
 
+## Failure modes of this agent (do not repeat)
+
+Every one of these happened in the 2026-11-10 session, with the user saying the
+same thing repeatedly. They are process failures, not knowledge gaps.
+
+1. **Invented design.** Wrote "the traffic is one whole tile per iteration" and
+   the 1024-datum CB page into NOTES and the passes. The user never said it; the
+   rule is arbitrary indexing with the 64-byte-rounded span read and the row as
+   the write unit. Inventing is worse than asking.
+2. **A frozen snapshot called a contract.** The IR test pasted a run's output as
+   the expected string, on a fixture that never reached `tt_add_movers`. It was
+   green and tested nothing. Expected IR is written from the design first, red
+   until the passes match.
+3. **Stand-ins for the real kernel.** The custom gather fixture and a tile copy
+   were built and called "the gather", then the user's actual target — the real
+   tensor op in `23_tt_lowering::gather` — was left untouched. A hand-built
+   kernel is a unit counterpart at most; it is never acceptance.
+4. **Progress reported as success.** Test counts ("137 pass") and a transfer
+   program proven against staged raw DRAM were reported as progress. NOTES is
+   explicit: the acceptance is the real tensor gather against the host.
+5. **Ignored the gather being a loopback.** The user said five times that the
+   gather kernel has no compute, like tt-metal's DRAM loopback. The time went
+   into the index-expand kernel's compute instead.
+6. **Assumed affine/contiguous indexing.** Proposed making the store a
+   contiguous row and then a tiling rewrite, instead of the recorded rule:
+   arbitrary indices, span reads, whole-row writes.
+7. **Used `python3`/`sed` for file edits**, which is forbidden; the edit tool
+   only.
+8. **Asked questions NOTES already answers** (page size, write unit, what the
+   acceptance is), instead of reading the file end to end first.
+9. **Called a backend launch "working"** when the addresses were raw row-major
+   DRAM and the pool stores tiled images; the output was garbage. The test is
+   `#[ignore]`d, not green.
+10. **Claimed one-hot exists** in the gather path, then defended it after the
+    user said the one-hot is optimized away. `fold_loops`' `replace_gather_loop`
+    is the intended lowering (`acc = source[index]`), producing the compute-free
+    loopback; the index expansion is a separate, earlier kernel.
+
+What the next session must know, concretely:
+
+- `23_tt_lowering::gather` is the acceptance. It compiles several kernels; the
+  first is `index_select`'s index expand (`out[i][j] = idx[i] + (idx[i] < 0)*V`),
+  which is a compute kernel. The gather kernel after `fold_loops` is
+  `acc = source[index]` — a pure transfer/loopback, which the transfer path in
+  this tree already lowers and runs on ttsim.
+- The index expand being a separate kernel is why the acceptance still fails
+  before the gather. The gather must read the compact index directly (fold the
+  expand into the gather, or run the fold before kernelization), so that no
+  compute kernel exists on the path. That is the next real change, and it is in
+  the graph/kernelizer lowering, not in `tt_add_movers`.
+- Fixed this session and kept: `merge_ranges` now decomposes the flat index
+  **row-major** (last axis low), so vector lanes can be contiguous; the row
+  body pages a contiguous vector store as `lanes` datums with the lane offset as
+  its page index; `Bool -> I32` cast is an identity (raw 1/0 word).
+
 ## Debugging
 
 Run cargo from `zyx/` (the root has no `Cargo.toml`).
