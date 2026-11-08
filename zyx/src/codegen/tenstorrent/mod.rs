@@ -29,6 +29,7 @@
 // parts zyx emits are exercised, so their unused surface is dead until a later
 // pass prunes it (the same allowance the backend's ports carry).
 #[allow(dead_code, unused_imports, unused_variables)]
+pub mod boundary;
 pub mod code;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub mod datapath;

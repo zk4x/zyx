@@ -145,6 +145,18 @@ pub fn srli(rd: u8, rs1: u8, sh: u32) -> u32 {
     assert!(sh < 32, "shift {sh} does not fit 5 bits");
     i_type(OP_IMM, 5, rd, rs1, sh as i32)
 }
+/// RV32M multiply (`mul`, the low 32 bits).
+pub fn mul(rd: u8, rs1: u8, rs2: u8) -> u32 {
+    r_type(OP_REG, 0, 1, rd, rs1, rs2)
+}
+/// RV32M unsigned divide.
+pub fn divu(rd: u8, rs1: u8, rs2: u8) -> u32 {
+    r_type(OP_REG, 5, 1, rd, rs1, rs2)
+}
+/// RV32M unsigned remainder.
+pub fn remu(rd: u8, rs1: u8, rs2: u8) -> u32 {
+    r_type(OP_REG, 7, 1, rd, rs1, rs2)
+}
 pub fn lui(rd: u8, imm20: u32) -> u32 {
     ((imm20 & 0xfffff) << 12) | ((rd as u32) << 7) | OP_LUI
 }
@@ -181,9 +193,17 @@ pub fn lbu(rd: u8, rs1: u8, imm: i32) -> u32 {
     assert!(fits_i12(imm), "lbu offset {imm} does not fit 12 bits");
     i_type(OP_LOAD, 4, rd, rs1, imm)
 }
+pub fn lhu(rd: u8, rs1: u8, imm: i32) -> u32 {
+    assert!(fits_i12(imm), "lhu offset {imm} does not fit 12 bits");
+    i_type(OP_LOAD, 5, rd, rs1, imm)
+}
 pub fn sw(rs1: u8, rs2: u8, imm: i32) -> u32 {
     assert!(fits_i12(imm), "sw offset {imm} does not fit 12 bits");
     s_type(OP_STORE, 2, rs1, rs2, imm)
+}
+pub fn sh(rs1: u8, rs2: u8, imm: i32) -> u32 {
+    assert!(fits_i12(imm), "sh offset {imm} does not fit 12 bits");
+    s_type(OP_STORE, 1, rs1, rs2, imm)
 }
 pub fn sb(rs1: u8, rs2: u8, imm: i32) -> u32 {
     assert!(fits_i12(imm), "sb offset {imm} does not fit 12 bits");
@@ -294,6 +314,16 @@ impl Assembler {
         self.fixups.push(Fixup { at, label: label.0, kind: Kind::Branch(1, rs1, rs2) });
     }
 
+    pub fn bltu(&mut self, rs1: u8, rs2: u8, label: Label) {
+        let at = self.push(bltu(rs1, rs2, 0));
+        self.fixups.push(Fixup { at, label: label.0, kind: Kind::Branch(6, rs1, rs2) });
+    }
+
+    pub fn bgeu(&mut self, rs1: u8, rs2: u8, label: Label) {
+        let at = self.push(bgeu(rs1, rs2, 0));
+        self.fixups.push(Fixup { at, label: label.0, kind: Kind::Branch(7, rs1, rs2) });
+    }
+
     pub fn jal(&mut self, rd: u8, label: Label) {
         let at = self.push(jal(rd, 0));
         self.fixups.push(Fixup { at, label: label.0, kind: Kind::Jal(rd) });
@@ -389,13 +419,31 @@ pub mod noc {
         write: bool,
         scratch: u8,
     ) {
+        issue_addr(a, base, targ, Addr::Imm(targ_hi), ret, Addr::Imm(ret_hi), tag, len, write, scratch);
+    }
+
+    /// [`issue`] with the high address words from registers as well (the
+    /// launch supplies a parameter's endpoint at run time).
+    #[allow(clippy::too_many_arguments)]
+    pub fn issue_addr(
+        a: &mut Assembler,
+        base: u8,
+        targ: Addr,
+        targ_hi: Addr,
+        ret: Addr,
+        ret_hi: Addr,
+        tag: u32,
+        len: u32,
+        write: bool,
+        scratch: u8,
+    ) {
         wait_idle(a, base, scratch);
         store(a, base, initiator::TARG_ADDR_LO, targ, scratch);
         store(a, base, initiator::TARG_ADDR_MID, Addr::Imm(0), scratch);
-        store(a, base, initiator::TARG_ADDR_HI, Addr::Imm(targ_hi), scratch);
+        store(a, base, initiator::TARG_ADDR_HI, targ_hi, scratch);
         store(a, base, initiator::RET_ADDR_LO, ret, scratch);
         store(a, base, initiator::RET_ADDR_MID, Addr::Imm(0), scratch);
-        store(a, base, initiator::RET_ADDR_HI, Addr::Imm(ret_hi), scratch);
+        store(a, base, initiator::RET_ADDR_HI, ret_hi, scratch);
         store(a, base, initiator::PACKET_TAG, Addr::Imm(tag), scratch);
         store(a, base, initiator::CTRL, Addr::Imm(if write { WRITE } else { READ }), scratch);
         store(a, base, initiator::AT_LEN_BE, Addr::Imm(len), scratch);
@@ -418,6 +466,110 @@ pub mod noc {
     /// Put the NOC's initiator base in `base`.
     pub fn open(a: &mut Assembler, base: u8, niu: Niu) {
         a.li(base, niu.base() as u32);
+    }
+}
+
+/// Inline circular-buffer sync: the four tt-metal `dataflow_api.h` operations as
+/// straight-line RISC-V over a [`cb::Local`] interface in L1.
+///
+/// The layout is tt-metal's `LocalCBInterface` (`circular_buffer_interface.h`),
+/// 8 words: `fifo_size`, `fifo_limit`, `fifo_page_size`, `fifo_num_pages`,
+/// `fifo_rd_ptr`, `fifo_wr_ptr`, `tiles_acked_received_init` (acked low 16,
+/// received high 16), `fifo_wr_tile_ptr`. `reserve_back` and `wait_front` poll
+/// and do not advance a pointer; `push_back`/`pop_front` advance the pointer and
+/// its counter, wrapping only at `fifo_limit`.
+pub mod cb {
+    use super::*;
+
+    /// Byte offsets of the [`LocalCBInterface`] fields.
+    pub const SIZE: i32 = 0;
+    pub const LIMIT: i32 = 4;
+    pub const PAGE_SIZE: i32 = 8;
+    pub const NUM_PAGES: i32 = 12;
+    pub const RD_PTR: i32 = 16;
+    pub const WR_PTR: i32 = 20;
+    /// `tiles_acked` (low 16) and `tiles_received` (high 16) share this word.
+    pub const COUNTERS: i32 = 24;
+    pub const WR_TILE_PTR: i32 = 28;
+    /// Bytes per interface entry.
+    pub const STRIDE: u32 = 32;
+
+    fn base_of(a: &mut Assembler, base: u8, cb: u32, out: u8) {
+        assert!(cb < 32, "cb id {cb} out of range");
+        a.push(addi(out, base, (cb * STRIDE) as i32));
+    }
+
+    /// `cb_reserve_back(cb, n)`: poll until `num_pages - (received - acked) >= n`.
+    pub fn reserve_back(a: &mut Assembler, base: u8, cb: u32, n: u32, s: [u8; 3]) {
+        let [p, t, u] = s;
+        base_of(a, base, cb, p);
+        let top = a.label();
+        a.bind(top);
+        a.push(lhu(u, p, COUNTERS + 2));
+        a.push(lhu(t, p, COUNTERS));
+        a.push(sub(u, u, t));
+        a.push(lw(t, p, NUM_PAGES));
+        a.push(sub(t, t, u));
+        a.li(u, n);
+        a.bltu(t, u, top);
+    }
+
+    /// `cb_wait_front(cb, n)`: poll until `received - acked >= n`.
+    pub fn wait_front(a: &mut Assembler, base: u8, cb: u32, n: u32, s: [u8; 3]) {
+        let [p, t, u] = s;
+        base_of(a, base, cb, p);
+        let top = a.label();
+        a.bind(top);
+        a.push(lhu(u, p, COUNTERS + 2));
+        a.push(lhu(t, p, COUNTERS));
+        a.push(sub(u, u, t));
+        a.li(t, n);
+        a.bltu(u, t, top);
+    }
+
+    /// `cb_push_back(cb, n)`: `received += n`, advance the write pointer.
+    pub fn push_back(a: &mut Assembler, base: u8, cb: u32, n: u32, s: [u8; 4]) {
+        let [p, t, u, v] = s;
+        base_of(a, base, cb, p);
+        a.li(t, n);
+        a.push(lhu(u, p, COUNTERS + 2));
+        a.push(add(u, u, t));
+        a.push(sh(p, u, COUNTERS + 2));
+        advance(a, p, WR_PTR, t, v);
+    }
+
+    /// `cb_pop_front(cb, n)`: `acked += n`, advance the read pointer.
+    pub fn pop_front(a: &mut Assembler, base: u8, cb: u32, n: u32, s: [u8; 4]) {
+        let [p, t, u, v] = s;
+        base_of(a, base, cb, p);
+        a.li(t, n);
+        a.push(lhu(u, p, COUNTERS));
+        a.push(add(u, u, t));
+        a.push(sh(p, u, COUNTERS));
+        advance(a, p, RD_PTR, t, v);
+    }
+
+    /// `*ptr += n * page_size`, wrapping at `fifo_limit` (tt-metal: the pointer
+    /// never passes the limit; reaching it resets by `fifo_size`).
+    fn advance(a: &mut Assembler, p: u8, ptr: i32, n: u8, scratch: u8) {
+        a.push(lw(scratch, p, PAGE_SIZE));
+        a.push(mul(scratch, scratch, n));
+        a.push(lw(n, p, ptr));
+        a.push(add(n, n, scratch));
+        a.push(sw(p, n, ptr));
+        a.push(lw(scratch, p, LIMIT));
+        let done = a.label();
+        a.bne(n, scratch, done);
+        a.push(lw(scratch, p, SIZE));
+        a.push(sub(n, n, scratch));
+        a.push(sw(p, n, ptr));
+        a.bind(done);
+    }
+
+    /// The interface, ready to be written into L1.
+    pub fn interface(fifo_addr: u32, size: u32, page_size: u32, num_pages: u32) -> [u32; 8] {
+        assert!(size > 0 && page_size > 0 && size % page_size == 0, "cb interface: size {size} / page {page_size}");
+        [size, fifo_addr + size, page_size, num_pages, fifo_addr, fifo_addr, 0, 0]
     }
 }
 

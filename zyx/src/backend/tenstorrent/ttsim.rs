@@ -121,6 +121,8 @@ pub(crate) struct ExecRun {
     pub(crate) l1: Vec<(u32, Vec<u8>)>,
     /// DRAM segments to read after the run, in order.
     pub(crate) read_back: Vec<DramRange>,
+    /// L1 ranges to read after the run: `(address, length)`.
+    pub(crate) l1_read_back: Vec<(u32, u32)>,
 }
 
 /// What a staged-program run produced.
@@ -128,6 +130,8 @@ pub(crate) struct ExecRun {
 pub(crate) struct ExecResult {
     /// One buffer per [`ExecRun::read_back`] range.
     pub(crate) dram: Vec<Vec<u8>>,
+    /// One buffer per [`ExecRun::l1_read_back`] range.
+    pub(crate) l1: Vec<Vec<u8>>,
     /// The value the program left in `a0`.
     pub(crate) ret: u32,
     /// The executor's error word, zero on a clean run.
@@ -557,7 +561,13 @@ fn execute_exec(dev: &mut Device<sim::LibTtsim<'_>>, window: &super::dev::Window
         dev.dram_read(window, *range, &mut buf).map_err(|e| e.to_string())?;
         dram.push(buf);
     }
-    Ok(ExecResult { dram, ret, error })
+    let mut l1 = Vec::with_capacity(run.l1_read_back.len());
+    for (at, len) in &run.l1_read_back {
+        let mut buf = vec![0u8; *len as usize];
+        dev.l1_read(window, tile, u64::from(*at), &mut buf).map_err(|e| e.to_string())?;
+        l1.push(buf);
+    }
+    Ok(ExecResult { dram, l1, ret, error })
 }
 
 fn execute(
@@ -696,8 +706,486 @@ fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Map;
     use crate::codegen::tenstorrent::riscv::Gather;
+    use crate::kernel::{Kernel, OpId};
     use tt_isa::noc::niu::{Endpoint, Niu, TxnId};
+
+    /// The four CB syncs as emitted RISC-V, executed on RISCV B against a
+    /// tt-metal `LocalCBInterface` in L1. One page, one push/pop: the counters
+    /// end at 1/1 and both pointers wrap back to the page base.
+    #[test]
+    fn cb_sync_ops_run_on_riscv_b() {
+        use crate::codegen::tenstorrent::riscv::{self, Assembler, cb, noc, reg};
+        if ensure_open().is_err() {
+            eprintln!("cb_sync_ops_run_on_riscv_b: no simulator, skipped");
+            return;
+        }
+        const DST: u64 = 0x4000;
+        const FIFO: u32 = 0x1_0000;
+        const PAGE: u32 = 64;
+        let channel = Dram::FULL.channel(0).expect("channel 0");
+        let dst = channel.range(DST, 32).expect("destination range");
+        let endpoint = channel.endpoint(Niu::Noc0, 0).expect("channel 0 endpoint");
+        let hi = Endpoint { x: endpoint.x(), y: endpoint.y(), addr: 0 }.hi();
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+        let me_hi = Endpoint { x, y, addr: 0 }.hi();
+
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let iface_at = program_at + 0x1000;
+        let args_at = program_at + 0x2000;
+
+        let mut a = Assembler::new();
+        // t0 = the interface base (arg 0), t1 = the DRAM destination (arg 1).
+        a.push(riscv::lw(reg::T0, reg::A0, 0));
+        a.push(riscv::lw(reg::T1, reg::A0, 4));
+        cb::reserve_back(&mut a, reg::T0, 0, 1, [reg::T2, reg::T3, reg::T4]);
+        cb::push_back(&mut a, reg::T0, 0, 1, [reg::T2, reg::T3, reg::T4, reg::T5]);
+        cb::wait_front(&mut a, reg::T0, 0, 1, [reg::T2, reg::T3, reg::T4]);
+        cb::pop_front(&mut a, reg::T0, 0, 1, [reg::T2, reg::T3, reg::T4, reg::T5]);
+        noc::open(&mut a, reg::T5, Niu::Noc0);
+        noc::issue(&mut a, reg::T5, noc::Addr::Reg(reg::T0), me_hi, noc::Addr::Reg(reg::T1), hi, 0, 64, true, reg::T2);
+        noc::drain(&mut a, reg::T5, TxnId::new(0).expect("transaction 0"), reg::T2);
+        a.push(riscv::RET);
+        let words = a.finish();
+
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        let iface = cb::interface(FIFO, PAGE, PAGE, 1);
+        let mut iface_bytes: Vec<u8> = iface.iter().flat_map(|w| w.to_le_bytes()).collect();
+        iface_bytes.resize(64, 0);
+        l1.push((iface_at, iface_bytes));
+        let mut args = Vec::new();
+        for word in [iface_at, DST as u32] {
+            args.extend(word.to_le_bytes());
+        }
+        l1.push((args_at, args));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, args_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+
+        let out = exec(ExecRun { tile: (x, y), dram: vec![], l1, read_back: vec![dst], l1_read_back: vec![] })
+            .expect("the CB program runs");
+        assert_eq!(out.error, 0, "executor error word");
+        let got: Vec<u32> = out.dram[0].chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect();
+        assert_eq!(got, vec![PAGE, FIFO + PAGE, PAGE, 1, FIFO, FIFO, (1 << 16) | 1, 0], "CB interface after one page");
+    }
+
+    /// RV32M on the executor's core: `a0 = 3 * 5`.
+    #[test]
+    fn rv32m_multiply_runs_on_riscv_b() {
+        use crate::codegen::tenstorrent::riscv::{self, Assembler, reg};
+        if ensure_open().is_err() {
+            eprintln!("rv32m_multiply_runs_on_riscv_b: no simulator, skipped");
+            return;
+        }
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let mut a = Assembler::new();
+        a.li(reg::T0, 3);
+        a.li(reg::T1, 5);
+        a.push(riscv::mul(reg::A0, reg::T0, reg::T1));
+        a.li(reg::T0, 7);
+        a.li(reg::T1, 3);
+        a.push(riscv::divu(reg::A1, reg::T0, reg::T1));
+        a.push(riscv::add(reg::A0, reg::A0, reg::A1));
+        a.push(riscv::RET);
+        let words = a.finish();
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, 0, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+        let out = exec(ExecRun { tile: (x, y), dram: vec![], l1, read_back: vec![], l1_read_back: vec![] })
+            .expect("the RV32M program runs");
+        assert_eq!(out.error, 0, "executor error word");
+        assert_eq!(out.ret, 15 + 2, "3*5 + 7/3");
+    }
+
+    /// `issue_addr` with the high words from registers: a DRAM read to L1 and
+    /// a write back, exactly as the boundary emitter uses it.
+    #[test]
+    fn noc_issue_with_register_high_words_runs_on_riscv_b() {
+        use crate::codegen::tenstorrent::riscv::{self, Assembler, noc, reg};
+        if ensure_open().is_err() {
+            eprintln!("noc_issue_with_register_high_words_runs_on_riscv_b: no simulator, skipped");
+            return;
+        }
+        const SRC: u64 = 0x1000;
+        const DST: u64 = 0x4000;
+        let channel = Dram::FULL.channel(0).expect("channel 0");
+        let src = channel.range(SRC, 64).expect("source");
+        let dst = channel.range(DST, 64).expect("destination");
+        let endpoint = channel.endpoint(Niu::Noc0, 0).expect("endpoint");
+        let hi = Endpoint { x: endpoint.x(), y: endpoint.y(), addr: 0 }.hi();
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+        let me_hi = Endpoint { x, y, addr: 0 }.hi();
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let args_at = program_at + 0x2000;
+        let page = program_at + 0x1000;
+        let mut a = Assembler::new();
+        // a1 = source lo, a2 = hi, a3 = destination lo, a4 = page.
+        a.push(riscv::lw(reg::A1, reg::A0, 0));
+        a.push(riscv::lw(reg::A2, reg::A0, 4));
+        a.push(riscv::lw(reg::A3, reg::A0, 8));
+        a.li(reg::A4, page);
+        a.li(reg::A5, me_hi);
+        noc::open(&mut a, reg::A7, Niu::Noc0);
+        noc::issue_addr(
+            &mut a,
+            reg::A7,
+            noc::Addr::Reg(reg::A1),
+            noc::Addr::Reg(reg::A2),
+            noc::Addr::Reg(reg::A4),
+            noc::Addr::Reg(reg::A5),
+            0,
+            64,
+            false,
+            reg::T0,
+        );
+        noc::drain(&mut a, reg::A7, TxnId::new(0).expect("transaction 0"), reg::T0);
+        noc::issue_addr(
+            &mut a,
+            reg::A7,
+            noc::Addr::Reg(reg::A4),
+            noc::Addr::Reg(reg::A5),
+            noc::Addr::Reg(reg::A3),
+            noc::Addr::Reg(reg::A2),
+            0,
+            64,
+            true,
+            reg::T0,
+        );
+        noc::drain(&mut a, reg::A7, TxnId::new(0).expect("transaction 0"), reg::T0);
+        a.push(riscv::RET);
+        let words = a.finish();
+        let data: Vec<u8> = (0..64u32).map(|i| (i * 3) as u8).collect();
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        let mut args = Vec::new();
+        for w in [SRC as u32, hi, DST as u32] {
+            args.extend(w.to_le_bytes());
+        }
+        l1.push((args_at, args));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, args_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+        let out = exec(ExecRun { tile: (x, y), dram: vec![(src, data.clone())], l1, read_back: vec![dst], l1_read_back: vec![] })
+            .expect("the NOC program runs");
+        assert_eq!(out.error, 0, "executor error word");
+        assert_eq!(out.dram[0], data, "round trip");
+    }
+
+    /// The writer program emitted from the gather's boundary IR: the CB page
+    /// written to the output row the grid point names. Runs on NCRISC.
+    #[test]
+    fn gather_writer_program_runs_on_riscv_b() {
+        use crate::codegen::tenstorrent::boundary;
+        use crate::kernel::Op;
+        if ensure_open().is_err() {
+            eprintln!("gather_writer_program_runs_on_riscv_b: no simulator, skipped");
+            return;
+        }
+        let (k, cbs, params) = gather_pipeline();
+        let words = boundary::writer(&k, &cbs, &params);
+
+        const OUT: u64 = 0x3000;
+        const ROW0: u32 = 0x1_0000;
+        let iface_at = ROW0 + 0x4000;
+        let args_at = iface_at + 0x1000;
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+        let channel = Dram::FULL.channel(0).expect("channel 0");
+        let out = channel.range(OUT, 4 * 64).expect("output range");
+        let endpoint = channel.endpoint(Niu::Noc0, 0).expect("endpoint");
+        let hi = Endpoint { x: endpoint.x(), y: endpoint.y(), addr: 0 }.hi();
+        let me_hi = Endpoint { x, y, addr: 0 }.hi();
+
+        // Interfaces: cb0 (idx) 64 B, cb1 (row) 1024 B, cb2 (out) 64 B. The out
+        // CB already holds one page.
+        let mut iface = Vec::new();
+        let mut fifo = ROW0;
+        let mut out_fifo = 0;
+        for cb in 0..cbs.len() as u32 {
+            let st = cbs.iter().find(|(_, v)| **v == cb).map(|(k, _)| *k).expect("cb");
+            let page = match k.at(st) {
+                Op::Storage { dtype, len, .. } => u32::try_from(*len).expect("len") * (dtype.bit_size() as u32 / 8),
+                _ => unreachable!(),
+            };
+            let mut words = crate::codegen::tenstorrent::riscv::cb::interface(fifo, page, page, 1);
+            if cb == 2 {
+                out_fifo = fifo;
+                // One page received, none acked: the writer's wait passes.
+                words[6] = 1 << 16;
+            }
+            for w in words {
+                iface.extend(w.to_le_bytes());
+            }
+            fifo += page;
+        }
+        let mut args = Vec::new();
+        for w in [2u32, 0, iface_at, me_hi, 0, hi, 0, hi, OUT as u32, hi] {
+            args.extend(w.to_le_bytes());
+        }
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        l1.push((iface_at, iface));
+        l1.push((args_at, args));
+        let row: Vec<u8> = (0..16u32).flat_map(|i| (i as f32 + 10.0).to_le_bytes()).collect();
+        l1.push((out_fifo, row.clone()));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, args_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+
+        let run = exec(ExecRun { tile: (x, y), dram: vec![], l1, read_back: vec![out], l1_read_back: vec![] })
+            .expect("the writer program runs");
+        assert_eq!(run.error, 0, "executor error word");
+        let mut expected = vec![0u8; 4 * 64];
+        expected[2 * 64..3 * 64].copy_from_slice(&row);
+        assert_eq!(run.dram[0], expected, "the output row");
+    }
+
+    /// The gather kernel brought to the boundary IR, with its parameters and
+    /// circular buffers numbered.
+    fn gather_pipeline() -> (Kernel, Map<OpId, u32>, Map<OpId, u32>) {
+        use crate::kernel::{Dev, Kernel, MemScope, Op, OpId};
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(std::sync::Arc::new(crate::backend::DeviceInfo {
+            compute: 1_000_000,
+            max_global_work_dims: vec![i64::from(1_000_000_000); 3],
+            max_local_threads: 1024,
+            max_local_work_dims: vec![1024, 1024, 1024],
+            preferred_vector_size: 8,
+            local_mem_size: 8192,
+            max_register_bytes: 256_000,
+            tensor_cores: false,
+            warp_size: 1,
+            cc: [0, 0],
+            dtype_capability: [crate::backend::DTypeCapability::all(); crate::DType::N_DTYPES],
+            has_native_exp2: false,
+            supported_vec_lens: vec![2, 4, 8, 16],
+            vector_depth: 1,
+            tenstorrent: true,
+            tile: [i64::from(32), i64::from(32)],
+            tile_sizes: vec![[i64::from(32), i64::from(32)]],
+            mma_variants: vec![],
+            num_circular_buffers: 8,
+            has_openmp: false,
+        }));
+        let weight = k.param(crate::DType::F32);
+        let idx = k.param(crate::DType::I64);
+        let out = k.param_mut(crate::DType::F32);
+        let rows = k.const_idx(4i64);
+        let s = k.group_range(0, rows);
+        let short = k.const_idx(16i64);
+        let h = k.push_back(Op::Unroll { axis: 0, len: 16 });
+        let token = k.load(idx, s);
+        let row = k.mul(token, short);
+        let at = k.add(row, h);
+        let v = k.load(weight, at);
+        let out_row = k.mul(s, short);
+        let out_at = k.add(out_row, h);
+        k.store(out, v, out_at);
+        k.tt_tile();
+        k.tt_unfold();
+        k.tt_reindex();
+        k.default_epilogue();
+        k.tt_add_movers();
+        k.tt_sync_cbs();
+        k.tt_dedup_pushes();
+        k.tt_place_pops();
+        k.tt_fifo_check();
+        let mut params: Map<OpId, u32> = Map::default();
+        let mut cbs: Map<OpId, u32> = Map::default();
+        let mut id = k.head;
+        while !id.is_null() {
+            match k.at(id) {
+                Op::Param { .. } => {
+                    params.insert(id, params.len() as u32);
+                }
+                Op::Storage { scope: MemScope::Circular, .. } if !cbs.contains_key(&id) => {
+                    cbs.insert(id, cbs.len() as u32);
+                }
+                _ => {}
+            }
+            id = k.next_op(id);
+        }
+        (k, cbs, params)
+    }
+
+    /// The reader program emitted from the gather's boundary IR: index span,
+    /// token picked in L1, 16 per-lane row spans into the row CB page. Runs on
+    /// RISCV B; the page is read back from L1.
+    #[test]
+    fn gather_reader_program_runs_on_riscv_b() {
+        use crate::Map;
+        use crate::codegen::tenstorrent::boundary;
+        use crate::kernel::{Dev, Kernel, MemScope, Op, OpId};
+        if ensure_open().is_err() {
+            eprintln!("gather_reader_program_runs_on_riscv_b: no simulator, skipped");
+            return;
+        }
+        // The fixture of `ir_contract`: out[s, h] = weight[idx[s], h].
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(std::sync::Arc::new(crate::backend::DeviceInfo {
+            compute: 1_000_000,
+            max_global_work_dims: vec![i64::from(1_000_000_000); 3],
+            max_local_threads: 1024,
+            max_local_work_dims: vec![1024, 1024, 1024],
+            preferred_vector_size: 8,
+            local_mem_size: 8192,
+            max_register_bytes: 256_000,
+            tensor_cores: false,
+            warp_size: 1,
+            cc: [0, 0],
+            dtype_capability: [crate::backend::DTypeCapability::all(); crate::DType::N_DTYPES],
+            has_native_exp2: false,
+            supported_vec_lens: vec![2, 4, 8, 16],
+            vector_depth: 1,
+            tenstorrent: true,
+            tile: [i64::from(32), i64::from(32)],
+            tile_sizes: vec![[i64::from(32), i64::from(32)]],
+            mma_variants: vec![],
+            num_circular_buffers: 8,
+            has_openmp: false,
+        }));
+        let weight = k.param(crate::DType::F32);
+        let idx = k.param(crate::DType::I64);
+        let out = k.param_mut(crate::DType::F32);
+        let rows = k.const_idx(4i64);
+        let s = k.group_range(0, rows);
+        let short = k.const_idx(16i64);
+        let h = k.push_back(Op::Unroll { axis: 0, len: 16 });
+        let token = k.load(idx, s);
+        let row = k.mul(token, short);
+        let at = k.add(row, h);
+        let v = k.load(weight, at);
+        let out_row = k.mul(s, short);
+        let out_at = k.add(out_row, h);
+        k.store(out, v, out_at);
+        k.tt_tile();
+        k.tt_unfold();
+        k.tt_reindex();
+        k.default_epilogue();
+        k.tt_add_movers();
+        k.tt_sync_cbs();
+        k.tt_dedup_pushes();
+        k.tt_place_pops();
+        k.tt_fifo_check();
+
+        let mut params: Map<OpId, u32> = Map::default();
+        let mut cbs: Map<OpId, u32> = Map::default();
+        let mut id = k.head;
+        while !id.is_null() {
+            match k.at(id) {
+                Op::Param { .. } => {
+                    params.insert(id, params.len() as u32);
+                }
+                Op::Storage { scope: MemScope::Circular, .. } if !cbs.contains_key(&id) => {
+                    cbs.insert(id, cbs.len() as u32);
+                }
+                _ => {}
+            }
+            id = k.next_op(id);
+        }
+        let words = boundary::reader(&k, &cbs, &params);
+        if std::env::var_os("ZYX_TT_DUMP").is_some() {
+            eprintln!("reader program: {} words", words.len());
+            for (i, w) in words.iter().enumerate() {
+                eprintln!("  {i:4}: {w:08x}");
+            }
+        }
+
+        const WEIGHT: u64 = 0x1000;
+        const INDICES: u64 = 0x2000;
+        const ROW0: u32 = 0x1_0000;
+        let page_of = |cb: u32| -> u32 {
+            let st = cbs.iter().find(|(_, v)| **v == cb).map(|(k, _)| *k).expect("cb");
+            match k.at(st) {
+                Op::Storage { dtype, len, .. } => (u32::try_from(*len).expect("len")) * (dtype.bit_size() as u32 / 8),
+                _ => unreachable!(),
+            }
+        };
+        let iface_at = ROW0 + 0x4000;
+        let args_at = iface_at + 0x1000;
+        let tile = tt_isa::noc::grid::Tensix::FULL.tiles::<Noc0>().next().expect("a Tensix tile");
+        let (x, y) = (tile.x(), tile.y());
+        let channel = Dram::FULL.channel(0).expect("channel 0");
+        let w_range = channel.range(WEIGHT, 4 * 64).expect("weight");
+        let i_range = channel.range(INDICES, 4 * 8).expect("indices");
+        let endpoint = channel.endpoint(Niu::Noc0, 0).expect("endpoint");
+        let hi = Endpoint { x: endpoint.x(), y: endpoint.y(), addr: 0 }.hi();
+        let me_hi = Endpoint { x, y, addr: 0 }.hi();
+
+        // weight rows: row r is 16 f32 all equal to r + 1.
+        let mut weight_bytes = Vec::new();
+        for r in 0..4u32 {
+            for _ in 0..16 {
+                weight_bytes.extend((r as f32 + 1.0).to_le_bytes());
+            }
+        }
+        // indices: 1, 0, 3, 2.
+        let mut idx_bytes = Vec::new();
+        for i in [1i64, 0, 3, 2] {
+            idx_bytes.extend(i.to_le_bytes());
+        }
+        // CB interfaces: one page each.
+        let mut iface = Vec::new();
+        let mut fifo = ROW0;
+        for cb in 0..cbs.len() as u32 {
+            let page = page_of(cb);
+            let words = crate::codegen::tenstorrent::riscv::cb::interface(fifo, page, page, 1);
+            for w in words {
+                iface.extend(w.to_le_bytes());
+            }
+            fifo += page;
+        }
+        let row_cb = 1u32; // the second Circular storage: the row page
+        let row_page = ROW0 + page_of(0);
+        let mut args = Vec::new();
+        // grid x, grid y, iface, me_hi, then each param's lo/hi.
+        for w in [0u32, 0, iface_at, me_hi, WEIGHT as u32, hi, INDICES as u32, hi, 0, hi] {
+            args.extend(w.to_le_bytes());
+        }
+
+        let program_at = tt_isa::l1::PROGRAM_CACHE.base as u32;
+        let mut l1 = Vec::new();
+        l1.push((program_at, words.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>()));
+        l1.push((iface_at, iface));
+        l1.push((args_at, args));
+        let mut control = Vec::new();
+        for word in [program_at, words.len() as u32, args_at, 0, 0, 0, 0] {
+            control.extend(word.to_le_bytes());
+        }
+        l1.push((tt_isa::mailbox::exec::BASE as u32, control));
+
+        let out_run = exec(ExecRun {
+            tile: (x, y),
+            dram: vec![(w_range, weight_bytes), (i_range, idx_bytes)],
+            l1,
+            read_back: vec![],
+            l1_read_back: vec![(row_page, page_of(row_cb))],
+        })
+        .expect("the reader program runs");
+        assert_eq!(out_run.error, 0, "executor error word");
+        let got: Vec<f32> = out_run.l1[0].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+        // Token 1, so every 16-datum span of the page is row 1.
+        for (i, v) in got.iter().enumerate() {
+            assert_eq!(*v, 2.0, "row page datum {i}");
+        }
+    }
 
     /// One row-per-64-bytes gather: `dst[i] = src[index[i]]`.
     ///
@@ -759,8 +1247,9 @@ mod tests {
         }
         l1.push((tt_isa::mailbox::exec::BASE as u32, control));
 
-        let out = exec(ExecRun { tile: (x, y), dram: vec![(src, src_bytes.clone())], l1, read_back: vec![dst] })
-            .expect("the gather program runs");
+        let out =
+            exec(ExecRun { tile: (x, y), dram: vec![(src, src_bytes.clone())], l1, read_back: vec![dst], l1_read_back: vec![] })
+                .expect("the gather program runs");
         assert_eq!(out.error, 0, "executor error word");
         let mut expected = Vec::new();
         for row in order {
