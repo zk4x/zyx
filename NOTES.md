@@ -49,13 +49,28 @@ Where things stand (2026-11-09):
   `tt_dedup_pushes`, `tt_place_pops`, `tt_fifo_check`/`fifo_check_copy`, wired in
   `device_epilogue` after `tt_add_movers` in the recorded order.
   `cargo build` clean; `cargo test --lib` 129 pass, 1 fail (the gate);
-  `ir_contract` green with the four passes run before the boundary snapshot.
-- **The tensor gather does not reach the gate:** `tt_sync_cbs` panics at its
-  pack store — `CB(142) publish run fills 32 datums, not whole pages`. The
-  gather's traffic is whole 64-byte rows (one row per scalar access, per the
-  64-byte congruence rule), while `tt_add_movers` still gives every CB a
-  hardcoded 1024-datum page and a whole-tile reader transfer. That is a bug in
-  those two places against the rule, not a design question.
+  `ir_contract` is mid-rewrite: the gather fixture never reaches
+  `tt_add_movers`, so the earlier frozen boundary had no CB traffic; the
+  tile-copy fixture written after that is dodging (see "No dodging") and the
+  test is red until the scalar row gather's ideal IR is in place.
+- **The gather is the current task, not out of scope.** The scalar row gather is
+  in the tree and its ideal IR is frozen: `weight.gather(0, indices)` shape, rows
+  of 16 F32 = 64 B. `tt_add_movers` now has a row-traffic body: every Global
+  load moves the 64-byte span containing each lane (one span per lane,
+  concatenated in the CB page), a data-dependent index is read from its own CB
+  first, and every Global store moves the row span it writes. The contract test
+  `ir_contract::gather_pipeline_ir_is_ideal` asserts the entry IR and the
+  boundary IR and is green. What is left is the reader/writer programs and the
+  launch, i.e. steps 2 and 5 below.
+- **The gather's boundary IR** (frozen, hash `0xe03d_24f3_d177_cf2c`): index CB
+  `len=8` (one 64-byte span of i64), row CB `len=256` (16 lanes × 16 datums),
+  output CB `len=16` (one 64-byte row span). Reader: `reserve/copy/push` the
+  index span, `wait/load/pop` the token, then `reserve/copy/push` the 16 per-lane
+  row spans; compute: `wait/load` at `lane*16 + within`, `reserve/store/push` the
+  row at `lane`; writer: `wait/copy/pop` the row span.
+- `tt_tile` no longer pads a group range into lanes when the access already
+  carries a lane axis: the group *is* the grid axis (padding it made the gather's
+  `idx[s]` a masked lane and guarded the pack, which no writer could match).
 - **One TT program has executed end to end:** the gather writeback on RISCV B,
   through the emitted RISC-V and the `exec_b` firmware (see below). No
   tensor-level kernel has run yet; the model has never run.
@@ -83,12 +98,14 @@ What exists now:
   runs one generation and reads DRAM back.
 - Green test: `backend::tenstorrent::ttsim::tests::gather_writeback_runs_on_riscv_b`
   — four 64-byte rows read in the order 2, 0, 3, 1, checked against the host.
-- IR contract test: `kernel::tenstorrent::ir_contract::gather_pipeline_ir_is_frozen`
-  — the gather fixture (custom kernel API: loop, index loaded from a param,
-  address `index*64`) asserted as printed IR plus `get_hash()` at the `tt_tile`
-  entry (`0xf50f_4928_19d0_184f`) and at the `tt_dataflow_select` entry
-  (`0x360d_ffdd_cc85_80dd`). The boundary strings are frozen as they are now and
-  are updated when `tt_sync_cbs` lands.
+- IR contract test: `kernel::tenstorrent::ir_contract` — **being rewritten to
+  the scalar row gather's ideal IR and red until the passes produce it.** Its two
+  earlier states are both failures: the gather fixture never reached
+  `tt_add_movers` (an `Op::Load` in the index cone made it return early, so the
+  frozen boundary had no CB traffic) and the strings were copied from a run; the
+  tile-copy fixture written next was dodging (see "No dodging"). See "Debugging"
+  for what the
+  test must become.
 - `TTOp::Reader(Box<TTRoleProgram>)` and `TTOp::Writer(...)` exist in the IR,
   with debug printing; nothing emits them yet.
 - `TTOp::{ReserveBack, PushBack, WaitFront, PopFront}` (`{ cb: OpId, n: u8 }`)
@@ -104,10 +121,12 @@ What exists now:
 1. Read this file end to end. Do not grep it for a keyword.
 2. `cd zyx && cargo build`; `cargo test --lib` (the gate failure is the only
    expected red); `cargo test --test 24_tt --no-run`.
-3. Run the two green tests that anchor the emitter:
+3. Run the emitter anchor:
    `TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so cargo test
-   --lib backend::tenstorrent::ttsim::tests::gather_writeback_runs_on_riscv_b -- --exact`
-   and `cargo test --lib kernel::tenstorrent::ir_contract`.
+   --lib backend::tenstorrent::ttsim::tests::gather_writeback_runs_on_riscv_b -- --exact`.
+   `ir_contract` is red by design while it is rewritten to the scalar row
+   gather's ideal IR; do not treat it as an anchor until it is green for that
+   reason.
 4. Settle the open questions below in order, one at a time. Do not implement
    ahead of an unanswered question.
 5. Then work the `Next` list. Do not scope it down: the target is the full
@@ -400,6 +419,10 @@ write mod 16. `dm` used to enforce it (`dram_offset % 64 == l1 % 64`, else error
   whole tiles and rows stay congruent.
 - CB bases are placed at `≡16 mod 64` (`tt_place_cbs`), where a tile image's
   datum block lives; a tile slot is `TILE_SLOT = 4160` with a 16-byte header.
+  A **row page** CB (the gather) is placed at `≡0 mod 64`, congruent with the
+  raw 64-byte DRAM span it holds; the two kinds are distinguished by the copy's
+  address (a rounded span base, i.e. a multiple of 64 or 16, versus the tiled
+  `TILE_SLOT + TILE_DATA` address).
 - `fifo_check_copy` proves per-variable stride congruence at compile time; an
   unprovable index is a loud rejection.
 
@@ -577,13 +600,35 @@ TT_TTSIM_LIB=/home/x/Dev/rust/metalium-rs/vendor/libttsim_bh.so \
 - A test that vanishes with no failure line is a `libttsim` BAR violation: the
   library calls `_Exit`.
 - **A bug first gets the unit test that isolates its half of the chain**, then
-  debugging continues. The IR contract test
-  (`kernel::tenstorrent::ir_contract::gather_pipeline_ir_is_frozen`) is that
-  test for the passes: it builds the gather fixture with the custom kernel API
-  and asserts the printed IR and kernel hash at the `tt_tile` entry and at the
-  `tt_dataflow_select` entry, calling the passes directly so the gate does not
-  fire. The boundary strings are frozen as they are now and updated when
-  `tt_sync_cbs` lands.
+  debugging continues.
+- **An IR test asserts the IDEAL IR, never a snapshot of current output.** The
+  expected text and hash are written from the design (the recorded rules:
+  page = the range the access moves, a whole row per scalar gather access,
+  reserve/push around each publisher, wait/pop around each consumer, no SSA
+  left, no tile addressing unless the search tiled the kernel). The test may be
+  red until the code produces that IR, and it stays red; it is never made green
+  by pasting `--nocapture` output back in.
+- **Modus operandi for every kernel, from now on (user, 2026-11-09): write
+  down the ideal IR first, then fix the passes until they produce it.** The unit
+  test asserts the ideal IR written from this design — never a snapshot of
+  current output — and stays red until the passes generate exactly that IR. A
+  kernel is brought up by writing its ideal IR at each boundary, then making the
+  passes match, not by reading what they happen to emit.
+- **A test that cannot fail for the bug it guards is worthless, and worse than
+  none when it is green.** The `ir_contract` test as first written
+  (`gather_pipeline_ir_is_frozen`) is that failure: the fixture's index cone
+  contains an `Op::Load`, so `tt_add_movers` returned early and created no CB,
+  no reader copy and no `EndReader`; `tt_sync_cbs`/`tt_dedup_pushes`/
+  `tt_place_pops`/`tt_fifo_check` were then no-ops, and the "frozen" strings
+  were copied from a run of the same test. It asserted that the printer still
+  prints the same no-CB IR, so a wrong page, a missing reserve and a whole-tile
+  reader all passed. **Fix:** the fixture must reach the pass it claims to
+  test (no early return on the path under test), the expected IR must be
+  written from the rules above, and the assertions must be able to fail for a
+  wrong page, a missing sync, or an SSA op at the boundary. The current test
+  does not guard the `tt_dataflow_select` boundary and its frozen strings are
+  not the ideal IR. `tt_add_movers`'s silent `return` on a non-affine index cone
+  is itself a fail-loud violation.
 - Run `cargo fmt`; format a single file with
   `rustfmt --config skip_children=true <file>`.
 - `TT_DRAM_PAGE_BYTES = 4096`; `TT_TTSIM_LIB` must point at the vendor pin
@@ -750,6 +795,47 @@ Every case below is unproven until it runs green on ttsim:
   granularity, and any one transfer covering several scalars, is an
   optimization, never a precondition; the CB page, the four syncs and the
   emitter follow what the access actually moves.
+- **The baseline that must work for PyTorch parity: round the address down to
+  64-byte congruence, move the aligned span, pick the element in L1.** It is
+  ugly and slow, but it is the general fallback. `ttnn.embedding` does exactly
+  this: `noc_async_read` the aligned index block, then `input_l1_ptr[index]` to
+  pick; the scalar pick is never part of the NOC address.
+- **Where the address is resolved:** `tt_tile` handles the tiling, `tt_reindex`
+  handles the face orientation, and `tt_add_movers` only splits one kernel into
+  the three segments. `tt_add_movers` does not compute tile addresses or page
+  sizes itself.
+- **Baseline traffic unit: one rounded span per lane (user, 2026-11-09).** A
+  vector access whose lanes name N places is N separately rounded spans, one per
+  lane: each lane's address rounds down to the congruence boundary, the aligned
+  span is moved, and the element is picked in L1 at its offset inside the span.
+  One aligned span covering all N lanes is the optimization, only correct when
+  the lanes are contiguous; it is never the fallback. The N spans of one traffic
+  op are concatenated into that op's CB page (`N * 64 B` for reads), so the
+  compute picks lane `i`'s datum at `i * 64 + (address - span_base)`; one
+  `reserve`/`push` per page. Writes round to 16 bytes.
+- **The write unit is the whole row** (user, 2026-11-09): reads have the
+  "round down and pick in L1" fallback, writes do not — a sub-16-byte write would
+  clobber its neighbours. Follow tt-metal, whose writer moves
+  `output_page_size` per `cb_pop_front` (`embeddings_rm_writer_chunked.cpp`).
+  Store indices are affine and row-major by construction: `linearize`'s
+  `add_indexing` builds every `Store`'s `dst_idx` from the output view's dims
+  with contiguous row-major strides (`write_index = mad(d.idx, s, write_index)`,
+  `src/kernel/linearize.rs:546-568`), the worst case being padded; so the whole
+  row is addressable without a read-modify-write.
+- **Generality limit: llama inference is the demo** (user, 2026-11-09). Nothing
+  more general than the kernels llama inference needs is required. That limit
+  does **not** exclude the gather: the embedding gather (loads that are not whole
+  tiles, an address computed from loaded data) is required and is the current
+  task. Express it as `weight.gather(0, indices)` with the index tensor already
+  in the output shape (uploaded), so the kernel is the scalar row gather and not
+  `index_select`, whose first step materialises an index broadcast with a
+  scattered store. Rules:
+  - no read-modify-write writer; a store is a row/contiguous run (or a tiled
+    output view), never a scattered element set;
+  - llama's one-hot embedding (`arange.equal(idx) * weight`, then `sum(vocab)`,
+    `zyx-nn/src/embedding.rs:63-110`) means every llama *store* is elementwise,
+    matmul, reduce or narrow-assign with an affine row-major output view — the
+    store side is easy; the *load* side is where the gather lives.
 - **Indexing is arbitrary; affine and tiled addressing are optimizations.** A
   kernel accesses rows and columns by indices computed from data, in any order:
   a gather is the case, not an exception. The reader and writer lower the index
@@ -762,6 +848,16 @@ Every case below is unproven until it runs green on ttsim:
 - **No scoping down.** The target is the full Tenstorrent backend, and each step
   is completed in full. No reduced versions, no "minimal" substitutes, no
   deferring part of a step because it is large.
+- **No dodging (user, 2026-11-09).** Do the thing that was asked, not an easier
+  thing next to it. Concretely: when the gather kernel ("loads that are not whole
+  tiles") was asked for, the contract test was rewritten around a **tile copy**
+  instead — that is dodging, and the fixture proved nothing about the case that
+  matters. Do not:
+  - substitute a simpler kernel (tile load, affine load) for the asked one;
+  - reclassify an asked kernel as "out of scope" to avoid lowering it;
+  - replace a failing case with a passing neighbouring case;
+  - report a plan or a test scaffold as progress.
+  If the asked kernel is hard, it stays the task and the work continues on it.
 - **Flattening (general direction, applied when it bites).** One layer between
   the kernel and the hardware: every type and name corresponds to something the
   spec or ISA has. When an issue lands in an abstraction that only renames,
@@ -913,13 +1009,26 @@ nothing is to be done in a reduced form.
    `fifo_check_copy` are wired after `tt_add_movers`. The publish tally is kept
    but scoped to one loop body (a run never crosses `Loop`/`EndLoop`), waits
    precede every CB `Load`/`Copy` source, and pops follow the last same-section
-   read. The boundary contract test now runs the four passes before its
-   snapshot. The publishes still count pages against a hardcoded 1024-datum page
-   (`Copy` straight-line = the CB length, `Store` = its datum count); that must
-   become the range the access actually moves (a whole row per scalar gather
-   access), and `tt_fifo_check`'s depth must be counted in those pages. Until
-   then the tensor gather is refused by the partial-page rule and the gate
-   stays.
+   read. A CB holds exactly one page (depth 1), so a publish run must fill
+   exactly `Storage.len` datums and the tag is `n = 1`; `tt_fifo_check` counts
+   depth in those pages and a push past one page is the deadlock/overfill
+   error; `tt_dataflow_select` takes the packet size from the CB's `len`
+   (broadcast keeps `TILE_SLOT`), so no pass hardcodes 1024. The `ir_contract`
+   test is mid-rewrite: its tile-copy fixture is dodging and is replaced by the
+   scalar row gather's ideal IR (see "No dodging").
+1a. **The scalar row gather (current task).** `weight.gather(0, indices)` with
+   the index in the output shape. `tt_add_movers` must stop returning on an
+   `Op::Load` in the index cone: materialise the index read as its own reader
+   copy, rewrite the index load to read from its CB, keep the data copy's
+   address as arithmetic over the picked token, and give both the page the
+   traffic moves. `ir_contract` asserts the entry IR and the boundary IR (two
+   reader copies: index span, then the row the token names) written from this
+   design; it is green, with the row gather's hashes frozen.
+   **Done:** `tt_tile` keeps the group as the grid when a lane axis exists;
+   `tt_add_movers` has the row body (per-lane spans, index CB, row writes);
+   `fifo_check_copy` accepts a `multiple-of-64/16` address as congruence by
+   construction, and a row CB's base is `≡0 mod 64` (a tile CB's is `≡16`).
+   **Next:** the reader/writer programs for this IR (step 2), then launch (5).
 2. **Reader/writer programs from codegen.** Emit `TTOp::Reader`/`Writer` from
    the kernel IR instead of `DmRead`/`DmWrite` lists: one loop per boundary
    loop, no unrolling; the index expression lowered as written (loads,
