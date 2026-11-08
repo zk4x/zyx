@@ -388,11 +388,13 @@ fn frag_elems(kernel: &mut Kernel, before: OpId, lane: OpId, map: &FragMap, src:
             let delta = Dim::from(b.0 - a.0) * sr + Dim::from(b.1 - a.1) * sc;
             if delta == 1 {
                 let addr = slot_addr(kernel, before, lane, map, base, sr, sc, a, warp);
-                let un = kernel.insert_before(before, Op::Unroll { axis: 0, len: 2 });
-                let idx = kernel.insert_before(before, Op::Binary { x: addr, y: un, bop: BOp::Add });
-                let v = kernel.insert_before(before, Op::Load { src, src_idx: idx });
-                out.push(kernel.insert_before(before, Op::Index { vec: v, idx: 0 }));
-                out.push(kernel.insert_before(before, Op::Index { vec: v, idx: 1 }));
+                // Two adjacent fragment slots: one scalar load each. A packed
+                // 2-lane load here would have to be unstacked by `Index`, and
+                // the lane expansion turns those into indexes of a scalar.
+                let one = kernel.insert_const_idx_before(before, 1i64);
+                let addr1 = kernel.insert_before(before, Op::Binary { x: addr, y: one, bop: BOp::Add });
+                out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr }));
+                out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr1 }));
                 i += 2;
                 continue;
             }

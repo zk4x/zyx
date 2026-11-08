@@ -166,7 +166,7 @@ suite after every edit; never make a commit wait for the push gate.
 | step | what runs |
 |------|-----------|
 | after an edit | ONLY the test that is failing / the suite being fixed: `cd zyx && AGENT=1 cargo test --test <file> <name> -- --exact`. No sweep, no other suites. |
-| before a commit | the zyx Rust test suite: `cd zyx && AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist`. Other crates and the non-Rust checks are not part of a commit. |
+| before a commit | the zyx Rust test suite on the GPU: `cd zyx && AGENT=1 ZYX_DEV=cuda cargo test --lib --tests`. Other crates and the non-Rust checks are not part of a commit. |
 | before a push | `./run_ci.sh` (repo root): zyx suite, zyx-nn/zyx-optim/zyx-derive tests, doctests, private-item rustdoc, `cargo fmt --check`, examples check + run, zyx-py (when torch/pytest/maturin exist), book examples. |
 
 - Pin the device with `ZYX_DEV` only. NEVER set `XDG_CONFIG_HOME`: the
