@@ -501,6 +501,21 @@ Every case below is unproven until it runs green on ttsim:
   overflow their 10 KiB L1 slots.
 - A shared global `target-dir`: a second checkout can shadow the test binaries.
 
+## Directives (2026-11-08, user)
+
+- **Loops lower to ordinary control flow, as in tt-metal.** tt-metal's kernels
+  are compiled code: nested C++ loops become branches, and every address is
+  computed from the loop variables at runtime
+  (`matmul_multi_core/kernels/compute/mm.cpp`, `reader_mm_output_tiles_partitioned.cpp`).
+  Our flat body lists, loop tables and compile-time entry addresses are not
+  that. Loops must not be flattened into repeated bodies/entries.
+- **Remove the metalium-rs dependency.** It is not on crates.io and blocks
+  publication. Copy only the parts we actually use, simplified, into this repo;
+  keep our own `firmware/tt-firmware`. Nothing may depend on
+  `../../metalium-rs`.
+- metalium-rs was only ever an assembly reference. Do not preserve its
+  structure, its abstractions or its dead code.
+
 ## Open questions (unclear, to settle one by one)
 
 ### Tiling and loops
