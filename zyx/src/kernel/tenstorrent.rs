@@ -2630,20 +2630,34 @@ impl Kernel {
             }
             scan = self.next_op(scan);
         }
-        // Last same-section user per CB load.
+        // Last same-section op that *depends* on each CB load. The pop must
+        // follow the whole cone the value feeds, not its first use: a pop placed
+        // after the first row op splits the SFPU row programs, and
+        // `tt_sfpu_fusion` then cannot merge them. Freeing the page later costs
+        // producer overlap, never correctness.
         let mut last_use: Map<OpId, OpId> = Map::default();
-        for (load, us) in users.iter() {
+        for (load, _) in users.iter() {
             if !matches!(self.ops[*load].op, Op::Load { src, .. } if self.is_circular(src)) {
                 continue;
             }
             let lsec = section[load];
             let mut best: Option<OpId> = None;
-            for u in us {
-                if section[u] != lsec {
+            let mut seen: Set<OpId> = Set::default();
+            let mut stack = vec![*load];
+            for _ in 0..250_000 {
+                let Some(op) = stack.pop() else { break };
+                if !seen.insert(op) {
                     continue;
                 }
-                if best.is_none_or(|b| pos[u] > pos[&b]) {
-                    best = Some(*u);
+                let Some(us) = users.get(&op) else { continue };
+                for u in us {
+                    if section[u] != lsec {
+                        continue;
+                    }
+                    if best.is_none_or(|b| pos[u] > pos[&b]) {
+                        best = Some(*u);
+                    }
+                    stack.push(*u);
                 }
             }
             if let Some(b) = best {
@@ -9199,6 +9213,6 @@ mod ir_contract {
 
     const ENTRY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r3: i64 = 4\n r4: i64 = group_range(0) over r3    // 0..=3\n r5: i64 = 16\n r6: i64[16] = unroll axis0 lanes 16\n r7: i64 = load r1[r4]    // 0..=3\n r8: i64 = r7 * r5\n r9: i64[16] = r8 + r6\n r10: f32[16] = load vec16 r0[r9]    // 0..=0\n r11: i64 = r4 * r5    // 0..=48\n r12: i64[16] = r11 + r6    // 0..=63\n store vec16 r2[r12] = r10    // 0..=63\n\n";
     const ENTRY_HASH: u64 = 0x9565_bc91_42e3_feb2;
-    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r15: i64 = storage cb, len=8\n r25: f32 = storage cb, len=256\n r39: f32 = storage cb, len=16\n r3: i64 = 4\n r5: i64 = 16\n r21: i64 = 0\n r28: i64 = 64\n r6: i64[16] = unroll axis0 lanes 16\n r4: i64 = group_range(0) over r3    // 0..=3\n r37: i64[16] = r6 * r5    // 0..=240\n r38: i64[16] = r37 + r6    // 0..=255\n r42: i64 = r4 * r5    // 0..=48\n r46: i64 = r42 * r3    // 0..=192\n r48: i64 = r46 / r28    // 0..=3\n r50: i64 = r48 * r28    // 0..=192\n reserve_back r15, 1\n copy r15[r21] = r1[r21]\n push_back r15, 1\n wait_front r15, 1\n r7: i64 = load r15[r4]    // 0..=3\n r8: i64 = r5 * r7\n pop_front r15, 1\n r9: i64[16] = r8 + r6\n r27: i64[16] = r9 * r3\n r29: i64[16] = r27 / r28\n r31: i64[16] = r29 * r28\n reserve_back r25, 1\n copy vec16 r25[r21] = r0[r31]\n push_back r25, 1\n end_reader\n wait_front r25, 1\n r10: f32[16] = load vec16 r25[r38]    // 0..=255\n reserve_back r39, 1\n store vec16 r39[r6] = r10    // 0..=15\n pop_front r25, 1\n push_back r39, 1\n end_compute\n wait_front r39, 1\n copy r2[r50] = r39[r21]\n pop_front r39, 1\n\n";
-    const BOUNDARY_HASH: u64 = 0xe03d_24f3_d177_cf2c;
+    const BOUNDARY_IR: &str = " r0: f32 = param global shape=NULL\n r1: i64 = param global shape=NULL\n r2: f32 = param global mut shape=NULL\n r15: i64 = storage cb, len=8\n r25: f32 = storage cb, len=256\n r39: f32 = storage cb, len=16\n r3: i64 = 4\n r5: i64 = 16\n r21: i64 = 0\n r28: i64 = 64\n r6: i64[16] = unroll axis0 lanes 16\n r4: i64 = group_range(0) over r3    // 0..=3\n r37: i64[16] = r6 * r5    // 0..=240\n r38: i64[16] = r37 + r6    // 0..=255\n r42: i64 = r4 * r5    // 0..=48\n r46: i64 = r42 * r3    // 0..=192\n r48: i64 = r46 / r28    // 0..=3\n r50: i64 = r48 * r28    // 0..=192\n reserve_back r15, 1\n copy r15[r21] = r1[r21]\n push_back r15, 1\n wait_front r15, 1\n r7: i64 = load r15[r4]    // 0..=3\n r8: i64 = r5 * r7\n r9: i64[16] = r8 + r6\n r27: i64[16] = r9 * r3\n r29: i64[16] = r27 / r28\n r31: i64[16] = r29 * r28\n reserve_back r25, 1\n copy vec16 r25[r21] = r0[r31]\n pop_front r15, 1\n push_back r25, 1\n end_reader\n wait_front r25, 1\n r10: f32[16] = load vec16 r25[r38]    // 0..=255\n reserve_back r39, 1\n store vec16 r39[r6] = r10    // 0..=15\n pop_front r25, 1\n push_back r39, 1\n end_compute\n wait_front r39, 1\n copy r2[r50] = r39[r21]\n pop_front r39, 1\n\n";
+    const BOUNDARY_HASH: u64 = 0x5120_b57a_3464_9069;
 }

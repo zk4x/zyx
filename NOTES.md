@@ -75,20 +75,21 @@ Where things stand (2026-11-09):
   left is wiring them into `render_tt`/the launch (steps 3-5) so the compiled
   kernel uses them instead of the `dm` lists.
 - **The `tt_dataflow_select` gate is removed** (both the gather's and the
-  elementwise tile kernel's boundary IR are frozen and good). Consequence: the
-  post-`tt_dataflow_select` pipeline now runs for the acceptance elementwise
-  kernel, and `acceptance::activations_are_one_row_body` fails with **two row
-  bodies** per activation (e.g. sigmoid `(2,2,2)`) instead of one: an unpack
-  `tt_copy` CB -> Register storage, a 3-word replay with `sfp_load`/`sfp_store`
-  copying the input to a DST slot, then the math replay loading it again. The
-  acceptance rule in this file says one row body, one `SFPLOAD`, one `SFPSTORE`.
-  That is the open question below.
-- **The gather's boundary IR** (frozen, hash `0xe03d_24f3_d177_cf2c`): index CB
+  elementwise tile kernel's boundary IR are frozen and good). Removing it exposed
+  an acceptance failure (two SFPU row bodies per activation): `tt_place_pops`
+  was putting a CB's pop after the loaded value's **first** use, which landed
+  between two SFPU row programs and blocked `tt_sfpu_fusion`. Fixed: a pop
+  follows the whole cone the value feeds (transitive SSA users within the
+  section), so the row programs fuse and `activations_are_one_row_body` is green
+  again (`135` lib tests pass). The acceptance rule stands; the lowering was
+  right.
+- **The gather's boundary IR** (frozen, hash `0x5120_b57a_3464_9069`): index CB
   `len=8` (one 64-byte span of i64), row CB `len=256` (16 lanes × 16 datums),
   output CB `len=16` (one 64-byte row span). Reader: `reserve/copy/push` the
-  index span, `wait/load/pop` the token, then `reserve/copy/push` the 16 per-lane
-  row spans; compute: `wait/load` at `lane*16 + within`, `reserve/store/push` the
-  row at `lane`; writer: `wait/copy/pop` the row span.
+  index span, `wait/load`, the token's cone, then `reserve/copy/push` the 16
+  per-lane row spans and the index `pop`; compute: `wait/load` at
+  `lane*16 + within`, `reserve/store/push` the row at `lane`; writer:
+  `wait/copy/pop` the row span.
 - `tt_tile` no longer pads a group range into lanes when the access already
   carries a lane axis: the group *is* the grid axis (padding it made the gather's
   `idx[s]` a masked lane and guarded the pack, which no writer could match).
@@ -415,7 +416,10 @@ tt-metal is the reference (`~/Dev/cpp/tt-metal/tt_metal/hw/inc`).
   PopFront}`. They are not data, not list entries and not pushes.
   `tt_sync_cbs` places them, `tt_dedup_pushes` merges adjacent pushes,
   `tt_place_pops` places the pops, and `tt_fifo_check` proves the balance before
-  codegen.
+  codegen. A pop follows the **whole cone** the loaded value feeds (transitive
+  users within the section), not its first use: a pop between two SFPU row
+  programs blocks `tt_sfpu_fusion` and splits one row body into two. Freeing the
+  page later costs producer overlap, never correctness.
 - **No credits, no batches, no `retire_batch`.** With a real loop the four ops
   are the synchronization. The credit machinery in earlier notes existed only
   because a mover list could not block inside an entry.
@@ -1008,15 +1012,9 @@ Every case below is unproven until it runs green on ttsim:
 
 ### Correctness
 
-5. **Is `tt_dataflow_select`'s phase-2 value lowering right, or is the
-   acceptance rule?** After the gate was removed, a pure elementwise kernel
-   lowers to two row bodies: an unpack `tt_copy` CB -> Register storage and a
-   3-word replay copying the input to a DST slot, then the math replay loading
-   that slot again. `acceptance::activations_are_one_row_body` (and this file's
-   "Acceptance of an SFPU kernel") requires one row body, one `SFPLOAD` from the
-   input tile and one `SFPSTORE` to the output tile. Either the lowering must
-   read the SFPU operand straight from the CB tile (no intermediate Register
-   copy), or the acceptance rule is outdated and must be rewritten. Which one?
+5. Is `sum_drop_col`'s orientation needed for llama at `seq_len = 1` (attention
+   over one key is `v`), and is its shape the one the model actually uses?
+   **Re-ask now that the gather writeback is green.**
 
 Nothing about launch, firmware, mailboxes, NoC init or the `tt-isa` surface is
 open: those follow tt-metal and the decisions above. `exec_nc` for the writer is
