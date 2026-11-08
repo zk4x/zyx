@@ -120,6 +120,20 @@ writer list, launched once.
   is split by `split(g, SplitMode::Loop, factor)` with `factor` the smallest
   divisor of the length whose outer part fits. The loop wraps the whole body, so
   each iteration is one of the group's points. Enabled in `tt_tile`.
+- **`tt_tile` chooses the tiling (user, 2026-11-08): whatever is easiest to
+  lower.** The easiest form is: **one loop iteration = one tile**, so every
+  access is `grid group(s) + Loop(tiles) + Unroll(32 within the tile)` and a
+  group/lane never enumerates elements when a tile is the unit. Concretely:
+  - a group/lane whose step is a whole tile (a multiple of 1024 datums) is the
+    tile axis and becomes the `Loop`;
+  - the grid is over tile ordinals and is capped by the split above;
+  - the within-tile row/col lanes stay `Unroll(32)`.
+  Why it is easiest: the CB ring is one tile deep, the traffic is one whole
+  tile per iteration (a congruent `TILE_SLOT` image), the compute index is the
+  tile's own `row*32+col`, and `LIST_MAX` is satisfied by construction. Kernel 1
+  (`[4096,8,128]`): 16384 tiles, 140 cores → ~117 tiles per core, 117 write
+  entries, versus the current 32-tile-lane form whose 4096 per core rows cannot
+  fit one list.
 
 ## Boundary indexing: `tt_canonical_tile`
 
@@ -489,8 +503,9 @@ Every case below is unproven until it runs green on ttsim:
 ### Tiling and loops
 
 1. Kernel 1's tile axis is `Unroll(32)` and one iteration covers 32 tile rows.
-   Must that unroll become a `Loop`, or must the TT search stop vectorizing the
-   tile axis? In which pass?
+   **Answered (2026-11-08): `tt_tile` may choose any tiling that is easiest to
+   lower; the chosen rule is one iteration = one tile (see "Tiling").** The
+   change is to turn a tile-stepping `Unroll` into the `Loop`.
 2. If a group length has no divisor whose outer part fits `max_global_work_dims`
    (a prime above the max), what is the IR: a tail loop, an over-allocated
    outer with masking, or a loud rejection?
