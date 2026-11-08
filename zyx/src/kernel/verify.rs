@@ -779,6 +779,8 @@ impl Kernel {
     /// constant outcomes.
     #[allow(clippy::match_same_arms)]
     pub(crate) fn compute_bounds(&self) -> Map<OpId, (Dim, Dim)> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("compute_bounds");
         // Single linear walk, O(number of ops). Bounds are ALWAYS conservative
         // (wide): we never narrow from guard conditions and never narrow across
         // scopes, so a single global map suffices — no scope stack, no cloning,

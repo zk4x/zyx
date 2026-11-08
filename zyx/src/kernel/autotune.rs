@@ -94,11 +94,12 @@ impl Kernel {
         self.move_constants_to_beginning();
         self.loop_invariant_code_motion();
         self.fold_accs();
-        self.algebraic_simplifications();
         self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();
-        self.instruction_schedule();
+        // Instruction scheduling costs ~454 µs/call and its ordering is not
+        // needed: commented out of the epilogue on the user's call.
+        // self.instruction_schedule();
         self.dead_code_elimination();
     }
 

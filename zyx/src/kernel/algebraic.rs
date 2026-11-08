@@ -20,6 +20,8 @@ use crate::{
     shape::Dim,
 };
 
+use super::fold_constants::record;
+
 impl Kernel {
     /// Apply algebraic simplification to the kernel.
     ///
@@ -62,6 +64,7 @@ impl Kernel {
     fn simplify_fused(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_fused");
+        let mut remaps: Map<OpId, OpId> = Map::default();
         // Arm patterns, built once: constructing these trees per visited op
         // (millions of throwaway allocs per search) dominated this pass.
         let pat_shl_shr = ((Pat::bind('y') << Pat::bind_const('d').dim_lt(64)) + Pat::bind('r')) >> Pat::bind_const('d').int();
@@ -90,319 +93,364 @@ impl Kernel {
         let pat_sub_ge = Pat::binary(BOp::Cmpge, Pat::bind('a').int() - Pat::bind('b').int(), 0);
         let pat_sub_gt = Pat::binary(BOp::Cmpgt, Pat::bind('a').int() - Pat::bind('b').int(), 0);
         let pat_sub_lt = Pat::binary(BOp::Cmplt, Pat::bind('a').int() - Pat::bind('b').int(), 0);
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            let next = self.next_op(op_id);
-            // shl_shr roundtrip: ((y << d) + rest) >> d -> y when
-            // 0 <= rest < 2^d: the residue shifts out exactly. Both shift
-            // amounts share one value name; dim_lt keeps the < 64 range
-            // in-pattern; retry covers the Add order.
-            if let Some(m) = { self.match_pat(op_id, &pat_shl_shr) } {
-                let (y, rest, dv) = (m.op('y'), m.op('r'), m.int('d'));
-                if bounds.get(&rest).is_some_and(|&(lo, hi)| lo >= 0 && hi < (1 << dv)) {
-                    self.remap(op_id, y);
-                }
-            } else if let Some(replacement) = {
-                // x & MAX -> x and x | 0 -> x as one alternation: a single
-                // match binds x either way; failed alternatives leave nothing.
-                self.match_pat(op_id, &pat_and_or).map(|m| m.op('x'))
-            } {
-                self.remap(op_id, replacement);
-            } else if let Some(m) = {
-                // ((a*d)+b)/d → a when |b| < |dv|: truncated division's
-                // correction term vanishes. Integer operands only (float
-                // division is never exact here); dv == 0 cannot fire.
-                self.match_pat(op_id, &pat_div_simp)
-            } {
-                let (a, b, dv) = (m.op('a'), m.op('b'), m.int('d'));
-                if bounds.get(&b).is_some_and(|&(lo, hi)| {
-                    let ad = dv.unsigned_abs();
-                    lo.unsigned_abs() < ad && hi.unsigned_abs() < ad
-                }) {
-                    self.remap(op_id, a);
-                }
-            } else if let Some(m) = {
-                // ((a<<k)+b)/d → a when d == 2^k and |b| < d. The pow2
-                // relation is a first-class comparison; the bounds guard
-                // is the same truncated-division correction as above.
-                self.match_pat(op_id, &pat_shl_div)
-            } {
-                let (a, b, dv) = (m.op('a'), m.op('b'), m.int('d'));
-                if bounds.get(&b).is_some_and(|&(lo, hi)| {
-                    let ad = dv.unsigned_abs();
-                    lo.unsigned_abs() < ad && hi.unsigned_abs() < ad
-                }) {
-                    self.remap(op_id, a);
-                }
-            } else if let Some(m) = { self.match_pat(op_id, &pat_div_zero) } {
-                // x/d → 0 when 0 <= x < d (dv > 0 follows). Integer only:
-                // float division has no truncating correction (1.0/2 = 0.5).
-                let (x, dv) = (m.op('x'), m.int('d'));
-                if let Some(&(lo, xu)) = bounds.get(&x)
-                    && lo >= 0
-                    && xu < dv
-                {
-                    self.ops[op_id].op = Op::Const(self.dtype(m.op('d')).zero_constant());
-                }
-            } else if let Some(m) = { self.match_pat(op_id, &pat_mod) } {
-                // `dv` is the divisor value, `m["d"]` its op. Each acted
-                // rule ends with `op_id = next; continue`: skip patterns 3-5,
-                // advance the walk. Fall-through leaves the op untouched.
-                let (x, d, dv) = (m.op('x'), m.op('d'), m.int('d'));
+        let mut next = self.head;
+        while !next.is_null() {
+            let op_id = next;
+            next = self.next_op(next);
+            match self.ops[op_id].op {
+                Op::Binary { bop, .. } => match bop {
+                    BOp::BitShiftRight => {
+                        // shl_shr roundtrip: ((y << d) + rest) >> d -> y when
+                        // 0 <= rest < 2^d: the residue shifts out exactly. Both shift
+                        // amounts share one value name; dim_lt keeps the < 64 range
+                        // in-pattern; retry covers the Add order.
+                        if let Some(m) = self.match_pat(op_id, &pat_shl_shr) {
+                            let (y, rest, dv) = (m.op('y'), m.op('r'), m.int('d'));
+                            if bounds.get(&rest).is_some_and(|&(lo, hi)| lo >= 0 && hi < (1 << dv)) {
+                                record(&mut remaps, op_id, y);
+                            }
+                        } else if let Some(m) = self.match_pat(op_id, &pat_shr_zero) {
+                            // x >> k -> 0 when 0 <= x < 2^k. dim_lt keeps the range in-pattern.
+                            let (x, kv) = (m.op('x'), m.int('k'));
+                            if let Some(&(lo, xu)) = bounds.get(&x)
+                                && lo >= 0
+                                && xu < (1i64 << kv)
+                            {
+                                let dtype = self.dtype(x);
+                                self.ops[op_id].op = Op::Const(dtype.zero_constant());
+                            }
+                        } else {
+                            self.fold_binary_const(op_id, bounds);
+                        }
+                    }
+                    BOp::BitAnd | BOp::BitOr => {
+                        // x & MAX -> x and x | 0 -> x as one alternation: a single
+                        // match binds x either way; failed alternatives leave nothing.
+                        if let Some(replacement) = self.match_pat(op_id, &pat_and_or).map(|m| m.op('x')) {
+                            record(&mut remaps, op_id, replacement);
+                        } else {
+                            self.fold_binary_const(op_id, bounds);
+                        }
+                    }
+                    BOp::Div => {
+                        // ((a*d)+b)/d → a when |b| < |dv|: truncated division's
+                        // correction term vanishes. Integer operands only (float
+                        // division is never exact here); dv == 0 cannot fire.
+                        if let Some(m) = self.match_pat(op_id, &pat_div_simp) {
+                            let (a, b, dv) = (m.op('a'), m.op('b'), m.int('d'));
+                            if bounds.get(&b).is_some_and(|&(lo, hi)| {
+                                let ad = dv.unsigned_abs();
+                                lo.unsigned_abs() < ad && hi.unsigned_abs() < ad
+                            }) {
+                                record(&mut remaps, op_id, a);
+                            }
+                        } else if let Some(m) = self.match_pat(op_id, &pat_shl_div) {
+                            // ((a<<k)+b)/d → a when d == 2^k and |b| < d. The pow2
+                            // relation is a first-class comparison; the bounds guard
+                            // is the same truncated-division correction as above.
+                            let (a, b, dv) = (m.op('a'), m.op('b'), m.int('d'));
+                            if bounds.get(&b).is_some_and(|&(lo, hi)| {
+                                let ad = dv.unsigned_abs();
+                                lo.unsigned_abs() < ad && hi.unsigned_abs() < ad
+                            }) {
+                                record(&mut remaps, op_id, a);
+                            }
+                        } else if let Some(m) = self.match_pat(op_id, &pat_div_zero) {
+                            // x/d → 0 when 0 <= x < d (dv > 0 follows). Integer only:
+                            // float division has no truncating correction (1.0/2 = 0.5).
+                            let (x, dv) = (m.op('x'), m.int('d'));
+                            if let Some(&(lo, xu)) = bounds.get(&x)
+                                && lo >= 0
+                                && xu < dv
+                            {
+                                self.ops[op_id].op = Op::Const(self.dtype(m.op('d')).zero_constant());
+                            }
+                        } else {
+                            self.fold_binary_const(op_id, bounds);
+                        }
+                    }
+                    BOp::Mod => {
+                        // `dv` is the divisor value, `m["d"]` its op. Each acted
+                        // rule ends with `continue`: skip patterns 3-5,
+                        // advance the walk. Fall-through leaves the op untouched.
+                        if let Some(m) = self.match_pat(op_id, &pat_mod) {
+                            let (x, d, dv) = (m.op('x'), m.op('d'), m.int('d'));
 
-                // Pattern 1: x % d when 0 <= x < d -> x.
-                if let Some(&(lo_x, max_x)) = bounds.get(&x)
-                    && lo_x >= 0
-                    && max_x < dv
-                {
-                    self.remap(op_id, x);
-                    op_id = next;
-                    continue;
-                }
-                // Resolve (a*c)+b or (a<<k)+b (any add/mul order) to
-                // (a, cval, b): a shape disjunction over two Pat matches
-                // sharing one body below. Integer operands only (float
-                // remainder is never exact here). Commutativity retry covers
-                // the orderings; the shl form computes its 2^k multiple.
-                let mul_like =
-                    self.match_pat(x, &pat_mod_mullike).map(|ma| (ma.op('a'), ma.int('c'), ma.op('b'))).or_else(|| {
-                        self.match_pat(x, &pat_mod_shllike).and_then(|ma| {
-                            let kv = ma.int('k');
-                            (0..64).contains(&kv).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
-                        })
-                    });
-                if let Some((a, c, b)) = mul_like {
-                    // Pattern 2: (a*c + b) % c -> b % c (because (a*c) % c = 0)
-                    // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
-                    // Since c == dv: result = b % dv
-                    if c == dv {
-                        self.ops[op_id].op = Op::Binary { x: b, y: d, bop: BOp::Mod };
-                        // Pattern 1 on result: if 0 <= b < dv, b % dv = b
-                        if let Some(&(lo_b, max_b)) = bounds.get(&b)
-                            && lo_b >= 0
-                            && max_b < dv
-                        {
-                            self.remap(op_id, b);
+                            // Pattern 1: x % d when 0 <= x < d -> x.
+                            if let Some(&(lo_x, max_x)) = bounds.get(&x)
+                                && lo_x >= 0
+                                && max_x < dv
+                            {
+                                record(&mut remaps, op_id, x);
+                                continue;
+                            }
+                            // Resolve (a*c)+b or (a<<k)+b (any add/mul order) to
+                            // (a, cval, b): a shape disjunction over two Pat matches
+                            // sharing one body below. Integer operands only (float
+                            // remainder is never exact here). Commutativity retry covers
+                            // the orderings; the shl form computes its 2^k multiple.
+                            let mul_like =
+                                self.match_pat(x, &pat_mod_mullike).map(|ma| (ma.op('a'), ma.int('c'), ma.op('b'))).or_else(
+                                    || {
+                                        self.match_pat(x, &pat_mod_shllike).and_then(|ma| {
+                                            let kv = ma.int('k');
+                                            (0..64).contains(&kv).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
+                                        })
+                                    },
+                                );
+                            if let Some((a, c, b)) = mul_like {
+                                // Pattern 2: (a*c + b) % c -> b % c (because (a*c) % c = 0)
+                                // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
+                                // Since c == dv: result = b % dv
+                                if c == dv {
+                                    self.ops[op_id].op = Op::Binary { x: b, y: d, bop: BOp::Mod };
+                                    // Pattern 1 on result: if 0 <= b < dv, b % dv = b
+                                    if let Some(&(lo_b, max_b)) = bounds.get(&b)
+                                        && lo_b >= 0
+                                        && max_b < dv
+                                    {
+                                        record(&mut remaps, op_id, b);
+                                    }
+                                    continue;
+                                }
+                                // Pattern 2b: (a*c + b) % d when c % d == 1 -> (a + b) % d
+                                // Math: (a*c + b) % d = ((a*(c%d) + b) % d) = ((a*1 + b) % d) = (a + b) % d
+                                // checked_rem never fires (instead of panicking) when dv == 0.
+                                if c.checked_rem(dv) == Some(1) {
+                                    let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
+                                    self.ops[op_id].op = Op::Binary { x: a_plus_b, y: d, bop: BOp::Mod };
+                                    // Pattern 1 on result: if 0 <= a+b < dv, (a+b) % dv = a+b
+                                    if let Some(&(min_a, max_a)) = bounds.get(&a)
+                                        && let Some(&(min_b, max_b)) = bounds.get(&b)
+                                        && min_a.saturating_add(min_b) >= 0
+                                        && max_a.saturating_add(max_b) < dv
+                                    {
+                                        record(&mut remaps, op_id, a_plus_b);
+                                    }
+                                    continue;
+                                }
+                                // Patterns 2c/2d (unsound `(a*c+b) % d -> b` family) are
+                                // gone: their sound cases are subsumed by Pattern 1,
+                                // which matches x = (a*c+b) directly with x's own bounds.
+                            }
+                        } else if let Some(m) = self.match_pat(op_id, &pat_add_mod) {
+                            // Pattern 3: (a + b) % d when min_a > 0, min_b > 0, max(a+b) < d.
+                            // Both positive and sum < d: no wraparound, result = a + b.
+                            let (x, (a, b), dv) = (m.op('x'), (m.op('a'), m.op('b')), m.int('d'));
+                            if let Some(&(min_a, max_a)) = bounds.get(&a)
+                                && let Some(&(min_b, max_b)) = bounds.get(&b)
+                                && min_a > 0
+                                && min_b > 0
+                            {
+                                let sum = max_a.saturating_add(max_b);
+                                if sum < dv && sum > 0 {
+                                    record(&mut remaps, op_id, x);
+                                }
+                            }
+                        } else if let Some(m) = self.match_pat(op_id, &pat_mul_mod) {
+                            // Pattern 4: (a * c) % d -> reduce c modulo d.
+                            // Math: (a * c) % d = (a * (c % d)) % d.
+                            let (x, (a, c), dv) = (m.op('x'), (m.op('a'), m.int('c')), m.int('d'));
+                            // checked_rem never fires (instead of panicking) when dv == 0.
+                            if let Some(c_reduced) = c.checked_rem(dv)
+                                && c_reduced != c
+                                && c_reduced > 0
+                                && let Some(&(min_a, max_a)) = bounds.get(&a)
+                                && min_a > 0
+                            {
+                                let prod = max_a.saturating_mul(c_reduced);
+                                if prod < dv && prod > 0 {
+                                    record(&mut remaps, op_id, x);
+                                }
+                            }
+                        } else if let Some(m) = self.match_pat(op_id, &pat_addc_mod) {
+                            // Pattern 5: (a + C) % d where C is const and 0 <= a+C < d.
+                            // No wraparound, result = a + C. Saturating adds never fire
+                            // (instead of overflowing) on huge bounds.
+                            let (x, (a, y), dv) = (m.op('x'), (m.op('a'), m.int('y')), m.int('d'));
+                            if let Some(&(min_a, max_a)) = bounds.get(&a)
+                                && min_a.saturating_add(y) >= 0
+                                && max_a.saturating_add(y) < dv
+                            {
+                                record(&mut remaps, op_id, x);
+                            }
+                        } else {
+                            self.fold_binary_const(op_id, bounds);
                         }
-                        op_id = next;
-                        continue;
                     }
-                    // Pattern 2b: (a*c + b) % d when c % d == 1 -> (a + b) % d
-                    // Math: (a*c + b) % d = ((a*(c%d) + b) % d) = ((a*1 + b) % d) = (a + b) % d
-                    // checked_rem never fires (instead of panicking) when dv == 0.
-                    if c.checked_rem(dv) == Some(1) {
-                        let a_plus_b = self.insert_before(op_id, Op::Binary { x: a, y: b, bop: BOp::Add });
-                        self.ops[op_id].op = Op::Binary { x: a_plus_b, y: d, bop: BOp::Mod };
-                        // Pattern 1 on result: if 0 <= a+b < dv, (a+b) % dv = a+b
-                        if let Some(&(min_a, max_a)) = bounds.get(&a)
-                            && let Some(&(min_b, max_b)) = bounds.get(&b)
-                            && min_a.saturating_add(min_b) >= 0
-                            && max_a.saturating_add(max_b) < dv
-                        {
-                            self.remap(op_id, a_plus_b);
+                    // `(a - b) == 0` equals `a == b` for integers, but only if
+                    // `a - b` cannot overflow (otherwise wrapping breaks the
+                    // equivalence). Sub is not commutative: no operand swap.
+                    BOp::Eq => match self.match_pat(op_id, &pat_sub_eq) {
+                        Some(m) => {
+                            let (a, b) = (m.op('a'), m.op('b'));
+                            if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                                a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                            }) {
+                                self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Eq };
+                            }
                         }
-                        op_id = next;
-                        continue;
+                        None => self.fold_binary_const(op_id, bounds),
+                    },
+                    // `(a - b) != 0` equals `a != b`. Same overflow guard.
+                    BOp::NotEq => match self.match_pat(op_id, &pat_sub_neq) {
+                        Some(m) => {
+                            let (a, b) = (m.op('a'), m.op('b'));
+                            if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                                a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                            }) {
+                                self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::NotEq };
+                            }
+                        }
+                        None => self.fold_binary_const(op_id, bounds),
+                    },
+                    // `(a - b) >= 0` equals `a >= b`. Same overflow guard.
+                    BOp::Cmpge => match self.match_pat(op_id, &pat_sub_ge) {
+                        Some(m) => {
+                            let (a, b) = (m.op('a'), m.op('b'));
+                            if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                                a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                            }) {
+                                self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpge };
+                            }
+                        }
+                        None => self.fold_binary_const(op_id, bounds),
+                    },
+                    // `(a - b) > 0` equals `a > b`. Same overflow guard.
+                    BOp::Cmpgt => match self.match_pat(op_id, &pat_sub_gt) {
+                        Some(m) => {
+                            let (a, b) = (m.op('a'), m.op('b'));
+                            if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                                a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                            }) {
+                                self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpgt };
+                            }
+                        }
+                        None => self.fold_binary_const(op_id, bounds),
+                    },
+                    // `(a - b) < 0` equals `a < b`. Same overflow guard.
+                    BOp::Cmplt => match self.match_pat(op_id, &pat_sub_lt) {
+                        Some(m) => {
+                            let (a, b) = (m.op('a'), m.op('b'));
+                            if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                                a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                            }) {
+                                self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmplt };
+                            }
+                        }
+                        None => self.fold_binary_const(op_id, bounds),
+                    },
+                    BOp::And => {
+                        // A conjunction with a bounds-decided side resolves
+                        // outright: false absorbs, true is identity. Same
+                        // short-circuit as the Select rule below: narrowed
+                        // Cmp/And bounds decide the side without waiting for it
+                        // to fold to a constant op first (which would take
+                        // another whole epilogue round per link of the chain).
+                        let (x, y) = match self.ops[op_id].op {
+                            Op::Binary { x, y, .. } => (x, y),
+                            _ => unreachable!(),
+                        };
+                        if self.dtype(op_id) != DType::Bool {
+                            self.fold_binary_const(op_id, bounds);
+                        } else if let (Some(&(xlo, xhi)), Some(&(ylo, yhi))) = (bounds.get(&x), bounds.get(&y)) {
+                            if (xlo == 0 && xhi == 0) || (ylo == 0 && yhi == 0) {
+                                self.ops[op_id].op = Op::Const(Constant::Bool(false));
+                            } else if xlo == 1 && xhi == 1 {
+                                record(&mut remaps, op_id, y);
+                            } else if ylo == 1 && yhi == 1 {
+                                record(&mut remaps, op_id, x);
+                            }
+                        }
                     }
-                    // Patterns 2c/2d (unsound `(a*c+b) % d -> b` family) are
-                    // gone: their sound cases are subsumed by Pattern 1,
-                    // which matches x = (a*c+b) directly with x's own bounds.
-                }
-            } else if let Some(m) = {
-                // Pattern 3: (a + b) % d when min_a > 0, min_b > 0, max(a+b) < d.
-                // Both positive and sum < d: no wraparound, result = a + b.
-                self.match_pat(op_id, &pat_add_mod)
-            } {
-                let (x, (a, b), dv) = (m.op('x'), (m.op('a'), m.op('b')), m.int('d'));
-                if let Some(&(min_a, max_a)) = bounds.get(&a)
-                    && let Some(&(min_b, max_b)) = bounds.get(&b)
-                    && min_a > 0
-                    && min_b > 0
-                {
-                    let sum = max_a.saturating_add(max_b);
-                    if sum < dv && sum > 0 {
-                        self.remap(op_id, x);
+                    BOp::Mul => {
+                        let (x, y) = match self.ops[op_id].op {
+                            Op::Binary { x, y, .. } => (x, y),
+                            _ => unreachable!(),
+                        };
+                        // `bool * x` is a pick, not a product: a Bool is 0/1, so
+                        // the product is `select(cond, x, 0)` elementwise. The
+                        // frontend writes `relu` (and `leaky_relu`, `selu`,
+                        // `hard_sigmoid`, every `elu` shape) as
+                        // `cast(cmp, dtype) * x`, and the *cast* is what forces
+                        // `tt_sfp_compare`'s whole IEEE comparison tile -- ~40
+                        // instructions holding `L0..L7` -- to be materialised for
+                        // a single predicate. `Select` lowers to a masked move,
+                        // which is the cheaper spelling on every backend.
+                        let dt = self.dtype(op_id);
+                        let zero = match dt {
+                            DType::F32 => Some(Constant::new(0.0f32)),
+                            DType::I32 => Some(Constant::new(0i32)),
+                            _ => None,
+                        };
+                        let pred = |k: &Kernel, o: OpId| match k.at(o) {
+                            Op::Cast { x: c, dtype } if *dtype == dt && k.dtype(*c) == DType::Bool => Some(*c),
+                            _ => None,
+                        };
+                        let pick = zero.and_then(|z| {
+                            // `if_true` must be the tile: `Select` follows it for
+                            // the result shape.
+                            pred(self, x)
+                                .filter(|_| !matches!(self.ops[y].op, Op::Const(_)))
+                                .map(|c| (c, y, z))
+                                .or_else(|| {
+                                    pred(self, y).filter(|_| !matches!(self.ops[x].op, Op::Const(_))).map(|c| (c, x, z))
+                                })
+                        });
+                        match pick {
+                            Some((cond, keep, zero)) => {
+                                let zero = self.insert_before(op_id, Op::Const(zero));
+                                self.ops[op_id].op = Op::Select { cond, if_true: keep, if_false: zero };
+                            }
+                            None => self.fold_binary_const(op_id, bounds),
+                        }
                     }
-                }
-            } else if let Some(m) = {
-                // Pattern 4: (a * c) % d -> reduce c modulo d.
-                // Math: (a * c) % d = (a * (c % d)) % d.
-                self.match_pat(op_id, &pat_mul_mod)
-            } {
-                let (x, (a, c), dv) = (m.op('x'), (m.op('a'), m.int('c')), m.int('d'));
-                // checked_rem never fires (instead of panicking) when dv == 0.
-                if let Some(c_reduced) = c.checked_rem(dv)
-                    && c_reduced != c
-                    && c_reduced > 0
-                    && let Some(&(min_a, max_a)) = bounds.get(&a)
-                    && min_a > 0
-                {
-                    let prod = max_a.saturating_mul(c_reduced);
-                    if prod < dv && prod > 0 {
-                        self.remap(op_id, x);
-                    }
-                }
-            } else if let Some(m) = {
-                // Pattern 5: (a + C) % d where C is const and 0 <= a+C < d.
-                // No wraparound, result = a + C. Saturating adds never fire
-                // (instead of overflowing) on huge bounds.
-                self.match_pat(op_id, &pat_addc_mod)
-            } {
-                let (x, (a, y), dv) = (m.op('x'), (m.op('a'), m.int('y')), m.int('d'));
-                if let Some(&(min_a, max_a)) = bounds.get(&a)
-                    && min_a.saturating_add(y) >= 0
-                    && max_a.saturating_add(y) < dv
-                {
-                    self.remap(op_id, x);
-                }
-            } else if let Some(m) = {
-                // x >> k -> 0 when 0 <= x < 2^k. dim_lt keeps the range in-pattern.
-                self.match_pat(op_id, &pat_shr_zero)
-            } {
-                let (x, kv) = (m.op('x'), m.int('k'));
-                if let Some(&(lo, xu)) = bounds.get(&x)
-                    && lo >= 0
-                    && xu < (1i64 << kv)
-                {
-                    let dtype = self.dtype(x);
-                    self.ops[op_id].op = Op::Const(dtype.zero_constant());
-                }
-            } else if let Some(m) = {
-                // `(a - b) == 0` equals `a == b` for integers, but only if
-                // `a - b` cannot overflow (otherwise wrapping breaks the
-                // equivalence). Sub is not commutative: no operand swap.
-                self.match_pat(op_id, &pat_sub_eq)
-            } {
-                let (a, b) = (m.op('a'), m.op('b'));
-                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                }) {
-                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Eq };
-                }
-            } else if let Some(m) = {
-                // `(a - b) != 0` equals `a != b`. Same overflow guard.
-                self.match_pat(op_id, &pat_sub_neq)
-            } {
-                let (a, b) = (m.op('a'), m.op('b'));
-                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                }) {
-                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::NotEq };
-                }
-            } else if let Some(m) = {
-                // `(a - b) >= 0` equals `a >= b`. Same overflow guard.
-                self.match_pat(op_id, &pat_sub_ge)
-            } {
-                let (a, b) = (m.op('a'), m.op('b'));
-                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                }) {
-                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpge };
-                }
-            } else if let Some(m) = {
-                // `(a - b) > 0` equals `a > b`. Same overflow guard.
-                self.match_pat(op_id, &pat_sub_gt)
-            } {
-                let (a, b) = (m.op('a'), m.op('b'));
-                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                }) {
-                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpgt };
-                }
-            } else if let Some(m) = {
-                // `(a - b) < 0` equals `a < b`. Same overflow guard.
-                self.match_pat(op_id, &pat_sub_lt)
-            } {
-                let (a, b) = (m.op('a'), m.op('b'));
-                if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                    a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                }) {
-                    self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmplt };
-                }
-            } else if let &Op::Select { cond, if_true, if_false } = self.at(op_id) {
-                // A predicate provably constant by bounds takes its arm
-                // outright (remap, never a guard). Bool bounds are 0/1:
-                // (0,0) is false, (1,1) is true. This collapses
-                // bounds-clamped index guards (linearize masked views)
-                // without waiting for the condition chain itself to fold
-                // to a constant op first: narrowed And/Cmp bounds already
-                // decide the predicate here.
-                if let Some(&(lo, hi)) = bounds.get(&cond) {
-                    if lo == 0 && hi == 0 {
-                        self.remap(op_id, if_false);
-                    } else if lo == 1 && hi == 1 {
-                        self.remap(op_id, if_true);
-                    }
-                }
-            } else if let &Op::Binary { x, y, bop: BOp::And } = self.at(op_id)
-                && self.dtype(op_id) == DType::Bool
-            {
-                // A conjunction with a bounds-decided side resolves
-                // outright: false absorbs, true is identity. Same
-                // short-circuit as the Select rule above: narrowed
-                // Cmp/And bounds decide the side without waiting for it
-                // to fold to a constant op first (which would take
-                // another whole epilogue round per link of the chain).
-                if let (Some(&(xlo, xhi)), Some(&(ylo, yhi))) = (bounds.get(&x), bounds.get(&y)) {
-                    if (xlo == 0 && xhi == 0) || (ylo == 0 && yhi == 0) {
-                        self.ops[op_id].op = Op::Const(Constant::Bool(false));
-                    } else if xlo == 1 && xhi == 1 {
-                        self.remap(op_id, y);
-                    } else if ylo == 1 && yhi == 1 {
-                        self.remap(op_id, x);
+                    _ => self.fold_binary_const(op_id, bounds),
+                },
+                Op::Select { cond, if_true, if_false } => {
+                    // A predicate provably constant by bounds takes its arm
+                    // outright (remap, never a guard). Bool bounds are 0/1:
+                    // (0,0) is false, (1,1) is true. This collapses
+                    // bounds-clamped index guards (linearize masked views)
+                    // without waiting for the condition chain itself to fold
+                    // to a constant op first: narrowed And/Cmp bounds already
+                    // decide the predicate here.
+                    if let Some(&(lo, hi)) = bounds.get(&cond) {
+                        if lo == 0 && hi == 0 {
+                            record(&mut remaps, op_id, if_false);
+                        } else if lo == 1 && hi == 1 {
+                            record(&mut remaps, op_id, if_true);
+                        }
                     }
                 }
-            } else if let &Op::Binary { x, y, bop: BOp::Mul } = self.at(op_id)
-                && let Some((cond, keep, zero)) = {
-                    // `bool * x` is a pick, not a product: a Bool is 0/1, so
-                    // the product is `select(cond, x, 0)` elementwise. The
-                    // frontend writes `relu` (and `leaky_relu`, `selu`,
-                    // `hard_sigmoid`, every `elu` shape) as
-                    // `cast(cmp, dtype) * x`, and the *cast* is what forces
-                    // `tt_sfp_compare`'s whole IEEE comparison tile -- ~40
-                    // instructions holding `L0..L7` -- to be materialised for
-                    // a single predicate. `Select` lowers to a masked move,
-                    // which is the cheaper spelling on every backend.
-                    let dt = self.dtype(op_id);
-                    let zero = match dt {
-                        DType::F32 => Some(Constant::new(0.0f32)),
-                        DType::I32 => Some(Constant::new(0i32)),
-                        _ => None,
-                    };
-                    let pred = |k: &Kernel, o: OpId| match k.at(o) {
-                        Op::Cast { x: c, dtype } if *dtype == dt && k.dtype(*c) == DType::Bool => Some(*c),
-                        _ => None,
-                    };
-                    zero.and_then(|z| {
-                        // `if_true` must be the tile: `Select` follows it for
-                        // the result shape.
-                        pred(self, x)
-                            .filter(|_| !matches!(self.ops[y].op, Op::Const(_)))
-                            .map(|c| (c, y, z))
-                            .or_else(|| pred(self, y).filter(|_| !matches!(self.ops[x].op, Op::Const(_))).map(|c| (c, x, z)))
-                    })
-                }
-            {
-                let zero = self.insert_before(op_id, Op::Const(zero));
-                self.ops[op_id].op = Op::Select { cond, if_true: keep, if_false: zero };
-            } else if let &Op::Binary { x, y, bop } = self.at(op_id)
-                && !self.dtype(x).is_float()
-            {
-                let folded: Option<Constant> = match (self.at(x).clone(), self.at(y).clone()) {
-                    (Op::Const(cx), Op::Const(cy)) => Some(Constant::binary(cx, cy, bop)),
-                    (Op::Const(cx), _) => bounds
-                        .get(&y)
-                        .and_then(|&(lb, ub)| cx.as_dim().and_then(|cv| fold_cmp(bop, lb, ub, cv, true).map(Constant::Bool))),
-                    (_, Op::Const(cy)) => bounds
-                        .get(&x)
-                        .and_then(|&(lb, ub)| cy.as_dim().and_then(|cv| fold_cmp(bop, lb, ub, cv, false).map(Constant::Bool))),
-                    _ => None,
-                };
-                if let Some(c) = folded {
-                    self.ops[op_id].op = Op::Const(c);
-                }
+                _ => {}
             }
-            op_id = next;
+        }
+
+        self.apply_remaps(&remaps);
+    }
+
+    /// Fold a `Binary` whose operands are constant or bounds-decided: the
+    /// generic fallthrough for every BOp that has no shape rule of its own.
+    fn fold_binary_const(&mut self, op_id: OpId, bounds: &Map<OpId, (Dim, Dim)>) {
+        let &Op::Binary { x, y, bop } = self.at(op_id) else {
+            return;
+        };
+        if self.dtype(x).is_float() {
+            return;
+        }
+        let folded: Option<Constant> = match (self.at(x).clone(), self.at(y).clone()) {
+            (Op::Const(cx), Op::Const(cy)) => Some(Constant::binary(cx, cy, bop)),
+            (Op::Const(cx), _) => bounds
+                .get(&y)
+                .and_then(|&(lb, ub)| cx.as_dim().and_then(|cv| fold_cmp(bop, lb, ub, cv, true).map(Constant::Bool))),
+            (_, Op::Const(cy)) => bounds
+                .get(&x)
+                .and_then(|&(lb, ub)| cy.as_dim().and_then(|cv| fold_cmp(bop, lb, ub, cv, false).map(Constant::Bool))),
+            _ => None,
+        };
+        if let Some(c) = folded {
+            self.ops[op_id].op = Op::Const(c);
         }
     }
 
@@ -415,6 +463,7 @@ impl Kernel {
     fn simplify_mod_div_identity(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_mod_div_identity");
+        let mut remaps: Map<OpId, OpId> = Map::default();
         // `(a % n) + (n * (a / n))` (in either order at both levels): the
         // truncated-division round-trip, valid for non-negative `a` and
         // positive `n`. Operand orders are handled by the matcher's
@@ -427,6 +476,24 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
+            // Bulk refusal: the round-trip identity is rooted at an `Add`.
+            if !matches!(self.at(op_id), Op::Binary { bop: BOp::Add, .. }) {
+                op_id = next;
+                continue;
+            }
+            // Second, cheaper gate: the Add must join a `%` with a `*` (either
+            // order); the div is nested under the multiply. Two discriminant
+            // reads instead of the full pattern walk.
+            let &Op::Binary { x: add_x, y: add_y, .. } = self.at(op_id) else {
+                op_id = next;
+                continue;
+            };
+            let modulo = |k: &Self, o: OpId| matches!(k.at(o), Op::Binary { bop: BOp::Mod, .. });
+            let product = |k: &Self, o: OpId| matches!(k.at(o), Op::Binary { bop: BOp::Mul, .. });
+            if !(modulo(self, add_x) && product(self, add_y) || modulo(self, add_y) && product(self, add_x)) {
+                op_id = next;
+                continue;
+            }
             if let Some(m) = self.match_pat(op_id, &pat) {
                 let (a, n) = (m.op('a'), m.op('n'));
                 // Default to the widest possible (negative) bound so a missing entry in
@@ -436,11 +503,13 @@ impl Kernel {
                 let a_lb = bounds.get(&a).map_or(Dim::MIN, |&(lb, _)| lb);
                 let n_lb = bounds.get(&n).map_or(0, |&(lb, _)| lb);
                 if a_lb >= 0 && n_lb > 0 {
-                    self.remap(op_id, a);
+                    record(&mut remaps, op_id, a);
                 }
             }
             op_id = next;
         }
+
+        self.apply_remaps(&remaps);
     }
 
     /// Try to recognize an expression as `root << K + constant` where the
@@ -450,6 +519,7 @@ impl Kernel {
     fn simplify_demux_roundtrip(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_demux_roundtrip");
+        let mut remaps: Map<OpId, OpId> = Map::default();
         /// A slice of a variable extracted via div/mod/shr then shifted back.
         #[derive(Clone)]
         struct Slice {
@@ -747,11 +817,13 @@ impl Kernel {
             if !constant_term.is_null() {
                 self.ops[op_id].op = Op::Binary { x: shl, y: constant_term, bop: BOp::Add };
             } else {
-                self.remap(op_id, shl);
+                record(&mut remaps, op_id, shl);
             }
 
             op_id = next;
         }
+
+        self.apply_remaps(&remaps);
     }
 
     /// Simplify modulo and shift sequences using valid algebraic identities.
@@ -766,6 +838,9 @@ impl Kernel {
     /// Every rewrite is guarded by conservative bounds so it only fires when
     /// provably valid (no overflow, non-negative operands).
     fn simplify_mod_shift_sequences(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("simplify_mod_shift_sequences");
+        let mut remaps: Map<OpId, OpId> = Map::default();
         // `(x >> 1) + (x & 1)` -> `(x + 1) >> 1` (also `(x % 2)` residue).
         // Requires non-negative `x` (unsigned dtype) and `x + 1` not
         // overflowing. Restricted to `k == 1`: for `k >= 2` the sum
@@ -790,6 +865,26 @@ impl Kernel {
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
+            // Bulk refusal: `pat_ceil_div` is rooted at an `Add`, so anything
+            // else cannot match and skips the (large, alternation-heavy)
+            // pattern walk.
+            if !matches!(self.at(op_id), Op::Binary { bop: BOp::Add, .. }) {
+                op_id = next;
+                continue;
+            }
+            // Second, cheaper gate: the Add must join a right-shift with a
+            // residue (`%` or `&`) in either order. That is a pair of
+            // discriminant reads, versus the full alternation walk.
+            let &Op::Binary { x: add_x, y: add_y, .. } = self.at(op_id) else {
+                op_id = next;
+                continue;
+            };
+            let shift = |k: &Self, o: OpId| matches!(k.at(o), Op::Binary { bop: BOp::BitShiftRight, .. });
+            let residue = |k: &Self, o: OpId| matches!(k.at(o), Op::Binary { bop: BOp::Mod | BOp::BitAnd, .. });
+            if !(shift(self, add_x) && residue(self, add_y) || shift(self, add_y) && residue(self, add_x)) {
+                op_id = next;
+                continue;
+            }
             if let Some(m) = self.match_pat(op_id, &pat_ceil_div) {
                 let r = m.op('r');
                 let dtype = self.dtype(r);
@@ -801,7 +896,7 @@ impl Kernel {
                     let plus = self.insert_before(op_id, Op::Binary { x: r, y: add_const, bop: BOp::Add });
                     let k_const = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&1i64.to_le_bytes(), dtype)));
                     let result = self.insert_before(op_id, Op::Binary { x: plus, y: k_const, bop: BOp::BitShiftRight });
-                    self.remap(op_id, result);
+                    record(&mut remaps, op_id, result);
                 }
             }
             op_id = next;
@@ -862,7 +957,7 @@ impl Kernel {
                                 }
                                 self.ops[op_id].op = Op::Binary { x: a_side, y, bop: BOp::Mod };
                                 if max_a < m {
-                                    self.remap(op_id, a_side);
+                                    record(&mut remaps, op_id, a_side);
                                 }
                                 break;
                             }
@@ -913,7 +1008,7 @@ impl Kernel {
                                         .insert_before(op_id, Op::Const(Constant::from_le_bytes(&amount.to_le_bytes(), dtype)));
                                     let a_op = self.insert_before(op_id, Op::Binary { x: a_side, y: amount_const, bop });
                                     let result = self.insert_before(op_id, Op::Binary { x: a_op, y: b, bop: BOp::Add });
-                                    self.remap(op_id, result);
+                                    record(&mut remaps, op_id, result);
                                     break;
                                 }
                             }
@@ -924,6 +1019,8 @@ impl Kernel {
             }
             op_id = next;
         }
+
+        self.apply_remaps(&remaps);
     }
 }
 

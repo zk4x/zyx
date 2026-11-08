@@ -37,6 +37,8 @@ impl Kernel {
     /// are never moved out of the loops or if blocks that contain them, and
     /// stores and loads are never moved before barriers.
     pub fn instruction_schedule(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("instruction_schedule");
         let mut global_ro = Vec::new();
         let mut global_rw = Vec::new();
         let mut local_rw = Vec::new();

@@ -45,6 +45,8 @@ impl Kernel {
     /// multiplication) to improve instruction scheduling and pipeline
     /// utilization.
     pub(crate) fn swap_commutative(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("swap_commutative");
         // Tracks whether a value depends on a loop index
         let mut loop_dep: Map<OpId, usize> = Map::default();
         let mut loop_depth = 0;

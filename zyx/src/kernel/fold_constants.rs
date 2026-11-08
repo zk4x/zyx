@@ -22,7 +22,46 @@ use crate::{
 };
 use std::hash::BuildHasherDefault;
 
+/// Record a rewrite to apply once at the end of the pass.
+///
+/// A rewrite used to be a full-kernel scan (`Kernel::remap`), so a pass that
+/// fired many of them was O(rewrites x ops). The collected map is applied in
+/// one sweep at the end of the pass by [`Kernel::apply_remaps`].
+pub(crate) fn record(remaps: &mut Map<OpId, OpId>, x: OpId, y: OpId) {
+    remaps.insert(x, y);
+}
+
 impl Kernel {
+    /// Apply a batch of `from -> to` rewrites in one sweep.
+    ///
+    /// Chains are compressed first (`a -> b`, `b -> c` lands on `c`), so one
+    /// pass over the kernel is enough. This replaces one full-kernel scan per
+    /// rewrite, which is what made the rewriting passes quadratic.
+    pub(crate) fn apply_remaps(&mut self, remaps: &Map<OpId, OpId>) {
+        if remaps.is_empty() {
+            return;
+        }
+        let mut map = remaps.clone();
+        let keys: Vec<OpId> = map.keys().copied().collect();
+        for k in keys {
+            let mut v = map[&k];
+            let mut guard = 0;
+            while let Some(&next) = map.get(&v) {
+                if next == v || guard > 8 {
+                    break;
+                }
+                v = next;
+                guard += 1;
+            }
+            map.insert(k, v);
+        }
+        let mut scan = self.head;
+        while !scan.is_null() {
+            self.ops[scan].op.remap_params(&map);
+            scan = self.next_op(scan);
+        }
+    }
+
     /// Fold constant expressions in the kernel IR.
     ///
     /// This method evaluates expressions with constant operands,
@@ -34,6 +73,7 @@ impl Kernel {
     pub fn constant_folding(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("constant folding");
+        let mut remaps: Map<OpId, OpId> = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
@@ -80,7 +120,7 @@ impl Kernel {
                             .enumerate()
                             .all(|(i, &sub)| matches!(self.at(sub), Op::Index { vec: v, idx } if *v == vec && *idx == i + 1))
                         {
-                            self.remap(op_id, vec);
+                            record(&mut remaps, op_id, vec);
                         }
                     }
                 }
@@ -128,13 +168,13 @@ impl Kernel {
                     if let Op::Cast { x: final_x, .. } = self.at(op_id)
                         && self.dtype(*final_x) == dtype
                     {
-                        self.remap(op_id, *final_x);
+                        record(&mut remaps, op_id, *final_x);
                     }
                 }
                 Op::Bitcast { x, dtype } => {
                     // Same-type bitcast is a no-op
                     if self.dtype(x) == dtype {
-                        self.remap(op_id, x);
+                        record(&mut remaps, op_id, x);
                     }
                     if let Op::Const(cx) = self.at(x) {
                         self.ops[op_id].op = Op::Const(cx.bitcast(dtype));
@@ -149,10 +189,10 @@ impl Kernel {
                     // Identical arms: the predicate is irrelevant.
                     // (Select-then-compute fusion is later work.)
                     if if_true == if_false {
-                        self.remap(op_id, if_true);
+                        record(&mut remaps, op_id, if_true);
                     } else if let Op::Const(Constant::Bool(p)) = self.at(cond) {
                         // A constant predicate picks its arm outright.
-                        self.remap(op_id, if *p { if_true } else { if_false });
+                        record(&mut remaps, op_id, if *p { if_true } else { if_false });
                     }
                 }
                 Op::Binary { x, y, bop } => match (self.at(x).clone(), self.at(y).clone()) {
@@ -161,65 +201,65 @@ impl Kernel {
                         self.ops[op_id].op = Op::Const(folded);
                     }
                     (Op::Const(cx), _) => match bop {
-                        BOp::And if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, x),
-                        BOp::And if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
-                        BOp::Or if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, y),
-                        BOp::Or if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, x),
+                        BOp::And if cx.dtype() == DType::Bool && cx.is_zero() => record(&mut remaps, op_id, x),
+                        BOp::And if cx.dtype() == DType::Bool && cx.is_one() => record(&mut remaps, op_id, y),
+                        BOp::Or if cx.dtype() == DType::Bool && cx.is_zero() => record(&mut remaps, op_id, y),
+                        BOp::Or if cx.dtype() == DType::Bool && cx.is_one() => record(&mut remaps, op_id, x),
                         BOp::Eq if cx.dtype() == DType::Bool && cx.is_zero() => {
                             self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Not }
                         }
-                        BOp::Eq if cx.dtype() == DType::Bool && cx.is_one() => self.remap(op_id, y),
-                        BOp::NotEq if cx.dtype() == DType::Bool && cx.is_zero() => self.remap(op_id, y),
+                        BOp::Eq if cx.dtype() == DType::Bool && cx.is_one() => record(&mut remaps, op_id, y),
+                        BOp::NotEq if cx.dtype() == DType::Bool && cx.is_zero() => record(&mut remaps, op_id, y),
                         BOp::NotEq if cx.dtype() == DType::Bool && cx.is_one() => {
                             self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Not }
                         }
-                        BOp::Add if cx.is_zero() => self.remap(op_id, y),
+                        BOp::Add if cx.is_zero() => record(&mut remaps, op_id, y),
                         BOp::Sub if cx.is_zero() => self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Neg },
                         BOp::Mul | BOp::Div if cx.is_zero() => self.ops[op_id].op = Op::Const(cx),
-                        BOp::Mul if cx.is_one() => self.remap(op_id, y),
+                        BOp::Mul if cx.is_one() => record(&mut remaps, op_id, y),
                         BOp::Mul if cx.is_two() => self.ops[op_id].op = Op::Binary { x: y, y, bop: BOp::Add },
                         BOp::Mul if cx.is_power_of_two() && cx.dtype() == IDX_T => {
                             let c = self.insert_before(op_id, Op::Const(cx.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x: y, y: c, bop: BOp::BitShiftLeft };
                         }
-                        BOp::Div if cx.is_zero() => self.remap(op_id, x),
+                        BOp::Div if cx.is_zero() => record(&mut remaps, op_id, x),
                         BOp::Div if cx.is_one() && cx.dtype().is_float() => {
                             self.ops[op_id].op = Op::Unary { x: y, uop: UOp::Reciprocal }
                         }
                         BOp::Pow if cx.is_one() => self.ops[op_id].op = Op::Const(cx),
-                        BOp::Max if cx.is_minimum() => self.remap(op_id, y),
-                        BOp::Max if cx.is_max() => self.remap(op_id, x),
-                        BOp::BitAnd if cx.is_zero() => self.remap(op_id, x),
-                        BOp::BitAnd if cx.is_max() && cx.dtype().is_uint() => self.remap(op_id, y),
-                        BOp::BitOr if cx.is_zero() => self.remap(op_id, y),
-                        BOp::BitOr if cx.is_max() => self.remap(op_id, x),
-                        BOp::BitXor if cx.is_zero() => self.remap(op_id, y),
-                        BOp::BitShiftLeft | BOp::BitShiftRight if cx.is_zero() => self.remap(op_id, x),
+                        BOp::Max if cx.is_minimum() => record(&mut remaps, op_id, y),
+                        BOp::Max if cx.is_max() => record(&mut remaps, op_id, x),
+                        BOp::BitAnd if cx.is_zero() => record(&mut remaps, op_id, x),
+                        BOp::BitAnd if cx.is_max() && cx.dtype().is_uint() => record(&mut remaps, op_id, y),
+                        BOp::BitOr if cx.is_zero() => record(&mut remaps, op_id, y),
+                        BOp::BitOr if cx.is_max() => record(&mut remaps, op_id, x),
+                        BOp::BitXor if cx.is_zero() => record(&mut remaps, op_id, y),
+                        BOp::BitShiftLeft | BOp::BitShiftRight if cx.is_zero() => record(&mut remaps, op_id, x),
                         _ => {}
                     },
                     (_, Op::Const(cy)) => match bop {
-                        BOp::And if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, y),
-                        BOp::And if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
-                        BOp::Or if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, x),
-                        BOp::Or if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, y),
+                        BOp::And if cy.dtype() == DType::Bool && cy.is_zero() => record(&mut remaps, op_id, y),
+                        BOp::And if cy.dtype() == DType::Bool && cy.is_one() => record(&mut remaps, op_id, x),
+                        BOp::Or if cy.dtype() == DType::Bool && cy.is_zero() => record(&mut remaps, op_id, x),
+                        BOp::Or if cy.dtype() == DType::Bool && cy.is_one() => record(&mut remaps, op_id, y),
                         BOp::Eq if cy.dtype() == DType::Bool && cy.is_zero() => {
                             self.ops[op_id].op = Op::Unary { x, uop: UOp::Not }
                         }
-                        BOp::Eq if cy.dtype() == DType::Bool && cy.is_one() => self.remap(op_id, x),
-                        BOp::NotEq if cy.dtype() == DType::Bool && cy.is_zero() => self.remap(op_id, x),
+                        BOp::Eq if cy.dtype() == DType::Bool && cy.is_one() => record(&mut remaps, op_id, x),
+                        BOp::NotEq if cy.dtype() == DType::Bool && cy.is_zero() => record(&mut remaps, op_id, x),
                         BOp::NotEq if cy.dtype() == DType::Bool && cy.is_one() => {
                             self.ops[op_id].op = Op::Unary { x, uop: UOp::Not }
                         }
-                        BOp::Add | BOp::Sub if cy.is_zero() => self.remap(op_id, x),
+                        BOp::Add | BOp::Sub if cy.is_zero() => record(&mut remaps, op_id, x),
                         BOp::Mul if cy.is_zero() => self.ops[op_id].op = Op::Const(cy),
-                        BOp::Mul if cy.is_one() => self.remap(op_id, x),
+                        BOp::Mul if cy.is_one() => record(&mut remaps, op_id, x),
                         BOp::Mul if cy.is_two() => self.ops[op_id].op = Op::Binary { x, y: x, bop: BOp::Add },
                         BOp::Mul if cy.is_power_of_two() && cy.dtype() == IDX_T => {
                             let c = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x, y: c, bop: BOp::BitShiftLeft };
                         }
                         BOp::Div if cy.is_zero() && !cy.dtype().is_float() => panic!("Division by constant zero"),
-                        BOp::Div if cy.is_one() => self.remap(op_id, x),
+                        BOp::Div if cy.is_one() => record(&mut remaps, op_id, x),
                         BOp::Div if cy.is_power_of_two() && cy.dtype() == IDX_T => {
                             let y = self.insert_before(op_id, Op::Const(cy.unary(UOp::Log2)));
                             self.ops[op_id].op = Op::Binary { x, y, bop: BOp::BitShiftRight };
@@ -229,17 +269,17 @@ impl Kernel {
                         }
                         BOp::Mod if cy.is_zero() && !cy.dtype().is_float() => panic!("Modulo by constant zero"),
                         BOp::Pow if cy.is_zero() => self.ops[op_id].op = Op::Const(cy.dtype().one_constant()),
-                        BOp::Pow if cy.is_one() => self.remap(op_id, x),
+                        BOp::Pow if cy.is_one() => record(&mut remaps, op_id, x),
                         BOp::Pow if cy.is_two() => self.ops[op_id].op = Op::Binary { x, y: x, bop: BOp::Mul },
-                        BOp::Max if cy.is_minimum() => self.remap(op_id, x),
-                        BOp::Max if cy.is_max() => self.remap(op_id, y),
-                        BOp::BitAnd if cy.is_zero() => self.remap(op_id, y),
-                        BOp::BitAnd if cy.is_max() && cy.dtype().is_uint() => self.remap(op_id, x),
-                        BOp::BitOr if cy.is_zero() => self.remap(op_id, x),
-                        BOp::BitOr if cy.is_max() => self.remap(op_id, y),
-                        BOp::BitXor if cy.is_zero() => self.remap(op_id, x),
-                        BOp::BitShiftLeft if cy.is_zero() => self.remap(op_id, x),
-                        BOp::BitShiftRight if cy.is_zero() => self.remap(op_id, x),
+                        BOp::Max if cy.is_minimum() => record(&mut remaps, op_id, x),
+                        BOp::Max if cy.is_max() => record(&mut remaps, op_id, y),
+                        BOp::BitAnd if cy.is_zero() => record(&mut remaps, op_id, y),
+                        BOp::BitAnd if cy.is_max() && cy.dtype().is_uint() => record(&mut remaps, op_id, x),
+                        BOp::BitOr if cy.is_zero() => record(&mut remaps, op_id, x),
+                        BOp::BitOr if cy.is_max() => record(&mut remaps, op_id, y),
+                        BOp::BitXor if cy.is_zero() => record(&mut remaps, op_id, x),
+                        BOp::BitShiftLeft if cy.is_zero() => record(&mut remaps, op_id, x),
+                        BOp::BitShiftRight if cy.is_zero() => record(&mut remaps, op_id, x),
                         // Consecutive modulo by constant: (x % a) % b folds to x % b
                         // only when b | a, and to x % a only when a | b. When neither
                         // divides the other the result cannot be reduced to a single mod.
@@ -277,12 +317,12 @@ impl Kernel {
                             let dtype = self.dtype(x);
                             self.ops[op_id].op = Op::Const(dtype.zero_constant());
                         }
-                        BOp::BitAnd | BOp::BitOr | BOp::Max => self.remap(op_id, x),
+                        BOp::BitAnd | BOp::BitOr | BOp::Max => record(&mut remaps, op_id, x),
                         // Boolean idempotence: x && x -> x, x || x -> x. Mask
                         // AND-chains (pad/narrow validity terms) can reduce both
                         // operands to the same comparison; without this rule the
                         // leftover And breaks fold_loops' condition-chain patterns.
-                        BOp::And | BOp::Or if self.dtype(x) == DType::Bool => self.remap(op_id, x),
+                        BOp::And | BOp::Or if self.dtype(x) == DType::Bool => record(&mut remaps, op_id, x),
                         BOp::Cmpgt | BOp::Cmplt => self.ops[op_id].op = Op::Const(DType::Bool.zero_constant()),
                         BOp::Eq if !self.dtype(x).is_float() => self.ops[op_id].op = Op::Const(DType::Bool.one_constant()),
                         BOp::NotEq if !self.dtype(x).is_float() => self.ops[op_id].op = Op::Const(DType::Bool.zero_constant()),
@@ -294,6 +334,7 @@ impl Kernel {
             op_id = next;
         }
 
+        self.apply_remaps(&remaps);
         self.verify();
     }
 
@@ -304,8 +345,10 @@ impl Kernel {
     pub(crate) fn fold_accs(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("fold_accs");
-        // We have to do constant folding before folding accs to guarantee indices are constants
-        self.constant_folding();
+        // The accumulator indices must be constants before folding, and every
+        // caller runs `constant_folding` first (the default epilogue does, in
+        // both rounds, immediately before this). Repeating it here cost a
+        // second full pass per call for nothing.
         // Check if an accumulator storage exists without a scope that stores into it.
         // Storages used inside `Loop`/`If` must not be
         // folded — they are conditional/loop-carried, not dead accumulators.
@@ -859,6 +902,7 @@ impl Kernel {
     /// `x^y = exp2(y * log2(x))`: integer `log2`/`exp2` match no NVRTC
     /// overload and PTX has no `pow`, so every int `Pow` must lower here.
     pub(crate) fn unfold_pows(&mut self) {
+        let mut remaps: Map<OpId, OpId> = Map::default();
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let &Op::Binary { x, y, bop } = self.at(op_id)
@@ -912,7 +956,7 @@ impl Kernel {
                                 let r = self.insert_before(op_id, Op::Unary { x: p, uop: UOp::Reciprocal });
                                 self.ops[op_id].op = Op::Unary { x: r, uop: UOp::Reciprocal };
                             } else {
-                                self.remap(op_id, p);
+                                record(&mut remaps, op_id, p);
                             }
                         }
                         _ => {
@@ -962,7 +1006,7 @@ impl Kernel {
                             if udt != dt {
                                 p = self.insert_before(op_id, Op::Bitcast { x: p, dtype: dt });
                             }
-                            self.remap(op_id, p);
+                            record(&mut remaps, op_id, p);
                         } else {
                             // Negative int exponent (torch semantics):
                             // 0, except base 1 (1) and base -1 (±1 by
@@ -981,7 +1025,7 @@ impl Kernel {
                             let picked = if n & 1 == 1 { cm1 } else { c1 };
                             let inner = self.insert_before(op_id, Op::Select { cond: is_negone, if_true: picked, if_false: c0 });
                             let result = self.insert_before(op_id, Op::Select { cond: is_one, if_true: x, if_false: inner });
-                            self.remap(op_id, result);
+                            record(&mut remaps, op_id, result);
                         }
                     } else {
                         // Dynamic int exponent: square-and-multiply over
@@ -1057,7 +1101,7 @@ impl Kernel {
                             let nonneg = self.insert_before(op_id, Op::Binary { x: y, y: ezero, bop: BOp::Cmpge });
                             out = self.insert_before(op_id, Op::Select { cond: nonneg, if_true: out, if_false: negval });
                         }
-                        self.remap(op_id, out);
+                        record(&mut remaps, op_id, out);
                     }
                 } else {
                     let x = self.insert_before(op_id, Op::Unary { x, uop: UOp::Log2 });
@@ -1068,6 +1112,7 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
 
+        self.apply_remaps(&remaps);
         self.verify();
     }
 }
