@@ -212,7 +212,9 @@ impl TextGeneration {
         logits = logits.squeeze([0]);
         let next_token = self.logits_processor.sample(&logits);
         let token_str = self.tokenizer.decode(&[next_token], true).unwrap();
-        println!("{token_str}={next_token}");
+        // Tokens stream as text: one piece at a time, no ids, no line per
+        // token. The tokenizer's pieces concatenate into the final text.
+        print!("{token_str}");
         std::io::stdout().flush().unwrap();
         start_pos = tokens.len();
         let mut last_tok = next_token;
@@ -229,7 +231,7 @@ impl TextGeneration {
             };
             let next_token = self.logits_processor.sample(&logits);
             let token_str = self.tokenizer.decode(&[next_token], true).unwrap();
-            println!("{token_str}={next_token}");
+            print!("{token_str}");
             std::io::stdout().flush().unwrap();
             start_pos += 1;
             last_tok = next_token;

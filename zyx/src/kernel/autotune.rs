@@ -517,17 +517,8 @@ impl BeamSearch {
             let mut rng = Rng::seed_from_u64(3_498_203_498);
             let mut exhausted = Set::default();
             let mut i = 0;
-            // Temporary: which phase of the tune this kernel is in, and how
-            // long each search step takes. Removed after the hang diagnosis.
-            let search_start = std::time::Instant::now();
             while forced.is_none() && i < self.n_total_opts && !items.is_empty() {
                 i += 1;
-                let best = items.iter().map(|s| s.cost).min().unwrap_or(u64::MAX);
-                eprintln!(
-                    "[search] i={i} items={} best={best} t={}ms",
-                    items.len(),
-                    search_start.elapsed().as_millis()
-                );
                 let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else {
                     break;
                 };
@@ -577,11 +568,6 @@ impl BeamSearch {
             // Keep trying past a candidate that fails to compile/launch (an
             // invalid optimization variant) until `n_launches` successes have
             // been measured.
-            eprintln!(
-                "[search] done i={i} items={} t={}ms",
-                items.len(),
-                search_start.elapsed().as_millis()
-            );
             items.sort_by_key(|seq| seq.cost);
             let mut launched = Set::default();
             let mut measured = 0usize;
@@ -589,15 +575,8 @@ impl BeamSearch {
             while measured < self.n_launches && next < items.len() {
                 let opt_seq = &items[next];
                 next += 1;
-                eprintln!(
-                    "[measure] {next}/{} measured={measured} seq={:?} t={}ms",
-                    items.len(),
-                    opt_seq.opts,
-                    search_start.elapsed().as_millis()
-                );
                 let mut kernel = base.clone();
                 apply_seq(&mut kernel, opt_seq, optimizations, &epilogue);
-                eprintln!("[measure] applied ops={}", kernel.ops.len().0);
                 // The cost model runs before `device_epilogue`, so its training
                 // data is this candidate, not the lowered one: record the
                 // pre-lowering kernel. Lowering `kernel` below still produces
@@ -613,7 +592,6 @@ impl BeamSearch {
                     last_error = Some(e);
                     continue;
                 }
-                eprintln!("[measure] lowered ops={}", kernel.ops.len().0);
                 // The resolved grid: computed before the launch so a launch
                 // that hangs still names its extents.
                 let grid = {
@@ -629,7 +607,6 @@ impl BeamSearch {
                     }
                     dims
                 };
-                eprintln!("[measure] grid={grid:?}");
                 // Temporary: dump the lowered IR of one named candidate.
                 if std::env::var("ZYX_DUMP_SEQ").ok().is_some_and(|spec| {
                     spec.split(',')
@@ -667,12 +644,9 @@ impl BeamSearch {
         }
 
         // Drop all compiled programs; the winner is returned as a kernel.
-        eprintln!("[mark] autotune: all threads measured");
-        let n_programs = programs.len();
         for program_id in programs {
             dev.release(program_id);
         }
-        eprintln!("[mark] autotune: released {n_programs}");
 
         match best_kernel {
             Some(kernel) => Ok((kernel, best_time)),
