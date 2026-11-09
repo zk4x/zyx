@@ -44,11 +44,11 @@ pub fn pad_kernel(s: i64, m: i64, d: i64) -> Kernel {
     let [lane] = kernel.local_ranges([32]);
     let c = kernel.mad(cc, 32i64, lane);
     let keep = kernel.cmplt(row, s);
-    let safe_row = kernel.branchless_where(keep, row, 0i64);
+    let safe_row = kernel.select(keep, row, 0i64);
     let safe_idx = kernel.mad(safe_row, d, c);
     let x_raw = kernel.load(inp, safe_idx);
     let x = kernel.cast(x_raw, DType::F16);
-    let v = kernel.branchless_where(keep, x, f16::from_f32(0.0));
+    let v = kernel.select(keep, x, f16::from_f32(0.0));
     let out_idx = kernel.mad(row, d, c);
     kernel.store(out, v, out_idx);
     kernel.default_epilogue();
@@ -86,28 +86,28 @@ pub fn pad_kernel_tt(s: i64, m: i64, d: i64) -> Kernel {
     // Reader: whole-tile DRAM -> CB transfers (tilized DRAM).
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
-        let tm = kernel.load_tile(mask, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cmask, tm, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
+        let tm = kernel.load_tile(mask, tbase, TDIM, TDIM);
+        kernel.store_tile(cmask, tm, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     // Compute: apply mask, convert to F16.
     kernel.loop_over(ntiles, |kernel, _t| {
-        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
-        let b = kernel.load_tile(cmask, zero, TDIM, TDIM, TDIM as u32);
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM);
+        let b = kernel.load_tile(cmask, zero, TDIM, TDIM);
         let mm = kernel.mul(a, b);
         let h = kernel.cast(mm, DType::F16);
-        kernel.store_tile(cout, h, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cout, h, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     // Writer: whole-tile CB -> DRAM transfer.
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -137,16 +137,16 @@ pub fn pad_move_tt(s: i64, m: i64, d: i64) -> Kernel {
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
     });
     kernel.barrier();
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let v = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cdata, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -176,16 +176,16 @@ pub fn pad_move_sym() -> Kernel {
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
     });
     kernel.barrier();
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let v = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cdata, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -219,8 +219,8 @@ pub fn pad_move_mc(ntiles: i64, ncores: i64) -> Kernel {
     kernel.loop_over(cshard, |kernel, t| {
         let ti = kernel.add(base, t);
         let tbase = kernel.mad(ti, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
     });
     kernel.barrier();
     kernel.barrier();
@@ -228,8 +228,8 @@ pub fn pad_move_mc(ntiles: i64, ncores: i64) -> Kernel {
     kernel.loop_over(cshard, |kernel, t| {
         let ti = kernel.add(base, t);
         let tbase = kernel.mad(ti, tile_elems, zero);
-        let v = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cdata, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -260,21 +260,21 @@ pub fn pad_copy_tt(s: i64, m: i64, d: i64) -> Kernel {
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, _t| {
-        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cout, a, zero, TDIM, TDIM, TDIM as u32);
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM);
+        kernel.store_tile(cout, a, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -305,22 +305,22 @@ pub fn pad_passthrough_tt(s: i64, m: i64, d: i64) -> Kernel {
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, _t| {
-        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM);
         let h = kernel.cast(a, DType::F16);
-        kernel.store_tile(cout, h, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cout, h, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -352,22 +352,22 @@ pub fn pad_cast_tt(s: i64, m: i64, d: i64) -> Kernel {
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, _t| {
-        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM);
         let h = kernel.cast(a, DType::F16);
-        kernel.store_tile(cout, h, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cout, h, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -401,25 +401,25 @@ pub fn pad_mul_tt(s: i64, m: i64, d: i64) -> Kernel {
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let td = kernel.load_tile(data, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cdata, td, zero, TDIM, TDIM, TDIM as u32);
-        let tm = kernel.load_tile(mask, tbase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cmask, tm, zero, TDIM, TDIM, TDIM as u32);
+        let td = kernel.load_tile(data, tbase, TDIM, TDIM);
+        kernel.store_tile(cdata, td, zero, TDIM, TDIM);
+        let tm = kernel.load_tile(mask, tbase, TDIM, TDIM);
+        kernel.store_tile(cmask, tm, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, _t| {
-        let a = kernel.load_tile(cdata, zero, TDIM, TDIM, TDIM as u32);
-        let b = kernel.load_tile(cmask, zero, TDIM, TDIM, TDIM as u32);
+        let a = kernel.load_tile(cdata, zero, TDIM, TDIM);
+        let b = kernel.load_tile(cmask, zero, TDIM, TDIM);
         let mm = kernel.mul(a, b);
-        kernel.store_tile(cout, mm, zero, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(cout, mm, zero, TDIM, TDIM);
     });
     kernel.barrier();
 
     kernel.loop_over(ntiles, |kernel, t| {
         let tbase = kernel.mad(t, tile_elems, zero);
-        let v = kernel.load_tile(cout, zero, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, tbase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cout, zero, TDIM, TDIM);
+        kernel.store_tile(out, v, tbase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -473,12 +473,12 @@ pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
             kernel.loop_over(ckt, |kernel, kti| {
                 let mk = kernel.mad(mti, ckt, kti);
                 let abase = kernel.mad(mk, c1024, c0);
-                let ta = kernel.load_tile(a, abase, TDIM, TDIM, TDIM as u32);
-                kernel.store_tile(ca, ta, c0, TDIM, TDIM, TDIM as u32);
+                let ta = kernel.load_tile(a, abase, TDIM, TDIM);
+                kernel.store_tile(ca, ta, c0, TDIM, TDIM);
                 let nti1024 = kernel.mad(nti, c1024, c0);
                 let bbase = kernel.mad(kti, c_nt1024, nti1024);
-                let tb = kernel.load_tile(b, bbase, TDIM, TDIM, TDIM as u32);
-                kernel.store_tile(cb_, tb, c0, TDIM, TDIM, TDIM as u32);
+                let tb = kernel.load_tile(b, bbase, TDIM, TDIM);
+                kernel.store_tile(cb_, tb, c0, TDIM, TDIM);
             });
         });
     });
@@ -490,14 +490,13 @@ pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
             // we need to probably make it explicit instead
             let acc = kernel.storage(DType::F32, MemScope::Register, TILE_ELEMS);
             kernel.loop_over(ckt, |kernel, _kti| {
-                let va = kernel.load_tile(ca, c0, TDIM, TDIM, TDIM as u32);
-                let vb = kernel.load_tile(cb_, c0, TDIM, TDIM, TDIM as u32);
-                let vc = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);
-                let m = kernel.matmul_tile(va, vb, vc);
-                kernel.store_tile(acc, m, c0, TDIM, TDIM, TDIM as u32);
+                let va = kernel.load_tile(ca, c0, TDIM, TDIM);
+                let vb = kernel.load_tile(cb_, c0, TDIM, TDIM);
+                let m = kernel.matmul_tile(va, vb);
+                kernel.store_tile(acc, m, c0, TDIM, TDIM);
             });
-            let f = kernel.load_tile(acc, c0, TDIM, TDIM, TDIM as u32);
-            kernel.store_tile(cout, f, c0, TDIM, TDIM, TDIM as u32);
+            let f = kernel.load_tile(acc, c0, TDIM, TDIM);
+            kernel.store_tile(cout, f, c0, TDIM, TDIM);
         });
     });
     kernel.barrier();
@@ -507,8 +506,8 @@ pub fn gemm_tt(r: i64, k: i64, n: i64) -> Kernel {
         kernel.loop_over(cnt, |kernel, nti| {
             let mn = kernel.mad(mti, cnt, nti);
             let obase = kernel.mad(mn, c1024, c0);
-            let v = kernel.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
-            kernel.store_tile(out, v, obase, TDIM, TDIM, TDIM as u32);
+            let v = kernel.load_tile(cout, c0, TDIM, TDIM);
+            kernel.store_tile(out, v, obase, TDIM, TDIM);
         });
     });
 
@@ -619,11 +618,11 @@ pub fn conv_silu_kernel() -> Kernel {
         let t_k = kernel.add(t, k);
         let src_t = kernel.sub(t_k, CK - 1);
         let ok = kernel.cmpge(src_t, 0i64);
-        let src_c = kernel.branchless_where(ok, src_t, 0i64);
+        let src_c = kernel.select(ok, src_t, 0i64);
         let in_idx = kernel.mad(src_c, CONV_DIM, c);
         let x_raw = kernel.load(inp, in_idx);
         let zf = kernel.const_val(0.0f32);
-        let x = kernel.branchless_where(ok, x_raw, zf);
+        let x = kernel.select(ok, x_raw, zf);
         let w_idx = kernel.mad(c, CK, k);
         let w = kernel.load(convw, w_idx);
         acc = kernel.mad(w, x, acc);
@@ -953,7 +952,7 @@ pub fn rope_kernel(seq: i64, heads: i64, head_dim: i64, rot_dim: i64) -> Kernel 
     let x_idx = kernel.mad(gidy, head_dim_c, col);
     let x_val = kernel.load(x, x_idx);
     let is_rot = kernel.cmplt(col, rot_dim_c);
-    let safe_col = kernel.branchless_where(is_rot, col, 0i64);
+    let safe_col = kernel.select(is_rot, col, 0i64);
     let cos_idx = kernel.mad(s, rot_dim_c, safe_col);
     let cos_val = kernel.load(cos, cos_idx);
     let sin_val = kernel.load(sin, cos_idx);
@@ -961,16 +960,16 @@ pub fn rope_kernel(seq: i64, heads: i64, head_dim: i64, rot_dim: i64) -> Kernel 
     let is_first = kernel.cmplt(col, half_c);
     let col_plus = kernel.add(col, half_c);
     let col_minus = kernel.sub(col, half_c);
-    let rot_col = kernel.branchless_where(is_first, col_plus, col_minus);
-    let safe_rot = kernel.branchless_where(is_rot, rot_col, 0i64);
+    let rot_col = kernel.select(is_first, col_plus, col_minus);
+    let safe_rot = kernel.select(is_rot, rot_col, 0i64);
     let x_rot_idx = kernel.mad(gidy, head_dim_c, safe_rot);
     let x_rot_raw = kernel.load(x, x_rot_idx);
     let neg = kernel.neg(x_rot_raw);
-    let x_rot = kernel.branchless_where(is_first, neg, x_rot_raw);
+    let x_rot = kernel.select(is_first, neg, x_rot_raw);
     let y1 = kernel.mul(x_val, cos_val);
     let y2 = kernel.mul(x_rot, sin_val);
     let rot_y = kernel.add(y1, y2);
-    let y = kernel.branchless_where(is_rot, rot_y, x_val);
+    let y = kernel.select(is_rot, rot_y, x_val);
     let out_idx = kernel.mad(gidy, head_dim_c, col);
     kernel.store(out, y, out_idx);
     let _ = m; // silence unused
@@ -1017,15 +1016,15 @@ pub fn attention_kernel(seq: i64, h: i64, kv: i64, d: i64) -> Kernel {
             let k_idx = kernel.add(k_idx0, dd);
             let q_raw = kernel.load(q, q_idx);
             let k_raw = kernel.load(k, k_idx);
-            let qv = kernel.branchless_where(valid, q_raw, zero);
-            let kvv = kernel.branchless_where(valid, k_raw, zero);
+            let qv = kernel.select(valid, q_raw, zero);
+            let kvv = kernel.select(valid, k_raw, zero);
             dot = kernel.mad(qv, kvv, dot);
         }
         let dot_sum = kernel.warp_reduce(dot);
         let scaled = kernel.mul(dot_sum, scale);
-        let masked = kernel.ternary_where(is_causal, scaled, neg_inf);
+        let masked = kernel.select(is_causal, scaled, neg_inf);
         let is_gt = kernel.cmpgt(masked, max_score);
-        max_score = kernel.ternary_where(is_gt, masked, max_score);
+        max_score = kernel.select(is_gt, masked, max_score);
     }
     let mut sum_exp = kernel.const_val(0.0f32);
     for s2 in 0..seq {
@@ -1048,16 +1047,16 @@ pub fn attention_kernel(seq: i64, h: i64, kv: i64, d: i64) -> Kernel {
             let k_idx = kernel.add(k_idx0, dd);
             let q_raw = kernel.load(q, q_idx);
             let k_raw = kernel.load(k, k_idx);
-            let qv = kernel.branchless_where(valid, q_raw, zero);
-            let kvv = kernel.branchless_where(valid, k_raw, zero);
+            let qv = kernel.select(valid, q_raw, zero);
+            let kvv = kernel.select(valid, k_raw, zero);
             dot = kernel.mad(qv, kvv, dot);
         }
         let dot_sum = kernel.warp_reduce(dot);
         let scaled = kernel.mul(dot_sum, scale);
-        let masked = kernel.ternary_where(is_causal, scaled, neg_inf);
+        let masked = kernel.select(is_causal, scaled, neg_inf);
         let sub = kernel.sub(masked, max_score);
         let exp_val = kernel.exp(sub);
-        let exp_masked = kernel.ternary_where(is_causal, exp_val, zero);
+        let exp_masked = kernel.select(is_causal, exp_val, zero);
         sum_exp = kernel.add(sum_exp, exp_masked);
     }
     let inv_sum = kernel.reciprocal(sum_exp);
@@ -1086,23 +1085,23 @@ pub fn attention_kernel(seq: i64, h: i64, kv: i64, d: i64) -> Kernel {
                 let k_idx = kernel.add(k_idx0, ddd);
                 let q_raw = kernel.load(q, q_idx);
                 let k_raw = kernel.load(k, k_idx);
-                let qv = kernel.branchless_where(valid2, q_raw, zero);
-                let kvv = kernel.branchless_where(valid2, k_raw, zero);
+                let qv = kernel.select(valid2, q_raw, zero);
+                let kvv = kernel.select(valid2, k_raw, zero);
                 dot = kernel.mad(qv, kvv, dot);
             }
             let dot_sum = kernel.warp_reduce(dot);
             let scaled = kernel.mul(dot_sum, scale);
-            let masked = kernel.ternary_where(is_causal, scaled, neg_inf);
+            let masked = kernel.select(is_causal, scaled, neg_inf);
             let sub = kernel.sub(masked, max_score);
             let exp_val = kernel.exp(sub);
             let prob = kernel.mul(exp_val, inv_sum);
-            let prob_masked = kernel.ternary_where(is_causal, prob, zero);
+            let prob_masked = kernel.select(is_causal, prob, zero);
             let kv_s = kernel.mul(kv_h, seq);
             let v_base = kernel.add(kv_s, s2_c);
             let v_idx0 = kernel.mul(v_base, d);
             let v_idx = kernel.add(v_idx0, dd);
             let vv_raw = kernel.load(v, v_idx);
-            let vv = kernel.branchless_where(valid_out, vv_raw, zero);
+            let vv = kernel.select(valid_out, vv_raw, zero);
             acc = kernel.mad(prob_masked, vv, acc);
         }
         let hd = h * d;
@@ -1217,15 +1216,15 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     // Reader: DRAM -> CB tile streaming only (the reader cannot do ALU).
     kernel.loop_over(cpages, |kernel, pi| {
         let ubase = kernel.mad(pi, c1024, c0);
-        let u = kernel.load_tile(packed, ubase, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(cu16, u, c0, TDIM, TDIM, TDIM as u32);
+        let u = kernel.load_tile(packed, ubase, TDIM, TDIM);
+        kernel.store_tile(cu16, u, c0, TDIM, TDIM);
         kernel.loop_over(c4, |kernel, ki| {
             let t = kernel.mad(pi, c4, ki);
             let sbase = kernel.mad(t, c1024, c0);
-            let s = kernel.load_tile(sc, sbase, TDIM, TDIM, TDIM as u32);
-            kernel.store_tile(csc, s, c0, TDIM, TDIM, TDIM as u32);
-            let m = kernel.load_tile(mn, sbase, TDIM, TDIM, TDIM as u32);
-            kernel.store_tile(cmn, m, c0, TDIM, TDIM, TDIM as u32);
+            let s = kernel.load_tile(sc, sbase, TDIM, TDIM);
+            kernel.store_tile(csc, s, c0, TDIM, TDIM);
+            let m = kernel.load_tile(mn, sbase, TDIM, TDIM);
+            kernel.store_tile(cmn, m, c0, TDIM, TDIM);
         });
     });
     kernel.barrier();
@@ -1247,48 +1246,48 @@ pub fn dequant_q4k_tt(ntiles: i64) -> Kernel {
     let c063 = kernel.const_val(0.0625f32);
     let c16 = kernel.const_val(16.0f32);
     kernel.loop_over(cpages, |kernel, _pi| {
-        let u1 = kernel.load_tile(cu16, c0, TDIM, TDIM, TDIM as u32);
+        let u1 = kernel.load_tile(cu16, c0, TDIM, TDIM);
         let f1 = kernel.cast(u1, DType::F32);
-        kernel.store_tile(ccur, f1, c0, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(ccur2, f1, c0, TDIM, TDIM, TDIM as u32);
+        kernel.store_tile(ccur, f1, c0, TDIM, TDIM);
+        kernel.store_tile(ccur2, f1, c0, TDIM, TDIM);
         kernel.loop_over(c4, |kernel, _ki| {
-            let cv = kernel.load_tile(ccur, c0, TDIM, TDIM, TDIM as u32);
+            let cv = kernel.load_tile(ccur, c0, TDIM, TDIM);
             let t = kernel.mul(cv, c063);
             let t = kernel.trunc(t);
             // Duplicate the carry through the scratch CB: b = trunc(cv/16)
             // feeds the in-place x16 and the two carry stores, so each
             // consumer gets its own DST copy.
-            kernel.store_tile(cs, t, c0, TDIM, TDIM, TDIM as u32);
-            let b16 = kernel.load_tile(cs, c0, TDIM, TDIM, TDIM as u32);
-            kernel.store_tile(cs, t, c0, TDIM, TDIM, TDIM as u32);
-            let bc = kernel.load_tile(cs, c0, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(cs, t, c0, TDIM, TDIM);
+            let b16 = kernel.load_tile(cs, c0, TDIM, TDIM);
+            kernel.store_tile(cs, t, c0, TDIM, TDIM);
+            let bc = kernel.load_tile(cs, c0, TDIM, TDIM);
             let t16 = kernel.mul(b16, c16);
-            let cv2 = kernel.load_tile(ccur2, c0, TDIM, TDIM, TDIM as u32);
+            let cv2 = kernel.load_tile(ccur2, c0, TDIM, TDIM);
             let n = kernel.sub(cv2, t16);
-            kernel.store_tile(ccur, bc, c0, TDIM, TDIM, TDIM as u32);
-            kernel.store_tile(ccur2, bc, c0, TDIM, TDIM, TDIM as u32);
-            let s = kernel.load_tile(csc, c0, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(ccur, bc, c0, TDIM, TDIM);
+            kernel.store_tile(ccur2, bc, c0, TDIM, TDIM);
+            let s = kernel.load_tile(csc, c0, TDIM, TDIM);
             let sf = kernel.cast(s, DType::F32);
             let m1 = kernel.mul(n, sf);
-            let g = kernel.load_tile(cmn, c0, TDIM, TDIM, TDIM as u32);
+            let g = kernel.load_tile(cmn, c0, TDIM, TDIM);
             let gf = kernel.cast(g, DType::F32);
             // llama.cpp: v = n*d*sc - dmin*m; repack stores positive mins.
             let v = kernel.sub(m1, gf);
             // No explicit F32->BF16 cast: tt-metal's SFPU typecast does not
             // support that pair — the packer converts (pack_reconfig to the
             // BF16 CB format reads the fp32 DST entries as BF16).
-            kernel.store_tile(cout, v, c0, TDIM, TDIM, TDIM as u32);
+            kernel.store_tile(cout, v, c0, TDIM, TDIM);
         });
-        let _drain = kernel.load_tile(ccur, c0, TDIM, TDIM, TDIM as u32);
-        let _drain2 = kernel.load_tile(ccur2, c0, TDIM, TDIM, TDIM as u32);
+        let _drain = kernel.load_tile(ccur, c0, TDIM, TDIM);
+        let _drain2 = kernel.load_tile(ccur2, c0, TDIM, TDIM);
     });
     kernel.barrier();
 
     // Writer: stream packed F32 output tiles to DRAM.
     kernel.loop_over(ctiles, |kernel, ti| {
         let obase = kernel.mad(ti, c1024, c0);
-        let v = kernel.load_tile(cout, c0, TDIM, TDIM, TDIM as u32);
-        kernel.store_tile(out, v, obase, TDIM, TDIM, TDIM as u32);
+        let v = kernel.load_tile(cout, c0, TDIM, TDIM);
+        kernel.store_tile(out, v, obase, TDIM, TDIM);
     });
 
     kernel.verify();
@@ -1365,7 +1364,7 @@ pub fn repack_q4k(
     // 4 tiles: u16[1024p+s] nibble k = tile 4p+k slot s. One packed page
     // feeds one outer device iteration (4 output tiles), hence ntiles % 4.
     let l = rows * cols;
-    let flat = mat.cast(DType::U16).tilize()?.reshape([l])?;
+    let flat = mat.cast(DType::U16).to(Dev::TT(0))?.reshape([l])?;
     let ntiles_p = l / 1024;
     debug_assert!(
         ntiles_p % 4 == 0,
