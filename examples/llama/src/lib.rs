@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
-use zyx::{DType, FrozenTape, GGUFMetadataValue, Module, Tape, Tensor, ZyxError};
+use zyx::{DType, Dev, FrozenTape, GGUFMetadataValue, Module, Tape, Tensor, ZyxError};
 use zyx_nn::{DecoderBlock, Embedding, GqaAttention, Linear, RMSNorm, RopeConfig, RopeScaling as NnRopeScaling, SwiGlu};
 
 /// Llama-3.1 style RoPE frequency scaling.
@@ -255,6 +255,19 @@ impl VarMap for HashMap<String, Tensor> {
     }
 }
 
+/// The device the weights are moved to once, at load. Leaving them in the
+/// mmap'd disk pool makes the frozen plan stage every weight again on every
+/// replay (a disk->device copy node per tensor per step), which is ~2 s per
+/// token against ~32 ms of kernels. `ZYX_LLAMA_DEVICE` overrides the pick
+/// (e.g. `cuda:0`, `c`, `vulkan:0`); by default the first available non-CPU
+/// device is used.
+fn compute_device() -> Dev {
+    if let Ok(s) = std::env::var("ZYX_LLAMA_DEVICE") {
+        return s.parse().unwrap_or_else(|e| panic!("ZYX_LLAMA_DEVICE: {e}"));
+    }
+    Dev::all().into_iter().find(|d| !matches!(d, Dev::C)).unwrap_or(Dev::C)
+}
+
 /// A llama decoder stack with a preallocated kv-cache.
 pub struct Llama {
     embedding: Embedding,
@@ -353,6 +366,16 @@ impl Llama {
         let tie_word_embeddings = !tensors.contains_key("output.weight");
         let cfg = LlamaConfig::from_gguf_metadata(&metadata, max_context, tie_word_embeddings)?;
         let mut vb = remap_gguf_weights(tensors);
+        // The GGUF is mmap'd, so every weight starts in the disk pool. The
+        // plan stages a disk-pool value with a copy node, and replay runs
+        // that copy again on every step: the first trace measured ~8.8 GB of
+        // weight uploads per token, ~2 s of the 2.05 s step, against ~32 ms of
+        // kernels. Moving the weights once here (the same fix as the MNIST
+        // example's dataset) leaves the plan with device-resident leaves.
+        let dev = compute_device();
+        for weight in vb.values_mut() {
+            *weight = weight.to(dev)?;
+        }
         // llama.cpp keeps the checkpoint's types: matmul weights f16 and the
         // norm weights f32. `Llama::new` pins the norm scales to f32.
         Ok(Self::new(&cfg, &mut vb, dtype))
