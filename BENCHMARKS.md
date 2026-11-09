@@ -17,22 +17,19 @@ Device: NVIDIA GeForce RTX 2060 12GB, compute capability 7.5, driver 13.0,
 | phase | framework | wall time | tok/s |
 |---|---|---|---|
 | prefill (6 tokens) | llama.cpp `e95dae18d` (ggml CUDA, f16, `pp6`) | 23.9 ms | 251.49 ± 0.28 |
-| prefill (6 tokens) | zyx 0.18-dev (CUDA, `n_launches=20`, replayed plan) | 2075.8 ms | 2.89 |
+| prefill (6 tokens) | zyx 0.18-dev (CUDA, `n_launches=20`, replayed plan) | 65.5 ms | 91.64 |
 | decode (per token) | llama.cpp `e95dae18d` (ggml CUDA, f16, `tg8`) | 22.6 ms | 44.23 ± 0.01 |
-| decode (per token) | zyx 0.18-dev (CUDA, `n_launches=20`, replayed plan) | 2044.8 ms | 0.49 |
+| decode (per token) | zyx 0.18-dev (CUDA, `n_launches=20`, replayed plan) | 39.3 ms | 25.43 |
 
 zyx's greedy tokens are `[12366, 13, 578, 6864, 315]`, the same five llama.cpp
 produces from this checkpoint, so the numbers above are for the same computation.
 
 Both zyx figures are wall clock around `forward` plus the readback that forces
-it: every host step a user pays per token is included. The GPU work inside the
-same run, read off `ZYX_DEBUG=1` as the sum of the launched kernels, is
-**282.9 ms** for the 6-token prefill and **32.2 ms** for one decode step
-(about 583 kernels). That is 21 and 31 tok/s of *kernel time only* — a statement
-about how long the GPU is busy, not the model's throughput. About 1.8 s of each
-2.06 s step is host side (launch preparation for ~600 kernels), which is why
-the wall-clock decode is 90x llama.cpp while the individual projections in the
-GEMM tables below land within a few percent of it on the same shapes.
+it: every host step a user pays per token is included, and the plan is already
+frozen and replayed. The weights are moved to the compute device once at load
+(`Llama::from_gguf`, `ZYX_LLAMA_DEVICE` picks it): a plan that leaves them in
+the mmap'd GGUF stages a disk-to-device copy of every weight on every replay,
+which costs more than the kernels by two orders of magnitude.
 
 ### Reproduce
 
