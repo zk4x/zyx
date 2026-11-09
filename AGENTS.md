@@ -8,10 +8,6 @@
   (workspace: `/home/x/Dev/rust/zyx/zyx`).
 
 ## Delivery: one ordered list, no partial output
-- TODO.md is the spec. Write the WHOLE ordered list before starting (the
-  items the user ordered, in their order, with their done-conditions),
-  then execute in order and tick as each finishes. Release/publish/HN
-  items are NOT TODO items unless the user puts them there.
 - A tick is a claim about BEHAVIOUR, never about the diff. Run the item's
   own done-condition and put the evidence beside the tick (command +
   observed result). "It compiles" is not evidence, and a pass that exists

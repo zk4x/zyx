@@ -1,5 +1,57 @@
 # Benchmarks
 
+## llama-3.2-3B end to end: tokens/s
+
+The whole model, not one block: 28 decoder layers over
+`Llama-3.2-3B-Instruct-f16.gguf` (f16 weights, f32 residual stream and norms,
+f32 accumulation), greedy sampling, 6-token prompt. zyx runs
+`zyx-bench llama e2e`, which generates the sequence twice and times the second
+pass, so nothing is compiled or autotuned inside the measured window; `Llama`
+freezes one plan per sequence length and replays it. Prefill is the 6-token
+prompt in one call, decode is one token per call with the kv-cache growing from
+position 6.
+
+Device: NVIDIA GeForce RTX 2060 12GB, compute capability 7.5, driver 13.0,
+336 GB/s HBM. Same card and same GGUF for both frameworks.
+
+| phase | framework | wall time | tok/s |
+|---|---|---|---|
+| prefill (6 tokens) | llama.cpp `e95dae18d` (ggml CUDA, f16, `pp6`) | 23.9 ms | 251.49 ± 0.28 |
+| prefill (6 tokens) | zyx 0.18-dev (CUDA, `n_launches=20`, replayed plan) | 2075.8 ms | 2.89 |
+| decode (per token) | llama.cpp `e95dae18d` (ggml CUDA, f16, `tg8`) | 22.6 ms | 44.23 ± 0.01 |
+| decode (per token) | zyx 0.18-dev (CUDA, `n_launches=20`, replayed plan) | 2044.8 ms | 0.49 |
+
+zyx's greedy tokens are `[12366, 13, 578, 6864, 315]`, the same five llama.cpp
+produces from this checkpoint, so the numbers above are for the same computation.
+
+Both zyx figures are wall clock around `forward` plus the readback that forces
+it: every host step a user pays per token is included. The GPU work inside the
+same run, read off `ZYX_DEBUG=1` as the sum of the launched kernels, is
+**282.9 ms** for the 6-token prefill and **32.2 ms** for one decode step
+(about 583 kernels). That is 21 and 31 tok/s of *kernel time only* — a statement
+about how long the GPU is busy, not the model's throughput. About 1.8 s of each
+2.06 s step is host side (launch preparation for ~600 kernels), which is why
+the wall-clock decode is 90x llama.cpp while the individual projections in the
+GEMM tables below land within a few percent of it on the same shapes.
+
+### Reproduce
+
+```bash
+# zyx
+cd zyx-bench
+AGENT=1 ZYX_DEV=cuda ./target/release/zyx-bench llama e2e
+
+# llama.cpp
+LLAMA_CPP=~/Dev/cpp/llama_cpp/llama.cpp
+$LLAMA_CPP/build/bin/llama-bench \
+  -m examples/models/llama-3.2-3b/Llama-3.2-3B-Instruct-f16.gguf \
+  -p 6 -n 8 -ngl 99 -r 3
+```
+
+`llama-bench` reports `pp6` and `tg8` (three repetitions, standard deviation as
+shown). The zyx figure must come from `--release`: a debug build spends seconds
+per step in the host path and does not measure the runtime.
+
 ## llama-3.2-3B GEMMs: prefill and decode
 
 One decoder block's seven projections, both phases: **prefill** is sequence 128,
