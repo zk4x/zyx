@@ -582,6 +582,17 @@ impl Kernel {
             0.0
         };
 
+        // How much `devectorize` will expand the body: the product of every
+        // unroll lane length in the kernel.
+        let lane_product: u64 = self
+            .iter_unordered()
+            .filter_map(|(_, op)| match op {
+                Op::Unroll { len, .. } => Some(u64::from(*len)),
+                _ => None,
+            })
+            .product();
+        let lane_product = lane_product.min(u64::from(u32::MAX)) as u32;
+
         // The raw feature vector: one definition shared by the search, the
         // benchmark collector and the trainer.
         Features {
@@ -614,6 +625,7 @@ impl Kernel {
             max_loop_depth: max_loop_depth as u32,
             preferred_vector_size: dev_info.preferred_vector_size as u32,
             local_mem_size: dev_info.local_mem_size as u32,
+            lane_product,
         }
     }
 
@@ -663,12 +675,19 @@ pub struct Features {
     pub max_loop_depth: u32,
     pub preferred_vector_size: u32,
     pub local_mem_size: u32,
+    /// Product of every `Op::Unroll` length in the kernel.
+    ///
+    /// `devectorize` expands the body by exactly this factor, so it is the
+    /// gap between the kernel the search ranks (pre-lowering) and the kernel
+    /// that runs. A candidate with 128 lanes and 61 ops lowers to ~7.8k scalar
+    /// ops; without this feature the model cannot see that cost.
+    pub lane_product: u32,
 }
 
 impl Features {
     /// Field names, in [`Features::values`] order. The collector's record keys
     /// and the trainer's columns are both derived from this list.
-    pub const NAMES: [&'static str; 29] = [
+    pub const NAMES: [&'static str; 30] = [
         "num_groups",
         "wi_per_group",
         "wi_ops",
@@ -698,10 +717,11 @@ impl Features {
         "max_loop_depth",
         "preferred_vector_size",
         "local_mem_size",
+        "lane_product",
     ];
 
     /// The raw values, in model order.
-    pub fn values(&self) -> [u32; 29] {
+    pub fn values(&self) -> [u32; 30] {
         [
             self.num_groups,
             self.wi_per_group,
@@ -732,6 +752,7 @@ impl Features {
             self.max_loop_depth,
             self.preferred_vector_size,
             self.local_mem_size,
+            self.lane_product,
         ]
     }
 
@@ -767,6 +788,7 @@ impl Features {
             max_loop_depth,
             preferred_vector_size,
             local_mem_size,
+            lane_product,
         ] = self.values();
         predict_time_us(
             num_groups,
@@ -798,6 +820,7 @@ impl Features {
             max_loop_depth,
             preferred_vector_size,
             local_mem_size,
+            lane_product,
         )
     }
 }

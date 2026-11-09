@@ -210,6 +210,15 @@ def register_all_features():
     register_feature('ci*lwpg', lambda df: (df['wi_compute_ops'] / np.maximum(df['wi_global_load_bits'] + df['wi_global_store_bits'], 1)) * np.log(df['wi_per_group'] + 1))
     register_feature('ci*barr', lambda df: (df['wi_compute_ops'] / np.maximum(df['wi_global_load_bits'] + df['wi_global_store_bits'], 1)) * df['wi_barriers'])
 
+    # Unroll lanes: `devectorize` expands the body by this product, so it is the
+    # gap between the kernel the search ranks and the kernel that runs. Kept on
+    # a log scale: `Ridge` here is unscaled, and a raw lane count (up to
+    # thousands) would dominate every other column.
+    register_feature('log_lane', lambda df: np.log(df['lane_product'] + 1))
+    register_feature('log_lane*lops', lambda df: np.log(df['lane_product'] + 1) * np.log(df['wi_ops']))
+    register_feature('log_lane*lcop', lambda df: np.log(df['lane_product'] + 1) * np.log(df['wi_compute_ops']))
+    register_feature('log_lane*barr', lambda df: np.log(df['lane_product'] + 1) * df['wi_barriers'])
+
 
 def build_feature_matrix(df):
     X = pd.DataFrame(index=df.index)
@@ -338,6 +347,7 @@ def _feature_to_rust(name):
         'ci*lgmem': 'ci * lgmem',
         'ci*lops': 'ci * lops',
         'ci*lcop': 'ci * lcop',
+        'log_lane': '(lane_product + 1.0).ln()',
         'ci*lng': 'ci * lng',
         'ci*lwpg': 'ci * lwpg',
         'ci*barr': 'ci * barr',
@@ -442,6 +452,7 @@ def main():
         f.write("    lws0: u32, lws1: u32, lws2: u32,\n")
         f.write("    max_loop_depth: u32,\n")
         f.write("    preferred_vector_size: u32, local_mem_size: u32,\n")
+        f.write("    lane_product: u32,\n")
         f.write(") -> f64 {\n")
         PARAMS = ['num_groups', 'wi_per_group', 'wi_ops', 'wi_compute_ops', 'wi_barriers',
                   'wi_global_load_bits', 'wi_global_store_bits', 'wi_local_load_bits',
@@ -451,7 +462,7 @@ def main():
                   'warp_size', 'max_local_threads', 'max_register_bytes',
                   'wi_register_load_bits', 'wi_register_store_bits',
                   'gws0', 'gws1', 'gws2', 'lws0', 'lws1', 'lws2', 'max_loop_depth',
-                  'preferred_vector_size', 'local_mem_size']
+                  'preferred_vector_size', 'local_mem_size', 'lane_product']
         for var in PARAMS:
             f.write(f"    let {var} = {var} as f64;\n")
         f.write("    let lng = num_groups.ln();\n")

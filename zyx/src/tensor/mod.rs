@@ -1920,9 +1920,43 @@ impl Tensor {
     /// Returns a shape error if the tensors have incompatible shapes.
     pub fn dot_dtype(&self, rhs: impl Into<Tensor>, acc_dtype: DType) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
+        let out_dtype = self.dtype().least_upper_dtype(rhs.dtype());
+        self.dot_dtype_output(rhs, acc_dtype, out_dtype)
+    }
+
+    /// Compute the matmul of this tensor and `rhs`, accumulating the
+    /// contraction in `acc_dtype` and producing `out_dtype`.
+    ///
+    /// Unlike [`Self::dot_dtype`], the output dtype is the caller's, not the
+    /// inputs' least-upper type: `f16` operands with `F32` accumulation and
+    /// `F32` output keep the `f32` accumulator instead of rounding it to `f16`
+    /// on the store. That is what `ggml_mul_mat` does (`ggml.c:3349`: `f16`
+    /// operands, `f32` accumulator, `f32` result), so a llama-style model can
+    /// match it exactly while still feeding the tensor cores `f16`.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use zyx::{Tensor, DType};
+    /// let a = Tensor::from([[1.0f32, 2.0], [3.0, 4.0]]).cast(DType::F16);
+    /// let b = Tensor::from([[5.0f32, 6.0], [7.0, 8.0]]).cast(DType::F16);
+    /// let c = a.dot_dtype_output(b, DType::F32, DType::F32).unwrap();
+    /// assert_eq!(c.dtype(), DType::F32);
+    /// assert_eq!(c.to_vec::<f32>().unwrap(), vec![19.0f32, 22.0, 43.0, 50.0]);
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns a shape error if the tensors have incompatible shapes.
+    pub fn dot_dtype_output(
+        &self,
+        rhs: impl Into<Tensor>,
+        acc_dtype: DType,
+        out_dtype: DType,
+    ) -> Result<Tensor, ZyxError> {
+        let rhs = rhs.into();
         let xres = self.resolve_shape();
         let yres = rhs.resolve_shape();
-        let out_dtype = self.dtype().least_upper_dtype(rhs.dtype());
         let xrank = xres.len();
         let yrank = yres.len();
         if xrank == 0 || yrank == 0 {

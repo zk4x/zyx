@@ -371,12 +371,12 @@ impl Kernel {
         // Peel through Cast ops to find the mask-and-value product
         // (e.g., f32(select(mask, source, 0))).
         let acc_id = self.peel_casts(accumulated_value_id);
-        let (source_id, indices_id) = match self.at(acc_id) {
+        let (source_id, indices_id, offset) = match self.at(acc_id) {
             &Op::Binary { x, y, bop: BOp::Mul } => {
-                if let Some(indices_id) = self.get_indices(x, loop_id) {
-                    (y, indices_id)
-                } else if let Some(indices_id) = self.get_indices(y, loop_id) {
-                    (x, indices_id)
+                if let Some((indices_id, offset)) = self.get_indices(x, loop_id) {
+                    (y, indices_id, offset)
+                } else if let Some((indices_id, offset)) = self.get_indices(y, loop_id) {
+                    (x, indices_id, offset)
                 } else {
                     return false;
                 }
@@ -389,10 +389,10 @@ impl Kernel {
                 if !matches!(self.at(zero), Op::Const(c) if c.is_zero()) {
                     return false;
                 }
-                let Some(indices_id) = self.get_indices(cond, loop_id) else {
+                let Some((indices_id, offset)) = self.get_indices(cond, loop_id) else {
                     return false;
                 };
-                (if_true, indices_id)
+                (if_true, indices_id, offset)
             }
             _ => return false,
         };
@@ -422,8 +422,17 @@ impl Kernel {
 
         //let Op::Loop { len: loop_len } = self.ops[loop_id].op else { return false };
 
-        // Convert indices to IDX_T
+        // Convert indices to IDX_T. The mask may compare an affine function of
+        // the loop variable (`(loop + 1) - 1`, which is what a cumsum-based
+        // `arange` leaves behind), so the index the body must run at is
+        // `token - offset`, not `token`.
         let loop_replace = self.insert_after(indices_id, Op::Cast { x: indices_id, dtype: IDX_T });
+        let loop_replace = if offset == 0 {
+            loop_replace
+        } else {
+            let c = self.insert_after(loop_replace, Op::Const(Constant::idx(offset)));
+            self.insert_after(c, Op::Binary { x: loop_replace, y: c, bop: BOp::Sub })
+        };
 
         let endloop_id = self.prev_op(after_loop_load_id);
         let mut op_id = self.next_op(loop_replace);
@@ -443,29 +452,62 @@ impl Kernel {
     }
 
     /// Find the equality op
-    fn get_indices(&self, mask_id: OpId, loop_id: OpId) -> Option<OpId> {
+    fn get_indices(&self, mask_id: OpId, loop_id: OpId) -> Option<(OpId, i64)> {
         let Op::Binary { x, y, bop: BOp::Eq } = self.ops[self.peel_casts(mask_id)].op else {
             return None;
         };
-        let indices_id = if self.check_loop(x, loop_id) {
-            y
-        } else if self.check_loop(y, loop_id) {
-            x
-        } else {
+        if let Some(offset) = self.loop_offset(x, loop_id) {
+            return Some((y, offset));
+        }
+        if let Some(offset) = self.loop_offset(y, loop_id) {
+            return Some((x, offset));
+        }
+        None
+    }
+
+    /// How far `op_id` is from the loop variable, when it is an affine
+    /// function of it: `loop`, `loop + c`, `loop - c`, through casts.
+    ///
+    /// A cumsum-based `arange` reaches the kernel as `(loop + 1) - 1`, so a
+    /// strict "is the loop variable" test misses the one-hot mask even though
+    /// its value is exactly the loop index.
+    fn loop_offset(&self, op_id: OpId, loop_id: OpId) -> Option<i64> {
+        let op_id = self.peel_casts(op_id);
+        if op_id == loop_id {
+            return Some(0);
+        }
+        let &Op::Binary { x, y, bop } = self.at(op_id) else {
             return None;
         };
-        Some(indices_id)
+        match bop {
+            BOp::Add => {
+                if let Some(c) = self.const_int(y) {
+                    return self.loop_offset(x, loop_id).map(|o| o.saturating_add(c));
+                }
+                if let Some(c) = self.const_int(x) {
+                    return self.loop_offset(y, loop_id).map(|o| o.saturating_add(c));
+                }
+                None
+            }
+            BOp::Sub => {
+                if let Some(c) = self.const_int(y) {
+                    return self.loop_offset(x, loop_id).map(|o| o.saturating_sub(c));
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// The integer value of a constant (through casts), if it has one.
+    fn const_int(&self, op_id: OpId) -> Option<i64> {
+        match self.at(self.peel_casts(op_id)) {
+            Op::Const(c) => c.as_dim(),
+            _ => None,
+        }
     }
 
     /// Check if `op_id` traces back to `loop_id` through Casts
-    fn check_loop(&self, op_id: OpId, loop_id: OpId) -> bool {
-        let peeled = self.peel_casts(op_id);
-        if peeled == loop_id {
-            return true;
-        }
-        false
-    }
-
     /// Peel through consecutive Cast ops to find the inner op
     fn peel_casts(&self, mut op_id: OpId) -> OpId {
         loop {
@@ -1360,5 +1402,97 @@ mod tests {
         let result = compiled.forward(&[], vec![[2]]).unwrap().pop().unwrap();
         // out[g] = g + 1 for g in 0..2
         assert_eq!(result, [1i64, 2]);
+    }
+}
+
+#[cfg(test)]
+mod affine_mask_tests {
+    //! The one-hot mask may compare an *affine* function of the loop variable:
+    //! a cumsum-based `arange` reaches the kernel as `(loop + 1) - 1`, so a
+    //! strict "operand is the loop variable" test misses it even though its
+    //! value is exactly the loop index.
+    use crate::dtype::Constant;
+    use crate::dtype::DType;
+    use crate::kernel::{Dev, Kernel, MemScope, Op, OpId};
+
+    fn make_affine_gather_kernel() -> (Kernel, OpId) {
+        let mut k = Kernel::new(Dev::Auto);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zi = k.const_idx(0u32);
+        let zf = k.const_val(0.0f32);
+        k.store(acc, zf, zi);
+
+        let one = k.const_idx(1u32);
+        let lc = k.const_idx(10i64);
+        let mut loop_id = OpId::NULL;
+        k.loop_over(lc, |k, lv| {
+            loop_id = lv;
+            // arange as the graph builds it: full(1).cumsum(0) collapses to
+            // `(i + 1) - 1`, which is `i` but is not the loop op itself.
+            let plus_one = k.add(lv, one);
+            let arange = k.sub(plus_one, one);
+            let index_val = k.const_idx(5u32);
+            let eq = k.equal(arange, index_val);
+            let eq_f32 = k.cast(eq, DType::F32);
+            let source = k.const_val(42.0f32);
+            let mul = k.mul(eq_f32, source);
+
+            let load_acc = k.load(acc, zi);
+            let add = k.add(mul, load_acc);
+            k.store(acc, add, zi);
+        });
+        let _result = k.load(acc, zi);
+        (k, loop_id)
+    }
+
+    #[test]
+    fn test_affine_arange_mask_folds() {
+        let (mut k, loop_id) = make_affine_gather_kernel();
+        k.simplify_accumulating_loop();
+        assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0)), "affine arange mask should fold");
+    }
+
+    /// Nonzero offset: the body must run at `token - offset`, not `token`.
+    #[test]
+    fn test_nonzero_offset_picks_the_right_row() {
+        let mut k = Kernel::new(Dev::Auto);
+        let source = k.param(DType::F32);
+        let token = k.param(DType::U32);
+        let out = k.param_mut(DType::F32);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zi = k.const_idx(0u32);
+        let zf = k.const_val(0.0f32);
+        k.store(acc, zf, zi);
+
+        let one = k.const_idx(1u32);
+        let five = k.const_idx(5i64);
+        let mut loop_id = OpId::NULL;
+        k.loop_over(five, |k, lv| {
+            loop_id = lv;
+            // arange: `full(1).cumsum(0) - 1` collapses to `(i + 1) - 1`; here
+            // keep a real offset so the fold must run the body at `token - 1`.
+            let arange = k.add(lv, one);
+            let arange_u = k.cast(arange, DType::U32);
+            let t = k.load(token, zi);
+            let eq = k.equal(arange_u, t);
+            let src = k.load(source, lv);
+            let pick = k.select(eq, src, zf);
+            let load_acc = k.load(acc, zi);
+            let add = k.add(pick, load_acc);
+            k.store(acc, add, zi);
+        });
+        let result = k.load(acc, zi);
+        k.store(out, result, zi);
+
+        k.simplify_accumulating_loop();
+        assert!(matches!(k.at(loop_id), Op::Const(_)), "affine mask with an offset must fold");
+
+        let compiled = k.compile().unwrap();
+        let dev = compiled.device();
+        let source = crate::Tensor::from([10.0f32, 20.0, 30.0, 40.0, 50.0]).to(dev).unwrap();
+        let token = crate::Tensor::from([3u32]).to(dev).unwrap();
+        let got = compiled.forward(&[&source, &token], vec![[1]]).unwrap().pop().unwrap();
+        // arange[i] == 3 runs at i = 2 -> source[2].
+        assert_eq!(got, [30.0f32]);
     }
 }
