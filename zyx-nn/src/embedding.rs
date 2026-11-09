@@ -33,8 +33,7 @@ impl Embedding {
             embed_size_t.clone(),
         ])?;
         let arange = Tensor::arange(0, vocab_size, 1)?
-            .reshape([one.clone(), one, vocab_size_t.clone(), 1i64.into()])?
-            .cast(dtype);
+            .reshape([one.clone(), one, vocab_size_t.clone(), 1i64.into()])?;
         Ok(Embedding {
             vocab_size: vocab_size_t,
             embed_size: embed_size_t,
@@ -52,9 +51,12 @@ impl Embedding {
         Ok(Embedding {
             vocab_size: vocab_size.clone(),
             embed_size: embed_size.clone(),
+            // Integer dtype, never the weight's: `f16` cannot represent every
+            // token id (everything above 2048 rounds to a neighbouring value),
+            // so a f16 arange makes `arange == ids` miss ~94% of the vocab.
+            // `forward` casts it to the index dtype, which is exact.
             arange: Tensor::arange(0, vocab_size.item::<i64>(), 1)?
-                .reshape([1i64.into(), 1i64.into(), vocab_size, 1i64.into()])?
-                .cast(weight.dtype()),
+                .reshape([1i64.into(), 1i64.into(), vocab_size, 1i64.into()])?,
             weight,
         })
     }

@@ -15,4 +15,5 @@ zyx/Cargo.lock
 zyx/tests/__temp_test.rs
 __pycache__/
 zyx-bench/bench.db*
+zyx-bench/perf.db*
 .cache/

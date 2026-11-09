@@ -37,7 +37,12 @@ impl SwiGlu {
     /// Returns a shape error if `x` does not have `n_embd` as its last dim.
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
-        let gate = self.gate_proj.forward(x.clone())?.swish();
+        // Materialize the projection before the activation. Fused with `swish`,
+        // the matmul comes out as one thread per output doing a 3072-long
+        // serial k-loop (4.6 ms at decode) plus two extra f32 scratch buffers
+        // for the sigmoid chain, and the reduce-split candidates never apply;
+        // the same matmul on its own is 176 us.
+        let gate = self.gate_proj.forward(x.clone())?.contiguous()?.swish();
         let up = self.up_proj.forward(x)?;
         self.down_proj.forward(gate * up)
     }

@@ -36,10 +36,16 @@ impl Linear {
 
     /// Forward function for linear.
     /// Calculates x.dot(&self.weight) + self.bias
+    ///
+    /// Mirrors llama.cpp: the matrix multiply is the only dtype-changing op.
+    /// `ggml_mul_mat` converts its second operand to the weight's type and
+    /// always produces `f32` (`ggml.c:3349`), so an `f16` weight turns an `f32`
+    /// activation into an `f16` dot and leaves an `f32` result.
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
-        let x = x.into().dot(self.weight.t())?;
+        let x = x.into();
+        let x = x.cast(self.weight.dtype()).dot(self.weight.t())?.cast(DType::F32);
         if let Some(bias) = &self.bias {
-            return Ok(x + bias);
+            return Ok(x + bias.cast(DType::F32));
         }
         Ok(x)
     }

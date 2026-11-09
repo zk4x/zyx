@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::Deserialize;
-use zyx::{DType, GGUFMetadataValue, Module, Tape, Tensor, ZyxError};
+use zyx::{DType, FrozenTape, GGUFMetadataValue, Module, Tape, Tensor, ZyxError};
 use zyx_nn::{DecoderBlock, Embedding, GqaAttention, Linear, RMSNorm, RopeConfig, RopeScaling as NnRopeScaling, SwiGlu};
 
 /// Llama-3.1 style RoPE frequency scaling.
@@ -261,6 +261,17 @@ pub struct Llama {
     layers: Vec<DecoderBlock>,
     norm: RMSNorm,
     lm_head: Linear,
+    /// Traced steps, one per sequence length, replayed afterwards.
+    ///
+    /// Tracing re-kernelizes hundreds of kernels per call, which dominated the
+    /// end-to-end time (~2 s per step against ~32 ms of GPU work at decode).
+    /// The token buffer and the two position variables are rebound per replay.
+    plans: std::collections::HashMap<i64, FrozenPlan>,
+}
+
+/// A frozen llama step: the graph, with its inputs rebound on replay.
+struct FrozenPlan {
+    frozen: FrozenTape,
 }
 
 impl Llama {
@@ -304,17 +315,23 @@ impl Llama {
             let mlp = SwiGlu::new(cfg.hidden_size as i64, cfg.intermediate_size as i64, dtype).unwrap();
             let mut layer = DecoderBlock::new(self_attn, mlp, cfg.hidden_size as i64, cfg.rms_norm_eps, dtype);
             layer.set_params(&mut layer_vb);
+            // llama.cpp runs the norms on the f32 residual stream whatever the
+            // matmul dtype is; the GGUF already stores the norm weights f32.
+            layer.input_layernorm.scale = layer.input_layernorm.scale.cast(DType::F32);
+            layer.post_attention_layernorm.scale =
+                layer.post_attention_layernorm.scale.cast(DType::F32);
             layers.push(layer);
         }
 
         let mut norm = RMSNorm::new(cfg.hidden_size as i64, dtype);
         norm.eps = cfg.rms_norm_eps;
-        norm.scale = vb.take("model.norm.weight").cast(dtype);
+        norm.scale = vb.take("model.norm.weight").cast(DType::F32);
         Self {
             embedding,
             layers,
             norm,
             lm_head,
+            plans: std::collections::HashMap::new(),
         }
     }
 
@@ -336,11 +353,8 @@ impl Llama {
         let tie_word_embeddings = !tensors.contains_key("output.weight");
         let cfg = LlamaConfig::from_gguf_metadata(&metadata, max_context, tie_word_embeddings)?;
         let mut vb = remap_gguf_weights(tensors);
-        // GGUF keeps the norms in f32 while the compute dtype is f16/bf16;
-        // the model has one dtype, so cast every parameter once at load.
-        for tensor in vb.values_mut() {
-            *tensor = tensor.cast(dtype);
-        }
+        // llama.cpp keeps the checkpoint's types: matmul weights f16 and the
+        // norm weights f32. `Llama::new` pins the norm scales to f32.
         Ok(Self::new(&cfg, &mut vb, dtype))
     }
 
@@ -381,8 +395,23 @@ impl Llama {
     /// `input_ids` is `[batch, seq_len]`; `start_pos` is the absolute position
     /// of the first token in the kv-cache. Returns the logits for the last
     /// position, `[batch, vocab]`.
+    ///
+    /// The first call for a given sequence length traces the step and freezes
+    /// it; every later call of that length replays the plan, so no
+    /// kernelization, hashing or search runs per token. The prefill and the
+    /// single-token decode step are separate plans because `Embedding`'s shape
+    /// arithmetic turns the sequence dim into a graph value, not a symbolic
+    /// one.
     pub fn forward(&mut self, input_ids: &Tensor, start_pos: usize) -> Tensor {
         let [_b_size, seq_len] = input_ids.dims::<2>().unwrap();
+        let seq = seq_len.item::<i64>();
+        let pos = Tensor::variable(start_pos as i64);
+        let cache_len = Tensor::variable(start_pos as i64 + seq);
+        if let Some(plan) = self.plans.get(&seq) {
+            let out = plan.frozen.replay([input_ids, &pos, &cache_len]).unwrap();
+            return out.into_iter().next().unwrap();
+        }
+
         let tape = Tape::empty();
         tape.add(&self.embedding.weight).unwrap();
         // One pass over the module tree covers every parameter and buffer,
@@ -394,24 +423,29 @@ impl Llama {
         }
         tape.add(&self.norm.scale).unwrap();
         tape.add(&self.lm_head.weight).unwrap();
-        let mut xs = self.embedding.forward(input_ids).unwrap();
-        // Symbolic positions: fresh variables each call, but identical kernel
-        // IR every step (params hash by ordinal, not value) — one compile total.
-        let pos = Tensor::variable(start_pos as i64);
-        let cache_len = Tensor::variable(start_pos as i64 + seq_len.item::<i64>());
+        // The token buffer is a declared input: replay rebinds it, which is
+        // what makes a step repeatable without retracing.
+        tape.add(input_ids).unwrap();
+
+        let mut xs = self.embedding.forward(input_ids).unwrap().cast(DType::F32);
         for layer in self.layers.iter_mut() {
             xs = layer.forward(&xs, &pos, &cache_len).unwrap();
         }
         xs = self.norm.forward(xs).unwrap();
         xs = xs.narrow(1, seq_len - 1i64, 1i64).unwrap().squeeze([1]);
         let out = self.lm_head.forward(xs).unwrap();
-        let mut realize_args: Vec<&Tensor> = vec![&out];
+
+        let mut outputs: Vec<Tensor> = vec![out];
         for layer in &self.layers {
-            realize_args.push(&layer.self_attn.cache_k);
-            realize_args.push(&layer.self_attn.cache_v);
+            outputs.push(layer.self_attn.cache_k.clone());
+            outputs.push(layer.self_attn.cache_v.clone());
         }
-        tape.realize(realize_args).unwrap();
-        out
+        let frozen = tape.freeze([input_ids, &pos, &cache_len], &outputs).unwrap();
+        // Replay immediately: the trace above only built the graph, and this
+        // call still has to produce its logits.
+        let res = frozen.replay([input_ids, &pos, &cache_len]).unwrap();
+        self.plans.insert(seq, FrozenPlan { frozen });
+        res.into_iter().next().unwrap()
     }
 }
 

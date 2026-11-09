@@ -20,6 +20,7 @@
 #![allow(unused)]
 
 mod bench;
+mod perf;
 
 use std::path::{Path, PathBuf};
 
@@ -239,7 +240,9 @@ fn reindex(db: &Path) -> Result<(), Box<dyn std::error::Error>> {
 fn main() -> Result<(), ZyxError> {
     let mut args = std::env::args().skip(1);
     let Some(folder) = args.next() else {
-        eprintln!("usage: zyx-bench <folder> <test>\n       zyx-bench --list\n       zyx-bench reindex");
+        eprintln!(
+            "usage: zyx-bench <folder> <test>\n       zyx-bench --list\n       zyx-bench reindex [<kernel hash>]\n       zyx-bench perf [--save] [--tol <percent>]"
+        );
         std::process::exit(2);
     };
     if folder == "--list" {
@@ -252,6 +255,31 @@ fn main() -> Result<(), ZyxError> {
             }
         }
         return Ok(());
+    }
+    if folder == "perf" {
+        // Performance regression suite: separate store, op-level wall clock.
+        let mut save = false;
+        let mut tol = perf::DEFAULT_TOL;
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--save" => save = true,
+                "--tol" => {
+                    let value = args.next().unwrap_or_else(|| {
+                        eprintln!("zyx-bench: --tol needs a percentage, e.g. --tol 10");
+                        std::process::exit(2);
+                    });
+                    tol = value.parse().unwrap_or_else(|e| {
+                        eprintln!("zyx-bench: --tol {value}: {e}");
+                        std::process::exit(2);
+                    });
+                }
+                other => {
+                    eprintln!("zyx-bench: unknown perf flag `{other}` (expected --save, --tol <percent>)");
+                    std::process::exit(2);
+                }
+            }
+        }
+        return perf::run(save, tol);
     }
     if folder == "reindex" {
         // `zyx-bench reindex <hash>` prints one stored kernel's IR instead of

@@ -77,12 +77,14 @@ impl RopeConfig {
     }
 }
 
-fn causal_mask(size: i64) -> Tensor {
-    let size_u = size as usize;
-    let mask: Vec<f32> = (0..size_u)
-        .flat_map(|i| (0..size_u).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
+fn causal_mask(size: i64, start: i64) -> Tensor {
+    // tinygrad: `Tensor.full((1,1,seqlen,start_pos+seqlen), -inf).triu(start_pos+1)`,
+    // i.e. query `i` (absolute position `start + i`) may attend to `j <= start + i`.
+    let cols = start + size;
+    let mask: Vec<f32> = (0..size)
+        .flat_map(|i| (0..cols).map(move |j| if j > start + i { f32::NEG_INFINITY } else { 0.0 }))
         .collect();
-    Tensor::from(mask).reshape([size, size]).unwrap()
+    Tensor::from(mask).reshape([size, cols]).unwrap()
 }
 
 fn repeat_kv(xs: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
@@ -100,9 +102,32 @@ fn repeat_kv(xs: Tensor, n_rep: usize) -> Result<Tensor, ZyxError> {
 
 fn rotate(xs: &Tensor, cos: &Tensor, sin: &Tensor, offset: &Tensor) -> Result<Tensor, ZyxError> {
     let [seq_len, _head_dim] = xs.rdims::<2>()?;
-    let c = cos.narrow(0, offset.clone(), seq_len.clone())?;
-    let s = sin.narrow(0, offset, seq_len)?;
-    xs.rope(c, s)
+    let [b, h, seq, d] = xs.dims::<4>()?;
+    let one = Tensor::from(1i64);
+    let two = Tensor::from(2i64);
+    let half = d.clone() / two.clone();
+    // `cos`/`sin` are `[max_context, head_dim/2]` in the model's weight dtype:
+    // take this step's rows and shape them to broadcast over
+    // `[batch, heads, seq, half, 1]`.
+    let c = cos
+        .narrow(0, offset.clone(), seq_len.clone())?
+        .cast(xs.dtype())
+        .reshape([one.clone(), one.clone(), seq.clone(), half.clone(), one.clone()])?;
+    let s = sin
+        .narrow(0, offset, seq_len.clone())?
+        .cast(xs.dtype())
+        .reshape([one.clone(), one.clone(), seq.clone(), half.clone(), one.clone()])?;
+    // tinygrad's `apply_rotary_emb`: neighbouring elements are the
+    // `(a, b)` pair, rotated by `(cos, sin)` as a complex product. That is
+    // the layout GGUF stores q/k in (llama.cpp permutes them to it), unlike
+    // Hugging Face's split-half `rotate_half`.
+    let x = xs.reshape([b.clone(), h.clone(), seq.clone(), half, two])?;
+    let zero = Tensor::from(0i64);
+    let a = x.narrow(-1, zero, one.clone())?;
+    let y = x.narrow(-1, one.clone(), one)?;
+    let ro = a.clone() * c.clone() - y.clone() * s.clone();
+    let co = a * s + y * c;
+    Tensor::cat([&ro, &co], -1)?.reshape([b, h, seq, d])
 }
 
 /// Causal multi-head attention with grouped key/value heads, rotary
@@ -193,8 +218,8 @@ impl GqaAttention {
         let q = rotate(&q, &self.cos, &self.sin, start_pos)?;
         let k = rotate(&k, &self.cos, &self.sin, start_pos)?;
 
-        let k_new = k.squeeze([0]).transpose(0, 1)?;
-        let v_new = v.squeeze([0]).transpose(0, 1)?;
+        let k_new = k.squeeze([0]).transpose(0, 1)?.cast(self.cache_k.dtype());
+        let v_new = v.squeeze([0]).transpose(0, 1)?.cast(self.cache_v.dtype());
         self.cache_k.narrow(0, start_pos, &seq_len)?.assign(&k_new)?;
         self.cache_v.narrow(0, start_pos, &seq_len)?.assign(&v_new)?;
 
@@ -205,17 +230,21 @@ impl GqaAttention {
         let k = repeat_kv(k, n_rep)?;
         let v = repeat_kv(v, n_rep)?;
 
-        let scale = Tensor::from(1.0f32 / (self.head_dim as f32).sqrt()).cast(q.dtype());
-        let attn = q.matmul(k.transpose(2, 3)?)? * scale;
+        let scale = Tensor::from(1.0f32 / (self.head_dim as f32).sqrt()).cast(DType::F32);
+        // The kv cache is `f16` while the stream is `f32`: each dot converts
+        // its activation to the cache's type and leaves an `f32` result, which
+        // is `ggml_mul_mat`'s contract again.
+        let attn = q.cast(k.dtype()).matmul(k.transpose(2, 3)?)?.cast(DType::F32) * scale;
 
         let seq_len_i = seq_len.item::<i64>();
         let attn = if seq_len_i <= 1 {
             attn
         } else {
-            let mask = causal_mask(seq_len_i).cast(attn.dtype());
+            let start = start_pos.item::<i64>();
+            let mask = causal_mask(seq_len_i, start).cast(attn.dtype());
             attn + mask
         };
-        let out = attn.softmax([-1])?.matmul(&v)?.transpose(1, 2)?;
+        let out = attn.softmax([-1])?.cast(v.dtype()).matmul(&v)?.cast(DType::F32).transpose(1, 2)?;
         let d = self.num_heads * self.head_dim;
         let out = out.reshape([b_size, seq_len, d.into()])?;
         self.o_proj.forward(out)
