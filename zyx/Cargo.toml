@@ -65,7 +65,7 @@ tiny_http = { version = "0.12.0", optional = true } # MIT
 # definition crate (instruction encoders, register maps, coordinate spaces).
 # Path dependency while the crate is edited in the tree; the crates.io version
 # follows once the surface settles.
-tt-isa = { path = "../../tt-isa", optional = true }
+tt-isa = { git = "https://github.com/zk4x/tt-isa", optional = true }
 
 # `libc` for the simulator's fork isolation, `libm` for the SFPU op programs'
 # host-side approximations.

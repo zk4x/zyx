@@ -885,6 +885,7 @@ dependencies = [
 [[package]]
 name = "tt-isa"
 version = "0.1.0"
+source = "git+https://github.com/zk4x/tt-isa#9345f205150e4f4852840440a46b28821225766e"
 
 [[package]]
 name = "unicode-ident"
