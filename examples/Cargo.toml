@@ -16,14 +16,14 @@ members = [
 
 [profile.release]
 opt-level = 1
-strip = false
+strip = true
 debug-assertions = false
 overflow-checks = true
 lto = false
 panic = "unwind"
 incremental = true
 codegen-units = 16
-debug = true
+debug = false
 
 [profile.test]
 opt-level = 1

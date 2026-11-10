@@ -3,7 +3,7 @@
 
 use super::{BackendError, ChunkId, DeviceInfo, ErrorStatus, GwsDim, LaunchArg, Placement, Pool};
 use crate::{
-    DType, Set,
+    DType, Map, Set,
     backend::{DTypeCapability, DeviceProgramId},
     kernel::{GPUOp, Kernel, Op, ParamKind},
     shape::Dim,
@@ -43,7 +43,11 @@ pub struct WGPUMemoryPool {
     queue: Arc<wgpu::Queue>,
     adapter: wgpu::Adapter,
     buffers: Slab<ChunkId, WGPUBuffer>,
-    free_set: Set<ChunkId>,
+    // Ids available for stable-address reuse, keyed by the exact (aligned)
+    // byte size. A smaller request never takes a larger block, so a big
+    // buffer cannot be spent on a small output and then be missing for the
+    // big one (CUDA and tinygrad do the same).
+    free_set: Map<usize, Vec<ChunkId>>,
     dev_info: DeviceInfo,
 }
 
@@ -211,7 +215,7 @@ pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<
         queue,
         adapter: wgpu_adapter,
         buffers: Slab::new(),
-        free_set: Set::default(),
+        free_set: Map::default(),
         dev_info: DeviceInfo {
             compute: 1024 * 1024 * 1024 * 1024,
             max_global_work_dims: vec![100_000; 3],
@@ -262,18 +266,9 @@ impl WGPUMemoryPool {
     pub fn allocate(&mut self, bytes: Dim) -> Result<ChunkId, BackendError> {
         let align = wgpu::COPY_BUFFER_ALIGNMENT as Dim;
         let bytes = (bytes + align - 1) / align * align;
-        // Best-fit from the free list first (stable addresses across
-        // repeats — those bytes were already paid for); else fresh.
-        let best = self
-            .free_set
-            .iter()
-            .filter_map(|id| {
-                let len = self.buffers[*id].bytes;
-                (len >= bytes).then_some((len, *id))
-            })
-            .min();
-        if let Some((_, id)) = best {
-            self.free_set.remove(&id);
+        // Exact-size reuse first (stable addresses across repeats — those
+        // bytes were already paid for); else fresh.
+        if let Some(id) = self.free_set.get_mut(&(bytes as usize)).and_then(|ids| ids.pop()) {
             return Ok(id);
         }
         if bytes > self.free_bytes {
@@ -300,17 +295,25 @@ impl WGPUMemoryPool {
             debug_assert!(false, "release of unknown WGPU buffer {buffer_id:?}");
             return;
         }
-        debug_assert!(!self.free_set.contains(&buffer_id), "double release of WGPU buffer {buffer_id:?}");
-        self.free_set.insert(buffer_id);
+        debug_assert!(
+            !self.free_set.get(&(self.buffers[buffer_id].bytes as usize)).is_some_and(|ids| ids.contains(&buffer_id)),
+            "double release of WGPU buffer {buffer_id:?}"
+        );
+        let bytes = self.buffers[buffer_id].bytes as usize;
+        self.free_set.entry(bytes).or_default().push(buffer_id);
     }
 
     /// Tries to reuse existing allocations, all or nothing: every id must
     /// be on the free list (stable addresses) or nothing is claimed.
     pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
-        let ok = buffer_ids.iter().all(|id| self.free_set.contains(id));
+        let ok = buffer_ids.iter().all(|id| {
+            self.free_set.get(&(self.buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id))
+        });
         if ok {
             for id in buffer_ids {
-                self.free_set.remove(id);
+                if let Some(ids) = self.free_set.get_mut(&(self.buffers[*id].bytes as usize)) {
+                    ids.retain(|x| x != id);
+                }
             }
         }
         ok
@@ -320,13 +323,15 @@ impl WGPUMemoryPool {
     /// and give the bytes back. wgpu defers driver-level destruction behind
     /// in-flight work itself.
     pub fn dispose(&mut self) {
-        for id in core::mem::take(&mut self.free_set) {
-            if let Some(buffer) = self.buffers.get(id) {
-                self.free_bytes += buffer.bytes;
-            }
-            if self.buffers.contains_id(id) {
-                let entry = unsafe { self.buffers.remove_and_return(id) };
-                entry.buffer.destroy();
+        for (_, ids) in core::mem::take(&mut self.free_set) {
+            for id in ids {
+                if let Some(buffer) = self.buffers.get(id) {
+                    self.free_bytes += buffer.bytes;
+                }
+                if self.buffers.contains_id(id) {
+                    let entry = unsafe { self.buffers.remove_and_return(id) };
+                    entry.buffer.destroy();
+                }
             }
         }
     }

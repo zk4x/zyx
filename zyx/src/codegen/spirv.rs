@@ -1257,7 +1257,21 @@ impl Kernel {
                     Op::GPU(_) => todo!(),
                     Op::Spirv(_) => todo!(),
                     Op::PTX(_) => todo!(),
-                    Op::Unroll { .. } => todo!("unroll lane vector must be devectorized before SPIR-V codegen"),
+                    // A lane vector that reached here was kept by `devectorize`
+                    // because the device advertises that width in
+                    // `supported_vec_lens`, but this renderer has no vector
+                    // access to emit it with. Reject the candidate rather than
+                    // abort the run: the autotuner treats a failed candidate as
+                    // unrenderable and keeps tuning the rest.
+                    Op::Unroll { len, .. } => {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!(
+                                "SPIR-V codegen: lane vector of {len} survives devectorization (supported_vec_lens claims it, the renderer has no vector access)"
+                            )
+                            .into(),
+                        });
+                    }
                     // Branchless select: OpSelect copies the winning arm's
                     // bits, so ±inf on the dead side stays dead. The
                     // condition is a Bool value like every comparison result.

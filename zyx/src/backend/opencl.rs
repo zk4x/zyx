@@ -534,10 +534,14 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
 
                     let mut buffers: Slab<ChunkId, OpenCLBuffer> = Slab::new();
                     // Free-list ids for stable-address reuse (`Release`
-                    // inserts, `TryReuse`/`Allocate` claim, `Dispose`
-                    // frees). Slab entries stay so ChunkIds are monotonic and
-                    // never alias a different buffer.
-                    let mut free_set: Set<ChunkId> = Set::default();
+                    // inserts, `TryReuse`/`Allocate` claim, `Dispose` frees),
+                    // keyed by the exact byte size. A smaller request never
+                    // takes a larger block, so a big buffer cannot be spent on
+                    // a small output and then be missing for the big one
+                    // (CUDA and tinygrad do the same). Slab entries stay so
+                    // ChunkIds are monotonic and never alias a different
+                    // buffer.
+                    let mut free_set: Map<usize, Vec<ChunkId>> = Map::default();
                     let mut programs: Slab<DeviceProgramId, OpenCLProgram> = Slab::new();
 
                     // Submission state, all worker-local. `held` retains one
@@ -565,18 +569,10 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                     'work_thread_loop: while let Ok(cmd) = rx.recv() {
                         match cmd {
                             Command::Allocate { bytes, reply } => {
-                                // Best-fit from the free list first (stable
-                                // addresses across repeats — those bytes were
-                                // already paid for); else fresh.
-                                let best = free_set
-                                    .iter()
-                                    .filter_map(|id| {
-                                        let b = &buffers[*id];
-                                        (b.bytes >= bytes).then_some((b.bytes, *id))
-                                    })
-                                    .min();
-                                if let Some((_, id)) = best {
-                                    free_set.remove(&id);
+                                // Exact-size reuse first (stable addresses
+                                // across repeats — those bytes were already
+                                // paid for); else fresh.
+                                if let Some(id) = free_set.get_mut(&(bytes as usize)).and_then(|ids| ids.pop()) {
                                     let _ = reply.send(Ok(id));
                                     continue;
                                 }
@@ -607,8 +603,11 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                     debug_assert!(false, "release of unknown OpenCL buffer {buffer_id:?}");
                                     continue;
                                 }
-                                debug_assert!(!free_set.contains(&buffer_id), "double release of OpenCL buffer {buffer_id:?}");
-                                free_set.insert(buffer_id);
+                                debug_assert!(
+                                    !free_set.get(&(buffers[buffer_id].bytes as usize)).is_some_and(|ids| ids.contains(&buffer_id)),
+                                    "double release of OpenCL buffer {buffer_id:?}"
+                                );
+                                free_set.entry(buffers[buffer_id].bytes as usize).or_default().push(buffer_id);
                             }
                             Command::Dispose => {
                                 // The only reclamation: drain every in-order
@@ -624,23 +623,32 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
                                     }
                                 }
-                                free_set.extend(pending_free.drain(..));
-                                for buffer_id in core::mem::take(&mut free_set) {
-                                    let OpenCLBuffer { ptr, bytes } = buffers[buffer_id];
-                                    debug_assert!(!ptr.is_null(), "deallocating null buffer is invalid");
-                                    let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::MemoryDeallocation);
-                                    free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
-                                    buffers.remove(buffer_id);
+                                for id in pending_free.drain(..) {
+                                    free_set.entry(buffers[id].bytes as usize).or_default().push(id);
+                                }
+                                for (_, ids) in core::mem::take(&mut free_set) {
+                                    for buffer_id in ids {
+                                        let OpenCLBuffer { ptr, bytes } = buffers[buffer_id];
+                                        debug_assert!(!ptr.is_null(), "deallocating null buffer is invalid");
+                                        let _ = unsafe { clReleaseMemObject(ptr) }.check(ErrorStatus::MemoryDeallocation);
+                                        free_bytes_atomic.fetch_add(bytes as u64, Ordering::SeqCst);
+                                        buffers.remove(buffer_id);
+                                    }
                                 }
                             }
                             Command::TryReuse { buffer_ids, reply } => {
                                 // All-or-nothing: every id must be on the free
                                 // list, else some address moved and the graph
-                                // must be retraced.
-                                let ok = buffer_ids.iter().all(|id| free_set.contains(id));
+                                // must be retraced. Exact size, like
+                                // `Allocate`.
+                                let ok = buffer_ids.iter().all(|id| {
+                                    free_set.get(&(buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id))
+                                });
                                 if ok {
                                     for id in &buffer_ids {
-                                        free_set.remove(id);
+                                        if let Some(ids) = free_set.get_mut(&(buffers[*id].bytes as usize)) {
+                                            ids.retain(|x| x != id);
+                                        }
                                     }
                                 }
                                 let _ = reply.send(Ok(ok));
@@ -663,7 +671,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
                                     }
                                 }
-                                free_set.extend(pending_free.drain(..));
+                                for id in pending_free.drain(..) {
+                                    free_set.entry(buffers[id].bytes as usize).or_default().push(id);
+                                }
                                 let dst_ptr = buffers[dst_buf].ptr;
                                 debug_assert!(!dst_ptr.is_null(), "copy into null memory. Internal bug.");
                                 let status = if src_pool == worker_pool {
@@ -716,7 +726,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
                                     }
                                 }
-                                free_set.extend(pending_free.drain(..));
+                                for id in pending_free.drain(..) {
+                                    free_set.entry(buffers[id].bytes as usize).or_default().push(id);
+                                }
                                 let OpenCLBuffer { ptr, .. } = buffers[src];
                                 debug_assert!(!ptr.is_null(), "Trying to read null memory. Internal bug.");
                                 let status = unsafe {
@@ -816,7 +828,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
                                     }
                                 }
-                                free_set.extend(pending_free.drain(..));
+                                for id in pending_free.drain(..) {
+                                    free_set.entry(buffers[id].bytes as usize).or_default().push(id);
+                                }
                                 // Snapshot: everything in here is
                                 // drained-complete. Same-replay deaths park
                                 // in pending_free, invisible to the
@@ -825,7 +839,7 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                 // flight, and only a schedule edge (baked
                                 // reuse) or a fence (next replay) proves it
                                 // complete. No polling, ever.
-                                let mut snapshot: Set<ChunkId> = free_set.clone();
+                                let mut snapshot: Map<usize, Vec<ChunkId>> = free_set.clone();
                                 // Ownership split: bound inputs and escaping
                                 // defs are caller-side Placements (Drop
                                 // releases them). Intermediaries never become
@@ -876,20 +890,17 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                                                     .into(),
                                                                 });
                                                             }
-                                                            // Poll-free best-fit over the
-                                                            // snapshot only. Fresh VRAM
+                                                            // Poll-free exact-size
+                                                            // reuse over the snapshot
+                                                            // only. Fresh VRAM
                                                             // last — parallelism over
                                                             // memory savings, always.
-                                                            let best = snapshot
-                                                                .iter()
-                                                                .filter_map(|id| {
-                                                                    let b = &buffers[*id];
-                                                                    (b.bytes >= bytes).then_some((b.bytes, *id))
-                                                                })
-                                                                .min();
-                                                            if let Some((_, id)) = best {
-                                                                snapshot.remove(&id);
-                                                                free_set.remove(&id);
+                                                            let key = bytes as usize;
+                                                            let reused = snapshot.get_mut(&key).and_then(|ids| ids.pop());
+                                                            if let Some(id) = reused {
+                                                                if let Some(ids) = free_set.get_mut(&key) {
+                                                                    ids.retain(|x| *x != id);
+                                                                }
                                                                 (id, bytes as usize)
                                                             } else {
                                                                 if bytes > free_bytes_atomic.load(Ordering::SeqCst) as i64 {
@@ -1013,7 +1024,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                         let _ = unsafe { (clReleaseEvent)(event) }.check(ErrorStatus::Deinitialization);
                                     }
                                 }
-                                free_set.extend(pending_free.drain(..));
+                                for id in pending_free.drain(..) {
+                                    free_set.entry(buffers[id].bytes as usize).or_default().push(id);
+                                }
                                 let start = Instant::now();
                                 let result = submit_launch(
                                     &programs,

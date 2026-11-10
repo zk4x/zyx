@@ -1664,8 +1664,28 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
         let gpu_raw = gpu as usize;
         let queue_raw = queue as usize;
 
-        let total_bytes = 1024 * 1024 * 1024; // 1 GB
-        let free_bytes_atomic = Arc::new(AtomicU64::new(total_bytes as u64));
+        // Report the device's real capacity: the largest *device-local* heap,
+        // i.e. the VRAM available to this physical device — the same number
+        // CUDA asks `cuDeviceTotalMem` for. `free_bytes` is a policy input
+        // (`Runtime::pick_device` and the store-pool choice gate on it), so a
+        // hardcoded total is an artificial OOM: at the old 1 GiB, a 6.4 GB
+        // model failed on its first kv-cache allocation with the GPU empty.
+        // Device-local on purpose: the biggest heap on a discrete card is
+        // VRAM, while the host-visible heap (half of system RAM on NVIDIA)
+        // would over-report.
+        const VK_MEMORY_HEAP_DEVICE_LOCAL_BIT: u32 = 0x0000_0001;
+        let mut mem_props: VkPhysicalDeviceMemoryProperties = unsafe { std::mem::zeroed() };
+        unsafe { vkGetPhysicalDeviceMemoryProperties(gpu, &mut mem_props) };
+        let heaps = &mem_props.memoryHeaps[..mem_props.memoryHeapCount as usize];
+        let total_bytes = heaps
+            .iter()
+            .filter(|h| h.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT != 0)
+            .map(|h| h.size)
+            .max()
+            // A device with no heap flagged device-local is reported by its
+            // largest heap rather than by zero.
+            .unwrap_or_else(|| heaps.iter().map(|h| h.size).max().unwrap_or(0));
+        let free_bytes_atomic = Arc::new(AtomicU64::new(total_bytes));
         let (tx, rx): (Sender<VulkanCommand>, Receiver<VulkanCommand>) = channel();
 
         // Clone library Arc for worker thread (OpenCL pattern)
@@ -1767,10 +1787,18 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
 
                 let mut buffers: Slab<ChunkId, VulkanBuffer> = Slab::new();
                 // Free-list ids for stable-address reuse (`Release`
-                // inserts, `TryReuse`/`Allocate` claim, `Dispose`
-                // frees). Slab entries stay so ChunkIds are monotonic and
-                // never alias a different buffer.
-                let mut free_set: Set<ChunkId> = Set::default();
+                // inserts, `TryReuse`/`Allocate` claim, `Dispose` frees),
+                // keyed by the reserved byte size. Exact size only: a
+                // smaller request never takes a larger block, so a big
+                // buffer cannot be spent on a small output and then be
+                // missing for the big one (CUDA and tinygrad do the same).
+                // Slab entries stay so ChunkIds are monotonic and never
+                // alias a different buffer.
+                let mut free_set: Map<usize, Vec<ChunkId>> = Map::default();
+                // The byte size a buffer actually reserves; the free-list key
+                // on every path (allocate, release, replay), so an exact-size
+                // hit means the same reservation.
+                let reserved = |bytes: usize| (bytes + 3) & !3;
                 let mut programs: Slab<DeviceProgramId, VulkanProgram> = Slab::new();
 
                 macro_rules! send_or_continue {
@@ -1882,21 +1910,14 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                     );
                     match cmd {
                         VulkanCommand::Allocate { bytes, reply } => {
-                            // Best-fit from the free list first (stable
-                            // addresses across repeats); else fresh.
-                            let best = free_set
-                                .iter()
-                                .filter_map(|id| {
-                                    let len = buffers[*id].bytes;
-                                    (len >= bytes as usize).then_some((len, *id))
-                                })
-                                .min();
-                            if let Some((_, id)) = best {
-                                free_set.remove(&id);
+                            // Exact-size reuse first (stable addresses
+                            // across repeats: those bytes were already paid
+                            // for); else fresh.
+                            let size = (bytes + 3) & !3;
+                            if let Some(id) = free_set.get_mut(&(size as usize)).and_then(|ids| ids.pop()) {
                                 let _ = reply.send(Ok(id));
                                 continue;
                             }
-                            let size = (bytes + 3) & !3;
                             let (buf, mem, ptr) = send_or_continue!(create_buffer(size as u64), reply);
                             let id = buffers.push(VulkanBuffer { buf, mem, ptr, bytes: bytes as usize });
                             free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
@@ -1915,8 +1936,11 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 debug_assert!(false, "release of unknown Vulkan buffer {buffer_id:?}");
                                 continue;
                             }
-                            debug_assert!(!free_set.contains(&buffer_id), "double release of Vulkan buffer {buffer_id:?}");
-                            free_set.insert(buffer_id);
+                            debug_assert!(
+                                !free_set.get(&reserved(buffers[buffer_id].bytes)).is_some_and(|ids| ids.contains(&buffer_id)),
+                                "double release of Vulkan buffer {buffer_id:?}"
+                            );
+                            free_set.entry(reserved(buffers[buffer_id].bytes)).or_default().push(buffer_id);
                         }
                         VulkanCommand::Dispose => {
                             // The only reclamation: submit the pending
@@ -1961,27 +1985,37 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
-                            free_set.extend(pending_free.drain(..));
-                            for buffer_id in core::mem::take(&mut free_set) {
-                                let VulkanBuffer { buf, mem, ptr, bytes } = unsafe { buffers.remove_and_return(buffer_id) };
-                                if !ptr.is_null() {
-                                    unsafe { vkUnmapMemory(device, mem) };
+                            for id in pending_free.drain(..) {
+                                free_set.entry(reserved(buffers[id].bytes)).or_default().push(id);
+                            }
+                            for (_, ids) in core::mem::take(&mut free_set) {
+                                for buffer_id in ids {
+                                    let VulkanBuffer { buf, mem, ptr, bytes } =
+                                        unsafe { buffers.remove_and_return(buffer_id) };
+                                    if !ptr.is_null() {
+                                        unsafe { vkUnmapMemory(device, mem) };
+                                    }
+                                    unsafe {
+                                        vkDestroyBuffer(device, buf, std::ptr::null());
+                                        vkFreeMemory(device, mem, std::ptr::null());
+                                    }
+                                    free_bytes_atomic.fetch_add(reserved(bytes) as u64, Ordering::SeqCst);
                                 }
-                                unsafe {
-                                    vkDestroyBuffer(device, buf, std::ptr::null());
-                                    vkFreeMemory(device, mem, std::ptr::null());
-                                }
-                                free_bytes_atomic.fetch_add(((bytes + 3) & !3) as u64, Ordering::SeqCst);
                             }
                         }
                         VulkanCommand::TryReuse { buffer_ids, reply } => {
                             // All-or-nothing: every id must be on the free
                             // list, else some address moved and the graph
-                            // must be retraced.
-                            let ok = buffer_ids.iter().all(|id| free_set.contains(id));
+                            // must be retraced. Exact size, like `Allocate`.
+                            let ok = buffer_ids.iter().all(|id| {
+                                buffers.contains_id(*id)
+                                    && free_set.get(&reserved(buffers[*id].bytes)).is_some_and(|ids| ids.contains(id))
+                            });
                             if ok {
                                 for id in &buffer_ids {
-                                    free_set.remove(id);
+                                    if let Some(ids) = free_set.get_mut(&reserved(buffers[*id].bytes)) {
+                                        ids.retain(|x| x != id);
+                                    }
                                 }
                             }
                             let _ = reply.send(Ok(ok));
@@ -2035,7 +2069,9 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 let _ = reply.send(Err(err));
                                 continue;
                             }
-                            free_set.extend(pending_free.drain(..));
+                            for id in pending_free.drain(..) {
+                                free_set.entry(reserved(buffers[id].bytes)).or_default().push(id);
+                            }
                             let VulkanBuffer { ptr, .. } = buffers[dst_buf];
                             unsafe { std::ptr::copy_nonoverlapping(src_ptr, ptr, bytes) };
                             // No release here: the caller releases the
@@ -2084,7 +2120,9 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
-                            free_set.extend(pending_free.drain(..));
+                            for id in pending_free.drain(..) {
+                                free_set.entry(reserved(buffers[id].bytes)).or_default().push(id);
+                            }
                             if let Some(err) = last_error.take() {
                                 let _ = reply.send(Err(err));
                                 continue;
@@ -2317,7 +2355,9 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 vkFreeDescriptorSets,
                                 vkDestroyFence,
                             );
-                            free_set.extend(pending_free.drain(..));
+                            for id in pending_free.drain(..) {
+                                free_set.entry(reserved(buffers[id].bytes)).or_default().push(id);
+                            }
                             if let Some(err) = last_error.take() {
                                 let _ = reply.send(Err(err));
                                 continue;
@@ -2429,7 +2469,9 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 let _ = reply.send(Err(err));
                                 continue;
                             }
-                            free_set.extend(pending_free.drain(..));
+                            for id in pending_free.drain(..) {
+                                free_set.entry(reserved(buffers[id].bytes)).or_default().push(id);
+                            }
                             // Ownership split (OpenCL pattern): bound inputs
                             // and escaping defs are caller-side Placements
                             // (Drop releases them). Intermediaries never
@@ -2450,7 +2492,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                 // pending_free — invisible to the scan by
                                 // construction. Cloned for iteration safety;
                                 // claims remove from both.
-                                let mut snapshot: Set<ChunkId> = free_set.clone();
+                                let mut snapshot: Map<usize, Vec<ChunkId>> = free_set.clone();
                                 debug_assert_eq!(cmds.len(), allocs.len(), "replay alloc plan length mismatch");
                                 debug_assert_eq!(cmds.len(), deaths.len(), "replay death length mismatch");
                                 for (idx, cmd) in cmds.iter().enumerate() {
@@ -2479,22 +2521,17 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
                                                                     .into(),
                                                             });
                                                         }
-                                                        // Best-fit over the
-                                                        // snapshot only; fresh
-                                                        // VRAM last.
-                                                        let best = snapshot
-                                                            .iter()
-                                                            .filter_map(|id| {
-                                                                let b = &buffers[*id];
-                                                                (b.bytes >= bytes as usize).then_some((b.bytes, *id))
-                                                            })
-                                                            .min();
-                                                        if let Some((_, id)) = best {
-                                                            snapshot.remove(&id);
-                                                            free_set.remove(&id);
+                                                        // Exact-size reuse over
+                                                        // the snapshot only;
+                                                        // fresh VRAM last.
+                                                        let size = reserved(bytes as usize);
+                                                        let reused = snapshot.get_mut(&size).and_then(|ids| ids.pop());
+                                                        if let Some(id) = reused {
+                                                            if let Some(ids) = free_set.get_mut(&size) {
+                                                                ids.retain(|x| *x != id);
+                                                            }
                                                             (id, 0, bytes as usize)
                                                         } else {
-                                                            let size = (bytes + 3) & !3;
                                                             let (buf, mem, ptr) = create_buffer(size as u64)?;
                                                             free_bytes_atomic.fetch_sub(size as u64, Ordering::SeqCst);
                                                             let id = buffers.push(VulkanBuffer {
