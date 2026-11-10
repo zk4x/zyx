@@ -4790,21 +4790,28 @@ impl Runtime {
             // also the DRAM interleave page (`STRIPE`).
             let bytes = {
                 if pool_id.is_tt_layout() {
-                    let shape = self.resolve_shape(tid);
-                    let (rows, cols) = match shape.as_slice() {
-                        [.., r, c] => (*r, *c),
-                        [c] => (1, *c),
-                        [] => (1, 1),
-                    };
-                    let outer: Dim = if shape.len() >= 2 {
-                        shape[..shape.len() - 2].iter().product()
-                    } else {
-                        1
-                    };
-                    let pr = ((rows + 31) / 32) * 32;
-                    let pc = ((cols + 31) / 32) * 32;
-                    let tiles = (outer * pr * pc) / 1024;
-                    usize::try_from(tiles * tt_isa::dm::TILE_SLOT as Dim).expect("TT tile image bytes fit usize")
+                    #[cfg(feature = "tenstorrent")]
+                    {
+                        let shape = self.resolve_shape(tid);
+                        let (rows, cols) = match shape.as_slice() {
+                            [.., r, c] => (*r, *c),
+                            [c] => (1, *c),
+                            [] => (1, 1),
+                        };
+                        let outer: Dim = if shape.len() >= 2 {
+                            shape[..shape.len() - 2].iter().product()
+                        } else {
+                            1
+                        };
+                        let pr = ((rows + 31) / 32) * 32;
+                        let pc = ((cols + 31) / 32) * 32;
+                        let tiles = (outer * pr * pc) / 1024;
+                        usize::try_from(tiles * tt_isa::dm::TILE_SLOT as Dim).expect("TT tile image bytes fit usize")
+                    }
+                    #[cfg(not(feature = "tenstorrent"))]
+                    {
+                        unreachable!("TT tile image bytes: tenstorrent feature off")
+                    }
                 } else {
                     bytes
                 }

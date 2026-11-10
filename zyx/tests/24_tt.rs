@@ -29,6 +29,8 @@
 //!   AGENT=1 timeout 10 $BIN <test> --exact --nocapture
 //! ```
 
+#![cfg(feature = "tenstorrent")]
+
 use std::result::Result;
 use zyx::{DType, Dev, Tensor, ZyxError};
 

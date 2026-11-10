@@ -125,6 +125,8 @@ impl Kernel {
         // devectorize runs on the TT path.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
+            #[cfg(feature = "tenstorrent")]
+            {
             if std::env::var_os("ZYX_TT_IR").is_some() {
                 eprintln!("=== IR before tt_tile ===");
                 self.debug();
@@ -216,6 +218,11 @@ impl Kernel {
             // the lowered TT IR is native tiles/rows, and `tt_verify` is its
             // checker.
             self.tt_verify();
+            }
+            #[cfg(not(feature = "tenstorrent"))]
+            {
+            unreachable!("device_epilogue: tenstorrent feature off")
+            }
         } else {
             self.devectorize()?;
         }
@@ -804,6 +811,7 @@ impl NoSearch {
         // TT tiling first: scalar row-major traffic becomes tile traffic
         // (tt_tile gates on the TT device itself, other devices skip).
         // Readability passes (relative order mirrors `default_epilogue`).
+        #[cfg(feature = "tenstorrent")]
         seed.tt_tile();
         for _ in 0..3 {
             seed.default_epilogue();

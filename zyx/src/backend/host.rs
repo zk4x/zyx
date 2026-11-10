@@ -95,6 +95,7 @@ pub(super) fn copy(src: &Placement, dst: &Placement, bytes: Dim) -> Result<(), B
             let dst_ptr = pool.buffer_ptr_mut(dst_shard.chunk);
             opool.pool_to_host(src_shard.chunk, unsafe { std::slice::from_raw_parts_mut(dst_ptr, bytes as usize) })?;
         }
+        #[cfg(feature = "tenstorrent")]
         Pool::TT(id) => {
             // Device DRAM read straight into the destination, no staging
             // buffer: `Pool::TT` chunks are the card's GDDR6, never host memory.

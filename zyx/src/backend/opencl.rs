@@ -604,7 +604,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                     continue;
                                 }
                                 debug_assert!(
-                                    !free_set.get(&(buffers[buffer_id].bytes as usize)).is_some_and(|ids| ids.contains(&buffer_id)),
+                                    !free_set
+                                        .get(&(buffers[buffer_id].bytes as usize))
+                                        .is_some_and(|ids| ids.contains(&buffer_id)),
                                     "double release of OpenCL buffer {buffer_id:?}"
                                 );
                                 free_set.entry(buffers[buffer_id].bytes as usize).or_default().push(buffer_id);
@@ -641,9 +643,9 @@ pub(super) fn ensure_pool_table(config: &OpenCLConfig, debug_dev: bool) -> Resul
                                 // list, else some address moved and the graph
                                 // must be retraced. Exact size, like
                                 // `Allocate`.
-                                let ok = buffer_ids.iter().all(|id| {
-                                    free_set.get(&(buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id))
-                                });
+                                let ok = buffer_ids
+                                    .iter()
+                                    .all(|id| free_set.get(&(buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id)));
                                 if ok {
                                     for id in &buffer_ids {
                                         if let Some(ids) = free_set.get_mut(&(buffers[*id].bytes as usize)) {

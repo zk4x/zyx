@@ -139,6 +139,7 @@ mod pat;
 mod predict_cost;
 mod recipe;
 mod split;
+#[cfg(feature = "tenstorrent")]
 mod tenstorrent;
 mod verify;
 

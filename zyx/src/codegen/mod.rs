@@ -13,6 +13,7 @@ mod cuda;
 mod opencl;
 mod ptx;
 pub(crate) mod spirv;
+#[cfg(feature = "tenstorrent")]
 pub(crate) mod tenstorrent;
 #[cfg(feature = "wgpu")]
 pub(crate) mod wgsl;
@@ -39,6 +40,7 @@ impl Kernel {
             Dev::C => self.render_c(),
             Dev::Cuda(_) => self.render_cuda(),
             Dev::OpenCL(_) => self.render_opencl(),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(_) => self.render_tt(),
             Dev::Vulkan(_) => self.render_spirv(),
             #[cfg(feature = "wgpu")]

@@ -44,6 +44,7 @@ mod cuda;
 mod disk;
 mod host;
 mod opencl;
+#[cfg(feature = "tenstorrent")]
 pub(crate) mod tenstorrent;
 mod vulkan;
 #[cfg(feature = "wgpu")]
@@ -227,6 +228,7 @@ impl CmdQueue {
                         Pool::Disk => todo!("schedule copy into the disk pool"),
                         Pool::OpenCL(id) => Dev::OpenCL(id),
                         Pool::Vulkan(id) => Dev::Vulkan(id),
+                        #[cfg(feature = "tenstorrent")]
                         Pool::TT(id) => Dev::TT(id),
                         #[cfg(feature = "wgpu")]
                         Pool::WGPU(id) => Dev::WGPU(id),
@@ -293,6 +295,7 @@ impl CmdQueue {
             Dev::Vulkan(id) => {
                 partitions.push(PlanPartition::Vulkan(vulkan::VulkanDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => {
                 partitions.push(PlanPartition::TT(tenstorrent::TTDevice::schedule(std::mem::take(run), outputs, live_out, id)))
             }
@@ -405,6 +408,7 @@ impl Plan {
                     let mut dev = dlock(Dev::Vulkan(vk_part.dev), device);
                     vk_part.replay(&mut dev, &mut resolved, vars)?;
                 }
+                #[cfg(feature = "tenstorrent")]
                 PlanPartition::TT(tt_part) => {
                     let device = tenstorrent::device(tt_part.dev)?;
                     let mut dev = dlock(Dev::TT(tt_part.dev), device);
@@ -423,6 +427,7 @@ impl Plan {
                         // TT sources move physical bytes (whole tiles);
                         // logical dims undercount, so take the shard lens.
                         let bytes = match src_placed.shards.first() {
+                            #[cfg(feature = "tenstorrent")]
                             Some(Shard { pool: Pool::TT(_), .. }) => src_placed.shards.iter().map(|s| s.len as Dim).sum(),
                             _ => bytes,
                         };
@@ -455,6 +460,7 @@ impl Plan {
                                 let dev = dlock(Dev::Vulkan(*id), device);
                                 dev.copy(&src_placed, &placed, bytes)?;
                             }
+                            #[cfg(feature = "tenstorrent")]
                             Dev::TT(id) => {
                                 let device = tenstorrent::device(*id)?;
                                 let dev = dlock(Dev::TT(*id), device);
@@ -522,6 +528,7 @@ pub(crate) enum PlanPartition {
     /// Ordered Tenstorrent commands with death lists (no queues, no edges —
     /// the synchronous shim IPC is the ordering), executed directly by a
     /// Tenstorrent device (one blocking run per launch).
+    #[cfg(feature = "tenstorrent")]
     TT(tenstorrent::TTPartition),
     /// Cross-pool copies, executed by the destination device.
     Copy { dst: Dev, ops: Vec<CopyOp> },
@@ -555,6 +562,7 @@ pub enum Pool {
     /// Vulkan device memory, one pool per device.
     Vulkan(u16),
     /// Tenstorrent device memory, one pool per accelerator.
+    #[cfg(feature = "tenstorrent")]
     TT(u16),
     /// WGPU device memory, one pool per device.
     #[cfg(feature = "wgpu")]
@@ -580,6 +588,7 @@ pub enum Dev {
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),
     /// Tenstorrent chip with the given id.
+    #[cfg(feature = "tenstorrent")]
     TT(u16),
     /// Vulkan physical device with the given index.
     Vulkan(u16),
@@ -611,6 +620,7 @@ impl std::str::FromStr for Dev {
             "C" | "CPU" => Dev::C,
             "HOST" => Dev::Host,
             "CUDA" => Dev::Cuda(index),
+            #[cfg(feature = "tenstorrent")]
             "TT" | "TENSTORRENT" => Dev::TT(index),
             "VULKAN" | "VK" => Dev::Vulkan(index),
             "OPENCL" | "CL" => Dev::OpenCL(index),
@@ -654,6 +664,7 @@ impl Dev {
             for i in 0..cuda::device_count() {
                 out.push(Dev::Cuda(i));
             }
+            #[cfg(feature = "tenstorrent")]
             for i in 0..tenstorrent::device_count() {
                 out.push(Dev::TT(i));
             }
@@ -680,6 +691,7 @@ impl Dev {
             Dev::Auto => panic!("Dev::Auto has no pool; resolve it with Dev::auto() first"),
             Dev::C | Dev::Host => Pool::Host,
             Dev::Cuda(i) => Pool::Cuda(i),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(i) => Pool::TT(i),
             Dev::Vulkan(i) => Pool::Vulkan(i),
             Dev::OpenCL(i) => Pool::OpenCL(i),
@@ -700,6 +712,7 @@ impl Dev {
             Dev::Host => panic!("Dev::Host has no device info; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).info()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).info()),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => Ok(dlock(self, tenstorrent::device(id)?).info()),
             Dev::Vulkan(id) => Ok(dlock(self, vulkan::device(id)?).info()),
             #[cfg(feature = "wgpu")]
@@ -719,6 +732,7 @@ impl Dev {
             Dev::Host => panic!("Dev::Host has no compute; it is transfer-only"),
             Dev::Cuda(id) => Ok(dlock(self, cuda::device(id)?).free_compute()),
             Dev::OpenCL(id) => Ok(dlock(self, opencl::device(id)?).free_compute()),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => Ok(dlock(self, tenstorrent::device(id)?).free_compute()),
             Dev::Vulkan(id) => Ok(dlock(self, vulkan::device(id)?).free_compute()),
             #[cfg(feature = "wgpu")]
@@ -751,6 +765,7 @@ impl Dev {
                 Ok(device.synchronize()?)
             }
             Dev::OpenCL(_) => todo!("Dev::synchronize for OpenCL"),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(_) => todo!("Dev::synchronize for Tenstorrent"),
             Dev::Vulkan(_) => todo!("Dev::synchronize for Vulkan"),
             #[cfg(feature = "wgpu")]
@@ -773,15 +788,24 @@ impl Dev {
     /// backend and the metalium backend consume the same layout.
     #[must_use]
     pub const fn is_tt_layout(self) -> bool {
-        matches!(self, Dev::TT(_))
+        #[cfg(feature = "tenstorrent")]
+        {
+            matches!(self, Dev::TT(_))
+        }
+        #[cfg(not(feature = "tenstorrent"))]
+        {
+            false
+        }
     }
 
     /// Host-staged logical -> physical tile layout transfer. Dispatches to
     /// whichever TT-family backend owns this device.
     pub(crate) fn tilize(&self, src: &Arc<Placement>, shape: &[Dim], dtype: DType) -> Result<Arc<Placement>, ZyxError> {
+        #[cfg(feature = "tenstorrent")]
         if let Dev::TT(_) = *self {
             return self.tilize_transfer(src, shape, dtype);
         }
+        let _ = (src, shape, dtype);
         panic!("tilize: not a TT-layout device: {self:?}");
     }
 
@@ -793,9 +817,11 @@ impl Dev {
         dtype: DType,
         dst_pool: Pool,
     ) -> Result<Arc<Placement>, ZyxError> {
+        #[cfg(feature = "tenstorrent")]
         if let Dev::TT(_) = *self {
             return self.untilize_transfer(src, shape, dtype, dst_pool);
         }
+        let _ = (src, shape, dtype, dst_pool);
         panic!("untilize: not a TT-layout device: {self:?}");
     }
 
@@ -808,6 +834,7 @@ impl Dev {
             Dev::Host => "Host",
             Dev::Cuda(_) => "CUDA",
             Dev::OpenCL(_) => "OpenCL",
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(_) => "Tenstorrent",
             Dev::Vulkan(_) => "Vulkan",
             #[cfg(feature = "wgpu")]
@@ -825,6 +852,7 @@ impl Dev {
             Dev::Host => panic!("Dev::Host cannot compile; it is transfer-only"),
             Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).compile(kernel, debug_asm),
             Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).compile(kernel, debug_asm),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).compile(kernel, debug_asm),
             Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).compile(kernel, debug_asm),
             #[cfg(feature = "wgpu")]
@@ -844,6 +872,7 @@ impl Dev {
             Dev::Host => panic!("Dev::Host cannot release; it holds no programs"),
             Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).release(program_id),
             Dev::OpenCL(id) => dlock(self, opencl::device(id).expect("OpenCL device unavailable")).release(program_id),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).release(program_id),
             Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).release(program_id),
             #[cfg(feature = "wgpu")]
@@ -862,6 +891,7 @@ impl Dev {
             Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),
             Dev::OpenCL(_) => {}
             Dev::Vulkan(_) => {}
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(_) => {}
             #[cfg(feature = "wgpu")]
             Dev::WGPU(_) => {}
@@ -895,6 +925,7 @@ impl Dev {
             }
             Dev::Host => panic!("Dev::Host cannot launch; it is transfer-only"),
             Dev::Vulkan(id) => dlock(self, vulkan::device(id).expect("Vulkan device unavailable")).launch_timed(program_id, args),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(id) => dlock(self, tenstorrent::device(id).expect("TT device unavailable")).launch_timed(program_id, args),
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).launch_timed(program_id, args),
@@ -913,6 +944,7 @@ impl Pool {
     #[must_use]
     pub const fn tt_layout_device(self) -> Option<Dev> {
         match self {
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => Some(Dev::TT(id)),
             _ => None,
         }
@@ -928,6 +960,7 @@ impl Pool {
             Pool::Cuda(id) => (lock(self, cuda::pool(id)?).allocate(bytes), "cuda"),
             Pool::OpenCL(id) => (lock(self, opencl::pool(id)?).allocate(bytes), "opencl"),
             Pool::Vulkan(id) => (lock(self, vulkan::pool(id)?).allocate(bytes), "vulkan"),
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => (lock(self, tenstorrent::pool(id)?).allocate(bytes), "tenstorrent"),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => (lock(self, wgpu::pool(id)?).allocate(bytes), "wgpu"),
@@ -984,6 +1017,7 @@ impl Pool {
                     lock(self, pool).release(buffer_id);
                 }
             }
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => {
                 if let Ok(pool) = tenstorrent::pool(id) {
                     lock(self, pool).release(buffer_id);
@@ -1012,6 +1046,7 @@ impl Pool {
             Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => wgpu::pool(id).map(|p| lock(self, &p).try_reuse_allocations(buffer_ids)).unwrap_or(false),
@@ -1039,6 +1074,7 @@ impl Pool {
                     lock(self, pool).dispose();
                 }
             }
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => {
                 if let Ok(pool) = tenstorrent::pool(id) {
                     lock(self, pool).dispose();
@@ -1060,6 +1096,7 @@ impl Pool {
             Pool::Cuda(id) => cuda::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
             Pool::OpenCL(id) => opencl::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
             Pool::Vulkan(id) => vulkan::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => tenstorrent::pool(id).map(|p| lock(self, p).free_bytes()).unwrap_or(0),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => wgpu::pool(id).map(|p| lock(self, &p).free_bytes()).unwrap_or(0),
@@ -1073,6 +1110,7 @@ impl Pool {
             Pool::Cuda(id) => lock(self, cuda::pool(id)?).pool_to_host(src, dst),
             Pool::OpenCL(id) => lock(self, opencl::pool(id)?).pool_to_host(src, dst),
             Pool::Vulkan(id) => lock(self, vulkan::pool(id)?).pool_to_host(src, dst),
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(id) => lock(self, tenstorrent::pool(id)?).pool_to_host(src, dst),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(id) => {
@@ -1093,6 +1131,7 @@ impl Pool {
             Pool::Cuda(_) => todo!("cuda buffers have no staging pointer"),
             Pool::OpenCL(_) => todo!("opencl buffers have no staging pointer"),
             Pool::Vulkan(_) => todo!("vulkan buffers have no staging pointer"),
+            #[cfg(feature = "tenstorrent")]
             Pool::TT(_) => todo!("TT buffers have no staging pointer"),
             #[cfg(feature = "wgpu")]
             Pool::WGPU(_) => todo!("wgpu buffers have no staging pointer"),
@@ -1118,7 +1157,10 @@ impl Config {
         self.cuda.device_ids = Some(Vec::new());
         self.opencl.platform_ids = Some(Vec::new());
         self.vulkan.device_ids = Some(Vec::new());
-        self.tenstorrent.device_ids = Some(Vec::new());
+        #[cfg(feature = "tenstorrent")]
+        {
+            self.tenstorrent.device_ids = Some(Vec::new());
+        }
         #[cfg(feature = "wgpu")]
         {
             self.wgpu.enabled = false;
@@ -1131,6 +1173,7 @@ impl Config {
             // Always available, never enumerated: nothing to enable.
             Dev::Host => {}
             Dev::Cuda(i) => self.cuda.device_ids = Some(vec![i32::from(i)]),
+            #[cfg(feature = "tenstorrent")]
             Dev::TT(i) => self.tenstorrent.device_ids = Some(vec![i32::from(i)]),
             Dev::Vulkan(i) => self.vulkan.device_ids = Some(vec![i32::from(i)]),
             Dev::OpenCL(i) => self.opencl.platform_ids = Some(vec![usize::from(i)]),
@@ -1429,6 +1472,7 @@ pub struct Config {
     /// `OpenCL` configuration
     pub opencl: opencl::OpenCLConfig,
     /// Tenstorrent configuration
+    #[cfg(feature = "tenstorrent")]
     pub tenstorrent: tenstorrent::TTConfig,
     // Vulkan configuration
     pub vulkan: vulkan::VulkanConfig,
@@ -1690,6 +1734,7 @@ mod tests {
         assert_eq!("cuda".parse::<Dev>().unwrap(), Dev::Cuda(0));
         assert_eq!("CUDA:2".parse::<Dev>().unwrap(), Dev::Cuda(2));
         assert_eq!("cpu".parse::<Dev>().unwrap(), Dev::C);
+        #[cfg(feature = "tenstorrent")]
         assert_eq!("tt:1".parse::<Dev>().unwrap(), Dev::TT(1));
         assert_eq!("vk".parse::<Dev>().unwrap(), Dev::Vulkan(0));
         assert_eq!("auto".parse::<Dev>().unwrap(), Dev::Auto);

@@ -9,10 +9,13 @@
 //! `CARGO_*` environment is stripped from the child so the nested invocation does
 //! not inherit the parent's target directory or profile.
 
+#[cfg(feature = "tenstorrent")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "tenstorrent")]
 use std::process::Command;
 
 /// Binaries in `tt-firmware/src/bin` to build and expose.
+#[cfg(feature = "tenstorrent")]
 const BINARIES: &[&str] = &[
     "heartbeat",
     "sfpu_mul",
@@ -39,92 +42,100 @@ const BINARIES: &[&str] = &[
 
 /// The one image the `ttinsn-experiment` feature adds, and the only one whose
 /// `.ttinsn` words the gate admits (`check_ttinsn_blocks`).
+#[cfg(feature = "tenstorrent")]
 const TTINSN_IMAGE: &str = "ttinsn_t1";
 
+#[cfg(feature = "tenstorrent")]
 const TARGET: &str = "riscv32im-unknown-none-elf";
 
 fn main() {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let firmware_dir = manifest.join("firmware").join("tt-firmware");
-    println!("cargo:rerun-if-changed=build.rs");
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    // The firmware belongs to the Tenstorrent backend, so a build without that
+    // feature compiles none of it (and does not need the RISC-V target).
+    #[cfg(feature = "tenstorrent")]
+    {
+        let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let firmware_dir = manifest.join("firmware").join("tt-firmware");
+        println!("cargo:rerun-if-changed=build.rs");
+        let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    // Track individual files rather than directories. A directory-level
-    // `rerun-if-changed` does not reliably notice an edit to a file nested inside
-    // it, which showed up here as firmware changes that never rebuilt.
-    track_sources(&firmware_dir);
+        // Track individual files rather than directories. A directory-level
+        // `rerun-if-changed` does not reliably notice an edit to a file nested inside
+        // it, which showed up here as firmware changes that never rebuilt.
+        track_sources(&firmware_dir);
 
-    // The firmware sources ship inside this crate but are not a package of
-    // their own in the tree (`Cargo.toml.in`, not `Cargo.toml`): cargo refuses
-    // to package a nested package. Copy them into `OUT_DIR` and give them the
-    // manifest there, so the build works both from the tree and from the
-    // published crate.
-    let build_dir = out_dir.join("firmware-src");
-    copy_tree(&firmware_dir, &build_dir);
-    std::fs::copy(firmware_dir.join("Cargo.toml.in"), build_dir.join("Cargo.toml"))
-        .expect("could not write the firmware manifest");
-    println!("cargo:rerun-if-changed={}", firmware_dir.join("Cargo.toml.in").display());
+        // The firmware sources ship inside this crate but are not a package of
+        // their own in the tree (`Cargo.toml.in`, not `Cargo.toml`): cargo refuses
+        // to package a nested package. Copy them into `OUT_DIR` and give them the
+        // manifest there, so the build works both from the tree and from the
+        // published crate.
+        let build_dir = out_dir.join("firmware-src");
+        copy_tree(&firmware_dir, &build_dir);
+        std::fs::copy(firmware_dir.join("Cargo.toml.in"), build_dir.join("Cargo.toml"))
+            .expect("could not write the firmware manifest");
+        println!("cargo:rerun-if-changed={}", firmware_dir.join("Cargo.toml.in").display());
 
-    let target_dir = out_dir.join("firmware-target");
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let target_dir = out_dir.join("firmware-target");
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
 
-    let experiment = std::env::var_os("CARGO_FEATURE_TTINSN_EXPERIMENT").is_some();
-    let mut cmd = Command::new(&cargo);
-    cmd.current_dir(&build_dir).args(["build", "--release", "--target", TARGET]).arg("--target-dir").arg(&target_dir);
-    let mut features = Vec::new();
-    if experiment {
-        features.push("ttinsn-experiment");
-    }
-    // The mover's read mode is chosen here, at build time (`tt-firmware`'s features).
-    if std::env::var_os("CARGO_FEATURE_FAST_READS").is_some() {
-        features.push("fast-reads");
-    }
-    if std::env::var_os("CARGO_FEATURE_ENCODED_GUARD").is_some() {
-        features.push("encoded-guard");
-    }
-    if !features.is_empty() {
-        cmd.args(["--features", &features.join(",")]);
-    }
-    // A nested cargo inherits variables that redirect it back at the parent
-    // workspace; strip them so the firmware build is genuinely independent.
-    // `RUSTC_WORKSPACE_WRAPPER` is `cargo clippy`'s `clippy-driver`: left in, the
-    // images of a clippy run came out about 900 bytes larger than a build's
-    // (`dm_b` 24,540 bytes against 23,644, of the 24,576 it may have), so a
-    // mover change that fit a build overflowed clippy. Firmware is linted on
-    // its own (`AGENTS.md`).
-    for (key, _) in std::env::vars() {
-        if key.starts_with("CARGO_") || key == "RUSTFLAGS" || key == "RUSTC_WRAPPER" || key == "RUSTC_WORKSPACE_WRAPPER" {
-            cmd.env_remove(key);
+        let experiment = std::env::var_os("CARGO_FEATURE_TTINSN_EXPERIMENT").is_some();
+        let mut cmd = Command::new(&cargo);
+        cmd.current_dir(&build_dir).args(["build", "--release", "--target", TARGET]).arg("--target-dir").arg(&target_dir);
+        let mut features = Vec::new();
+        if experiment {
+            features.push("ttinsn-experiment");
         }
-    }
-    let status = cmd.status().expect("could not run cargo for the firmware build");
-    assert!(status.success(), "firmware build failed");
+        // The mover's read mode is chosen here, at build time (`tt-firmware`'s features).
+        if std::env::var_os("CARGO_FEATURE_FAST_READS").is_some() {
+            features.push("fast-reads");
+        }
+        if std::env::var_os("CARGO_FEATURE_ENCODED_GUARD").is_some() {
+            features.push("encoded-guard");
+        }
+        if !features.is_empty() {
+            cmd.args(["--features", &features.join(",")]);
+        }
+        // A nested cargo inherits variables that redirect it back at the parent
+        // workspace; strip them so the firmware build is genuinely independent.
+        // `RUSTC_WORKSPACE_WRAPPER` is `cargo clippy`'s `clippy-driver`: left in, the
+        // images of a clippy run came out about 900 bytes larger than a build's
+        // (`dm_b` 24,540 bytes against 23,644, of the 24,576 it may have), so a
+        // mover change that fit a build overflowed clippy. Firmware is linted on
+        // its own (`AGENTS.md`).
+        for (key, _) in std::env::vars() {
+            if key.starts_with("CARGO_") || key == "RUSTFLAGS" || key == "RUSTC_WRAPPER" || key == "RUSTC_WORKSPACE_WRAPPER" {
+                cmd.env_remove(key);
+            }
+        }
+        let status = cmd.status().expect("could not run cargo for the firmware build");
+        assert!(status.success(), "firmware build failed");
 
-    let objcopy = tool("llvm-objcopy");
-    let objdump = tool("llvm-objdump");
+        let objcopy = tool("llvm-objcopy");
+        let objdump = tool("llvm-objdump");
 
-    let binaries = BINARIES.iter().copied().chain(experiment.then_some(TTINSN_IMAGE));
-    for name in binaries {
-        let elf = target_dir.join(TARGET).join("release").join(name);
-        assert!(elf.exists(), "firmware binary {name} was not produced at {}", elf.display());
+        let binaries = BINARIES.iter().copied().chain(experiment.then_some(TTINSN_IMAGE));
+        for name in binaries {
+            let elf = target_dir.join(TARGET).join("release").join(name);
+            assert!(elf.exists(), "firmware binary {name} was not produced at {}", elf.display());
 
-        let bin = out_dir.join(format!("{name}.bin"));
-        let status =
-            Command::new(&objcopy).args(["-O", "binary"]).arg(&elf).arg(&bin).status().expect("could not run llvm-objcopy");
-        assert!(status.success(), "objcopy failed for {name}");
+            let bin = out_dir.join(format!("{name}.bin"));
+            let status =
+                Command::new(&objcopy).args(["-O", "binary"]).arg(&elf).arg(&bin).status().expect("could not run llvm-objcopy");
+            assert!(status.success(), "objcopy failed for {name}");
 
-        check_instruction_set(&objdump, &elf, name);
+            check_instruction_set(&objdump, &elf, name);
 
-        // The entry point, so the crate can check each image against the core
-        // it is loaded for instead of trusting a literal next to it.
-        println!("cargo:rustc-env=FIRMWARE_{}_ENTRY={}", name.to_uppercase(), elf_entry(&elf));
+            // The entry point, so the crate can check each image against the core
+            // it is loaded for instead of trusting a literal next to it.
+            println!("cargo:rustc-env=FIRMWARE_{}_ENTRY={}", name.to_uppercase(), elf_entry(&elf));
 
-        println!("cargo:rustc-env=FIRMWARE_{}={}", name.to_uppercase(), bin.display());
+            println!("cargo:rustc-env=FIRMWARE_{}={}", name.to_uppercase(), bin.display());
+        }
     }
 }
 
 /// Emit `rerun-if-changed` for every source file under `dir`, skipping build
 /// output.
+#[cfg(feature = "tenstorrent")]
 fn track_sources(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -144,6 +155,7 @@ fn track_sources(dir: &Path) {
 }
 
 /// Copy the firmware source tree (no `target/`, no `.git/`) into `dst`.
+#[cfg(feature = "tenstorrent")]
 fn copy_tree(src: &Path, dst: &Path) {
     std::fs::create_dir_all(dst).expect("could not create the firmware build directory");
     for entry in std::fs::read_dir(src).expect("could not read the firmware sources").flatten() {
@@ -162,6 +174,7 @@ fn copy_tree(src: &Path, dst: &Path) {
 }
 
 /// Locate one of the `llvm-tools` binaries shipped with the active toolchain.
+#[cfg(feature = "tenstorrent")]
 fn tool(name: &str) -> PathBuf {
     let sysroot = Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into()))
         .arg("--print")
@@ -181,17 +194,21 @@ fn tool(name: &str) -> PathBuf {
 /// the baby RISC-V implementation, and executing an unimplemented instruction is
 /// `UndefinedBehavior` — which, per the glossary, includes possible physical
 /// damage. There is no illegal-instruction trap to fall back on.
+#[cfg(feature = "tenstorrent")]
 fn check_instruction_set(objdump: &Path, elf: &Path, name: &str) {
     // Every image but the experiment's is disassembled whole and judged, exactly
     // as it always was. The experiment's `.ttinsn` words cannot be disassembled
     // (they sit in the compressed encoding space this gate refuses), so for that
     // one image the words are validated directly and the rest is judged in the
     // gaps between them.
+    #[cfg(feature = "tenstorrent")]
     let blocks = if name == TTINSN_IMAGE {
         check_ttinsn_blocks(objdump, elf, name)
     } else {
         Vec::new()
     };
+    #[cfg(not(feature = "tenstorrent"))]
+    let blocks: Vec<(u64, u64)> = Vec::new();
     let mut checked = 0usize;
     if blocks.is_empty() {
         assert!(name != TTINSN_IMAGE, "`{name}` has no `.ttinsn` words: the experiment image is the one image that must");
@@ -218,6 +235,7 @@ fn check_instruction_set(objdump: &Path, elf: &Path, name: &str) {
 }
 
 /// The disassembly of `elf`, or of `range` of it.
+#[cfg(feature = "tenstorrent")]
 fn disassemble(objdump: &Path, elf: &Path, name: &str, range: Option<(u64, u64)>) -> String {
     let mut cmd = Command::new(objdump);
     // `F` on top of the image's own attributes (rv32im): firmware reaches
@@ -235,6 +253,7 @@ fn disassemble(objdump: &Path, elf: &Path, name: &str, range: Option<(u64, u64)>
 }
 
 /// Judge every instruction line of `text`, and say how many there were.
+#[cfg(feature = "tenstorrent")]
 fn judge(text: &str, name: &str) -> usize {
     let mut checked = 0usize;
     for line in text.lines() {
@@ -293,6 +312,7 @@ fn judge(text: &str, name: &str) -> usize {
 ///
 /// No other image reaches here, and an image built without the feature has no
 /// `.ttinsn` section, so a `.ttinsn` word anywhere else is still `<unknown>`.
+#[cfg(feature = "tenstorrent")]
 fn check_ttinsn_blocks(objdump: &Path, elf: &Path, name: &str) -> Vec<(u64, u64)> {
     use std::collections::BTreeMap;
     let nm = Command::new(tool("llvm-nm")).arg(elf).output().expect("could not run llvm-nm");
@@ -375,6 +395,7 @@ fn check_ttinsn_blocks(objdump: &Path, elf: &Path, name: &str) -> Vec<(u64, u64)
 }
 
 /// A file in this build script's `OUT_DIR`.
+#[cfg(feature = "tenstorrent")]
 fn out_dir_file(name: &str) -> PathBuf {
     PathBuf::from(std::env::var("OUT_DIR").unwrap()).join(name)
 }
@@ -389,6 +410,7 @@ fn out_dir_file(name: &str) -> PathBuf {
 ///
 /// The permitted forms are the ordering fences the specification's own recipes
 /// use. Anything else is flagged rather than assumed safe.
+#[cfg(feature = "tenstorrent")]
 fn fence_reason(mnemonic: &str, operands: &str) -> Option<&'static str> {
     if mnemonic != "fence" {
         return None;
@@ -412,6 +434,7 @@ fn fence_reason(mnemonic: &str, operands: &str) -> Option<&'static str> {
 /// unimplemented instruction is `UndefinedBehavior` — which per `Glossary.md`
 /// includes possible physical damage. There is no illegal-instruction trap to
 /// fall back on, so this is a correctness gate rather than hygiene.
+#[cfg(feature = "tenstorrent")]
 fn forbidden_reason(mnemonic: &str) -> Option<&'static str> {
     // Strip the ordering suffixes AMOs may carry, so `lr.w.aq` is caught too.
     let base = mnemonic.trim_end_matches(".aq").trim_end_matches(".rl");
@@ -456,6 +479,7 @@ fn forbidden_reason(mnemonic: &str) -> Option<&'static str> {
 }
 
 /// `e_entry` of a 32-bit little-endian ELF.
+#[cfg(feature = "tenstorrent")]
 fn elf_entry(elf: &Path) -> u32 {
     let bytes = std::fs::read(elf).expect("could not read the firmware ELF");
     assert!(

@@ -2460,6 +2460,8 @@ impl Runtime {
                                     // logical element count leaves the reader's
                                     // whole-tile move running past the chunk.
                                     let bytes_alloc = if pool_id.is_tt_layout() {
+                                        #[cfg(feature = "tenstorrent")]
+                                        {
                                         let shape = self.graphs[graph_id].shape(cid);
                                         let mut dims: Vec<Dim> = Vec::with_capacity(shape.len());
                                         for &d in &shape {
@@ -2481,6 +2483,11 @@ impl Runtime {
                                         let pr = ((rows + 31) / 32) * 32;
                                         let pc = ((cols + 31) / 32) * 32;
                                         (outer * pr * pc) / 1024 * tt_isa::dm::TILE_SLOT as Dim
+                                        }
+                                        #[cfg(not(feature = "tenstorrent"))]
+                                        {
+                                        unreachable!("tt param buffer: tenstorrent feature off")
+                                        }
                                     } else {
                                         (dtype.bit_size() as Dim * (len + 1)) / 8
                                     };
