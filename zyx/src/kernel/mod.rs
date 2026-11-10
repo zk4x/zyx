@@ -99,8 +99,8 @@ pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{
-    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTDmRead, TTDmWrite, TTOp,
-    TTRoleProgram, TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore, TileDim,
+    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTDmRead, TTDmTileRead,
+    TTDmWrite, TTOp, TTRoleProgram, TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore, TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};
@@ -503,7 +503,13 @@ impl Kernel {
                 | Op::TT(TTOp::Replay { .. })
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {}
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_))
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => {}
                 // PTX-level instruction: `ldmatrix` yields a per-lane
                 // fragment vector of `frags` 32-bit words (2 f16 each) and
                 // reads both the staging storage and its index.
@@ -2418,8 +2424,9 @@ impl Kernel {
             }
             match self.ops[n].op {
                 Op::Unroll { .. } => return true,
-                // A loop var is a scalar iterator, not a lane.
-                Op::Const(_) | Op::Param { .. } | Op::Range { .. } | Op::Storage { .. } | Op::Loop { .. } => {}
+                // A loop var is a scalar iterator, not a lane; so is a value
+                // read from a page (the gather's token).
+                Op::Const(_) | Op::Param { .. } | Op::Range { .. } | Op::Storage { .. } | Op::Loop { .. } | Op::Load { .. } => {}
                 Op::Binary { x, y, .. } => {
                     stack.push(x);
                     stack.push(y);

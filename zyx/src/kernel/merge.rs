@@ -250,12 +250,21 @@ impl Kernel {
         };
         let merged = self.insert_before(first, Op::Range { axis: axis_a, kind });
 
-        let mut x = merged;
-        for (id, len) in [(first, len_a), (second, len_b)] {
-            let y = self.insert_before(id, Op::Const(Constant::idx(len)));
-            self.ops[id].op = Op::Binary { x, y, bop: BOp::Mod };
-            x = self.insert_after(id, Op::Binary { x, y, bop: BOp::Div });
-        }
+        // Decompose the flat index **row-major**: the *last* axis is the low
+        // part (`flat % len_b`), the earlier axis the quotient. Ascending
+        // order would make the first axis vary fastest, so consecutive
+        // elements of the row-major index would stride by the row width and a
+        // vectorised store could never be a contiguous run. The axes are
+        // parallel, so any bijection is semantically the same.
+        let y_b = self.insert_before(first, Op::Const(Constant::idx(len_b)));
+        let div_b = self.insert_before(first, Op::Binary { x: merged, y: y_b, bop: BOp::Div });
+        let mod_b = self.insert_before(first, Op::Binary { x: merged, y: y_b, bop: BOp::Mod });
+        let y_a = self.insert_before(first, Op::Const(Constant::idx(len_a)));
+        let div_a = self.insert_before(first, Op::Binary { x: div_b, y: y_a, bop: BOp::Div });
+        let mod_a = self.insert_before(first, Op::Binary { x: div_b, y: y_a, bop: BOp::Mod });
+        self.ops[first].op = self.ops[mod_a].op.clone();
+        self.ops[second].op = self.ops[mod_b].op.clone();
+        let _ = div_a;
         self.verify();
         merged
     }

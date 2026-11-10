@@ -4784,11 +4784,11 @@ impl Runtime {
             }
             let bytes = (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
             // TT buffers are physical (whole tiles, row-padded to 32);
-            // logical shapes stay. Mirrors tilize_transfer: outer * pr
-            // * pc. Flat round-up under-allocates whenever rows are not
-            // a multiple of 32 (halo rows need full tiles).
+            // logical shapes stay. Mirrors `tilize_transfer`: one tile *image*
+            // per tile — the 16-byte header the unpacker steps over plus 1024
+            // face-order datums, padded to `tt_isa::dm::TILE_SLOT`, which is
+            // also the DRAM interleave page (`STRIPE`).
             let bytes = {
-                let el = dtypes[&tid].bit_size() as usize / 8;
                 if pool_id.is_tt_layout() {
                     let shape = self.resolve_shape(tid);
                     let (rows, cols) = match shape.as_slice() {
@@ -4803,7 +4803,8 @@ impl Runtime {
                     };
                     let pr = ((rows + 31) / 32) * 32;
                     let pc = ((cols + 31) / 32) * 32;
-                    ((outer * pr * pc) as usize) * el
+                    let tiles = (outer * pr * pc) / 1024;
+                    usize::try_from(tiles * tt_isa::dm::TILE_SLOT as Dim).expect("TT tile image bytes fit usize")
                 } else {
                     bytes
                 }

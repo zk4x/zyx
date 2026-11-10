@@ -3,11 +3,17 @@
 
 //! Tenstorrent codegen — emission only.
 //!
-//! Lowering lives in `kernel/tenstorrent.rs`: the kernel TT
-//! passes (`tt_storage`, `tt_lock_dst`, ...) rewrite the kernel IR in
-//! place, and this file is a pure consumer. It walks `Op` + the kernel
-//! [`crate::kernel::TTOp`] and emits three RISC-V section sources
-//! plus the launch tables the backend needs.
+//! Lowering lives in [`crate::kernel::tenstorrent`]: the kernel TT passes
+//! (`tt_storage`, `tt_lock_dst`, ...) rewrite the kernel IR in place, and this
+//! module is a pure consumer. It walks `Op` + the kernel
+//! [`TTOp`](crate::kernel::TTOp) and emits three RISC-V section sources plus
+//! the launch tables the backend needs.
+//!
+//! The instruction builders are here, not in the backend: SFPU programs
+//! ([`sfpu`]), the unpacker/packer word builders ([`datapath`]), the L1/CB
+//! plan ([`l1`]), the stored-program format ([`code`]) and its expander
+//! ([`loops`]), and the matmul constants ([`matmul`]). The backend keeps only
+//! device access and execution.
 //!
 //! Physical ids are derived at emission, never stored:
 //! - CBs come from `Op::Storage { scope: Circular }` (first touch
@@ -19,19 +25,43 @@
 //! - NOC traffic comes from `Op::Copy` between a `Param` and a
 //!   Circular storage (async read one way, async write the other).
 
+// The instruction builders are ported whole from `metalium-rs` and only the
+// parts zyx emits are exercised, so their unused surface is dead until a later
+// pass prunes it (the same allowance the backend's ports carry).
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod boundary;
+pub mod code;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod datapath;
+pub mod disasm;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod elem;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod kind;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod l1;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod loops;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod matmul;
+pub mod riscv;
+#[allow(dead_code, unused_imports, unused_variables)]
+pub mod sfpu;
+
+use self::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
 use crate::DType;
 use crate::Map;
 use crate::Set;
-use crate::backend::tenstorrent::kern::sfpu::kernel::{A_ROW, B_ROW, OUT_ROW};
-use crate::backend::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit};
 use crate::backend::{GwsDim, gws_from_kernel};
 use crate::dtype::Constant;
 use crate::error::{BackendError, ErrorStatus};
 use crate::kernel::{
-    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmWrite, TTOp, TTSfpInsn, UOp,
+    BOp, GPUOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, SourceBlock, TTDmRead, TTDmTileRead, TTDmWrite, TTOp,
+    TTSfpInsn, UOp,
 };
 use crate::scalar::{bf16, f16};
 use crate::slab::Slab;
+use nanoserde::SerBin;
 use tt_isa::isa::Instruction;
 
 /// DRAM page size in bytes.
@@ -39,7 +69,7 @@ pub(crate) const TT_DRAM_PAGE_BYTES: u32 = 4096;
 
 /// TT `DataFormat` code for a dtype on the tile path (the
 /// `typecast_tile_init<in, out>` template args). Distinct from the
-/// CB descriptor codes in `generate_tenstorrent` below: the two
+/// CB descriptor codes in `render_tt` below: the two
 /// numberings differ.
 /// zyx dtype -> the hardware's L1/`Src` data format code.
 ///
@@ -67,8 +97,7 @@ fn tt_fmt(dtype: DType) -> Result<u32, BackendError> {
 }
 
 /// Codegen output for the Tenstorrent backend, built from the kernel IR by
-/// [`Kernel::generate_tenstorrent`] and rendered into ops by
-/// [`Kernel::render_tt`].
+/// [`Kernel::render_tt`] and then rendered into ops.
 pub struct TTProgram {
     /// Reader section source.
     pub reader_src: String,
@@ -94,19 +123,122 @@ pub struct TTProgram {
     pub sems: Vec<TTSemaphoreInit>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One data-mover move of the native program: `bytes` between the DRAM
+/// buffer of param `param` and L1 address `l1`.
+pub struct TTDmMove {
+    /// Global head-order param ordinal (the shim/launch arg index).
+    pub param: u32,
+    /// L1 byte address of the CB side of the move.
+    pub l1: u32,
+    /// Transfer size in bytes of the L1 side.
+    pub bytes: u32,
+    /// Writer-side narrowing: the L1 tile is FP32 and the param is 16-bit,
+    /// so the host write-back converts (`TT_NARROW_*`). The packer cannot do
+    /// it: F32 `Dst` -> BF16 L1 is `pack_fmt_conv_mode=0x105`, which the
+    /// pinned ttsim refuses (`ttsim-divergence.md`, "BF16 late narrowing").
+    pub narrow: u8,
+    /// Byte offset of this move's slice inside the param's buffer for every
+    /// grid point, in launch order (`axis0 * extent1 + axis1`). The launch
+    /// hands each core its own entry list, so a grid point may name any
+    /// address: the expression is evaluated, not reduced to a stride.
+    pub offsets: Box<[u32]>,
+}
+
+/// `TTDmMove::narrow`: the L1 bytes are copied as they are.
+pub const TT_NARROW_NONE: u8 = 0;
+/// `TTDmMove::narrow`: FP32 L1 tile -> FP16 param, round to nearest even.
+pub const TT_NARROW_F16: u8 = 1;
+/// `TTDmMove::narrow`: FP32 L1 tile -> BF16 param, round to nearest even.
+pub const TT_NARROW_BF16: u8 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
+/// One semaphore's initial state, mirroring
+/// `tt_kernels::runtime::SemaphoreInit` (`(Semaphore, value, max)`), stored
+/// as plain bytes so the program table stays plain data.
+pub struct TTSemaphoreInit {
+    /// Semaphore index, `0..8`.
+    pub index: u8,
+    /// Initial value.
+    pub value: u8,
+    /// Maximum value.
+    pub max: u8,
+}
+
 impl Kernel {
     /// Tenstorrent render: lower to a fully rendered kernel — head order
     /// `Params`, `TensixGrid`, the three role programs, the reader's `DmRead`
     /// pages, `EndReader`, the compute section, `EndCompute`, the `Semset`s,
     /// the writer's `DmWrite` pages. The section sources are the
     /// not-yet-ported fallback only. Lowering lives in `device_epilogue`
-    /// (which verifies the lowered IR); emission derives CBs, DST slots,
-    /// param ordinals, and grid axes from the resulting ops.
+    /// (which verifies the lowered IR).
     /// Backend `compile` only walks these ops.
     /// The unlowered ops are consumed, never carried. Every kernel
     /// goes through here, including hand-built custom kernels (raw IR
     /// lowers exactly once; kernels already holding a `Source` pass
     /// through untouched in `render` and never reach this).
+    /// Render a pure transfer: parameters, the grid, and one mover program.
+    /// No roles, no boundary lists, no circular buffers.
+    fn render_transfer(k: &Kernel, param_ordinal_of: &Map<OpId, u32>) -> Result<Kernel, BackendError> {
+        // Plain L1 pages, placed at `≡0 mod 64`: congruent with the raw DRAM
+        // span each holds.
+        let mut pages: Map<OpId, u32> = Map::default();
+        let mut at = tt_isa::l1::DATA.base;
+        let mut scan = k.head;
+        for _ in 0..250_000 {
+            if scan.is_null() {
+                break;
+            }
+            if let Op::Storage { dtype, len, .. } = k.at(scan)
+                && matches!(k.at(scan), Op::Storage { scope: MemScope::Local, .. })
+            {
+                let bytes = u64::try_from(*len)
+                    .map_err(|_| tt_err(format!("tenstorrent: page {scan} has negative length")))?
+                    .checked_mul(dtype.bit_size() as u64 / 8)
+                    .ok_or_else(|| tt_err(format!("tenstorrent: page {scan} size overflows")))?;
+                let base = ((at + 63) & !63) + tt_isa::dm::TILE_DATA;
+                if base + bytes > tt_isa::l1::DATA.end {
+                    return Err(tt_err(format!(
+                        "tenstorrent: L1 data arena exhausted: page {scan} needs {bytes} bytes at {base:#x}"
+                    )));
+                }
+                pages.insert(
+                    scan,
+                    u32::try_from(base).map_err(|_| tt_err("tenstorrent: page address overflows u32".to_string()))?,
+                );
+                at = base + bytes;
+            }
+            scan = k.next_op(scan);
+        }
+        let cbs: Map<OpId, u32> = Map::default();
+        let words = boundary::reader(k, &cbs, param_ordinal_of, &pages);
+        let gws_vec = gws_from_kernel(k, &k.dev_info().max_global_work_dims)?;
+        if gws_vec.len() > 2 {
+            return Err(tt_err(format!("tenstorrent render: grid rank {} exceeds 2D", gws_vec.len())));
+        }
+        let mut grid = [GwsDim::Const(1), GwsDim::Const(1)];
+        for (i, g) in gws_vec.into_iter().enumerate() {
+            grid[i] = g;
+        }
+        let mut params = Vec::new();
+        let mut id = k.head;
+        while !id.is_null() {
+            if let Op::Param { kind, .. } = k.at(id) {
+                params.push(*kind);
+            }
+            id = k.next_op(id);
+        }
+        let mut rendered =
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: k.dev, dev_info: k.dev_info.clone() };
+        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+        rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
+        rendered.push_back(Op::TT(TTOp::Reader(Box::new(crate::kernel::TTRoleProgram {
+            words: words.into_boxed_slice(),
+            loops: Box::new([]),
+        }))));
+        Ok(rendered)
+    }
+
     pub(crate) fn render_tt(&self) -> Result<Kernel, BackendError> {
         // Render-only: lowering lives in `device_epilogue` (which
         // verifies the lowered IR); this consumes the result 1:1.
@@ -134,6 +266,12 @@ impl Kernel {
                 status: ErrorStatus::KernelCompilation,
                 context: "tenstorrent: param scan did not finish in 50000 steps".into(),
             });
+        }
+
+        // A pure transfer has no sections: one mover program, plain L1 pages,
+        // and no roles, no boundary lists, no CBs. tt-metal's DRAM loopback.
+        if !k.iter_unordered().any(|(_, op)| matches!(op, Op::TT(TTOp::EndReader))) {
+            return Self::render_transfer(k, &param_ordinal_of);
         }
 
         // CB allocation: first touch over loads/stores/copies of
@@ -186,9 +324,26 @@ impl Kernel {
 
         // The DRAM boundary: one move per reader publish and per writer drain,
         // in program order. `render_tt` splits each into page ops.
-        let (reader, writer) = tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?;
+        // A kernel with a row page (a CB shorter than one tile) is driven by
+        // the RISC-V boundary programs instead: its traffic is spans, not whole
+        // tiles, and the page-op list cannot express it.
+        let row_traffic =
+            k.iter_unordered().any(|(_, op)| matches!(op, Op::Storage { scope: MemScope::Circular, len, .. } if *len < 1024));
+        let (reader, writer) = if row_traffic {
+            (Vec::new(), Vec::new())
+        } else {
+            tt_boundary_moves(k, &cbs, &l1, &param_ordinal_of)?
+        };
+        let empty_l1: Map<OpId, u32> = Map::default();
+        let (reader_words, writer_words) = if row_traffic {
+            (boundary::reader(k, &cbs, &param_ordinal_of, &empty_l1), boundary::writer(k, &cbs, &param_ordinal_of, &empty_l1))
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         let program = TTProgram { reader_src, compute_src, writer_src, roles, loops, reader, writer, sems };
+
+        // Render the program into the ops the backend compiles.
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         if gws_vec.len() > 2 {
             return Err(BackendError {
@@ -200,10 +355,10 @@ impl Kernel {
         for (i, g) in gws_vec.into_iter().enumerate() {
             grid[i] = g;
         }
-        // Param head order is lowering-invariant: the TT passes only append
-        // effect ops at the tail and never create, remove, or replace Param
-        // ops — so the pre-lowering order matches the ordinals emission
-        // numbered post-lowering.
+        // Param head order is lowering-invariant: the TT passes only
+        // append effect ops at the tail and never create, remove, or
+        // replace Param ops — so the pre-lowering order matches the
+        // ordinals the passes numbered post-lowering.
         let mut params = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
@@ -213,29 +368,43 @@ impl Kernel {
             op_id = self.next_op(op_id);
         }
         let [unpack, math, pack] = program.roles;
-        let [_, math_loops, _] = program.loops;
+        let [unpack_loops, math_loops, pack_loops] = program.loops;
         let mut rendered =
             Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::TT(TTOp::TensixGrid(Box::new(grid))));
-        rendered.push_back(Op::TT(TTOp::Unpack(unpack.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Unpack(Box::new(crate::kernel::TTRoleProgram {
+            words: unpack.into_boxed_slice(),
+            loops: unpack_loops.into_boxed_slice(),
+        }))));
         rendered.push_back(Op::TT(TTOp::Math(Box::new(crate::kernel::TTRoleProgram {
             words: math.into_boxed_slice(),
             loops: math_loops.into_boxed_slice(),
         }))));
-        rendered.push_back(Op::TT(TTOp::Pack(pack.into_boxed_slice())));
+        rendered.push_back(Op::TT(TTOp::Pack(Box::new(crate::kernel::TTRoleProgram {
+            words: pack.into_boxed_slice(),
+            loops: pack_loops.into_boxed_slice(),
+        }))));
         // The reader list: one op per 4 KB page, so the stream's shape is
         // fixed here and the launch only substitutes addresses (NOTES §2).
         rendered.push_back(Op::Source(SourceBlock(program.reader_src.into_boxed_str())));
         for mv in &program.reader {
+            // A `TILE_SLOT` publish is the mover's shaped read of one whole
+            // tile image (`READ_BROADCAST_COL`): one entry, never paged.
+            if mv.bytes == tt_isa::dm::TILE_SLOT as u32 {
+                rendered.push_back(Op::TT(TTOp::DmReadBroadcastCol(Box::new(TTDmTileRead {
+                    param: mv.param,
+                    dst: mv.l1,
+                    offsets: mv.offsets.clone(),
+                }))));
+                continue;
+            }
             for page in tt_pages(mv) {
                 rendered.push_back(Op::TT(TTOp::DmRead(Box::new(TTDmRead {
                     param: mv.param,
                     l1: page.l1,
                     len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
+                    offsets: tt_page_offsets(mv, page.at)?,
                 }))));
             }
         }
@@ -251,45 +420,68 @@ impl Kernel {
                     param: mv.param,
                     l1: page.l1,
                     len: page.len,
-                    base: page.base,
-                    gstride0: mv.gstride0,
-                    gstride1: mv.gstride1,
+                    offsets: tt_page_offsets(mv, page.at)?,
                     narrow: mv.narrow,
                 }))));
             }
         }
         rendered.push_back(Op::Source(SourceBlock(program.writer_src.into_boxed_str())));
+        if !reader_words.is_empty() {
+            rendered.push_back(Op::TT(TTOp::Reader(Box::new(crate::kernel::TTRoleProgram {
+                words: reader_words.into_boxed_slice(),
+                loops: Box::new([]),
+            }))));
+        }
+        if !writer_words.is_empty() {
+            rendered.push_back(Op::TT(TTOp::Writer(Box::new(crate::kernel::TTRoleProgram {
+                words: writer_words.into_boxed_slice(),
+                loops: Box::new([]),
+            }))));
+        }
         Ok(rendered)
     }
 }
 
-/// One 4 KB page of a boundary move: its L1 side, its byte length, and its
-/// byte offset inside the param's slice. The grid strides move the whole
-/// slice, so they stay on the move.
+/// One 4 KB page of a boundary move: its L1 side, its byte length, and the
+/// byte delta that turns the move's per-grid-point table into this page's.
 struct TtPage {
     l1: u32,
     len: u32,
-    base: u32,
+    at: u32,
 }
 
 /// Split a boundary move into the pages codegen emits one op each for: the
-/// 4 KB page is the unit that is contiguous on both sides.
+/// DRAM page is the unit that is contiguous on both sides. A shaped tile read
+/// (`READ_BROADCAST_COL`, one whole `TILE_SLOT`) is one entry by definition.
 fn tt_pages(mv: &TTDmMove) -> Vec<TtPage> {
+    if mv.bytes == tt_isa::dm::TILE_SLOT as u32 {
+        return vec![TtPage { l1: mv.l1, len: mv.bytes, at: 0 }];
+    }
     let mut pages = Vec::with_capacity(mv.bytes.div_ceil(TT_DRAM_PAGE_BYTES) as usize);
     let mut at = 0u32;
     while at < mv.bytes {
         let len = (mv.bytes - at).min(TT_DRAM_PAGE_BYTES);
-        pages.push(TtPage { l1: mv.l1 + at, len, base: mv.base + at });
+        pages.push(TtPage { l1: mv.l1 + at, len, at });
         at += len;
     }
     pages
+}
+
+/// A move's per-grid-point table, shifted by one page's byte delta.
+fn tt_page_offsets(mv: &TTDmMove, at: u32) -> Result<Box<[u32]>, BackendError> {
+    let mut table = Vec::with_capacity(mv.offsets.len());
+    for off in mv.offsets.iter() {
+        let value = i64::from(*off) + i64::from(at);
+        table.push(u32::try_from(value).map_err(|_| tt_err(format!("tenstorrent: page offset {value} does not fit u32")))?);
+    }
+    Ok(table.into_boxed_slice())
 }
 fn tt_err(context: String) -> BackendError {
     BackendError { status: ErrorStatus::KernelCompilation, context: context.into() }
 }
 
 /// Tile bytes for a CB dtype (matches the `cb_config` table in
-/// `generate_tenstorrent`).
+/// `render_tt`).
 fn tt_tile_bytes(dtype: DType) -> Result<u32, BackendError> {
     match dtype {
         DType::F32 | DType::U32 | DType::I32 => Ok(4096),
@@ -421,8 +613,8 @@ pub(crate) fn tt_sfp_encode(insn: &TTSfpInsn) -> Result<Instruction, BackendErro
 /// `kind` the lowering stored; the arity must match the operands the zyx op
 /// carries, otherwise the program would read a row that was never written.
 fn tt_sfpu_program(kind: u32, a_row: u32, b_row: Option<u32>, slot_row: u32) -> Result<Vec<Instruction>, BackendError> {
-    use crate::backend::tenstorrent::kern::sfpu::kernel::Operands;
-    use crate::backend::tenstorrent::kern::sfpu::ops::{Broadcast, program_for};
+    use crate::codegen::tenstorrent::sfpu::kernel::Operands;
+    use crate::codegen::tenstorrent::sfpu::ops::{Broadcast, program_for};
     let Some((operands, code)) = program_for(kind, [0.0, 0.0], Broadcast::None) else {
         return Err(tt_err(format!("tenstorrent: SFPU kind {kind:#x} has no metalium program")));
     };
@@ -449,6 +641,15 @@ struct TtSection<'a> {
     section: u8,
     params: Vec<OpId>,
     loop_names: Map<OpId, String>,
+    /// The iteration each `Op::Loop` is being emitted for. A loop reaches the
+    /// role programs one iteration at a time: the body's words are the
+    /// iteration's (a CB slot is the counter), so every index it names has a
+    /// concrete value at emission.
+    bind: Map<OpId, i64>,
+    /// The innermost `Op::Loop` whose body is being emitted **once** with a
+    /// block repeat: an address that moves per iteration is then a register the
+    /// translator steps (`ttinsn::STEP_STORE`), not a different word.
+    loop_var: Option<(OpId, i64)>,
     range_names: Map<OpId, String>,
     var_names: Map<OpId, String>,
     slots: Map<OpId, u32>,
@@ -511,7 +712,10 @@ impl<'a> TtSection<'a> {
     fn expr(&self, id: OpId) -> Result<String, BackendError> {
         match self.k.at(id) {
             Op::Const(c) => tt_const_lit(c),
-            Op::Loop { .. } => self.loop_names.get(&id).cloned().ok_or_else(|| self.err(format!("{id:?} is no loop counter"))),
+            Op::Loop { .. } => match self.bind.get(&id) {
+                Some(t) => Ok(t.to_string()),
+                None => self.loop_names.get(&id).cloned().ok_or_else(|| self.err(format!("{id:?} is no loop counter"))),
+            },
             Op::Range { axis, kind, .. } => match kind {
                 RangeKind::Group(_) => self
                     .range_names
@@ -675,7 +879,7 @@ impl<'a> TtSection<'a> {
                 tt_isa::mailbox::loops::LEN_BITS
             )));
         }
-        use crate::backend::tenstorrent::kern::datapath::{addr_mod_entry, thread_entry};
+        use crate::codegen::tenstorrent::datapath::{addr_mod_entry, thread_entry};
         let row = addr_mod_entry(0);
         let step = addr_mod_entry(7);
         self.native.push(thread_entry(row.dst_incr, 0).word());
@@ -738,6 +942,14 @@ impl<'a> TtSection<'a> {
     /// Push a word into a named role stream (a semaphore op names the role it
     /// belongs to instead of inheriting the previous op's).
     fn push_role_word_for(&mut self, role: u8, word: u32) {
+        if std::env::var_os("ZYX_WORD_DUMP").is_some() {
+            let at = match role {
+                0 => self.native_t0.len(),
+                1 => self.native.len(),
+                _ => self.native_t2.len(),
+            };
+            eprintln!("WORD role {role} at {at}: {word:08x}");
+        }
         match role {
             0 => self.native_t0.push(word),
             1 => self.native.push(word),
@@ -805,9 +1017,68 @@ impl<'a> TtSection<'a> {
 /// Render one section body: loops, traffic, sync, locks, compute.
 /// Locks are discipline-checked (compute-only, paired, closed at
 /// section end — the old verify lock block).
+
+/// The `EndLoop` matching the `Op::Loop` at `ops[start]`, honouring nesting.
+fn tt_matching_end(k: &Kernel, ops: &[OpId], start: usize) -> Result<usize, BackendError> {
+    let mut depth = 0usize;
+    for i in start..ops.len() {
+        match k.at(ops[i]) {
+            Op::Loop { .. } => depth += 1,
+            Op::EndLoop => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(tt_err(format!("tenstorrent: loop {:?} has no EndLoop in its section", ops[start])))
+}
+
 fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError> {
     let mut loop_stack: Vec<OpId> = Vec::new();
-    for id in ops.iter().copied() {
+    let mut at = 0usize;
+    while at < ops.len() {
+        let id = ops[at];
+        // A loop reaches the role programs one iteration at a time: its body's
+        // words are the iteration's (a multi-tile CB's slot is the counter), so
+        // the streams get the body once per iteration with the counter bound,
+        // not one copy with the counter unresolved.
+        if let Op::Loop { len } = sec.k.at(id) {
+            let trip = sec
+                .k
+                .resolve_const(*len)
+                .and_then(Constant::as_dim)
+                .filter(|t| *t > 0)
+                .ok_or_else(|| sec.err(format!("loop {id:?} needs a positive constant trip count")))?;
+            let end = tt_matching_end(sec.k, ops, at)?;
+            // One copy of the body and a block repeat per role: the words are
+            // the *first* iteration's, and anything that must move with the
+            // counter (a tile CB's slot) is a register the translator steps
+            // (`ttinsn::STEP_STORE`), never a second copy of the words. A body
+            // that already spends the table's entries (a replay longer than the
+            // 32-word hardware buffer) keeps its own; the two nest.
+            let started = [sec.native_t0.len(), sec.native.len(), sec.native_t2.len()];
+            let outer = sec.loop_var;
+            sec.loop_var = Some((id, trip));
+            sec.bind.insert(id, 0);
+            render_section(sec, &ops[at + 1..end])?;
+            sec.bind.remove(&id);
+            sec.loop_var = outer;
+            let ended = [sec.native_t0.len(), sec.native.len(), sec.native_t2.len()];
+            for (role, (start, stop)) in started.iter().zip(ended.iter()).enumerate() {
+                if stop > start {
+                    let len = (stop - start) as u32;
+                    if len >= 1 << tt_isa::mailbox::loops::LEN_BITS || trip > 1 << tt_isa::mailbox::loops::COUNT_BITS {
+                        return Err(sec.err(format!("loop {id:?} does not fit a block repeat")));
+                    }
+                    sec.loops[role].push([*start as u32, len, trip as u32]);
+                }
+            }
+            at = end + 1;
+            continue;
+        }
         match sec.k.at(id) {
             Op::Const { .. } | Op::Param { .. } | Op::Storage { .. } | Op::Stack { .. } => {}
             // Unrolled lanes emit no code: traffic addresses are
@@ -817,7 +1088,11 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             Op::Unroll { .. } => {}
             Op::Range { kind, .. } => match kind {
                 RangeKind::Group(_) => {}
-                _ => return Err(sec.err(format!("range {id:?} is not a group range"))),
+                // A lane axis is a within-tile offset: the boundary copies
+                // address lane-free bases (the transform binds it) and the
+                // tile-shape carriers never become addresses, so it emits no
+                // code — exactly like `Unroll` above.
+                RangeKind::Local(_) => {}
             },
             Op::Loop { len } => {
                 if sec.k.dtype(*len) == DType::Bool {
@@ -872,7 +1147,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                             use tt_isa::cfg::generated::{global, thcon};
                             let l1 = sec.cb_l1(dcb)?;
                             let mut words = tt_isa::backend::ConfigWords::new();
-                            crate::backend::tenstorrent::kern::datapath::pack_config(&mut words, l1);
+                            crate::codegen::tenstorrent::datapath::pack_config(&mut words, l1);
                             words
                                 .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
                                 .map_err(|e| sec.err(format!("pack {id:?}: dst offset: {e:?}")))?;
@@ -881,19 +1156,20 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                                 .map_err(|e| sec.err(format!("pack {id:?}: out format: {e:?}")))?;
                             let mut code =
                                 vec![wait_for_packer(Before::CONFIG).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?];
-                            code.extend(crate::backend::tenstorrent::kern::datapath::config_program(&words));
+                            code.extend(crate::codegen::tenstorrent::datapath::config_program(&words));
                             code.push(
                                 stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY)
                                     .map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?,
                             );
-                            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(
-                                crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS,
+                            code.extend(crate::codegen::tenstorrent::datapath::pack_rows(
+                                crate::codegen::tenstorrent::datapath::TILE_DST_ROWS,
                             ));
                             sec.native_t2.extend(code.iter().map(|i| i.word()));
                             sec.last_role = 2;
                             // A pack is one op, not the end of the section:
                             // the register hand-off (`tt_reg_sync`) can put
                             // another tile's pack after this one.
+                            at += 1;
                             continue;
                         }
                         if sec.section != 0 {
@@ -945,9 +1221,54 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         // the DST path needs the same header compensation the
                         // Src path does (`tt_src_base`). Without it the tile is
                         // shifted by one 16-byte unit (four F32 datums).
-                        let l1 = tt_src_base(sec.cb_l1(scb)?);
-                        let words = crate::backend::tenstorrent::kern::datapath::unpack_tile_to_dst(l1, dst);
-                        sec.native_t0.extend(words.iter().map(|i| i.word()));
+                        //
+                        // A multi-tile CB's slot is the index's. Inside a loop
+                        // the body is written once, so the slot of iteration 0 is
+                        // what the words say and the rest of the loop is a
+                        // register the translator advances by the index's own
+                        // step — a slot that does not move with the counter is a
+                        // different loop and is refused below rather than
+                        // silently reading tile 0 every time.
+                        let uab = u32::from(cb_dtype(sec.k, scb)?.bit_size()) / 8;
+                        let base_l1 = tt_src_base(sec.cb_l1(scb)?);
+                        let words: Vec<u32> = match sec.loop_var {
+                            Some((var, _)) => {
+                                let mut first = sec.bind.clone();
+                                first.insert(var, 0);
+                                let mut next = sec.bind.clone();
+                                next.insert(var, 1);
+                                let slot0 = tt_cb_offset(sec.k, *src_idx, uab, &first)?;
+                                let slot1 = tt_cb_offset(sec.k, *src_idx, uab, &next)?;
+                                let step = slot1.checked_sub(slot0).unwrap_or(0);
+                                // A slot that does not move with the counter is
+                                // loop-invariant: the repeat reads it again,
+                                // which is what the body says.
+                                if step == 0 {
+                                    crate::codegen::tenstorrent::datapath::unpack_tile_to_dst(base_l1 + u64::from(slot0), dst)
+                                        .iter()
+                                        .map(|i| i.word())
+                                        .collect()
+                                } else if step % 16 != 0 {
+                                    return Err(sec.err(format!(
+                                        "unpack {id:?} moves its CB slot {step} bytes a step, not a 16-byte unit"
+                                    )));
+                                } else {
+                                    crate::codegen::tenstorrent::datapath::unpack_tile_stepped(
+                                        base_l1 + u64::from(slot0),
+                                        step,
+                                        dst,
+                                    )
+                                }
+                            }
+                            None => {
+                                let slot = tt_cb_offset(sec.k, *src_idx, uab, &sec.bind)?;
+                                crate::codegen::tenstorrent::datapath::unpack_tile_to_dst(base_l1 + u64::from(slot), dst)
+                                    .iter()
+                                    .map(|i| i.word())
+                                    .collect()
+                            }
+                        };
+                        sec.native_t0.extend(words);
                         sec.last_role = 0;
                         sec.compute_ops += 1;
                         sec.out.push_str(&format!("{}copy_tile({cb}, 0, {dst});\n", sec.indent));
@@ -998,7 +1319,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.out.push_str(&format!("{}{text}\n", sec.indent));
             }
             Op::TT(TTOp::Unpacr { src, unit, count, flip }) => {
-                use crate::backend::tenstorrent::kern::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
+                use crate::codegen::tenstorrent::datapath::{Unpacker, config_program, set_adc_x, tile_base_units};
                 use tt_isa::cfg::generated::{alu, thcon};
                 if *count != 1024 {
                     return Err(sec.err(format!("unpacr {id:?} of {count} datums: only whole tiles are wired up")));
@@ -1016,17 +1337,17 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                     // BF16 in L1 moves as is (`SrcRoute`).
                     let src_dtype = sec.k.dtype(*src);
                     let route = match src_dtype {
-                        DType::F32 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Tf32FromFp32,
-                        DType::BF16 => crate::backend::tenstorrent::kern::matmul::SrcRoute::Bf16FromBf16,
+                        DType::F32 => crate::codegen::tenstorrent::matmul::SrcRoute::Tf32FromFp32,
+                        DType::BF16 => crate::codegen::tenstorrent::matmul::SrcRoute::Bf16FromBf16,
                         dt => {
                             return Err(sec.err(format!("unpacr {id:?}: no Src route from {dt:?} (F32 and BF16 are wired up)")));
                         }
                     };
                     let (in_fmt, out_fmt) = route.formats();
-                    crate::backend::tenstorrent::kern::datapath::unpack_src_config(
+                    crate::codegen::tenstorrent::datapath::unpack_src_config(
                         &mut words,
                         unpacker,
-                        crate::backend::tenstorrent::kern::matmul::tile_descriptor(in_fmt),
+                        crate::codegen::tenstorrent::matmul::tile_descriptor(in_fmt),
                         l1,
                         out_fmt,
                     );
@@ -1053,10 +1374,10 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 let mut code = config_program(&words);
                 if fresh {
                     // `matmul_items`: the X range is the whole face, set once.
-                    code.push(set_adc_x(unpacker, 0, crate::backend::tenstorrent::kern::matmul::FACE_DATUMS - 1));
+                    code.push(set_adc_x(unpacker, 0, crate::codegen::tenstorrent::matmul::FACE_DATUMS - 1));
                     sec.src_unpacker_ready[*unit as usize] = true;
                 }
-                code.push(crate::backend::tenstorrent::kern::datapath::unpack_src_instruction(unpacker, *flip));
+                code.push(crate::codegen::tenstorrent::datapath::unpack_src_instruction(unpacker, *flip));
                 sec.native_t0.extend(code.iter().map(|i| i.word()));
                 sec.last_role = 0;
                 sec.has_src_unpack = true;
@@ -1065,8 +1386,8 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 use tt_isa::isa::generated::encode;
                 let z = encode::Setadczw::ZERO.z0(1).z0_val(*face);
                 let insn = match tt_unpacker(*unit).map_err(|e| sec.err(format!("setadczw {id:?}: {e}")))? {
-                    crate::backend::tenstorrent::kern::datapath::Unpacker::SrcA => z.u0(1),
-                    crate::backend::tenstorrent::kern::datapath::Unpacker::SrcB => z.u1(1),
+                    crate::codegen::tenstorrent::datapath::Unpacker::SrcA => z.u0(1),
+                    crate::codegen::tenstorrent::datapath::Unpacker::SrcB => z.u1(1),
                 }
                 .encode()
                 .map_err(|e| sec.err(format!("setadczw {id:?}: {e:?}")))?;
@@ -1077,7 +1398,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 if *count == 0 {
                     return Err(sec.err(format!("setadcx {id:?}: empty datum range")));
                 }
-                let insn = crate::backend::tenstorrent::kern::datapath::set_adc_x(
+                let insn = crate::codegen::tenstorrent::datapath::set_adc_x(
                     tt_unpacker(*unit).map_err(|e| sec.err(format!("setadcx {id:?}: {e}")))?,
                     *first,
                     first + count - 1,
@@ -1094,9 +1415,9 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                 sec.acc_row = row;
                 let insn = encode::Setrwc::ZERO
                     .src_a(1)
-                    .src_a_val(crate::backend::tenstorrent::kern::matmul::SRC_A_ROW as u32)
+                    .src_a_val(crate::codegen::tenstorrent::matmul::SRC_A_ROW as u32)
                     .src_b(1)
-                    .src_b_val(crate::backend::tenstorrent::kern::matmul::SRC_B_ROW as u32)
+                    .src_b_val(crate::codegen::tenstorrent::matmul::SRC_B_ROW as u32)
                     .dst(1)
                     // `SETRWC`'s `DstVal` is four bits, so one unit is a 32-row
                     // half-tile, not a row: a `Dst` row cannot be encoded at
@@ -1167,7 +1488,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
                         *value,
                     )
                     .map_err(|e| sec.err(format!("setcfg {id:?}: {e:?}")))?;
-                let program = crate::backend::tenstorrent::kern::datapath::config_program(&words);
+                let program = crate::codegen::tenstorrent::datapath::config_program(&words);
                 sec.native.extend(program.iter().map(|i| i.word()));
                 sec.last_role = 1;
             }
@@ -1292,6 +1613,7 @@ fn render_section(sec: &mut TtSection, ops: &[OpId]) -> Result<(), BackendError>
             _ => return Err(sec.err(format!("{id:?} is not fully lowered (SSA remains)"))),
         }
         sec.finish_replay()?;
+        at += 1;
     }
     if sec.replay.is_some() {
         return Err(sec.err("a replay body is truncated by the section end".to_string()));
@@ -1319,9 +1641,14 @@ fn tt_place_cbs(k: &Kernel, cb_order: &[OpId]) -> Result<Vec<u32>, BackendError>
         // one. Sizing by `len` alone overlaps the tiles of consecutive CBs.
         let el = u64::from(dtype.bit_size() as u32 / 8);
         let len = (*len as u64).checked_mul(el).ok_or_else(|| tt_err(format!("tenstorrent: CB {st} size overflows")))?;
-        let base = (at + 63) & !63;
+        // Every CB starts 16 bytes *into* its alignment block: the datums then
+        // sit at ≡16 mod 64, which is where a tile image's datum block lives
+        // (`tt_isa::dm::TILE_DATA`). A plain read copies that datum block, and
+        // a shaped read (`READ_BROADCAST_COL`) writes header+datums at
+        // `base - 16`, so the 16 bytes of headroom must be inside the arena.
+        let base = ((at + 63) & !63) + tt_isa::dm::TILE_DATA;
         let end = base + len;
-        if end > tt_isa::l1::DATA.end {
+        if end > tt_isa::l1::DATA.end || base < tt_isa::l1::DATA.base {
             return Err(tt_err(format!(
                 "tenstorrent: L1 data arena exhausted: CB {st} needs {len} bytes at {base:#x}, arena ends at {:#x}",
                 tt_isa::l1::DATA.end
@@ -1356,72 +1683,174 @@ fn tt_narrow(cb: DType, param: DType) -> u8 {
     }
 }
 
-/// Byte offset and per-grid-axis byte strides of a boundary move's slice.
+/// Evaluate an index expression for one concrete binding of its variables.
 ///
-/// The base is the index's constant term. For an index `tt_reindex` already
-/// rewrote to physical tile units, the grid strides are the index's own (a
-/// grid step there is a whole number of tiles: the reduce loop makes a row
-/// group advance `ntc` tiles, which the extent-only map cannot know).
-/// Otherwise the index is a *logical* one and the strides come from the
-/// physical tile map: one grid point owns exactly one tile (the unit phase 1
-/// sizes CBs, slots and byte counts in), so a group step advances by 1024
-/// datums times the extents of the higher-axis groups — the same map
-/// `strip_unrolls` uses to place reader and writer slices. Trusting a logical
-/// folded index here reads a 32-tile stride where one tile is meant.
-fn tt_slice(k: &Kernel, idx: OpId, elem_bytes: u32) -> Result<(u32, u32, u32), BackendError> {
-    let strides = k.get_strides(idx).ok_or_else(|| tt_err(format!("tenstorrent: boundary index {idx:?} is not affine")))?;
-    for var in strides.keys() {
+/// The expression is a plain tree of integer arithmetic (`+`, `-`, `*`, `/`,
+/// `%`, negation), with range/loop/lane variables as leaves. `None` when a
+/// leaf is unbound or the tree carries anything that is not index math — the
+/// caller either binds it or reports.
+fn tt_eval_index(k: &Kernel, idx: OpId, bind: &Map<OpId, i64>) -> Option<i64> {
+    if idx.is_null() {
+        return Some(0);
+    }
+    match k.at(idx) {
+        Op::Const(c) => c.as_integer(),
+        Op::Range { .. } | Op::Loop { .. } | Op::Unroll { .. } => bind.get(&idx).copied(),
+        Op::Binary { x, y, bop } => {
+            let x = tt_eval_index(k, *x, bind)?;
+            let y = tt_eval_index(k, *y, bind)?;
+            Some(match bop {
+                BOp::Add => x.checked_add(y)?,
+                BOp::Sub => x.checked_sub(y)?,
+                BOp::Mul => x.checked_mul(y)?,
+                BOp::Div => x.checked_div(y)?,
+                BOp::Mod => x.checked_rem(y)?,
+                _ => return None,
+            })
+        }
+        Op::Unary { x, uop: UOp::Neg } => tt_eval_index(k, *x, bind)?.checked_neg(),
+        Op::Cast { x, .. } => tt_eval_index(k, *x, bind),
+        _ => None,
+    }
+}
+
+/// Every variable a boundary index names, once each.
+fn tt_index_vars(k: &Kernel, idx: OpId, out: &mut Vec<OpId>) {
+    if idx.is_null() {
+        return;
+    }
+    match k.at(idx) {
+        Op::Const(_) => {}
+        Op::Range { .. } | Op::Loop { .. } | Op::Unroll { .. } => {
+            if !out.contains(&idx) {
+                out.push(idx);
+            }
+        }
+        Op::Binary { x, y, .. } => {
+            tt_index_vars(k, *x, out);
+            tt_index_vars(k, *y, out);
+        }
+        Op::Unary { x, .. } | Op::Cast { x, .. } => tt_index_vars(k, *x, out),
+        _ => {}
+    }
+}
+
+/// The launch grid's axis extents, from the kernel's group ranges. A boundary
+/// move's address is evaluated per grid point, so the extents must be known at
+/// compile time; a symbolic grid is refused rather than guessed.
+fn tt_grid_extents(k: &Kernel) -> Result<[u32; 2], BackendError> {
+    let gws = crate::backend::gws_from_kernel(k, &k.dev_info().max_global_work_dims)?;
+    let mut grid = [1u32; 2];
+    for (axis, dim) in gws.iter().enumerate() {
+        let GwsDim::Const(len) = dim else {
+            return Err(tt_err(format!(
+                "tenstorrent: grid axis {axis} is symbolic; a boundary move is evaluated per grid point"
+            )));
+        };
+        grid[axis] =
+            u32::try_from(*len).map_err(|_| tt_err(format!("tenstorrent: grid axis {axis} length {len} does not fit u32")))?;
+    }
+    Ok(grid)
+}
+
+/// Byte offset of a boundary slice inside its param's buffer for **every** grid
+/// point, in launch order (`axis0 * extent1 + axis1`).
+///
+/// The index is `tt_add_movers`' canonical DRAM address — bytes, with the tile
+/// pitch, header and face layout already in the expression — so it may be any
+/// tree of integer arithmetic, `/` and `%` included. The bound loops and lanes
+/// come from `bind`; the two grid coordinates are substituted per entry. The
+/// list is staged per core, so a grid point may name any address: nothing here
+/// is required to be affine.
+fn tt_move_offsets(k: &Kernel, idx: OpId, bind: &Map<OpId, i64>, grid: [u32; 2]) -> Result<Box<[u32]>, BackendError> {
+    let mut vars = Vec::new();
+    tt_index_vars(k, idx, &mut vars);
+    let mut axis_var: [Option<OpId>; 2] = [None, None];
+    for var in vars.iter().copied() {
+        let Op::Range { axis, kind: RangeKind::Group(_), .. } = k.at(var) else {
+            continue;
+        };
+        if bind.contains_key(&var) {
+            continue;
+        }
+        let slot = axis_var.get_mut(*axis as usize).ok_or_else(|| {
+            tt_err(format!("tenstorrent: boundary index {idx:?} names grid axis {axis}, which is not dispatched"))
+        })?;
+        if slot.is_some() {
+            return Err(tt_err(format!("tenstorrent: boundary index {idx:?} names more than one variable on grid axis {axis}")));
+        }
+        *slot = Some(var);
+    }
+    let count = (grid[0] as usize)
+        .checked_mul(grid[1] as usize)
+        .ok_or_else(|| tt_err("tenstorrent: boundary grid overflows".to_string()))?;
+    let mut offsets = Vec::with_capacity(count);
+    for g0 in 0..grid[0] {
+        for g1 in 0..grid[1] {
+            let mut at = bind.clone();
+            if let Some(var) = axis_var[0] {
+                at.insert(var, i64::from(g0));
+            }
+            if let Some(var) = axis_var[1] {
+                at.insert(var, i64::from(g1));
+            }
+            let value = tt_eval_index(k, idx, &at).ok_or_else(|| {
+                tt_err(format!("tenstorrent: boundary index {idx:?} is not evaluable at grid point ({g0}, {g1})"))
+            })?;
+            offsets.push(
+                u32::try_from(value)
+                    .map_err(|_| tt_err(format!("tenstorrent: boundary offset {value} bytes does not fit u32")))?,
+            );
+        }
+    }
+    Ok(offsets.into_boxed_slice())
+}
+
+/// The L1 byte offset a boundary copy's buffer-side index names, for one
+/// iteration of every bound loop.
+///
+/// The buffer side never moves with the grid: a grid axis there would mean a
+/// per-core slot, which the plan does not express. So every variable the index
+/// names must be a bound loop (or the constant term).
+/// The staged word the firmware translator turns into `sw t2, 0(t3)`: the store
+/// of the loop's address register into the config word it names
+/// (`tt-firmware`'s `ttinsn::STEP_STORE`). The low 20 bits are the register's
+/// first value, in 16-byte units.
+fn ttinsn_step_store(l1: u64) -> u32 {
+    0x7F50_0000 | ((l1 / 16) as u32 & 0xF_FFFF)
+}
+
+/// The staged word the translator turns into `addi t2, t2, step`: the advance
+/// of that register for the next iteration, in 16-byte units
+/// (`ttinsn::STEP_ADVANCE`).
+fn ttinsn_step_advance(units: u32) -> u32 {
+    0x7F60_0000 | (units & 0xFFF)
+}
+
+fn tt_cb_offset(k: &Kernel, idx: OpId, elem_bytes: u32, bind: &Map<OpId, i64>) -> Result<u32, BackendError> {
+    if idx.is_null() {
+        return Ok(0);
+    }
+    let strides = k.get_strides(idx).ok_or_else(|| tt_err(format!("tenstorrent: buffer index {idx:?} is not affine")))?;
+    let mut elems = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+    for (var, (_, stride)) in strides.iter() {
         if *var == OpId::NULL {
             continue;
         }
-        let is_group = matches!(k.at(*var), Op::Range { kind: RangeKind::Group(_), .. });
-        if !is_group {
-            return Err(tt_err(format!("tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}")));
-        }
+        let Some(value) = bind.get(var) else {
+            return Err(tt_err(format!(
+                "tenstorrent: buffer index {idx:?} names {var:?}, which is neither the constant term nor a bound loop"
+            )));
+        };
+        elems = value
+            .checked_mul(*stride)
+            .and_then(|t| elems.checked_add(t))
+            .ok_or_else(|| tt_err("tenstorrent: a buffer slot offset overflows".to_string()))?;
     }
-    let base = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
-    let mut per_axis = [0i64; 2];
-    if k.tt_index_is_tile_units(idx) {
-        // The rewritten index is the truth: each grid term is its physical
-        // tile stride.
-        for (var, (_, stride)) in strides.iter() {
-            if *var == OpId::NULL {
-                continue;
-            }
-            let Op::Range { axis, kind: RangeKind::Group(_), .. } = k.at(*var) else {
-                return Err(tt_err(format!("tenstorrent: boundary index {idx:?} keeps a non-grid variable {var:?}")));
-            };
-            let slot = per_axis
-                .get_mut(*axis as usize)
-                .ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
-            *slot = *stride;
-        }
-    } else {
-        let mut axes: Vec<(u32, i64)> = Vec::new();
-        for (_, op) in k.iter_unordered() {
-            if let Op::Range { axis, kind: RangeKind::Group(len) } = op {
-                let extent = k.resolve_const(*len).and_then(Constant::as_dim).ok_or_else(|| {
-                    tt_err("tenstorrent: a grid extent is symbolic; boundary slices need a concrete grid".to_string())
-                })?;
-                axes.push((*axis, extent));
-            }
-        }
-        axes.sort();
-        let mut suffix = 1024i64;
-        for (axis, extent) in axes.iter().rev() {
-            let slot = per_axis
-                .get_mut(*axis as usize)
-                .ok_or_else(|| tt_err(format!("tenstorrent: grid axis {axis} is not dispatched")))?;
-            *slot = suffix;
-            suffix = suffix.checked_mul(*extent).ok_or_else(|| tt_err("tenstorrent: grid slice stride overflows".to_string()))?;
-        }
-    }
-    let to_bytes = |v: i64| -> Result<u32, BackendError> {
-        let b =
-            v.checked_mul(i64::from(elem_bytes)).ok_or_else(|| tt_err(format!("tenstorrent: boundary offset {v} overflows")))?;
-        u32::try_from(b).map_err(|_| tt_err(format!("tenstorrent: boundary offset {b} bytes does not fit u32")))
-    };
-    Ok((to_bytes(base)?, to_bytes(per_axis[0])?, to_bytes(per_axis[1])?))
+    let bytes = elems
+        .checked_mul(i64::from(elem_bytes))
+        .ok_or_else(|| tt_err("tenstorrent: a buffer slot offset overflows".to_string()))?;
+    u32::try_from(bytes).map_err(|_| tt_err(format!("tenstorrent: buffer offset {bytes} does not fit u32")))
 }
 
 fn tt_boundary_moves(
@@ -1430,18 +1859,31 @@ fn tt_boundary_moves(
     l1: &[u32],
     param_ordinal_of: &Map<OpId, u32>,
 ) -> Result<(Vec<TTDmMove>, Vec<TTDmMove>), BackendError> {
+    let grid = tt_grid_extents(k)?;
     let mut reader: Vec<TTDmMove> = Vec::new();
     let mut writer: Vec<TTDmMove> = Vec::new();
     let mut section = 0u8;
+    // A boundary copy inside a constant-trip loop is one entry per iteration:
+    // the mover list is a static array, so a loop there is unrolled here.
+    let mut loops: Vec<(OpId, i64)> = Vec::new();
     let mut op_id = k.head;
     while !op_id.is_null() {
         match k.at(op_id) {
             Op::TT(TTOp::EndReader) => section = 1,
             Op::TT(TTOp::EndCompute) => section = 2,
+            Op::Loop { len } => {
+                let trip = k.resolve_const(*len).and_then(Constant::as_dim).filter(|t| *t > 0).ok_or_else(|| {
+                    tt_err(format!("tenstorrent: boundary loop {op_id:?} needs a positive constant trip count"))
+                })?;
+                loops.push((op_id, trip));
+            }
+            Op::EndLoop => {
+                loops.pop();
+            }
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, bytes }) if section != 1 => {
-                let (param, cb, idx) = match section {
-                    0 => (*src, *dst, *src_idx),
-                    2 => (*dst, *src, *dst_idx),
+                let (param, cb, idx, cb_idx) = match section {
+                    0 => (*src, *dst, *src_idx, *dst_idx),
+                    2 => (*dst, *src, *dst_idx, *src_idx),
                     _ => unreachable!("section is 0 or 2 in this arm"),
                 };
                 let ord = param_ordinal_of
@@ -1459,16 +1901,94 @@ fn tt_boundary_moves(
                     2 => tt_narrow(k.dtype(cb), k.dtype(param)),
                     _ => unreachable!("section is 0 or 2 in this arm"),
                 };
-                // Which slice of the param this move touches, and how it
-                // moves with the grid: the program is tile-uniform, so this
-                // is the only per-core difference.
-                let elem_bytes = k.dtype(param).bit_size() as u32 / 8;
-                let (base, gstride0, gstride1) = tt_slice(k, idx, elem_bytes)?;
-                let move_ = TTDmMove { param: ord, l1: l1[cb_num as usize], bytes: *bytes, narrow, base, gstride0, gstride1 };
-                match section {
-                    0 => reader.push(move_),
-                    2 => writer.push(move_),
-                    _ => unreachable!("section is 0 or 2 in this arm"),
+                // The DRAM side of the slice: `tt_add_movers` already made it a
+                // byte address (tile pitch, header and face layout included),
+                // so only the per-tile advance of a block is added here. The
+                // L1 side advances one CB tile, whose width is the CB's own
+                // dtype — a writer CB is FP32 whatever the param is.
+                let cb_elem_bytes = k.dtype(cb).bit_size() as u32 / 8;
+                let tile_bytes = cb_elem_bytes * 1024;
+                let slot = tt_isa::dm::TILE_SLOT as u32;
+                let data = tt_isa::dm::TILE_DATA as u32;
+                // One DMA entry carries one *tile image*: tiles are not
+                // contiguous on the DRAM side (16-byte header, 4160 pitch), so
+                // a block publish/drain is one entry per tile. A `TILE_SLOT`
+                // publish is the mover's shaped read of one whole image
+                // (`READ_BROADCAST_COL`) and stays one entry.
+                let shaped = *bytes == slot;
+                let n = if shaped {
+                    1
+                } else {
+                    bytes.checked_div(tile_bytes).ok_or_else(|| tt_err("tenstorrent: zero-length boundary move".to_string()))?
+                };
+                if !shaped && n * tile_bytes != *bytes {
+                    return Err(tt_err(format!(
+                        "tenstorrent: boundary move {op_id:?} is {bytes} bytes, not a whole number of {tile_bytes}-byte tiles"
+                    )));
+                }
+                // One entry per combination of the enclosing boundary loops'
+                // iterations; no loops means the one empty binding.
+                let mut combos: Vec<Map<OpId, i64>> = vec![Map::default()];
+                for (var, trip) in &loops {
+                    let mut next = Vec::with_capacity(combos.len().saturating_mul(*trip as usize));
+                    for bind in &combos {
+                        for i in 0..*trip {
+                            let mut b = bind.clone();
+                            b.insert(*var, i);
+                            next.push(b);
+                        }
+                    }
+                    combos = next;
+                }
+                for bind in &combos {
+                    let offsets = tt_move_offsets(k, idx, bind, grid)?;
+                    // The buffer side is a slot inside the CB, never a grid
+                    // slice: only a bound loop moves it.
+                    let cb_off = if loops.is_empty() {
+                        0
+                    } else {
+                        tt_cb_offset(k, cb_idx, cb_elem_bytes, bind)?
+                    };
+                    for t in 0..n {
+                        // A shaped read writes the header too, so its L1 base is
+                        // the slot start, 16 bytes below the CB's datums.
+                        let l1 = if shaped {
+                            l1[cb_num as usize] - data
+                        } else {
+                            l1[cb_num as usize] + cb_off + t * tile_bytes
+                        };
+                        // The slice's byte address names the tile image's
+                        // datums; the next tile of a block is one pitch on, per
+                        // grid point. A shaped read writes the header itself,
+                        // so its DRAM base is the slot start, 16 bytes before
+                        // the datums.
+                        let shift = if shaped {
+                            i64::from(t) * i64::from(slot) - i64::from(data)
+                        } else {
+                            i64::from(t) * i64::from(slot)
+                        };
+                        let mut table = Vec::with_capacity(offsets.len());
+                        for off in offsets.iter() {
+                            let value = i64::from(*off) + shift;
+                            table.push(u32::try_from(value).map_err(|_| {
+                                tt_err(format!("tenstorrent: boundary move {op_id:?} offset {value} does not fit u32"))
+                            })?);
+                        }
+                        let bytes = if shaped { slot } else { tile_bytes };
+                        let move_ = TTDmMove { param: ord, l1, bytes, narrow, offsets: table.into_boxed_slice() };
+                        match section {
+                            0 => reader.push(move_),
+                            2 => writer.push(move_),
+                            _ => unreachable!("section is 0 or 2 in this arm"),
+                        }
+                        let entries = if section == 0 { reader.len() } else { writer.len() };
+                        if entries > tt_isa::dm::LIST_MAX as usize {
+                            return Err(tt_err(format!(
+                                "tenstorrent: {entries} boundary entries exceed the mover list (LIST_MAX {})",
+                                tt_isa::dm::LIST_MAX
+                            )));
+                        }
+                    }
                 }
             }
             _ => {}
@@ -1500,10 +2020,10 @@ fn tt_src_base(cb: u64) -> u64 {
 }
 
 /// Unpacker index -> the metalium `Unpacker` (0 = SrcA, 1 = SrcB).
-fn tt_unpacker(unit: u8) -> Result<crate::backend::tenstorrent::kern::datapath::Unpacker, String> {
+fn tt_unpacker(unit: u8) -> Result<crate::codegen::tenstorrent::datapath::Unpacker, String> {
     match unit {
-        0 => Ok(crate::backend::tenstorrent::kern::datapath::Unpacker::SrcA),
-        1 => Ok(crate::backend::tenstorrent::kern::datapath::Unpacker::SrcB),
+        0 => Ok(crate::codegen::tenstorrent::datapath::Unpacker::SrcA),
+        1 => Ok(crate::codegen::tenstorrent::datapath::Unpacker::SrcB),
         other => Err(format!("unpacker {other} is neither SrcA (0) nor SrcB (1)")),
     }
 }
@@ -1553,16 +2073,17 @@ fn setrwc_clear() -> u32 {
     tt_isa::isa::generated::encode::Setrwc::ZERO.dst(1).encode().unwrap().word()
 }
 
-fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
+fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> (Vec<u32>, u32) {
     use tt_isa::backend::{Before, wait_for_unpacker0, wait_for_unpacker1};
     if body.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
     let config = if src_mode {
-        crate::backend::tenstorrent::kern::datapath::src_thread_config()
+        crate::codegen::tenstorrent::datapath::src_thread_config()
     } else {
-        crate::backend::tenstorrent::kern::datapath::thread_config()
+        crate::codegen::tenstorrent::datapath::thread_config()
     };
+    let preamble = config.len() as u32;
     let mut role: Vec<u32> = config.iter().map(|i| i.word()).collect();
     role.extend(body);
     // Both unpackers can have run (a Src matmul unpacks `SrcA` and `SrcB`),
@@ -1571,7 +2092,7 @@ fn tt_unpack_role(body: Vec<u32>, src_mode: bool) -> Vec<u32> {
     if src_mode {
         role.push(wait_for_unpacker1(Before::EVERYTHING).expect("wait_for_unpacker1(EVERYTHING) is encodable").word());
     }
-    role
+    (role, preamble)
 }
 
 /// T1, the math role: the state id, then the per-op math programs in
@@ -1582,7 +2103,7 @@ fn tt_math_role(body: Vec<u32>) -> (Vec<u32>, u32) {
     if body.is_empty() {
         return (Vec::new(), 0);
     }
-    let mut role: Vec<u32> = vec![crate::backend::tenstorrent::kern::datapath::state_id().word()];
+    let mut role: Vec<u32> = vec![crate::codegen::tenstorrent::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_sfpu(Before::EVERYTHING).expect("wait_for_sfpu(EVERYTHING) is encodable").word());
     (role, 1)
@@ -1591,15 +2112,15 @@ fn tt_math_role(body: Vec<u32>) -> (Vec<u32>, u32) {
 /// T2, the pack role: the state id, then one self-contained DST -> CB pack
 /// per `Store`, then a packer drain (the thread unblocks once the packer
 /// accepts work, not when it finishes).
-fn tt_pack_role(body: Vec<u32>) -> Vec<u32> {
+fn tt_pack_role(body: Vec<u32>) -> (Vec<u32>, u32) {
     use tt_isa::backend::{Before, wait_for_packer};
     if body.is_empty() {
-        return Vec::new();
+        return (Vec::new(), 0);
     }
-    let mut role: Vec<u32> = vec![crate::backend::tenstorrent::kern::datapath::state_id().word()];
+    let mut role: Vec<u32> = vec![crate::codegen::tenstorrent::datapath::state_id().word()];
     role.extend(body);
     role.push(wait_for_packer(Before::EVERYTHING).expect("wait_for_packer(EVERYTHING) is encodable").word());
-    role
+    (role, 1)
 }
 
 fn render(
@@ -1760,6 +2281,8 @@ fn render(
             section: s as u8,
             params: params[s].clone(),
             loop_names,
+            bind: Map::default(),
+            loop_var: None,
             range_names,
             var_names,
             slots: Map::default(),
@@ -1923,7 +2446,9 @@ fn render(
                 _ => {}
             }
         }
-        render_section(&mut sec, &sections[s])?;
+        if s == 1 {
+            render_section(&mut sec, &sections[s])?;
+        }
         match s {
             0 => sec.out.push_str("  noc_async_read_barrier();\n"),
             2 => sec.out.push_str("  noc_async_write_barrier();\n"),
@@ -1939,11 +2464,26 @@ fn render(
             // unit before the firmware reports it done. The three streams
             // become `TTOp::Unpack`/`Math`/`Pack`: codegen is the encoder.
             let (math, preamble) = tt_math_role(section_native);
-            roles = [tt_unpack_role(section_t0, sec.has_src_unpack), math, tt_pack_role(section_t2)];
+            let (unpack, unpack_preamble) = tt_unpack_role(section_t0, sec.has_src_unpack);
+            let (pack, pack_preamble) = tt_pack_role(section_t2);
+            roles = [unpack, math, pack];
             *sems = std::mem::take(&mut sec.sems);
             loops = std::mem::take(&mut sec.loops);
-            for entry in &mut loops[1] {
-                entry[0] += preamble;
+            if std::env::var_os("ZYX_WORD_DUMP").is_some() {
+                eprintln!(
+                    "RAW loops={loops:?} preambles t0={unpack_preamble} t1={preamble} t2={pack_preamble} lens t0={} t1={} t2={}",
+                    roles[0].len(),
+                    roles[1].len(),
+                    roles[2].len()
+                );
+            }
+            // Each role's program leads with its own preamble (a thread config
+            // on T0, a state id on T1/T2), and a block repeat indexes the words
+            // as pushed, so every entry moves by its role's preamble.
+            for (role, shift) in [(0usize, unpack_preamble), (1, preamble), (2, pack_preamble)] {
+                for entry in &mut loops[role] {
+                    entry[0] += shift;
+                }
             }
         } else {
             debug_assert!(section_native.is_empty(), "native compute words outside the compute section");
@@ -1951,6 +2491,20 @@ fn render(
             debug_assert!(section_t2.is_empty(), "native pack words outside the compute section");
         }
         srcs[s] = sec.out;
+    }
+    if std::env::var_os("ZYX_WORD_DUMP").is_some() {
+        eprintln!("ROLES len t0={} t1={} t2={} loops={loops:?}", roles[0].len(), roles[1].len(), roles[2].len());
+        for (r, role) in roles.iter().enumerate() {
+            let words: Vec<String> = role
+                .iter()
+                .enumerate()
+                .map(|(i, w)| {
+                    let tag = if w & 0x8000_0000 != 0 { "?!" } else { "" };
+                    format!("{i}:{w:08x}{tag}")
+                })
+                .collect();
+            eprintln!("PROG{r} {}", words.join(" "));
+        }
     }
 
     Ok((srcs[0].clone(), srcs[1].clone(), srcs[2].clone(), roles, loops))
@@ -2295,7 +2849,7 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
             use tt_isa::cfg::generated::{global, thcon};
             let l1 = sec.cb_l1(dst)?;
             let mut words = tt_isa::backend::ConfigWords::new();
-            crate::backend::tenstorrent::kern::datapath::pack_config(&mut words, l1);
+            crate::codegen::tenstorrent::datapath::pack_config(&mut words, l1);
             words
                 .set(global::DEST_TARGET_REG_CFG_PACK_SEC0_Offset, row)
                 .map_err(|e| sec.err(format!("pack {id:?}: dst offset: {e:?}")))?;
@@ -2303,14 +2857,12 @@ fn render_store(sec: &mut TtSection, id: OpId, x: OpId, dst: OpId) -> Result<(),
                 .set(thcon::THCON_SEC0_REG1_Out_data_format, out_fmt)
                 .map_err(|e| sec.err(format!("pack {id:?}: out format: {e:?}")))?;
             let mut code = vec![wait_for_packer(Before::CONFIG).map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?];
-            code.extend(crate::backend::tenstorrent::kern::datapath::config_program(&words));
+            code.extend(crate::codegen::tenstorrent::datapath::config_program(&words));
             code.push(
                 stallwait(block::PACKER | block::CONFIG, cond::CONFIG_BUSY)
                     .map_err(|e| sec.err(format!("pack {id:?}: {e:?}")))?,
             );
-            code.extend(crate::backend::tenstorrent::kern::datapath::pack_rows(
-                crate::backend::tenstorrent::kern::datapath::TILE_DST_ROWS,
-            ));
+            code.extend(crate::codegen::tenstorrent::datapath::pack_rows(crate::codegen::tenstorrent::datapath::TILE_DST_ROWS));
             sec.native_t2.extend(code.iter().map(|i| i.word()));
             sec.last_role = 2;
             sec.out.push_str(&format!("{}pack_tile({slot}, {dcb});\n", sec.indent));
@@ -2340,7 +2892,7 @@ mod tests {
         use crate::shape::Dim;
         use std::sync::Arc;
         let mut k = Kernel::new(crate::Dev::Auto);
-        // `generate_tenstorrent` reads one device property (the CB count); the
+        // `render_tt` reads one device property (the CB count); the
         // test only needs a bound device, not a real one.
         k.dev_info = Some(Arc::new(DeviceInfo {
             compute: 1_000_000,
@@ -2369,17 +2921,16 @@ mod tests {
         k.push_back(Op::TT(TTOp::Setrwc { dst: storage }));
         k.push_back(Op::TT(TTOp::EndCompute));
         let rendered = k.render_tt().expect("a minimal math-only kernel renders");
-        // The math stream rides on `TTOp::Math`; pick it out of the rendered ops.
-        let mut math_words = None;
-        let mut op_id = rendered.head;
-        while !op_id.is_null() {
-            if let Op::TT(TTOp::Math(program)) = &rendered.ops[op_id].op {
-                math_words = Some(program.words.clone());
+        let mut math_words: &[u32] = &[];
+        let mut scan = rendered.head;
+        while !scan.is_null() {
+            if let Op::TT(TTOp::Math(program)) = rendered.at(scan) {
+                math_words = &program.words;
+                break;
             }
-            op_id = rendered.next_op(op_id);
+            scan = rendered.next_op(scan);
         }
-        let words = math_words.expect("the math section is in the rendered kernel");
-        let mut setrwc = words
+        let mut setrwc = math_words
             .iter()
             .map(|&word| tt_isa::isa::Instruction::new(word, &tt_isa::isa::generated::defs::SETRWC))
             .filter(|insn| insn.def().mnemonic() == "SETRWC");

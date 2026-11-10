@@ -179,12 +179,16 @@ impl Kernel {
 
         self.add_indexing();
 
-        // After linearization the parameter shapes are no longer meaningful;
-        // clear them so the verify below (and later passes) don't require shape
-        // consts to be ordered before the params that reference them.
-        for node in self.ops.values_mut() {
-            if let Op::Param { shape, .. } = &mut node.op {
-                *shape = OpId::NULL;
+        // After linearization the parameter shapes are no longer meaningful on
+        // a flat, row-major device; clear them so later passes don't carry
+        // them. Tenstorrent is the exception: its buffers are tiled at upload,
+        // so a flat element index is only invertible through the value's shape
+        // (last two dims, rank-1 = N x 1) — keep it.
+        if !self.dev_info.as_ref().is_some_and(|info| info.tenstorrent) {
+            for node in self.ops.values_mut() {
+                if let Op::Param { shape, .. } = &mut node.op {
+                    *shape = OpId::NULL;
+                }
             }
         }
 
@@ -246,18 +250,40 @@ impl Kernel {
         // The move handlers may leave dead constants (e.g. unused `one`/`total`
         // scaffold) and duplicate arithmetic behind; CSE and DCE clean those up
         // now that the ops are ordered.
+        //
+        // `Stack` is also the shape-vector constructor. On a tiled device a
+        // param keeps its shape, and that shape is a (viewless) `Stack` of
+        // dims — metadata, not a movement value. Such a Stack (and its cone)
+        // is exempt from the "no movement op survived" rule; a Stack that was
+        // a value had a view and was unfolded above.
+        let mut shape_cone: Set<OpId> = Set::default();
+        {
+            let mut stack: Vec<OpId> = self
+                .iter_unordered()
+                .filter_map(|(_, op)| match op {
+                    Op::Param { shape, .. } if !shape.is_null() => Some(*shape),
+                    _ => None,
+                })
+                .collect();
+            while let Some(id) = stack.pop() {
+                if id.is_null() || !shape_cone.insert(id) {
+                    continue;
+                }
+                stack.extend(self.ops[id].op.parameters());
+            }
+        }
         assert!(
-            self.ops.values().all(|node| !matches!(
-                node.op,
+            self.iter_unordered().all(|(id, node)| match node {
                 Op::Reshape { .. }
-                    | Op::Pad { .. }
-                    | Op::Permute { .. }
-                    | Op::Expand { .. }
-                    | Op::Flip { .. }
-                    | Op::Narrow { .. }
-                    | Op::Stack { .. }
-            )),
-            "linearize left a movement or stack operation in the kernel"
+                | Op::Pad { .. }
+                | Op::Permute { .. }
+                | Op::Expand { .. }
+                | Op::Flip { .. }
+                | Op::Narrow { .. } => false,
+                Op::Stack { .. } => shape_cone.contains(&id),
+                _ => true,
+            }),
+            "linearize left a movement operation, or a value stack, in the kernel"
         );
 
         // Dedup group-index ops: every store handler emits its own set of
@@ -1096,22 +1122,25 @@ impl Kernel {
                     // walk reaches their Param they are remapped to loads and
                     // this chain follows automatically.
                     let stacked = ops.to_vec();
-                    if let Some(view) = views.get(&op_id).cloned() {
-                        debug_assert!(!view.dims.is_empty(), "Stack: empty output view");
-                        let leading = view.dims[0].idx;
-                        let trailing: Vec<SDim> = view.dims[1..].to_vec();
-                        for &input in stacked.iter() {
-                            views.insert(input, SView { dims: trailing.clone(), mask: view.mask });
-                        }
-                        let n = stacked.len();
-                        let mut ret = stacked[n - 1];
-                        for k in (0..n - 1).rev() {
-                            let k_const = self.push_back(Op::Const(Constant::idx(k as i64)));
-                            let eq = self.equal(leading, k_const);
-                            ret = self.select(eq, stacked[k], ret);
-                        }
-                        self.remap(op_id, ret);
+                    // A `Stack` with no seeded view is not a value: it is part
+                    // of a metadata expression (a param shape on a tiled
+                    // device). Leave it in place — the walk only unfolds
+                    // values, and the shape stays an operand of its param.
+                    let Some(view) = views.get(&op_id).cloned() else { continue };
+                    debug_assert!(!view.dims.is_empty(), "Stack: empty output view");
+                    let leading = view.dims[0].idx;
+                    let trailing: Vec<SDim> = view.dims[1..].to_vec();
+                    for &input in stacked.iter() {
+                        views.insert(input, SView { dims: trailing.clone(), mask: view.mask });
                     }
+                    let n = stacked.len();
+                    let mut ret = stacked[n - 1];
+                    for k in (0..n - 1).rev() {
+                        let k_const = self.push_back(Op::Const(Constant::idx(k as i64)));
+                        let eq = self.equal(leading, k_const);
+                        ret = self.select(eq, stacked[k], ret);
+                    }
+                    self.remap(op_id, ret);
                     self.remove_op(op_id);
                 }
                 ref op => {
@@ -1318,11 +1347,38 @@ impl Kernel {
         }
         order.retain(|op| !matches!(self.ops[*op].op, Op::Param { .. }));
 
+        // A param's shape is an IR value and has to be declared before the
+        // param that names it (every program-order walk requires def before
+        // use). Params are hoisted to the front for argument order, so hoist
+        // their shape cones ahead of them, in the Kahn order so the cone keeps
+        // its own dependency order. Only a tiled device keeps param shapes, so
+        // this prefix is empty everywhere else.
+        let mut shape_cone: Set<OpId> = Set::default();
+        {
+            let mut stack: Vec<OpId> = Vec::new();
+            for &p in ro_params.iter().chain(rw_params.iter()) {
+                if let Op::Param { shape, .. } = self.ops[p].op {
+                    if !shape.is_null() {
+                        stack.push(shape);
+                    }
+                }
+            }
+            while let Some(id) = stack.pop() {
+                if id.is_null() || !shape_cone.insert(id) {
+                    continue;
+                }
+                stack.extend(self.ops[id].op.parameters());
+            }
+        }
+        let shape_order: Vec<OpId> = order.iter().copied().filter(|op| shape_cone.contains(op)).collect();
+        order.retain(|op| !shape_cone.contains(op));
+
         // Move the params to the front: read-only (Variable + Global) first,
         // then writable (GlobalMut), each in linked-list order. Unused
         // params never enter the Kahn order at all; used ones are dropped
         // here and reinserted.
-        let mut final_order = Vec::with_capacity(order.len() + ro_params.len() + rw_params.len());
+        let mut final_order = Vec::with_capacity(order.len() + shape_order.len() + ro_params.len() + rw_params.len());
+        final_order.extend(shape_order);
         final_order.extend(ro_params.iter().copied());
         final_order.extend(rw_params.iter().copied());
         final_order.extend(order);

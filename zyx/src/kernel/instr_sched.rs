@@ -44,9 +44,31 @@ impl Kernel {
         let mut local_rw = Vec::new();
         let mut rest = Vec::new();
 
+        // A tiled device keeps its params' shapes, and a shape is an operand
+        // of its param: its cone must stay before the params, even though the
+        // schedule groups the params first. Empty on every other device.
+        let mut shape_meta: Vec<OpId> = Vec::new();
+        let mut shape_cone: crate::Set<OpId> = crate::Set::default();
+        for (_, node) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = node {
+                let mut stack = vec![*shape];
+                while let Some(id) = stack.pop() {
+                    if id.is_null() || !shape_cone.insert(id) {
+                        continue;
+                    }
+                    stack.extend(self.ops[id].op.parameters());
+                }
+            }
+        }
+
         let mut op_id = self.head;
         while !op_id.is_null() {
             let next = self.next_op(op_id);
+            if shape_cone.contains(&op_id) {
+                shape_meta.push(op_id);
+                op_id = next;
+                continue;
+            }
             match self.at(op_id) {
                 Op::Param { kind: ParamKind::Global | ParamKind::Variable, .. } => global_ro.push(op_id),
                 Op::Param { kind: ParamKind::GlobalMut, .. } => global_rw.push(op_id),
@@ -58,7 +80,9 @@ impl Kernel {
 
         let sorted_rest = self.schedule_rest(&rest);
 
-        let mut order = Vec::with_capacity(global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
+        let mut order =
+            Vec::with_capacity(shape_meta.len() + global_ro.len() + global_rw.len() + local_rw.len() + sorted_rest.len());
+        order.extend(shape_meta);
         order.extend(global_ro);
         order.extend(global_rw);
         order.extend(local_rw);
@@ -133,7 +157,9 @@ impl Kernel {
                 | Op::TT(TTOp::TensixGrid(_))
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_)) => {
                     structural[i] = true;
                     barrier[i] = true;
                 }
@@ -246,7 +272,13 @@ impl Kernel {
                 | Op::TT(TTOp::Replay { .. })
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {}
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_))
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => {}
                 Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
                 }

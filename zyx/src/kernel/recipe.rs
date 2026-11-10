@@ -388,6 +388,16 @@ impl Kernel {
             return Box::new(RegisterTiling { configs });
         }
 
+        // Tenstorrent has no SIMT registers to tile: its lanes are whole
+        // 32-wide tiles, so a 2/4/8/16 split is not a shape its tiling can
+        // lower (it leaves a laned group index whose rank no longer matches
+        // the index it joins). Same device gate as `opt_recipe` and
+        // `opt_tile_and_stage`.
+        let info = self.device_info();
+        if info.tenstorrent || info.local_mem_size <= 0 {
+            return Box::new(RegisterTiling { configs });
+        }
+
         // A site is a factor candidate when it divides, leaves at least 4
         // iterations, and the largest factor alone stays inside the bound.
         let factors = |len: Dim| -> Vec<u16> {

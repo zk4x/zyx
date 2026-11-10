@@ -2441,16 +2441,49 @@ impl Runtime {
                                     vi += 1;
                                 }
                                 ParamKind::Global | ParamKind::GlobalMut => {
-                                    let (len, is_mut) = if kind == ParamKind::GlobalMut {
+                                    let (len, is_mut, cid) = if kind == ParamKind::GlobalMut {
                                         let len = mut_lens[mli];
+                                        let cid = ek.stores[mli];
                                         mli += 1;
-                                        (len, true)
+                                        (len, true, cid)
                                     } else {
                                         let len = ro_lens[rli];
+                                        let cid = ek.loads[rli];
                                         rli += 1;
-                                        (len, false)
+                                        (len, false, cid)
                                     };
-                                    let bytes_alloc = (dtype.bit_size() as Dim * (len + 1)) / 8;
+                                    // A TT param buffer is *physical*: whole 32x32
+                                    // tile images, row/column padded, exactly what
+                                    // `tilize_transfer` and `materialize` allocate.
+                                    // A rank-1 value is a tile column (element `i` is
+                                    // row `i`, lane 0). A timing buffer with only the
+                                    // logical element count leaves the reader's
+                                    // whole-tile move running past the chunk.
+                                    let bytes_alloc = if pool_id.is_tt_layout() {
+                                        let shape = self.graphs[graph_id].shape(cid);
+                                        let mut dims: Vec<Dim> = Vec::with_capacity(shape.len());
+                                        for &d in &shape {
+                                            let v = self
+                                                .resolve_symbolic_class(graph_id, d)
+                                                .expect("tt param buffer: dim class does not resolve");
+                                            dims.push(v.as_dim().expect("tt param buffer: dim is not a length"));
+                                        }
+                                        let (rows, cols) = match dims.as_slice() {
+                                            [.., r, c] => (*r, *c),
+                                            [c] => (*c, 1),
+                                            [] => (1, 1),
+                                        };
+                                        let outer: Dim = if dims.len() >= 2 {
+                                            dims[..dims.len() - 2].iter().product()
+                                        } else {
+                                            1
+                                        };
+                                        let pr = ((rows + 31) / 32) * 32;
+                                        let pc = ((cols + 31) / 32) * 32;
+                                        (outer * pr * pc) / 1024 * tt_isa::dm::TILE_SLOT as Dim
+                                    } else {
+                                        (dtype.bit_size() as Dim * (len + 1)) / 8
+                                    };
                                     let reuse = if is_mut {
                                         mut_alias.get(&mut_slot).and_then(|&r| ro_args[r].clone())
                                     } else {
@@ -2480,7 +2513,7 @@ impl Runtime {
                                             DType::U64 | DType::I64 => 1i64.to_le_bytes().to_vec(),
                                         };
                                         let one_len = elem.len();
-                                        let fill_bytes = (dtype.bit_size() as usize / 8) * len as usize;
+                                        let fill_bytes = bytes_alloc as usize;
                                         let host_buf = Pool::Host.allocate(fill_bytes as Dim)?;
                                         {
                                             let dst = Pool::Host.buffer_ptr_mut(host_buf);
@@ -2504,7 +2537,7 @@ impl Runtime {
                                             dst: OpId::from(1),
                                             dst_pool: pool_id,
                                             dst_dtype: dtype,
-                                            dst_dims: vec![PlanDim::Const(len + 1)],
+                                            dst_dims: vec![PlanDim::Const(bytes_alloc / Dim::from(dtype.bit_size() / 8))],
                                         });
                                         let mut boundary = Map::default();
                                         boundary.insert(

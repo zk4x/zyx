@@ -164,8 +164,31 @@ impl Kernel {
                 Done,
             }
             let mut phase = Phase::GlobalRo;
+            // A tiled device keeps its params' shapes past linearize, and a
+            // shape is an operand of its param: it must be declared before it,
+            // which puts the shape cone ahead of the params. That prefix is
+            // metadata, not kernel preamble, so it does not close the RO-param
+            // phase.
+            let mut shape_cone: Set<OpId> = Set::default();
+            for (_op_id, node) in self.iter_unordered() {
+                if let Op::Param { shape, .. } = node {
+                    let mut stack = vec![*shape];
+                    while let Some(id) = stack.pop() {
+                        if id.is_null() || !shape_cone.insert(id) {
+                            continue;
+                        }
+                        stack.extend(self.ops[id].op.parameters());
+                    }
+                }
+            }
             let mut scan = self.head;
             while !scan.is_null() {
+                // A pure scalar constant is not a buffer argument: it may sit
+                // in front of the params (the shape cone is one such prefix).
+                if shape_cone.contains(&scan) || matches!(self.at(scan), Op::Const(_)) {
+                    scan = self.next_op(scan);
+                    continue;
+                }
                 match self.at(scan) {
                     Op::Param { kind, .. } => match kind {
                         ParamKind::Variable | ParamKind::Global => {
@@ -374,7 +397,13 @@ impl Kernel {
                 | Op::TT(TTOp::Replay { .. })
                 | Op::TT(TTOp::Unpack(_))
                 | Op::TT(TTOp::Math(_))
-                | Op::TT(TTOp::Pack(_)) => {}
+                | Op::TT(TTOp::Pack(_))
+                | Op::TT(TTOp::Reader(_))
+                | Op::TT(TTOp::Writer(_))
+                | Op::TT(TTOp::ReserveBack { .. })
+                | Op::TT(TTOp::PushBack { .. })
+                | Op::TT(TTOp::WaitFront { .. })
+                | Op::TT(TTOp::PopFront { .. }) => {}
                 Op::TT(TTOp::SfpLoad(ref load)) => {
                     check(op_id, load.slot, &stack);
                     dtypes.insert(op_id, dtypes[&load.slot]);
@@ -416,6 +445,8 @@ impl Kernel {
                         Op::Param { kind: ParamKind::Global | ParamKind::GlobalMut, .. }
                             | Op::Storage { scope: MemScope::Circular, .. }
                             | Op::Storage { scope: MemScope::Register, .. }
+                            // A transfer page: the pure-copy kernel's L1 span.
+                            | Op::Storage { scope: MemScope::Local, .. }
                     ) {
                         println!("tt copy op={op_id} has non-traffic src {src:?}");
                         self.debug();
@@ -428,6 +459,8 @@ impl Kernel {
                         Op::Param { kind: ParamKind::GlobalMut, .. }
                             | Op::Storage { scope: MemScope::Circular, .. }
                             | Op::Storage { scope: MemScope::Register, .. }
+                            // A transfer page: the pure-copy kernel's L1 span.
+                            | Op::Storage { scope: MemScope::Local, .. }
                     ) {
                         println!("tt copy op={op_id} has non-traffic dst {dst:?}");
                         self.debug();
@@ -579,7 +612,14 @@ impl Kernel {
                     params.insert(op_id, kind);
                     dtypes.insert(op_id, dtype);
                     if shape != OpId::NULL {
-                        check(op_id, shape, &stack);
+                        // A param's shape is its own metadata: on a tiled
+                        // device (Tenstorrent) it is kept past linearize and
+                        // ordered after the param, which is the first thing in
+                        // the kernel by the argument-order rule above. It is
+                        // not a value the kernel computes, so it is exempt
+                        // from the declared-before-use check; its own cone is
+                        // still checked in its own order.
+                        debug_assert!(self.ops.contains_id(shape), "param {op_id} names a deleted shape {shape}");
                     }
                 }
                 Op::Storage { dtype, scope, len, .. } => {

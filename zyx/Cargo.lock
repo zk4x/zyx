@@ -883,13 +883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tt-firmware-images"
-version = "0.1.0"
-dependencies = [
- "tt-isa",
-]
-
-[[package]]
 name = "tt-isa"
 version = "0.1.0"
 
@@ -1288,7 +1281,6 @@ dependencies = [
  "pollster",
  "pyo3",
  "tiny_http",
- "tt-firmware-images",
  "tt-isa",
  "wgpu",
 ]

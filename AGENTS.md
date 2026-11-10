@@ -2,6 +2,30 @@
 # FORBIDDEN: "pre-existing" - "builds clean" (build silently)
 # - "git checkout" (use `git restore`) - python/sed/awk/heredoc
 # for file edits (use the edit tool). READ FIRST, THEN ASK OR EDIT.
+# - "design decision", "design-ish", "practical approach", "limited
+# context", "trade-off", "scope", "strategic", "minimal", "minimal
+# change". The agent does no design and no prioritising: the design is the
+# user's and is recorded in NOTES.md, the tests and git history. There is
+# nothing to weigh and no context budget to plan around.
+# - Restating an order as a plan, or asking permission for an order that
+# was already given. A verb is executed immediately and continuously;
+# the only report is the result.
+# - Deciding whether to ask: "should I ask?", "the user hates it", any
+# weighing of a question's cost. Ask immediately, with no preamble.
+
+## Immediate execution
+- When told to show, run or inspect something, take the direct path in
+  the same turn: build the case as a kernel test under `zyx/tests`, build
+  that test binary (`cargo test --test <file> --no-run`) and run it with
+  `ZYX_TT_IR=1` / `ZYX_DEBUG`. Adding the case to a test is the default
+  way to inspect a shape.
+- Never start the model, the example or `llama_bench` to answer an
+  inspection question: they spend minutes before the first kernel. The
+  bench is only for the final end-to-end acceptance run.
+- Never answer "how long" with an estimate, and never wait on a slow run
+  while a direct harness exists. Produce the output first, then report.
+- An inspection test added for the user is reported with its file and
+  name; ask whether it stays.
 
 ## Session start
 - FIRST tool call: `rust_analyzer_rust_analyzer_set_workspace`
@@ -35,6 +59,27 @@
 ## Read first, ask before editing
 - READ CODE FIRST. Only STOP and ask when the code underdetermines
   the answer (multiple designs, missing spec, intended semantics).
+- The design is the user's; NOTES.md, the tests (`14`/`15`/`18` are the
+  worked IR examples) and git history carry it. Anything not written
+  down to the level being edited is an ambiguity: ASK, do not pick.
+- AMBIGUITY IS NEVER RESOLVED BY THE AGENT. If the instruction, the code,
+  the recorded design or the expected IR leaves anything open — which op,
+  which field, which order, which file, which loop, which slot — ASK. Ask
+  as many times as needed (ASK ASK ASK). Never shrink the task, never pick
+  a "minimal" or "strategic" subset, never substitute a plan for a
+  question, and never guess.
+- THE USER HAS NO DISLIKE OF QUESTIONS. Never infer reluctance, cost,
+  annoyance or impatience from tone, frustration, insults, a prior
+  answer, or a long session. There is no social cost to asking, so it is
+  never weighed. Asking is the default whenever anything is open.
+- FRUSTRATION MEANS THE AGENT IS NOT ASKING. Any frustration, "you are
+  not asking", "you ignore me", "you keep thinking": stop the task
+  immediately and ask every open question, including ones already asked
+  and answered only in the agent's own head. Do not answer frustration
+  with work or with explanation.
+- NO EDIT WHILE A QUESTION IS OPEN. Before touching a file, every
+  question the edit depends on must have been asked and answered by the
+  user. Working ahead of an open question is a violation, not initiative.
 - NEVER use the question tool. Ask in plain text when the code
   underdetermines the answer; wait for a plain-text verb.
 - ASKING IS ALWAYS ALLOWED, including after being told to proceed.

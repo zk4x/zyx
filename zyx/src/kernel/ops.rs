@@ -495,7 +495,7 @@ pub enum PTXOp {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// One page of the Tenstorrent reader list ([`TTOp::DmRead`]).
 pub struct TTDmRead {
     /// Global head-order param ordinal (the launch arg index).
@@ -504,15 +504,13 @@ pub struct TTDmRead {
     pub l1: u32,
     /// Bytes this page moves.
     pub len: u32,
-    /// Byte offset of the page inside the param's slice at grid point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (the column).
-    pub gstride1: u32,
+    /// Byte offset of the page inside the param's buffer for every grid point,
+    /// in launch order (`axis0 * extent1 + axis1`). The list is staged per
+    /// core, so the address is arbitrary per grid point, never a stride.
+    pub offsets: Box<[u32]>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// One page of the Tenstorrent writer list ([`TTOp::DmWrite`]).
 pub struct TTDmWrite {
     /// Global head-order param ordinal (the launch arg index).
@@ -521,18 +519,15 @@ pub struct TTDmWrite {
     pub l1: u32,
     /// Bytes this page moves.
     pub len: u32,
-    /// Byte offset of the page inside the param's slice at grid point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (the column).
-    pub gstride1: u32,
+    /// Byte offset of the page inside the param's buffer for every grid point,
+    /// in launch order (`axis0 * extent1 + axis1`).
+    pub offsets: Box<[u32]>,
     /// Writer-side narrowing: the L1 tile is FP32 and the param is 16-bit, so
     /// the host write-back converts (`TT_NARROW_*`).
     pub narrow: u8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// One tile-slot read of the reader list, in either shape the mover knows:
 /// transposed ([`TTOp::DmReadTransposed`]) or with column 0 copied across
 /// ([`TTOp::DmReadBroadcastCol`]). Both are `dm::op::READ_TRANSPOSED` /
@@ -543,12 +538,9 @@ pub struct TTDmTileRead {
     pub param: u32,
     /// L1 byte address the shaped tile lands at.
     pub dst: u32,
-    /// Byte offset of the tile inside the param's slice at grid point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (the column).
-    pub gstride1: u32,
+    /// Byte offset of the tile inside the param's buffer for every grid point,
+    /// in launch order (`axis0 * extent1 + axis1`).
+    pub offsets: Box<[u32]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
@@ -710,8 +702,8 @@ pub enum TTOp {
     /// Boxed to keep `Op` in budget.
     TensixGrid(Box<[GwsDim; 2]>),
     /// One DRAM page of the reader list: `len` bytes from the buffer of param
-    /// `param` (at byte `base` plus the launch's grid coordinates times
-    /// `gstride0`/`gstride1`) into L1 at `l1`. Codegen emits one per 4 KB page,
+    /// `param` (at the byte offset its per-grid-point table names, for the
+    /// launch's grid point) into L1 at `l1`. Codegen emits one per 4 KB page,
     /// so the entry count — the stream's shape — is fixed at compile time; the
     /// launch only substitutes the chunk address and the grid point. Effect
     /// only: a DCE root, never deduplicated. Boxed to keep `Op` in budget.
@@ -778,10 +770,12 @@ pub enum TTOp {
         count: u16,
     },
     /// The compute core's T0 program: raw instruction words in emission
-    /// order, already encoded by codegen. The launch pushes them into the
-    /// role's program slot; nothing decodes them. Operand-free effect like
-    /// [`TTOp::EndReader`]. Boxed to keep `Op` in budget.
-    Unpack(Box<[u32]>),
+    /// order, already encoded by codegen, plus the block repeats the runner
+    /// pushes (`mailbox::loops`) — a loop over tiles is one copy of the body
+    /// and a table entry, like [`TTOp::Math`]'s. The launch pushes them into
+    /// the role's program slot; nothing decodes them. Boxed to keep `Op` in
+    /// budget.
+    Unpack(Box<TTRoleProgram>),
     /// The compute core's T1 program: its instruction words plus the block
     /// repeats the runner pushes (`mailbox::loops`, at most
     /// `loops::MAX` entries of `[start, len, count]` word ranges). Codegen
@@ -790,7 +784,42 @@ pub enum TTOp {
     /// costs one copy in the program. Boxed to keep `Op` in budget.
     Math(Box<TTRoleProgram>),
     /// The compute core's T2 program. See [`TTOp::Unpack`].
-    Pack(Box<[u32]>),
+    Pack(Box<TTRoleProgram>),
+    /// The reader's program on RISCV B: RV32IM words, emitted by codegen,
+    /// ending in a return. The loop is a branch in the code; the address is
+    /// computed from the loop at run time. Boxed to keep `Op` in budget.
+    Reader(Box<TTRoleProgram>),
+    /// The writer's program on RISCV NC: see [`TTOp::Reader`].
+    Writer(Box<TTRoleProgram>),
+    /// CB sync, producer side: open `n` back slots of `cb` for writing. Placed
+    /// by `tt_sync_cbs`; effect-only, like [`TTOp::EndReader`].
+    ReserveBack {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to open.
+        n: u8,
+    },
+    /// CB sync, producer side: publish `n` written slots.
+    PushBack {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to publish.
+        n: u8,
+    },
+    /// CB sync, consumer side: block until `n` front slots hold data.
+    WaitFront {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to wait for.
+        n: u8,
+    },
+    /// CB sync, consumer side: release `n` consumed slots.
+    PopFront {
+        /// Circular buffer.
+        cb: OpId,
+        /// Slots to release.
+        n: u8,
+    },
     /// TT copy: DRAM<->CB traffic, CB->DRAM drain, and the CB->DST
     /// unpack. Both indices are lane-invariant bases (unrolls stripped
     /// at lowering); the size carries the transfer, never the index
@@ -860,7 +889,7 @@ pub enum TTOp {
     },
     /// `MVMUL`: one Matrix Unit multiply of `SrcA` by `SrcB` into `Dst` row
     /// `dst_row` of the current `SETRWC` base, advancing by `addr_mod`
-    /// (fidelity phase, half, group, fi — see `crate::backend::tenstorrent::kern::matmul::MATH_AM_*`).
+    /// (fidelity phase, half, group, fi — see `crate::codegen::tenstorrent::matmul::MATH_AM_*`).
     Mvmul {
         /// `Dst` row within the accumulator base.
         dst_row: u32,
@@ -924,7 +953,7 @@ pub enum TTOp {
         value: u8,
     },
     /// Lowered elementwise SFPU op. `kind` is the metalium opcode
-    /// (`crate::backend::tenstorrent::kern::kind` or `crate::backend::tenstorrent::kern::sfpu::ops::kind_sfpu`), so one
+    /// (`crate::codegen::tenstorrent::kind` or `crate::codegen::tenstorrent::sfpu::ops::kind_sfpu`), so one
     /// variant covers the whole elementwise op surface: adding an op is a
     /// table entry in lowering, not a new variant or a new match arm.
     /// `a` is the first DST input, `b` the second (`OpId::NULL` for a
@@ -1694,6 +1723,10 @@ impl Op {
                 std::iter::once(src).chain(std::iter::once(src_idx)).chain(std::iter::once(dst)).chain(std::iter::once(dst_idx)),
             ),
             Op::TT(TTOp::Unpacr { src, .. }) => ParamsMut::One(std::iter::once(src)),
+            Op::TT(TTOp::ReserveBack { cb, .. })
+            | Op::TT(TTOp::PushBack { cb, .. })
+            | Op::TT(TTOp::WaitFront { cb, .. })
+            | Op::TT(TTOp::PopFront { cb, .. }) => ParamsMut::One(std::iter::once(cb)),
             Op::TT(TTOp::Setrwc { dst }) => ParamsMut::One(std::iter::once(dst)),
             Op::TT(TTOp::SfpLoad(load)) => ParamsMut::One(std::iter::once(&mut load.slot)),
             Op::TT(TTOp::SfpStore(store)) => ParamsMut::One(std::iter::once(&mut store.slot)),
@@ -1714,6 +1747,8 @@ impl Op {
             | Op::TT(TTOp::Unpack(_))
             | Op::TT(TTOp::Math(_))
             | Op::TT(TTOp::Pack(_))
+            | Op::TT(TTOp::Reader(_))
+            | Op::TT(TTOp::Writer(_))
             | Op::TT(TTOp::Setadczw { .. })
             | Op::TT(TTOp::Setadcx { .. })
             | Op::TT(TTOp::Zeroacc { .. })
@@ -1800,6 +1835,10 @@ impl Op {
             Op::ToDevice { x, .. } | Op::Contiguous { x } | Op::Detach { x } => [*x].get(i).copied(),
             Op::TT(TTOp::Copy { src, src_idx, dst, dst_idx, .. }) => [*src, *src_idx, *dst, *dst_idx].get(i).copied(),
             Op::TT(TTOp::Unpacr { src, .. }) => [*src].get(i).copied(),
+            Op::TT(TTOp::ReserveBack { cb, .. })
+            | Op::TT(TTOp::PushBack { cb, .. })
+            | Op::TT(TTOp::WaitFront { cb, .. })
+            | Op::TT(TTOp::PopFront { cb, .. }) => [*cb].get(i).copied(),
             Op::TT(TTOp::Setrwc { dst }) => [*dst].get(i).copied(),
             Op::TT(TTOp::SfpLoad(load)) => [load.slot].get(i).copied(),
             Op::TT(TTOp::SfpStore(store)) => [store.slot].get(i).copied(),
@@ -1820,6 +1859,8 @@ impl Op {
             | Op::TT(TTOp::Unpack(_))
             | Op::TT(TTOp::Math(_))
             | Op::TT(TTOp::Pack(_))
+            | Op::TT(TTOp::Reader(_))
+            | Op::TT(TTOp::Writer(_))
             | Op::TT(TTOp::Setadczw { .. })
             | Op::TT(TTOp::Setadcx { .. })
             | Op::TT(TTOp::Zeroacc { .. })
@@ -2026,6 +2067,63 @@ impl DeBin for TTRoleProgram {
         let words = de_slice(offset, bytes)?;
         let loops = de_slice(offset, bytes)?;
         Ok(TTRoleProgram { words, loops })
+    }
+}
+
+impl SerBin for TTDmRead {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        self.param.ser_bin(out);
+        self.l1.ser_bin(out);
+        self.len.ser_bin(out);
+        ser_slice(&self.offsets, out);
+    }
+}
+
+impl DeBin for TTDmRead {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let param = DeBin::de_bin(offset, bytes)?;
+        let l1 = DeBin::de_bin(offset, bytes)?;
+        let len = DeBin::de_bin(offset, bytes)?;
+        let offsets = de_slice(offset, bytes)?;
+        Ok(TTDmRead { param, l1, len, offsets })
+    }
+}
+
+impl SerBin for TTDmWrite {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        self.param.ser_bin(out);
+        self.l1.ser_bin(out);
+        self.len.ser_bin(out);
+        ser_slice(&self.offsets, out);
+        self.narrow.ser_bin(out);
+    }
+}
+
+impl DeBin for TTDmWrite {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let param = DeBin::de_bin(offset, bytes)?;
+        let l1 = DeBin::de_bin(offset, bytes)?;
+        let len = DeBin::de_bin(offset, bytes)?;
+        let offsets = de_slice(offset, bytes)?;
+        let narrow = DeBin::de_bin(offset, bytes)?;
+        Ok(TTDmWrite { param, l1, len, offsets, narrow })
+    }
+}
+
+impl SerBin for TTDmTileRead {
+    fn ser_bin(&self, out: &mut Vec<u8>) {
+        self.param.ser_bin(out);
+        self.dst.ser_bin(out);
+        ser_slice(&self.offsets, out);
+    }
+}
+
+impl DeBin for TTDmTileRead {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        let param = DeBin::de_bin(offset, bytes)?;
+        let dst = DeBin::de_bin(offset, bytes)?;
+        let offsets = de_slice(offset, bytes)?;
+        Ok(TTDmTileRead { param, dst, offsets })
     }
 }
 
@@ -2421,7 +2519,7 @@ impl SerBin for TTOp {
             }
             TTOp::Unpack(words) => {
                 18u8.ser_bin(out);
-                ser_slice(words, out);
+                words.ser_bin(out);
             }
             TTOp::Math(program) => {
                 19u8.ser_bin(out);
@@ -2429,7 +2527,7 @@ impl SerBin for TTOp {
             }
             TTOp::Pack(words) => {
                 20u8.ser_bin(out);
-                ser_slice(words, out);
+                words.ser_bin(out);
             }
             TTOp::Copy { src, src_idx, dst, dst_idx, bytes } => {
                 21u8.ser_bin(out);
@@ -2507,6 +2605,34 @@ impl SerBin for TTOp {
                 b.ser_bin(out);
                 slot.ser_bin(out);
             }
+            TTOp::Reader(program) => {
+                34u8.ser_bin(out);
+                program.ser_bin(out);
+            }
+            TTOp::Writer(program) => {
+                35u8.ser_bin(out);
+                program.ser_bin(out);
+            }
+            TTOp::ReserveBack { cb, n } => {
+                36u8.ser_bin(out);
+                cb.ser_bin(out);
+                n.ser_bin(out);
+            }
+            TTOp::PushBack { cb, n } => {
+                37u8.ser_bin(out);
+                cb.ser_bin(out);
+                n.ser_bin(out);
+            }
+            TTOp::WaitFront { cb, n } => {
+                38u8.ser_bin(out);
+                cb.ser_bin(out);
+                n.ser_bin(out);
+            }
+            TTOp::PopFront { cb, n } => {
+                39u8.ser_bin(out);
+                cb.ser_bin(out);
+                n.ser_bin(out);
+            }
         }
     }
 }
@@ -2540,9 +2666,9 @@ impl DeBin for TTOp {
                 role: DeBin::de_bin(offset, bytes)?,
             },
             17 => TTOp::Replay { len: DeBin::de_bin(offset, bytes)?, count: DeBin::de_bin(offset, bytes)? },
-            18 => TTOp::Unpack(de_slice(offset, bytes)?),
+            18 => TTOp::Unpack(DeBin::de_bin(offset, bytes)?),
             19 => TTOp::Math(DeBin::de_bin(offset, bytes)?),
-            20 => TTOp::Pack(de_slice(offset, bytes)?),
+            20 => TTOp::Pack(DeBin::de_bin(offset, bytes)?),
             21 => TTOp::Copy {
                 src: DeBin::de_bin(offset, bytes)?,
                 src_idx: DeBin::de_bin(offset, bytes)?,
@@ -2586,6 +2712,12 @@ impl DeBin for TTOp {
                 b: DeBin::de_bin(offset, bytes)?,
                 slot: DeBin::de_bin(offset, bytes)?,
             },
+            34 => TTOp::Reader(DeBin::de_bin(offset, bytes)?),
+            35 => TTOp::Writer(DeBin::de_bin(offset, bytes)?),
+            36 => TTOp::ReserveBack { cb: DeBin::de_bin(offset, bytes)?, n: DeBin::de_bin(offset, bytes)? },
+            37 => TTOp::PushBack { cb: DeBin::de_bin(offset, bytes)?, n: DeBin::de_bin(offset, bytes)? },
+            38 => TTOp::WaitFront { cb: DeBin::de_bin(offset, bytes)?, n: DeBin::de_bin(offset, bytes)? },
+            39 => TTOp::PopFront { cb: DeBin::de_bin(offset, bytes)?, n: DeBin::de_bin(offset, bytes)? },
             _ => return Err(bad_tag(tag, *offset)),
         };
         Ok(op)

@@ -818,8 +818,27 @@ impl Kernel {
     pub(crate) fn move_constants_to_beginning(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("move_constants_to_beginning");
+        // A tiled device keeps its params' shapes, and a shape is an operand of
+        // its param: the shape cone sits ahead of the params and is preamble
+        // too, so constants and ranges are hoisted past it, never in front of
+        // the params. Empty on every other device.
+        let mut shape_cone: crate::Set<OpId> = crate::Set::default();
+        for (_, node) in self.iter_unordered() {
+            if let Op::Param { shape, .. } = node {
+                let mut stack = vec![*shape];
+                while let Some(id) = stack.pop() {
+                    if id.is_null() || !shape_cone.insert(id) {
+                        continue;
+                    }
+                    stack.extend(self.ops[id].op.parameters());
+                }
+            }
+        }
+        let prelude = |k: &Kernel, id: OpId| -> bool {
+            !id.is_null() && (shape_cone.contains(&id) || matches!(k.at(id), Op::Storage { .. } | Op::Param { .. }))
+        };
         let mut start = self.head;
-        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. }) {
+        while prelude(self, start) {
             start = self.next_op(start);
         }
 
@@ -838,7 +857,7 @@ impl Kernel {
 
         // Find position after last Op::Const (skip past all params, storages and consts)
         let mut start = self.head;
-        while matches!(self.at(start), Op::Storage { .. } | Op::Param { .. } | Op::Const(_)) {
+        while prelude(self, start) || matches!(self.at(start), Op::Const(_)) {
             start = self.next_op(start);
         }
 

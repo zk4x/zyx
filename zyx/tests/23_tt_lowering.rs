@@ -248,6 +248,22 @@ fn unary_math() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn large_elementwise() -> Result<(), ZyxError> {
+    // A group range above the device max: `tt_tile` must split it into an
+    // outer group and a loop, and the loop's traffic must stay canonical.
+    let x = Tensor::rand([1024, 256], DType::F32)?;
+    let xs = x.to(Dev::TT(0))?;
+    let neg: Vec<f32> = (-&xs).to(Dev::C)?.try_into().unwrap();
+    let xv: Vec<f32> = x.try_into().unwrap();
+    assert_eq!(neg.len(), xv.len());
+    for i in 0..xv.len() {
+        // `NEG` is `SFPMOV` with the negate modifier: exact in F32.
+        assert_eq!(neg[i].to_bits(), (-xv[i]).to_bits(), "neg lane {i}");
+    }
+    Ok(())
+}
+
+#[test]
 fn tiling() -> Result<(), ZyxError> {
     // The shapes that exercise the forms `tt_tile` must finish (NOTES,
     // "Tiling: the search explores, `tt_tile` completes"):
@@ -389,6 +405,150 @@ fn sum() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// `sum([1])` drops the reduced axis, so the result is `[10]` rather than the
+/// `[10, 1]` of `sum_keepdim`. The two go through the same `reduce_axes`
+/// (permute + `reduce_last_axis`), so a difference between them is in the
+/// rank-dropping shape, not in the reduction.
+#[test]
+fn sum_drop() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.sum([1])?.to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 10);
+    let mut bad = 0;
+    let mut worst = 0f32;
+    for r in 0..10 {
+        let acc: f32 = xv[r * 20..(r + 1) * 20].iter().sum();
+        let err = (zv[r] - acc).abs();
+        worst = worst.max(err);
+        if err > 1e-3 {
+            if bad < 10 {
+                println!("z[{r}] = {}, expected {acc} (err {err})", zv[r]);
+            }
+            bad += 1;
+        }
+    }
+    println!("sum_drop bad: {bad} / 10 (worst {worst})");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// `max([1])` drops the axis like `sum([1])`. Exact like the `max` gate.
+#[test]
+fn max_drop() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.max([1])?.to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 10);
+    let mut bad = 0;
+    for r in 0..10 {
+        let want = xv[r * 20..(r + 1) * 20].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        if zv[r] != want {
+            if bad < 10 {
+                println!("z[{r}] = {}, expected {want}", zv[r]);
+            }
+            bad += 1;
+        }
+    }
+    println!("max_drop bad: {bad} / 10");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// `sum([0])` permutes then drops, so the reduced axis is the leading one in
+/// the (unchanged) layout. A gate on its own because the reference is per
+/// column, not per row.
+#[test]
+fn sum_drop_col() -> Result<(), ZyxError> {
+    let x = Tensor::rand([10, 20], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.sum([0])?.to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 10 * 20);
+    assert_eq!(zv.len(), 20);
+    let mut bad = 0;
+    let mut worst = 0f32;
+    for c in 0..20 {
+        let acc: f32 = (0..10).map(|r| xv[r * 20 + c]).sum();
+        let err = (zv[c] - acc).abs();
+        worst = worst.max(err);
+        if err > 1e-3 {
+            if bad < 10 {
+                println!("z[{c}] = {}, expected {acc} (err {err})", zv[c]);
+            }
+            bad += 1;
+        }
+    }
+    println!("sum_drop_col bad: {bad} / 20 (worst {worst})");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// The axis-dropping reduce with a real loop: `[32, 256]` summed over axis 1
+/// is 8 tile iterations, and the output is a `[32]` vector.
+#[test]
+fn sum_drop_loop() -> Result<(), ZyxError> {
+    let x = Tensor::rand([32, 256], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.sum([1])?.to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 32 * 256);
+    assert_eq!(zv.len(), 32);
+    let mut bad = 0;
+    let mut worst = 0f32;
+    for r in 0..32 {
+        let acc: f32 = xv[r * 256..(r + 1) * 256].iter().sum();
+        let err = (zv[r] - acc).abs();
+        worst = worst.max(err);
+        if err > 1e-3 * acc.abs().max(1.0) {
+            if bad < 10 {
+                println!("z[{r}] = {}, expected {acc} (err {err})", zv[r]);
+            }
+            bad += 1;
+        }
+    }
+    println!("sum_drop_loop bad: {bad} / 32 (worst {worst})");
+    assert_eq!(bad, 0);
+
+    Ok(())
+}
+
+/// A single row wider than one tile: `[1, 256].sum_all()` is a `[1, 256]`
+/// buffer (not tile-aligned in the row direction) reduced to a scalar. It hits
+/// the tiling's `boundary offset ... is not a whole tile` path.
+#[test]
+fn sum_one_row() -> Result<(), ZyxError> {
+    let x = Tensor::rand([1, 256], DType::F32)?;
+
+    let z = x.to(Dev::TT(0))?.sum_all().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 256);
+    assert_eq!(zv.len(), 1);
+    let acc: f32 = xv.iter().sum();
+    let err = (zv[0] - acc).abs();
+    println!("sum_one_row: {} vs {} (err {err})", zv[0], acc);
+    assert!(err <= 1e-3, "err {err}");
+
+    Ok(())
+}
+
 #[test]
 fn sum_sigmoid() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::F32)?;
@@ -526,6 +686,32 @@ fn sum_all() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// A reduce whose kernel really has a loop: `[32, 256]` summed over
+/// everything is 8 tile iterations, so the accumulator, the per-iteration
+/// tile hand-off and the loop's reuse ring all run. (The `[10, 20]` reduces
+/// above fit one tile and never enter a loop.)
+#[test]
+fn sum_loop() -> Result<(), ZyxError> {
+    let x = Tensor::rand([32, 256], DType::F32)?;
+    let z = x.to(Dev::TT(0))?.sum_all().to(Dev::C)?;
+
+    let xv: Vec<f32> = x.try_into().unwrap();
+    let zv: Vec<f32> = z.try_into().unwrap();
+    assert_eq!(xv.len(), 32 * 256);
+    assert_eq!(zv.len(), 1);
+    let mut acc = 0f32;
+    for v in &xv {
+        acc += *v;
+    }
+    let err = (zv[0] - acc).abs();
+    println!("sum_loop: {} vs {} (err {err})", zv[0], acc);
+    // 8192 fp32 additions in the device's own order: the bound is
+    // `n * u * sum |x|`, well under a relative 1e-4 here.
+    assert!(err <= 1e-4 * acc.abs() + 1e-3, "err {err}");
+
+    Ok(())
+}
+
 #[test]
 fn matmul_sigmoid() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 20], DType::F32)?;
@@ -635,6 +821,31 @@ fn softmax() -> Result<(), ZyxError> {
     let zv: Vec<f32> = z.try_into().unwrap();
     assert_eq!(xv.len(), 256 * 256);
     assert_eq!(zv.len(), 256 * 256);
+
+    // Every row is a distribution: compare it against the host's softmax,
+    // peaked enough that a wrong reduction (one tile only, a lost
+    // accumulator) cannot pass by accident.
+    let mut bad = 0;
+    let mut worst = 0.0f32;
+    for r in 0..256 {
+        let row = &xv[r * 256..(r + 1) * 256];
+        let max = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let e: Vec<f32> = row.iter().map(|v| (v - max).exp()).collect();
+        let sum: f32 = e.iter().sum();
+        for c in 0..256 {
+            let want = e[c] / sum;
+            let got = zv[r * 256 + c];
+            let err = (got - want).abs();
+            worst = worst.max(err);
+            if err > 1e-3 {
+                if bad < 5 {
+                    println!("softmax[{r},{c}] = {got}, expected {want}");
+                }
+                bad += 1;
+            }
+        }
+    }
+    assert_eq!(bad, 0, "{bad} of {} values wrong (worst error {worst})", 256 * 256);
 
     Ok(())
 }

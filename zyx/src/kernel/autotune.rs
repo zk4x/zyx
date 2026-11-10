@@ -166,6 +166,32 @@ impl Kernel {
             // once the Bool is materialised in an F32 tile, which the cast
             // arm has no program for.
             self.default_epilogue();
+            // The CB plan is SSA: `tt_add_movers` writes the block copies, the
+            // writer drains and the two section markers as ordinary
+            // `Op::Copy`/`Load`/`Store` on `Circular` storages, with every
+            // boundary copy's DRAM side a canonical tile-image address. The
+            // phase boundary below only encodes it.
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR before tt_add_movers ===");
+                self.debug();
+            }
+            self.tt_add_movers();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_add_movers ===");
+                self.debug();
+            }
+            // The four CB syncs over that traffic: reserve/push around every
+            // published page run, wait before every consumer, pop after the
+            // last read, then the balance and depth proof that keeps a
+            // deadlocked kernel off the board.
+            self.tt_sync_cbs();
+            self.tt_dedup_pushes();
+            self.tt_place_pops();
+            self.tt_fifo_check();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_fifo_check ===");
+                self.debug();
+            }
             self.tt_dataflow_select();
             if std::env::var_os("ZYX_TT_IR").is_some() {
                 eprintln!("=== IR after tt_dataflow_select ===");

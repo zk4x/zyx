@@ -119,39 +119,82 @@ impl Kernel {
                 Op::TT(TTOp::EndReader) => {
                     writeln!(f, "{indent}{blue}end_reader{reset}").unwrap();
                 }
-                Op::TT(TTOp::Unpack(ref words)) => {
-                    writeln!(f, "{indent}{blue}unpack{reset} {} words", words.len()).unwrap();
+                Op::TT(TTOp::Unpack(ref program)) => {
+                    writeln!(f, "{indent}{blue}unpack{reset} {} words, {} loops", program.words.len(), program.loops.len())
+                        .unwrap();
                 }
                 Op::TT(TTOp::Math(ref program)) => {
                     writeln!(f, "{indent}{blue}math{reset} {} words, {} loops", program.words.len(), program.loops.len())
                         .unwrap();
                 }
-                Op::TT(TTOp::Pack(ref words)) => {
-                    writeln!(f, "{indent}{blue}pack{reset} {} words", words.len()).unwrap();
+                Op::TT(TTOp::Pack(ref program)) => {
+                    writeln!(f, "{indent}{blue}pack{reset} {} words, {} loops", program.words.len(), program.loops.len())
+                        .unwrap();
+                }
+                Op::TT(TTOp::Reader(ref program)) => {
+                    writeln!(f, "{indent}{blue}reader{reset} {} words", program.words.len()).unwrap();
+                }
+                Op::TT(TTOp::Writer(ref program)) => {
+                    writeln!(f, "{indent}{blue}writer{reset} {} words", program.words.len()).unwrap();
+                }
+                Op::TT(TTOp::ReserveBack { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}reserve_back{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::PushBack { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}push_back{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::WaitFront { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}wait_front{reset} r{cb}, {n}").unwrap();
+                }
+                Op::TT(TTOp::PopFront { cb, n }) => {
+                    let cb = id_map.get(&cb).copied().unwrap_or(cb);
+                    writeln!(f, "{indent}{red}pop_front{reset} r{cb}, {n}").unwrap();
                 }
                 Op::TT(TTOp::DmRead(ref page)) => {
                     writeln!(
                         f,
-                        "{indent}{blue}dm_read{reset} param:{} l1:{:#x} len:{} base:{}",
-                        page.param, page.l1, page.len, page.base
+                        "{indent}{blue}dm_read{reset} param:{} l1:{:#x} len:{} offsets:{:?}",
+                        page.param,
+                        page.l1,
+                        page.len,
+                        &page.offsets[..page.offsets.len().min(8)]
                     )
                     .unwrap();
                 }
                 Op::TT(TTOp::DmWrite(ref page)) => {
                     writeln!(
                         f,
-                        "{indent}{blue}dm_write{reset} param:{} l1:{:#x} len:{} base:{} narrow:{}",
-                        page.param, page.l1, page.len, page.base, page.narrow
+                        "{indent}{blue}dm_write{reset} param:{} l1:{:#x} len:{} offsets:{:?} narrow:{}",
+                        page.param,
+                        page.l1,
+                        page.len,
+                        &page.offsets[..page.offsets.len().min(8)],
+                        page.narrow
                     )
                     .unwrap();
                 }
                 Op::TT(TTOp::DmReadTransposed(ref t)) => {
-                    writeln!(f, "{indent}{blue}dm_read_transposed{reset} param:{} dst:{:#x} base:{}", t.param, t.dst, t.base)
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_read_transposed{reset} param:{} dst:{:#x} offsets:{:?}",
+                        t.param,
+                        t.dst,
+                        &t.offsets[..t.offsets.len().min(8)]
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::DmReadBroadcastCol(ref t)) => {
-                    writeln!(f, "{indent}{blue}dm_read_broadcast_col{reset} param:{} dst:{:#x} base:{}", t.param, t.dst, t.base)
-                        .unwrap();
+                    writeln!(
+                        f,
+                        "{indent}{blue}dm_read_broadcast_col{reset} param:{} dst:{:#x} offsets:{:?}",
+                        t.param,
+                        t.dst,
+                        &t.offsets[..t.offsets.len().min(8)]
+                    )
+                    .unwrap();
                 }
                 Op::TT(TTOp::DmFill(ref fill)) => {
                     writeln!(

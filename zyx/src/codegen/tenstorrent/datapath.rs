@@ -687,6 +687,41 @@ pub fn unpack_tile_to_dst(l1: u64, row: u32) -> Vec<Instruction> {
     unpack_datums_to_dst(l1, 0, TILE_DATUMS, row)
 }
 
+/// `unpack_tile_to_dst`, for a tile loop whose base advances one `step` bytes
+/// per iteration: the config still seeds slot 0, and the address the unpacker
+/// actually uses comes from a register the translator stores before each unpack
+/// and advances at the end of the body (`ttinsn::STEP_STORE`). One copy of the
+/// body then serves the whole loop, which is what a block repeat needs.
+pub fn unpack_tile_stepped(l1: u64, step: u32, row: u32) -> Vec<u32> {
+    assert!(step > 0 && step % TileImage::ALIGNMENT as u32 == 0, "a stepped base moves in 16-byte units");
+    let units = step / TileImage::ALIGNMENT as u32;
+    assert!(units < 1 << 12, "a per-iteration step must fit the advance's 12 bits");
+    let mut words: Vec<u32> = unpack_tile_to_dst(l1, row).iter().map(|i| i.word()).collect();
+    // After the config and its stallwait, before the unpack instruction. The
+    // base the register holds is a *config* write (`sw` to the unpacker's
+    // `REG3_Base_address`), and the unpacker reads that register when it
+    // executes, not when the core issues it: without a drain between the
+    // store and `UNPACR` the next iteration's store can land first and two
+    // iterations read the same tile (measured: tiles 0,0,2,3,...). The drain
+    // is the one the static config already ends with
+    // (`ConfigurationUnit.md`, C12).
+    let at = words.len() - 1;
+    let drain = tt_isa::backend::stallwait(
+        tt_isa::backend::block::UNPACKER | tt_isa::backend::block::CONFIG,
+        tt_isa::backend::cond::CONFIG_BUSY,
+    )
+    .expect("the configuration drain is encodable");
+    // The store is a `WRCFG` in the coprocessor's instruction FIFO (the
+    // translator turns `STEP_STORE` into one), so it is ordered with the
+    // unpack that reads it; `WRCFG` itself demands a `nop` behind it, then the
+    // config unit is drained before the unpack starts.
+    words.insert(at, crate::codegen::tenstorrent::ttinsn_step_store(l1));
+    words.insert(at + 1, tt_isa::sfpu::nop().word());
+    words.insert(at + 2, drain.word());
+    words.push(crate::codegen::tenstorrent::ttinsn_step_advance(units));
+    words
+}
+
 /// Unpack `count` datums of the FP32 tile image at `l1`, from datum `first`
 /// (a multiple of four, so the run starts on a 16-byte unit), into `Dst` from
 /// row `row`. An uncompressed unpack always starts at the image's first datum

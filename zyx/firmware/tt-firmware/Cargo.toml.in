@@ -1,0 +1,52 @@
+# Deliberately outside the host workspace: this crate only ever builds for
+# riscv32im-unknown-none-elf, and mixing it into the host workspace would make
+# `cargo build` at the root try to build it for the host.
+[workspace]
+
+[package]
+name = "tt-firmware"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Bare-metal Rust for the Blackhole baby RISC-V cores."
+
+# Off by default. `ttinsn-experiment` builds the `ttinsn_t1` image and the hooks it
+# needs in `corpus.rs`: see `docs/plans/ttinsn-push-experiment.md`. No image built
+# without it contains a `.ttinsn` word.
+[features]
+ttinsn-experiment = []
+# Host-encoded GDDR reads (`tt_isa::dm::encoded`): the B mover runs `READ_ENCODED`
+# entries, verifying their checksum, in place of decoding and checking each read itself.
+# Off by default: the default image is "safe", every read checked on the card, and
+# refuses `READ_ENCODED` as an unknown op. The mover tells the host which it is
+# (`dm::CAPS`), so a host never encodes for a safe image.
+fast-reads = []
+# With `fast-reads`, also run the independent semantic check (`encoded::guard`: a
+# usable-DRAM-endpoint bitmap, this tile as the return, address and length bounds) on
+# each encoded read: ~50 cycles more an entry, protecting against a bug in the
+# host's encoder as well as damage.
+encoded-guard = ["fast-reads"]
+
+[[bin]]
+name = "ttinsn_t1"
+path = "src/bin/ttinsn_t1.rs"
+required-features = ["ttinsn-experiment"]
+
+[dependencies]
+tt-isa = { path = "/home/x/Dev/rust/tt-isa" }
+
+[build-dependencies]
+tt-isa = { path = "/home/x/Dev/rust/tt-isa" }
+
+[profile.release]
+# Code size, not speed: every role image is linked into a 10 KiB L1 slot, and
+# the loop translator lives in all three. The pusher's inner loop is a few
+# instructions either way.
+opt-level = "z"
+lto = true
+codegen-units = 1
+# There is no unwinder, and `ebreak` cannot back a panic path, so firmware
+# publishes a status word and spins instead. See src/lib.rs.
+panic = "abort"
+debug = true

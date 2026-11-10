@@ -31,7 +31,7 @@
 // that thread. There is no C++ and no dlopen: compilation uploads a kernel's
 // images into device DRAM once (`images`), a launch resolves them to their
 // slots and the owner thread loads only what its residency ledger says is
-// missing, then `kern::runtime::run` waits for every role's `DONE`. The
+// missing, then `runtime::run` waits for every role's `DONE`. The
 // simulator itself is a Tenstorrent binary blob, found through `TT_TTSIM_LIB`
 // or `vendor/libttsim_bh.so`; only its wrapper lives here.
 //
@@ -59,7 +59,7 @@ use crate::{
     shape::Dim,
     slab::{Slab, SlabId},
 };
-use nanoserde::{DeJson, SerBin};
+use nanoserde::DeJson;
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tt_isa::dram::{Dram, DramRange};
@@ -69,13 +69,17 @@ use tt_isa::dram::{Dram, DramRange};
 // is dead until a later pass prunes it.
 #[allow(dead_code, unused_imports, unused_variables)]
 pub(crate) mod dev;
+#[allow(dead_code)]
+pub(crate) mod firmware_images;
 #[allow(dead_code, unused_imports, unused_variables)]
-pub(crate) mod kern;
+pub(crate) mod runtime;
 #[allow(dead_code, unused_imports, unused_variables)]
 pub(crate) mod sim;
 pub(crate) mod ttsim;
 
-use kern::runtime::SemaphoreInit;
+use crate::codegen::tenstorrent::code::Loop;
+use crate::codegen::tenstorrent::l1::SemaphoreInit;
+use crate::codegen::tenstorrent::{TT_NARROW_BF16, TT_NARROW_F16, TT_NARROW_NONE, TTDmMove, TTSemaphoreInit};
 use tt_isa::mailbox::role::Mailbox;
 use tt_isa::tensix::Core;
 
@@ -179,9 +183,10 @@ pub struct TTConfig {
 // This is the whole kernel as the hardware executes it: data-mover moves
 // across the DRAM/L1 boundary, the three Tensix role streams, the
 // semaphores they synchronize on, and the build-time L1/DST placement the
-// instructions bake in as immediates. It lives here (not in the kernel IR)
-// beside the device types it feeds; `TTProgramDesc` carries it in the IR so
-// `compile` can reach it after lowering.
+// instructions bake in as immediates. The move/semaphore descriptors are
+// produced by codegen (`crate::codegen::tenstorrent::{TTDmMove, ...}`) and
+// carried in the IR (`TTProgramDesc`) so `compile` can reach them after
+// lowering.
 //
 // Addresses: L1 is a zyx-owned bump allocation over the metalium data arena
 // (`tt_isa::l1::DATA`), first touch, 64-byte aligned. DRAM offsets are not
@@ -189,56 +194,6 @@ pub struct TTConfig {
 // DM move carries the param ordinal and the launch fills in
 // channel/port/offset.
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// One data-mover move of the native program: `bytes` between the DRAM
-/// buffer of param `param` and L1 address `l1`.
-pub struct TTDmMove {
-    /// Global head-order param ordinal (the shim/launch arg index).
-    pub param: u32,
-    /// L1 byte address of the CB side of the move.
-    pub l1: u32,
-    /// Transfer size in bytes of the L1 side.
-    pub bytes: u32,
-    /// Writer-side narrowing: the L1 tile is FP32 and the param is 16-bit,
-    /// so the host write-back converts (`TT_NARROW_*`). The packer cannot do
-    /// it: F32 `Dst` -> BF16 L1 is `pack_fmt_conv_mode=0x105`, which the
-    /// pinned ttsim refuses (`ttsim-divergence.md`, "BF16 late narrowing").
-    pub narrow: u8,
-    /// Byte offset of this move's slice inside the param's buffer at grid
-    /// point `(0, 0)`.
-    pub base: u32,
-    /// Byte stride of the slice per grid index on axis 0 (gidx0, the row).
-    pub gstride0: u32,
-    /// Byte stride of the slice per grid index on axis 1 (gidx1, the column).
-    pub gstride1: u32,
-}
-
-/// Byte offset of a move's slice for one grid point: the program is
-/// tile-uniform, so this is the only thing a grid point changes.
-pub fn tt_move_offset(mv: &TTDmMove, gidx0: u32, gidx1: u32) -> usize {
-    mv.base as usize + gidx0 as usize * mv.gstride0 as usize + gidx1 as usize * mv.gstride1 as usize
-}
-
-/// `TTDmMove::narrow`: the L1 bytes are copied as they are.
-pub const TT_NARROW_NONE: u8 = 0;
-/// `TTDmMove::narrow`: FP32 L1 tile -> FP16 param, round to nearest even.
-pub const TT_NARROW_F16: u8 = 1;
-/// `TTDmMove::narrow`: FP32 L1 tile -> BF16 param, round to nearest even.
-pub const TT_NARROW_BF16: u8 = 2;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin)]
-/// One semaphore's initial state, mirroring
-/// `tt_kernels::runtime::SemaphoreInit` (`(Semaphore, value, max)`), stored
-/// as plain bytes so the program table stays plain data.
-pub struct TTSemaphoreInit {
-    /// Semaphore index, `0..8`.
-    pub index: u8,
-    /// Initial value.
-    pub value: u8,
-    /// Maximum value.
-    pub max: u8,
-}
 
 // ---------------------------------------------------------------------------
 // Device DRAM
@@ -254,9 +209,11 @@ pub struct TTSemaphoreInit {
 
 /// DRAM interleaving granularity: bytes striped round-robin across the chip's
 /// channels before the next channel gets the next page. Tenstorrent interleaves
-/// a buffer in units of its page rounded to `DRAM_ALIGNMENT` (`64` on
-/// Blackhole) — 4 KB for an FP32 tile; 4 KB is the default here.
-const STRIPE: u64 = 4096;
+/// a buffer in units of its *page* — the tile image — so the page is
+/// [`tt_isa::dm::TILE_SLOT`] (16-byte header + 1024 datums + pad), not the bare
+/// 4 KB datum block: a tile image must land inside one channel range, because
+/// `READ_TRANSPOSED`/`READ_BROADCAST_COL` are a single descriptor of one slot.
+const STRIPE: u64 = tt_isa::dm::TILE_SLOT;
 
 /// One allocation in the flat DRAM space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -743,6 +700,9 @@ struct TTProgram {
     /// the grid point's offsets, deciding nothing (NOTES §2).
     reader: Box<[TTDmMove]>,
     writer: Box<[TTDmMove]>,
+    /// The reader and writer sections as RISC-V programs (the movers' code).
+    reader_program: Box<[u32]>,
+    writer_program: Box<[u32]>,
     sems: Vec<SemaphoreInit>,
     /// Global param count (inputs) and GlobalMut count (outputs).
     n_inputs: u32,
@@ -761,8 +721,8 @@ pub struct TTDevice {
     programs: Slab<DeviceProgramId, TTProgram>,
     /// The device's program cache: every image on the card (NOTES §2).
     images: Slab<ImageId, Image>,
-    /// The two mover firmware images ([`tt_firmware_images::DM_B`],
-    /// [`tt_firmware_images::DM_NC`]), created on first compile: boot is their first residency
+    /// The two mover firmware images ([`firmware_images::DM_B`],
+    /// [`firmware_images::DM_NC`]), created on first compile: boot is their first residency
     /// miss, not a special step.
     firmware: Option<[ImageId; 2]>,
 }
@@ -787,8 +747,12 @@ impl TTDevice {
         let rendered = kernel.render()?;
         let mut reader: Vec<TTDmMove> = Vec::new();
         let mut writer: Vec<TTDmMove> = Vec::new();
+        let mut reader_program: Vec<u32> = Vec::new();
+        let mut writer_program: Vec<u32> = Vec::new();
         let mut roles: [Vec<u32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut math_loops: Vec<[u32; 3]> = Vec::new();
+        let mut unpack_loops: Vec<[u32; 3]> = Vec::new();
+        let mut pack_loops: Vec<[u32; 3]> = Vec::new();
         let mut semset: Vec<TTSemaphoreInit> = Vec::new();
         let mut gws: Option<Vec<GwsDim>> = None;
         let mut n_inputs = 0u32;
@@ -814,30 +778,43 @@ impl TTDevice {
                     }
                 }
                 Op::TT(TTOp::TensixGrid(grid)) => gws = Some(grid.to_vec()),
-                Op::TT(TTOp::Unpack(words)) => roles[0] = words.to_vec(),
+                Op::TT(TTOp::Unpack(program)) => {
+                    roles[0] = program.words.to_vec();
+                    unpack_loops = program.loops.to_vec();
+                }
                 Op::TT(TTOp::Math(program)) => {
                     roles[1] = program.words.to_vec();
                     math_loops = program.loops.to_vec();
                 }
-                Op::TT(TTOp::Pack(words)) => roles[2] = words.to_vec(),
+                Op::TT(TTOp::Pack(program)) => {
+                    roles[2] = program.words.to_vec();
+                    pack_loops = program.loops.to_vec();
+                }
                 Op::TT(TTOp::DmRead(page)) => reader.push(TTDmMove {
                     param: page.param,
                     l1: page.l1,
                     bytes: page.len,
                     narrow: TT_NARROW_NONE,
-                    base: page.base,
-                    gstride0: page.gstride0,
-                    gstride1: page.gstride1,
+                    offsets: page.offsets.clone(),
+                }),
+                // One whole tile image, shaped by the mover: `READ_BROADCAST_COL`
+                // copies the header and writes row `r`'s value into every column.
+                Op::TT(TTOp::DmReadBroadcastCol(tile)) => reader.push(TTDmMove {
+                    param: tile.param,
+                    l1: tile.dst,
+                    bytes: tt_isa::dm::TILE_SLOT as u32,
+                    narrow: TT_NARROW_NONE,
+                    offsets: tile.offsets.clone(),
                 }),
                 Op::TT(TTOp::DmWrite(page)) => writer.push(TTDmMove {
                     param: page.param,
                     l1: page.l1,
                     bytes: page.len,
                     narrow: page.narrow,
-                    base: page.base,
-                    gstride0: page.gstride0,
-                    gstride1: page.gstride1,
+                    offsets: page.offsets.clone(),
                 }),
+                Op::TT(TTOp::Reader(program)) => reader_program = program.words.to_vec(),
+                Op::TT(TTOp::Writer(program)) => writer_program = program.words.to_vec(),
                 Op::TT(TTOp::Semset { sem, value }) => {
                     semset.push(TTSemaphoreInit { index: *sem, value: *value, max: tt_isa::sync::MAX_VALUE })
                 }
@@ -863,8 +840,29 @@ impl TTDevice {
             eprintln!("[tenstorrent] reader:\n{}", sources[0]);
             eprintln!("[tenstorrent] compute:\n{}", sources[1]);
             eprintln!("[tenstorrent] writer:\n{}", sources[2]);
+            if !reader_program.is_empty() {
+                eprintln!(
+                    "[tenstorrent] reader program ({} words):\n{}",
+                    reader_program.len(),
+                    crate::codegen::tenstorrent::disasm::program(&reader_program)
+                );
+            }
+            if !writer_program.is_empty() {
+                eprintln!(
+                    "[tenstorrent] writer program ({} words):\n{}",
+                    writer_program.len(),
+                    crate::codegen::tenstorrent::disasm::program(&writer_program)
+                );
+            }
             for (role, words) in roles.iter().enumerate() {
-                eprintln!("[tenstorrent] role T{role}: {} words", words.len());
+                if words.is_empty() {
+                    continue;
+                }
+                eprintln!(
+                    "[tenstorrent] role T{role} ({} words):\n{}",
+                    words.len(),
+                    crate::codegen::tenstorrent::disasm::program(words)
+                );
             }
             eprintln!("[tenstorrent] dm: {} reader pages, {} writer pages", reader.len(), writer.len());
         }
@@ -893,13 +891,11 @@ impl TTDevice {
             if words.is_empty() {
                 continue;
             }
-            // Block repeats belong to T1's stream (row loops are SFPU work).
-            let loops: Vec<kern::code::Loop> = if thread == 1 {
-                math_loops.iter().map(|l| kern::code::Loop { start: l[0], len: l[1], count: l[2] }).collect()
-            } else {
-                Vec::new()
-            };
-            let (stored, len) = kern::code::stored(words, &loops).map_err(|e| BackendError {
+            // Each role has its own program header, and so its own block
+            // repeats: a tile loop's unpack lives on T0, its math on T1.
+            let table = [&unpack_loops, &math_loops, &pack_loops][thread];
+            let loops: Vec<Loop> = table.iter().map(|l| Loop { start: l[0], len: l[1], count: l[2] }).collect();
+            let (stored, len) = crate::codegen::tenstorrent::code::stored(words, &loops).map_err(|e| BackendError {
                 status: ErrorStatus::KernelCompilation,
                 context: format!("tenstorrent: role T{thread} program: {e}").into(),
             })?;
@@ -920,6 +916,8 @@ impl TTDevice {
             lens: lens.into_boxed_slice(),
             reader: reader.into_boxed_slice(),
             writer: writer.into_boxed_slice(),
+            reader_program: reader_program.into_boxed_slice(),
+            writer_program: writer_program.into_boxed_slice(),
             sems,
             n_inputs,
             n_outputs,
@@ -958,8 +956,8 @@ impl TTDevice {
             return Ok(ids);
         }
         let ids = [
-            self.upload(Core::B, tt_firmware_images::DM_B.1)?,
-            self.upload(Core::NC, tt_firmware_images::DM_NC.1)?,
+            self.upload(Core::B, firmware_images::DM_B.1)?,
+            self.upload(Core::NC, firmware_images::DM_NC.1)?,
         ];
         self.firmware = Some(ids);
         Ok(ids)
@@ -1156,6 +1154,9 @@ impl TTDevice {
         for gidx0 in 0..grid_dims[0] {
             for gidx1 in 0..grid_dims[1] {
                 let point = usize::try_from(gidx0 * ncols + gidx1).unwrap_or(usize::MAX);
+                // The offsets table is dense in the launch grid, while `point`
+                // indexes the chip's Tensix tiles: they are different walks.
+                let grid_point = (gidx0 as usize) * (grid_dims[1] as usize) + gidx1 as usize;
                 let (x, y) = *tiles.get(point).ok_or_else(|| BackendError {
                     status: ErrorStatus::KernelLaunch,
                     context: format!("tenstorrent grid point ({gidx0}, {gidx1}) is not a Tensix tile").into(),
@@ -1163,18 +1164,71 @@ impl TTDevice {
                 let mut reads: Vec<(DramRange, u32)> = Vec::new();
                 let mut writes: Vec<(DramRange, u32)> = Vec::new();
                 let mut narrows: Vec<(u32, ChunkId, usize, u64, usize, u8)> = Vec::new();
-                {
+                // Each move carries its byte offset for every grid point, in
+                // launch order; this core takes its own.
+                let offset_of = |mv: &TTDmMove| -> Result<usize, BackendError> {
+                    mv.offsets.get(grid_point).map(|o| *o as usize).ok_or_else(|| BackendError {
+                        status: ErrorStatus::KernelLaunch,
+                        context: format!(
+                            "move of param {} has {} grid offsets but the launch has {} points",
+                            mv.param,
+                            mv.offsets.len(),
+                            grid_point + 1
+                        )
+                        .into(),
+                    })
+                };
+                let transfer = {
                     let tpool = super::lock(self.memory_pool, tpool);
+                    // A pure transfer runs one program that moves DRAM itself:
+                    // its args carry the grid point, this tile's high address
+                    // word and each parameter's DRAM address.
+                    let transfer = if prog.reader_program.is_empty() {
+                        None
+                    } else {
+                        let me_hi = tt_isa::noc::niu::Endpoint { x, y, addr: 0 }.hi();
+                        let mut args: Vec<u32> = vec![gidx0, gidx1, 0, me_hi];
+                        let params = usize::try_from(prog.n_inputs + prog.n_outputs).unwrap_or(0);
+                        for ordinal in 0..params {
+                            let chunk = chunks[ordinal].ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("transfer parameter {ordinal} has no buffer arg").into(),
+                            })?;
+                            let range = tpool
+                                .ranges(chunk, 0, 1)
+                                .map_err(|e| BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("transfer parameter {ordinal}: {e}").into(),
+                                })?
+                                .first()
+                                .map(|(r, _)| *r)
+                                .ok_or_else(|| BackendError {
+                                    status: ErrorStatus::KernelLaunch,
+                                    context: format!("transfer parameter {ordinal} has no DRAM range").into(),
+                                })?;
+                            let channel = range.channel();
+                            let port = channel.port_for(tt_isa::noc::niu::Niu::Noc0, 0);
+                            let ep = channel.endpoint(tt_isa::noc::niu::Niu::Noc0, port).ok_or_else(|| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: format!("transfer parameter {ordinal} has no NOC0 endpoint").into(),
+                            })?;
+                            args.push(u32::try_from(range.offset()).map_err(|_| BackendError {
+                                status: ErrorStatus::KernelLaunch,
+                                context: "transfer parameter address overflows u32".into(),
+                            })?);
+                            args.push(tt_isa::noc::niu::Endpoint { x: ep.x(), y: ep.y(), addr: 0 }.hi());
+                        }
+                        Some(ttsim::Transfer { words: prog.reader_program.to_vec(), args })
+                    };
                     for mv in prog.reader.iter() {
                         let chunk = chunks[mv.param as usize].ok_or_else(|| BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("reader move names param {}, which has no buffer arg", mv.param).into(),
                         })?;
-                        let ranges = tpool.ranges(chunk, tt_move_offset(mv, gidx0, gidx1), mv.bytes as usize).map_err(|e| {
-                            BackendError {
-                                status: ErrorStatus::KernelLaunch,
-                                context: format!("reader move of param {}: {e}", mv.param).into(),
-                            }
+                        let off = offset_of(mv)?;
+                        let ranges = tpool.ranges(chunk, off, mv.bytes as usize).map_err(|e| BackendError {
+                            status: ErrorStatus::KernelLaunch,
+                            context: format!("reader move of param {}: {e}", mv.param).into(),
                         })?;
                         for (range, at) in ranges {
                             reads.push((range, mv.l1 + at as u32));
@@ -1185,7 +1239,7 @@ impl TTDevice {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("writer move names param {}, which has no buffer arg", mv.param).into(),
                         })?;
-                        let off = tt_move_offset(mv, gidx0, gidx1);
+                        let off = offset_of(mv)?;
                         let ranges = tpool.ranges(chunk, off, mv.bytes as usize).map_err(|e| BackendError {
                             status: ErrorStatus::KernelLaunch,
                             context: format!("writer move of param {}: {e}", mv.param).into(),
@@ -1200,7 +1254,8 @@ impl TTDevice {
                             narrows.push((mv.param, chunk, off, u64::from(mv.l1), mv.bytes as usize, mv.narrow));
                         }
                     }
-                }
+                    transfer
+                };
                 let read_back: Vec<(u64, usize)> = narrows.iter().map(|(_, _, _, l1, bytes, _)| (*l1, *bytes)).collect();
                 let run = NativeRun {
                     tile: (x, y),
@@ -1210,6 +1265,7 @@ impl TTDevice {
                     writes,
                     read_back,
                     sems: prog.sems.clone(),
+                    transfer,
                 };
                 let outcome = run_native(run)
                     .map_err(|e| BackendError { status: ErrorStatus::KernelLaunch, context: e.into_boxed_str() })?;
@@ -1409,21 +1465,36 @@ impl Dev {
         };
         let el = dtype.bit_size() as usize / 8;
         debug_assert!(el > 0, "tilize_transfer: zero element width");
+        // A rank-1 value is a tile *column*: element `i` is row `i`, lane 0.
+        // That is the layout `tt_reindex` writes for a reduce (`out_lane =
+        // row * 32`) and the one a `[N, 1]` keepdim value uses, so a dropped
+        // axis and a host vector land in the same bytes. Reading it as a
+        // `1 x N` row made every `sum([N])`/`max([N])` return row 0's value.
         let (rows, cols) = match shape {
             [.., r, c] => (*r, *c),
-            [c] => (1, *c),
+            [c] => (*c, 1),
             [] => (1, 1),
         };
         debug_assert!(rows > 0 && cols > 0, "tilize_transfer: non-positive dims {rows}x{cols}");
         let (pr, pc) = self.info().expect("tilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
         let rank = shape.len();
         let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
+        // Device tiles are tile *images*: a 16-byte header the unpacker steps
+        // over (`UNPACR_Regular`'s `(Base + 1 + DigestSize) * 16`), the 1024
+        // face-order datums, and padding to 64 bytes (`tt_isa::dm::TILE_SLOT`).
+        // The header is never read; the movers copy it along so what lands in
+        // L1 is a valid tile image (the shaped reads need it, see `STRIPE`).
+        let el_d = el as Dim;
+        let slot = tt_isa::dm::TILE_SLOT as Dim;
+        let hdr = tt_isa::dm::TILE_DATA as Dim;
+        let tile_elems = slot / el_d;
+        let hdr_elems = hdr / el_d;
+        let tiles = (pr * pc) / 1024;
         let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
         if rank >= 2 {
             phys_dims.extend_from_slice(&shape[..rank - 2]);
         }
-        phys_dims.push(pr);
-        phys_dims.push(pc);
+        phys_dims.push(tiles * tile_elems);
         let [shard] = &src.shards[..] else {
             todo!("tilize_transfer: multi-shard source");
         };
@@ -1470,15 +1541,15 @@ impl Dev {
         Pool::Host.pool_to_host(staged_shard.chunk, &mut logical)?;
         // Swizzle to face order on the host (zero-filled halo).
         let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
-        let mut physical = vec![0u8; (outer * pr * pc * el as Dim) as usize];
+        let mut physical = vec![0u8; usize::try_from(outer * tiles * slot).expect("TT tile image bytes fit usize")];
         for b in 0..outer {
             for r in 0..rows {
                 for c in 0..cols {
                     let (tr, tc) = (r / 32, c / 32);
                     let face = (r % 32) / 16 * 2 + (c % 32) / 16;
                     let within = (r % 16) * 16 + (c % 16);
-                    let srci = ((b * rows + r) * cols + c) * el as Dim;
-                    let dsti = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
+                    let srci = ((b * rows + r) * cols + c) * el_d;
+                    let dsti = (((b * ntr + tr) * ntc + tc) * tile_elems + hdr_elems + face * 256 + within) * el_d;
                     physical[dsti as usize..dsti as usize + el].copy_from_slice(&logical[srci as usize..srci as usize + el]);
                 }
             }
@@ -1522,21 +1593,30 @@ impl Dev {
         };
         let el = dtype.bit_size() as usize / 8;
         debug_assert!(el > 0, "untilize_transfer: zero element width");
+        // Rank-1 is a tile column, matching `tilize_transfer` and the reduce
+        // emitter's `out_lane = row * 32` (see there).
         let (rows, cols) = match shape {
             [.., r, c] => (*r, *c),
-            [c] => (1, *c),
+            [c] => (*c, 1),
             [] => (1, 1),
         };
         debug_assert!(rows > 0 && cols > 0, "untilize_transfer: non-positive dims {rows}x{cols}");
         let (pr, pc) = self.info().expect("untilize_transfer: TT device has no info").tile_physical_dims(rows, cols);
         let rank = shape.len();
         let outer: Dim = if rank >= 2 { shape[..rank - 2].iter().product() } else { 1 };
+        // The same tile images [`Dev::tilize_transfer`] writes (see there and
+        // `STRIPE`): header + face-order datums, `tt_isa::dm::TILE_SLOT` each.
+        let el_d = el as Dim;
+        let slot = tt_isa::dm::TILE_SLOT as Dim;
+        let hdr = tt_isa::dm::TILE_DATA as Dim;
+        let tile_elems = slot / el_d;
+        let hdr_elems = hdr / el_d;
+        let tiles = (pr * pc) / 1024;
         let mut phys_dims: Vec<Dim> = Vec::with_capacity(rank.max(2));
         if rank >= 2 {
             phys_dims.extend_from_slice(&shape[..rank - 2]);
         }
-        phys_dims.push(pr);
-        phys_dims.push(pc);
+        phys_dims.push(tiles * tile_elems);
         let [shard] = &src.shards[..] else {
             todo!("untilize_transfer: multi-shard source");
         };
@@ -1579,7 +1659,7 @@ impl Dev {
         let [staged_shard] = &staged.shards[..] else {
             unreachable!("untilize_transfer: staged placement changed shape");
         };
-        let physical_len = (outer * pr * pc * el as Dim) as usize;
+        let physical_len = usize::try_from(outer * tiles * slot).expect("TT tile image bytes fit usize");
         let mut physical = vec![0u8; physical_len];
         Pool::Host.pool_to_host(staged_shard.chunk, &mut physical)?;
         // Unswizzle on the host, then move logical bytes.
@@ -1591,7 +1671,7 @@ impl Dev {
                     let (tr, tc) = (r / 32, c / 32);
                     let face = (r % 32) / 16 * 2 + (c % 32) / 16;
                     let within = (r % 16) * 16 + (c % 16);
-                    let srci = (((b * ntr + tr) * ntc + tc) * 1024 + face * 256 + within) * el as Dim;
+                    let srci = (((b * ntr + tr) * ntc + tc) * tile_elems + hdr_elems + face * 256 + within) * el_d;
                     let dsti = ((b * rows + r) * cols + c) * el as Dim;
                     logical[dsti as usize..dsti as usize + el].copy_from_slice(&physical[srci as usize..srci as usize + el]);
                 }
