@@ -497,6 +497,17 @@ pub enum PTXOp {
     /// wait for each other. A shared tile private to one warp needs this,
     /// never a block-wide barrier.
     WarpSync,
+    /// Warp-level `shfl.sync.idx.b32`: every lane reads a 32-bit word (two
+    /// f16 halves) from the lane `lane` names. This is the element exchange
+    /// a tensor-core operand needs when a thread loads a wider vector than
+    /// the instruction's per-lane slot, so the operand's halves have to be
+    /// moved between lanes rather than reloaded per slot.
+    Shfl {
+        /// The word to move; one 32-bit value (two f16 halves).
+        value: OpId,
+        /// Source lane, per destination lane.
+        lane: OpId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1744,6 +1755,7 @@ impl Op {
             Op::PTX(p) => match p.as_mut() {
                 PTXOp::Bytes(_) | PTXOp::WarpSync => ParamsMut::Empty,
                 PTXOp::LdMatrix { src, addr, .. } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(addr))),
+                PTXOp::Shfl { value, lane, .. } => ParamsMut::Two(std::iter::once(value).chain(std::iter::once(lane))),
             },
             Op::TT(TTOp::EndReader)
             | Op::TT(TTOp::EndCompute)
@@ -1856,6 +1868,7 @@ impl Op {
             Op::PTX(p) => match p.as_ref() {
                 PTXOp::Bytes(_) | PTXOp::WarpSync => None,
                 PTXOp::LdMatrix { src, addr, .. } => [*src, *addr].get(i).copied(),
+                PTXOp::Shfl { value, lane, .. } => [*value, *lane].get(i).copied(),
             },
             Op::TT(TTOp::EndReader)
             | Op::TT(TTOp::EndCompute)
@@ -2039,6 +2052,11 @@ impl SerBin for PTXOp {
                 trans.ser_bin(out);
             }
             PTXOp::WarpSync => 2u8.ser_bin(out),
+            PTXOp::Shfl { value, lane } => {
+                3u8.ser_bin(out);
+                value.ser_bin(out);
+                lane.ser_bin(out);
+            }
         }
     }
 }
@@ -2055,6 +2073,10 @@ impl DeBin for PTXOp {
                 trans: DeBin::de_bin(offset, bytes)?,
             },
             2 => PTXOp::WarpSync,
+            3 => PTXOp::Shfl {
+                value: DeBin::de_bin(offset, bytes)?,
+                lane: DeBin::de_bin(offset, bytes)?,
+            },
             _ => return Err(bad_tag(tag, *offset)),
         };
         Ok(op)

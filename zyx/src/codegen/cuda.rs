@@ -282,6 +282,26 @@ impl Kernel {
                         _ = writeln!(source, "{indent}asm volatile(\"bar.warp.sync 0xffffffff;\");");
                     }
                     PTXOp::Bytes(_) => todo!("CUDA codegen: assembled PTX payload in kernel IR"),
+                    // One word (two f16 halves) read from another lane of the
+                    // warp, every lane naming its own source.
+                    PTXOp::Shfl { value, lane } => {
+                        let dtype = dtypes[&op_id].clone();
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                        let src = get_var(
+                            *value,
+                            &constants,
+                            &indices,
+                            &reg_map,
+                            &mut registers,
+                            loop_id,
+                            &var_params,
+                        )?;
+                        let l = get_var(*lane, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        _ = writeln!(
+                            source,
+                            "{indent}*(unsigned*)&r{reg} = __shfl_sync(0xffffffffu, *(const unsigned*)&{src}, (int){l});"
+                        );
+                    }
                 },
                 // An address lane the device supports: the load/store covers
                 // the lanes, so the address is the lane-0 base.
@@ -737,7 +757,7 @@ impl Kernel {
         if dtypes.values().any(|x| x.0 == DType::F16) {
             pragma += "#include <cuda_fp16.h>\n";
             pragma += "struct __align__(8) half4 { half x, y, z, w; };\n";
-            pragma += "struct __align__(16) half8 { half x, y, z, w, s4, s5, s6, s7; };\n";
+            pragma += "struct __align__(16) half8 { half x, y, z, w, s0, s1, s2, s3; };\n";
         }
         if dtypes.values().any(|x| x.0 == DType::BF16) {
             pragma += "#include <cuda_bf16.h>\n";

@@ -724,6 +724,12 @@ impl Kernel {
                             .unwrap();
                     }
                     PTXOp::WarpSync => writeln!(f, "{indent}warpsync").unwrap(),
+                    PTXOp::Shfl { value, lane } => writeln!(
+                        f,
+                        "{indent}shfl of OpId({}) from lane OpId({})",
+                        value.0, lane.0
+                    )
+                    .unwrap(),
                 },
             }
             op_id = self.ops[op_id].next;

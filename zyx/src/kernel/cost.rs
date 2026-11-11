@@ -140,6 +140,8 @@ impl Kernel {
                     PTXOp::LdMatrix { .. } => true,
                     // Effect only.
                     PTXOp::WarpSync => false,
+                    // A register move, no memory.
+                    PTXOp::Shfl { .. } => false,
                 },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
@@ -529,6 +531,11 @@ impl Kernel {
                     PTXOp::WarpSync => {
                         wi_ops += loop_mult;
                         wi_barriers += loop_mult;
+                    }
+                    // One shuffle instruction.
+                    PTXOp::Shfl { .. } => {
+                        wi_ops += loop_mult;
+                        wi_compute_ops += loop_mult;
                     }
                 },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {

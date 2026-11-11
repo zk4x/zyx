@@ -8,7 +8,7 @@ use crate::{
     backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
-    kernel::{BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, UOp},
     scalar::bf16,
     shape::Dim,
 };
@@ -328,21 +328,24 @@ impl Compiler {
     /// Emit a load from `[ %address ]` into the register(s) at `reg`.
     /// `space` is one of "global", "shared", "local".
     fn emit_load(&mut self, shape: &[Dim], dtype: DType, reg: u16, space: &str) -> Result<(), BackendError> {
+        // A shared variable's address is a 32-bit offset in the shared
+        // window (`%saddress`); global and local use the generic `%address`.
+        let addr = if space == "shared" { "%saddress" } else { "%address" };
         match shape {
             [] => {
                 if matches!(dtype, DType::F16 | DType::BF16) {
                     let tmp = self.new_reg(DType::U16, Vec::new(), 1);
-                    _ = writeln!(self.body, "{}ld.{}.b16 %r{tmp}, [%address];", self.indent, space);
+                    _ = writeln!(self.body, "{}ld.{}.b16 %r{tmp}, [{addr}];", self.indent, space);
                     _ = writeln!(self.body, "{}mov.b16 %r{reg}, %r{tmp};", self.indent);
                     self.release_reg(tmp);
                 } else {
-                    _ = writeln!(self.body, "{}ld.{}.{} %r{reg}, [%address];", self.indent, space, dtype.mem_ptx());
+                    _ = writeln!(self.body, "{}ld.{}.{} %r{reg}, [{addr}];", self.indent, space, dtype.mem_ptx());
                 }
             }
             [4] if dtype == DType::F32 => {
                 _ = writeln!(
                     self.body,
-                    "{}ld.{}.v4.f32 {{%r{reg}, %r{}, %r{}, %r{}}}, [%address];",
+                    "{}ld.{}.v4.f32 {{%r{reg}, %r{}, %r{}, %r{}}}, [{addr}];",
                     self.indent,
                     space,
                     reg + 1,
@@ -354,19 +357,19 @@ impl Compiler {
             // one 16-bit slot per element.
             [n] if matches!(dtype, DType::F16 | DType::BF16) && *n % 2 == 0 && *n <= 8 => {
                 let words = usize::try_from(n / 2).expect("pack word count");
-                let t = self.new_reg(DType::U32, Vec::new(), words as u32);
+                let t = self.new_reg(DType::U32, vec![Dim::from(words as i64)], words as u32);
                 match words {
-                    1 => _ = writeln!(self.body, "{}ld.{}.b32 %r{t}, [%address];", self.indent, space),
+                    1 => _ = writeln!(self.body, "{}ld.{}.b32 %r{t}, [{addr}];", self.indent, space),
                     2 => _ = writeln!(
                         self.body,
-                        "{}ld.{}.v2.b32 {{%r{t}, %r{}}}, [%address];",
+                        "{}ld.{}.v2.b32 {{%r{t}, %r{}}}, [{addr}];",
                         self.indent,
                         space,
                         t + 1
                     ),
                     _ => _ = writeln!(
                         self.body,
-                        "{}ld.{}.v4.b32 {{%r{t}, %r{}, %r{}, %r{}}}, [%address];",
+                        "{}ld.{}.v4.b32 {{%r{t}, %r{}, %r{}, %r{}}}, [{addr}];",
                         self.indent,
                         space,
                         t + 1,
@@ -405,14 +408,17 @@ impl Compiler {
     /// Emit a store of the register(s) at `x` to `[ %address ]`.
     /// `space` is one of "global", "shared", "local".
     fn emit_store_space(&mut self, shape: &[Dim], dtype: DType, x: u16, space: &str) -> Result<(), BackendError> {
+        // A shared variable's address is a 32-bit offset in the shared
+        // window (`%saddress`); global and local use the generic `%address`.
+        let addr = if space == "shared" { "%saddress" } else { "%address" };
         match shape {
             [] => {
-                _ = writeln!(self.body, "{}st.{}.{} [%address], %r{x};", self.indent, space, dtype.mem_ptx());
+                _ = writeln!(self.body, "{}st.{}.{} [{addr}], %r{x};", self.indent, space, dtype.mem_ptx());
             }
             [4] if dtype == DType::F32 => {
                 _ = writeln!(
                     self.body,
-                    "{}st.{}.v4.f32 [%address], {{%r{x}, %r{}, %r{}, %r{}}};",
+                    "{}st.{}.v4.f32 [{addr}], {{%r{x}, %r{}, %r{}, %r{}}};",
                     self.indent,
                     space,
                     x + 1,
@@ -423,23 +429,23 @@ impl Compiler {
             // A vector of f16 pairs: pack the 16-bit slots into 32-bit words.
             [n] if matches!(dtype, DType::F16 | DType::BF16) && *n % 2 == 0 && *n <= 8 => {
                 let words = usize::try_from(n / 2).expect("pack word count");
-                let t = self.new_reg(DType::U32, Vec::new(), words as u32);
+                let t = self.new_reg(DType::U32, vec![Dim::from(words as i64)], words as u32);
                 for w in 0..words {
                     let (lo, hi) = (x + 2 * w as u16, x + 2 * w as u16 + 1);
                     _ = writeln!(self.body, "{}mov.b32 %r{}, {{%r{lo}, %r{hi}}};", self.indent, t + w as u16);
                 }
                 match words {
-                    1 => _ = writeln!(self.body, "{}st.{}.b32 [%address], %r{t};", self.indent, space),
+                    1 => _ = writeln!(self.body, "{}st.{}.b32 [{addr}], %r{t};", self.indent, space),
                     2 => _ = writeln!(
                         self.body,
-                        "{}st.{}.v2.b32 [%address], {{%r{t}, %r{}}};",
+                        "{}st.{}.v2.b32 [{addr}], {{%r{t}, %r{}}};",
                         self.indent,
                         space,
                         t + 1
                     ),
                     _ => _ = writeln!(
                         self.body,
-                        "{}st.{}.v4.b32 [%address], {{%r{t}, %r{}, %r{}, %r{}}};",
+                        "{}st.{}.v4.b32 [{addr}], {{%r{t}, %r{}, %r{}, %r{}}};",
                         self.indent,
                         space,
                         t + 1,
@@ -617,7 +623,7 @@ impl Kernel {
                             let idx = comp.get_var_addr(src_idx);
                             let offset = comp.new_reg(DType::U64, Vec::new(), 1);
                             let reg = comp.new_var(op_id, dtype, access_shape.clone(), rcs[&op_id]);
-                            if IDX_T == DType::U64 {
+                            if IDX_T.bit_size() == 64 {
                                 if offset != idx {
                                     _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
                                 }
@@ -633,15 +639,17 @@ impl Kernel {
                             let idx = comp.get_var_addr(src_idx);
                             let reg = comp.new_var(op_id, dtype, access_shape.clone(), rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
-                            let t = comp.new_reg(DType::U64, Vec::new(), 1);
-                            if IDX_T == DType::U64 {
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
+                            // A shared variable's address is a 32-bit offset in
+                            // the shared window.
+                            _ = writeln!(comp.body, "{}mov.u32 %saddress, __ld{buf};", comp.indent);
+                            let t = comp.new_reg(DType::U32, Vec::new(), 1);
+                            if IDX_T.bit_size() == 64 {
+                                _ = writeln!(comp.body, "{}cvt.u32.u64 %r{t}, %r{idx};", comp.indent);
                             } else {
-                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                                _ = writeln!(comp.body, "{}mov.b32 %r{t}, %r{idx};", comp.indent);
                             }
-                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
+                            _ = writeln!(comp.body, "{}shl.b32 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{t};", comp.indent);
                             comp.release_reg(t);
                             comp.emit_load(&access_shape, dtype, reg, "shared")?;
                         }
@@ -651,7 +659,7 @@ impl Kernel {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
                             let t = comp.new_reg(DType::U64, Vec::new(), 1);
-                            if IDX_T == DType::U64 {
+                            if IDX_T.bit_size() == 64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
                             } else {
                                 _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
@@ -676,7 +684,7 @@ impl Kernel {
                                 let idx = comp.get_var_addr(dst_idx);
                                 let x = comp.get_var(x);
                                 _ = writeln!(comp.body, "{}selp.u32 %r{gstu}, 1, 0, %r{x};", comp.indent);
-                                if IDX_T == DType::U64 {
+                                if IDX_T.bit_size() == 64 {
                                     if offset != idx {
                                         _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
                                     }
@@ -689,7 +697,7 @@ impl Kernel {
                             } else {
                                 let idx = comp.get_var_addr(dst_idx);
                                 let x = comp.get_var(x);
-                                if IDX_T == DType::U64 {
+                                if IDX_T.bit_size() == 64 {
                                     if offset != idx {
                                         _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
                                     }
@@ -705,15 +713,17 @@ impl Kernel {
                             let idx = comp.get_var_addr(dst_idx);
                             let x = comp.get_var(x);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
-                            let t = comp.new_reg(DType::U64, Vec::new(), 1);
-                            if IDX_T == DType::U64 {
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
+                            // A shared variable's address is a 32-bit offset in
+                            // the shared window.
+                            _ = writeln!(comp.body, "{}mov.u32 %saddress, __ld{dst_buf};", comp.indent);
+                            let t = comp.new_reg(DType::U32, Vec::new(), 1);
+                            if IDX_T.bit_size() == 64 {
+                                _ = writeln!(comp.body, "{}cvt.u32.u64 %r{t}, %r{idx};", comp.indent);
                             } else {
-                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                                _ = writeln!(comp.body, "{}mov.b32 %r{t}, %r{idx};", comp.indent);
                             }
-                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
+                            _ = writeln!(comp.body, "{}shl.b32 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{t};", comp.indent);
                             comp.release_reg(t);
                             comp.emit_store_space(&access_shape, dtype, x, "shared")?;
                         }
@@ -723,7 +733,7 @@ impl Kernel {
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
                             let t = comp.new_reg(DType::U64, Vec::new(), 1);
-                            if IDX_T == DType::U64 {
+                            if IDX_T.bit_size() == 64 {
                                 _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
                             } else {
                                 _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
@@ -979,7 +989,12 @@ impl Kernel {
                     let a_comps = comp.components_of(self, a, &dtypes)?;
                     let b_comps = comp.components_of(self, b, &dtypes)?;
                     let c_comps = comp.components_of(self, c, &dtypes)?;
-                    debug_assert_eq!(a_comps.len(), 4, "PTX: mma A fragment must hold 4 f16 values");
+                    debug_assert_eq!(
+                        a_comps.len(),
+                        4,
+                        "PTX: mma A fragment must hold 4 f16 values: a={a:?} {:?}",
+                        self.ops[a].op
+                    );
                     debug_assert_eq!(b_comps.len(), 2, "PTX: mma B fragment must hold 2 f16 values");
                     debug_assert_eq!(c_comps.len(), 4, "PTX: mma C fragment must hold 4 f32 values");
                     // Pack the f16 pairs into .b32 registers: a = {a01, a23},
@@ -1010,6 +1025,66 @@ impl Kernel {
                     comp.release_reg(b01);
                 }
                 Op::Asm { .. } => todo!("PTX: inline asm not implemented"),
+                // One 32-bit word read from another lane of the warp, every
+                // lane naming its own source.
+                Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::Shfl { value, lane } => {
+                        let vb = comp.get_var(*value);
+                        let l = comp.get_var(*lane);
+                        let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(2)], rcs[&op_id]);
+                        _ = writeln!(
+                            comp.body,
+                            "{}shfl.sync.idx.b32 %r{reg}, %r{vb}, %r{l}, 0x1f, 0xffffffff;",
+                            comp.indent
+                        );
+                    }
+                    PTXOp::Bytes(_) => todo!("PTX: assembled payload in kernel IR"),
+                    // `ldmatrix` reads one 8x8 b16 tile per group of eight
+                    // lanes into one register per tile, in lane order.
+                    PTXOp::LdMatrix { frags, src, addr, trans } => {
+                        let idx = comp.get_var_addr(*addr);
+                        let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(i64::from(*frags) * 2)], rcs[&op_id]);
+                        // A shared variable's address is a 32-bit offset in
+                        // the shared window; the index is in f16 elements.
+                        _ = writeln!(comp.body, "{}mov.u32 %saddress, __ld{src};", comp.indent);
+                        let off = comp.new_reg(DType::U32, Vec::new(), 1);
+                        if IDX_T.bit_size() == 64 {
+                            _ = writeln!(comp.body, "{}cvt.u32.u64 %r{off}, %r{idx};", comp.indent);
+                        } else {
+                            _ = writeln!(comp.body, "{}mov.b32 %r{off}, %r{idx};", comp.indent);
+                        }
+                        _ = writeln!(comp.body, "{}shl.b32 %r{off}, %r{off}, 1;", comp.indent);
+                        _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{off};", comp.indent);
+                        comp.release_reg(off);
+                        let t = comp.new_reg(DType::U32, vec![Dim::from(i64::from(*frags))], u32::from(*frags));
+                        let t_suffix = if *trans { ".trans" } else { "" };
+                        // `ldmatrix` writes one 32-bit word per 8x8 tile, so
+                        // the words land in temporaries and are split into the
+                        // fragment's two 16-bit halves (`ptxas` coalesces the
+                        // moves into the fragment's registers).
+                        let pattern =
+                            (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
+                        _ = writeln!(
+                            comp.body,
+                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%saddress];",
+                            comp.indent
+                        );
+                        for i in 0..u16::from(*frags) {
+                            _ = writeln!(
+                                comp.body,
+                                "{}mov.b32 {{%r{}, %r{}}}, %r{};",
+                                comp.indent,
+                                reg + 2 * i,
+                                reg + 2 * i + 1,
+                                t + i
+                            );
+                        }
+                        comp.release_reg(t);
+                    }
+                    // Full-mask warp barrier: the lanes of one warp wait for
+                    // each other. A per-warp shared tile needs no more.
+                    PTXOp::WarpSync => _ = writeln!(comp.body, "{}bar.warp.sync 0xffffffff;", comp.indent),
+                },
                 Op::Copy { .. } => {
                     todo!("Copy lowering for PTX (tenstorrent phase)");
                 }
@@ -1043,6 +1118,7 @@ impl Kernel {
         }
 
         _ = writeln!(comp.header, "{}.reg .u64 %address;", comp.indent);
+        _ = writeln!(comp.header, "{}.reg .b32 %saddress;", comp.indent);
         for (dtype_layout, _, _, base) in comp.registers.iter() {
             let len = Compiler::slot_len(&dtype_layout.1);
             for i in 0..len {

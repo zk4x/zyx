@@ -186,8 +186,10 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tensor_recipe");
         /// Lane multipliers on the instruction tile.
         const MULT: &[u16] = &[32, 16, 8, 4, 2, 1];
-        /// No config may emit more instructions than this.
-        const MAX_TILES: Dim = 256;
+        /// The tile grids one config may emit: the staged form's body is one
+        /// loop over its fragments, the unstage form's is the grid itself
+        /// (bounded where it is emitted).
+        const MAX_TILES_STAGED: Dim = 2048;
 
         let mut configs = Vec::new();
         let info = self.device_info();
@@ -275,7 +277,7 @@ impl Kernel {
                             continue;
                         }
                         let tiles = (m_lanes / fm) * (n_lanes / fn_) * (k_lanes / fk);
-                        if tiles > MAX_TILES {
+                        if tiles > MAX_TILES_STAGED {
                             continue;
                         }
                         // No IR-growth bound here: this recipe tensorizes with

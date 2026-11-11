@@ -1848,7 +1848,7 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 cc: [major, minor],
                 dtype_capability: [DTypeCapability::none(); DType::N_DTYPES],
                 has_native_exp2: true,
-                supported_vec_lens: vec![2],
+                supported_vec_lens: vec![2, 4, 8],
                 vector_depth: 1,
                 tenstorrent: false,
                 tile: [1, 1],
@@ -1898,7 +1898,7 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 capability
             },
             has_native_exp2: true,
-            supported_vec_lens: vec![2],
+            supported_vec_lens: vec![2, 4, 8],
             vector_depth: 1,
             tenstorrent: false,
             tile: [1, 1],

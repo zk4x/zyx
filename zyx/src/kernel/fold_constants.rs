@@ -19,6 +19,7 @@ use crate::{
     DType, Map, Set,
     dtype::Constant,
     kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, UOp},
+    shape::Dim,
 };
 use std::hash::BuildHasherDefault;
 
@@ -112,13 +113,18 @@ impl Kernel {
                 }
                 Op::Stack { ref ops } => {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
+                    // only when the stack rebuilds *every* lane of `v`; a
+                    // stack that takes a prefix (e.g. one K step of a
+                    // two-step `ldmatrix` result) is a different value.
                     if let Op::Index { vec, idx: 0 } = self.at(ops[0]) {
                         let vec = *vec;
-                        if ops
-                            .iter()
-                            .skip(1)
-                            .enumerate()
-                            .all(|(i, &sub)| matches!(self.at(sub), Op::Index { vec: v, idx } if *v == vec && *idx == i + 1))
+                        let all_lanes = self.shape(vec).iter().product::<Dim>() == Dim::from(ops.len() as i64);
+                        if all_lanes
+                            && ops
+                                .iter()
+                                .skip(1)
+                                .enumerate()
+                                .all(|(i, &sub)| matches!(self.at(sub), Op::Index { vec: v, idx } if *v == vec && *idx == i + 1))
                         {
                             record(&mut remaps, op_id, vec);
                         }

@@ -133,7 +133,7 @@ impl Kernel {
                 // passes see); assembled payloads never reach this stage.
                 Op::PTX(p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload in kernel IR"),
-                    PTXOp::LdMatrix { .. } | PTXOp::WarpSync => {}
+                    PTXOp::LdMatrix { .. } | PTXOp::WarpSync | PTXOp::Shfl { .. } => {}
                 },
                     // Graph-only marker, erased at kernelization: never present.
                     Op::Detach { .. } => {
@@ -731,6 +731,13 @@ impl Kernel {
                     }
                     // Effect only: no operands to check, no result value.
                     PTXOp::WarpSync => {}
+                    // A warp-level move of one 32-bit word: both operands are
+                    // values defined before it.
+                    PTXOp::Shfl { value, lane } => {
+                        check(op_id, *value, &stack);
+                        check(op_id, *lane, &stack);
+                        dtypes.insert(op_id, DType::F16);
+                    }
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {

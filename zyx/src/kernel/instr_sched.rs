@@ -196,6 +196,9 @@ impl Kernel {
                         structural[i] = true;
                         barrier[i] = true;
                     }
+                    // A shuffle reads two registers and writes one: no shared
+                    // state to order against.
+                    PTXOp::Shfl { .. } => {}
                 },
                 // A copy reads its src and writes its dst: it pins like a
                 // load (barriers, asm, loops) and orders like a store.
@@ -303,6 +306,10 @@ impl Kernel {
                     }
                     // No operands: ordered by the barrier edges alone.
                     PTXOp::WarpSync => {}
+                    PTXOp::Shfl { value, lane, .. } => {
+                        add_param!(value);
+                        add_param!(lane);
+                    }
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {
@@ -590,6 +597,8 @@ impl Kernel {
                     PTXOp::LdMatrix { src, .. } => *src,
                     PTXOp::Bytes(_) => todo!(),
                     PTXOp::WarpSync => continue,
+                    // A shuffle reads a register, not a storage.
+                    PTXOp::Shfl { .. } => continue,
                 },
                 _ => continue,
             };

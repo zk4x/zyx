@@ -525,6 +525,13 @@ impl Kernel {
                     }
                     // Effect only: no result, no operands.
                     PTXOp::WarpSync => {}
+                    // A moved word is two f16 halves, like one `ldmatrix`
+                    // fragment.
+                    PTXOp::Shfl { value, lane, .. } => {
+                        dtypes.insert(op_id, (DType::F16, vec![Dim::from(2)]));
+                        *rcs.entry(*value).or_insert(0) += 1;
+                        *rcs.entry(*lane).or_insert(0) += 1;
+                    }
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => todo!("Detach in ordered kernel"),
@@ -882,6 +889,7 @@ impl Kernel {
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload has no dtype"),
                     PTXOp::LdMatrix { .. } => return DType::F16,
+                    PTXOp::Shfl { .. } => return DType::F16,
                     PTXOp::WarpSync => todo!("warp sync has no result dtype"),
                 },
                 Op::Const(c) => return c.dtype(),
