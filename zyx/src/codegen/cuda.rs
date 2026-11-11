@@ -169,8 +169,8 @@ impl Kernel {
             if let &Op::Param { dtype, kind, .. } = op {
                 match kind {
                     ParamKind::Variable => _ = writeln!(global_args, "  {} p{op_id},", dtype.cu()),
-                    ParamKind::Global => _ = writeln!(global_args, "  const {}* p{op_id},", dtype.cu()),
-                    ParamKind::GlobalMut => _ = writeln!(global_args, "  {}* p{op_id},", dtype.cu()),
+                    ParamKind::Global => _ = writeln!(global_args, "  const {}* __restrict__ p{op_id},", dtype.cu()),
+                    ParamKind::GlobalMut => _ = writeln!(global_args, "  {}* __restrict__ p{op_id},", dtype.cu()),
                 }
             }
             // Walk the ENTIRE op list: Params may sit anywhere in the
@@ -275,6 +275,11 @@ impl Kernel {
                             source,
                             "{indent}asm volatile(\"ldmatrix.sync.aligned.m8n8.x{frags}{t}.b16 {{{pattern}}}, [%{frags}];\" : {outs} : \"l\"(&p{src}[{idx}]));"
                         );
+                    }
+                    // Full-mask warp barrier: the lanes of one warp wait for
+                    // each other. A per-warp shared tile needs no more.
+                    PTXOp::WarpSync => {
+                        _ = writeln!(source, "{indent}asm volatile(\"bar.warp.sync 0xffffffff;\");");
                     }
                     PTXOp::Bytes(_) => todo!("CUDA codegen: assembled PTX payload in kernel IR"),
                 },
@@ -423,14 +428,31 @@ impl Kernel {
                     }
                 }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
-                    let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rcs[&op_id], loop_id);
-                    let name = mma_helper_name(dims, layout, dtype);
-                    let c_cast = mma_dtype_parts(dtype).4;
-                    _ = writeln!(source, "{indent}{name}((unsigned*)&{a}, (unsigned*)&{b}, ({c_cast}*)&{c});");
-                    _ = writeln!(source, "{indent}r{reg} = {c};");
+                    // The instruction accumulates in place over its `c`
+                    // operand: running it on a `c` that another instruction
+                    // still reads clobbers that shared value. Such a `c` is
+                    // copied into the destination register first, and only
+                    // then are `a`/`b` released, so the fresh register cannot
+                    // be one the instruction still reads.
+                    if rcs.get(&c).copied().unwrap_or(0) > 1 {
+                        let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rcs[&op_id], loop_id);
+                        let name = mma_helper_name(dims, layout, dtype);
+                        let c_cast = mma_dtype_parts(dtype).4;
+                        _ = writeln!(source, "{indent}r{reg} = {c};");
+                        let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        _ = writeln!(source, "{indent}{name}((unsigned*)&{a}, (unsigned*)&{b}, ({c_cast}*)&r{reg});");
+                    } else {
+                        let a = get_var(a, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let b = get_var(b, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let c = get_var(c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtypes[&op_id].clone(), rcs[&op_id], loop_id);
+                        let name = mma_helper_name(dims, layout, dtype);
+                        let c_cast = mma_dtype_parts(dtype).4;
+                        _ = writeln!(source, "{indent}{name}((unsigned*)&{a}, (unsigned*)&{b}, ({c_cast}*)&{c});");
+                        _ = writeln!(source, "{indent}r{reg} = {c};");
+                    }
                 }
                 Op::Cast { x, dtype } => {
                     let x_var = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;

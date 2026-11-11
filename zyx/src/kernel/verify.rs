@@ -133,7 +133,7 @@ impl Kernel {
                 // passes see); assembled payloads never reach this stage.
                 Op::PTX(p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload in kernel IR"),
-                    PTXOp::LdMatrix { .. } => {}
+                    PTXOp::LdMatrix { .. } | PTXOp::WarpSync => {}
                 },
                     // Graph-only marker, erased at kernelization: never present.
                     Op::Detach { .. } => {
@@ -729,6 +729,8 @@ impl Kernel {
                         dtypes.insert(op_id, DType::F16);
                         let _ = frags;
                     }
+                    // Effect only: no operands to check, no result value.
+                    PTXOp::WarpSync => {}
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {

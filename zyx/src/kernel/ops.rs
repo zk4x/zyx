@@ -493,6 +493,10 @@ pub enum PTXOp {
         /// Load the transposed element order (`.trans`).
         trans: bool,
     },
+    /// Warp-level `bar.warp.sync 0xffffffff`: the lanes of the issuing warp
+    /// wait for each other. A shared tile private to one warp needs this,
+    /// never a block-wide barrier.
+    WarpSync,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1738,7 +1742,7 @@ impl Op {
                 }
             }
             Op::PTX(p) => match p.as_mut() {
-                PTXOp::Bytes(_) => ParamsMut::Empty,
+                PTXOp::Bytes(_) | PTXOp::WarpSync => ParamsMut::Empty,
                 PTXOp::LdMatrix { src, addr, .. } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(addr))),
             },
             Op::TT(TTOp::EndReader)
@@ -1850,7 +1854,7 @@ impl Op {
                 }
             }
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::Bytes(_) => None,
+                PTXOp::Bytes(_) | PTXOp::WarpSync => None,
                 PTXOp::LdMatrix { src, addr, .. } => [*src, *addr].get(i).copied(),
             },
             Op::TT(TTOp::EndReader)
@@ -2034,6 +2038,7 @@ impl SerBin for PTXOp {
                 addr.ser_bin(out);
                 trans.ser_bin(out);
             }
+            PTXOp::WarpSync => 2u8.ser_bin(out),
         }
     }
 }
@@ -2049,6 +2054,7 @@ impl DeBin for PTXOp {
                 addr: DeBin::de_bin(offset, bytes)?,
                 trans: DeBin::de_bin(offset, bytes)?,
             },
+            2 => PTXOp::WarpSync,
             _ => return Err(bad_tag(tag, *offset)),
         };
         Ok(op)

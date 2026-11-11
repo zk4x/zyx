@@ -15,7 +15,7 @@
 //! These optimizations reduce redundant computations and improve performance.
 
 use super::autotune::Optimization;
-use crate::kernel::{Kernel, Op, OpId};
+use crate::kernel::{Kernel, Op, OpId, PTXOp};
 use crate::{DType, Map, Set};
 
 /// Reassociate commutative operations (addition, multiplication)
@@ -73,7 +73,8 @@ impl Kernel {
                 // payload is post-render and must never appear here.
                 Op::PTX(ref p) => match p.as_ref() {
                     crate::kernel::PTXOp::Bytes(_) => unreachable!(),
-                    crate::kernel::PTXOp::LdMatrix { .. } => loop_depth,
+                    // Pinned where it is: a sync orders its own loop's body.
+                    crate::kernel::PTXOp::LdMatrix { .. } | crate::kernel::PTXOp::WarpSync => loop_depth,
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {
@@ -144,7 +145,6 @@ impl Kernel {
                 | Op::Source(_)
                 | Op::GPU(_)
                 | Op::Spirv(_)
-                | Op::PTX(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
@@ -158,6 +158,11 @@ impl Kernel {
                 }
                 // Effect-only TT ops: pinned like Store/Copy, never hoisted.
                 Op::TT(_) => loop_depth,
+                Op::PTX(p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => unreachable!(),
+                    PTXOp::LdMatrix { src, addr, .. } => loop_dep[src].max(loop_dep[addr]),
+                    PTXOp::WarpSync => loop_depth,
+                },
                 Op::Asm { ops, .. } => {
                     let mut max = 0;
                     for op in ops.iter() {
@@ -287,6 +292,10 @@ impl Kernel {
                             | Op::Copy { .. }
                             | Op::TT(_)
                             | Op::Load { .. }
+                            // `ldmatrix` reads shared memory the loop writes,
+                            // exactly like a load; hoisting it would read a
+                            // fill that has not run yet.
+                            | Op::PTX(_)
                             | Op::Loop { .. }
                             | Op::EndLoop
                             | Op::Storage { .. }

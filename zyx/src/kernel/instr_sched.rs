@@ -186,6 +186,17 @@ impl Kernel {
                 | Op::TT(TTOp::WaitBelowMax { .. }) => structural[i] = true,
                 Op::Store { .. } => store[i] = true,
                 Op::Load { .. } => load[i] = true,
+                // `ldmatrix` reads local storage the loop refills: pin it
+                // inside the loop exactly like a load of that storage.
+                Op::PTX(p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!(),
+                    PTXOp::LdMatrix { .. } => load[i] = true,
+                    // A warp barrier orders the shared accesses around it.
+                    PTXOp::WarpSync => {
+                        structural[i] = true;
+                        barrier[i] = true;
+                    }
+                },
                 // A copy reads its src and writes its dst: it pins like a
                 // load (barriers, asm, loops) and orders like a store.
                 Op::Copy { .. } | Op::TT(TTOp::Copy { .. }) => {
@@ -290,6 +301,8 @@ impl Kernel {
                         add_param!(src);
                         add_param!(addr);
                     }
+                    // No operands: ordered by the barrier edges alone.
+                    PTXOp::WarpSync => {}
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {
@@ -569,8 +582,17 @@ impl Kernel {
             if !load[i] {
                 continue;
             }
-            let Op::Load { src, .. } = self.at(rest[i]) else { continue };
-            let buf = *src;
+            let buf = match self.at(rest[i]) {
+                Op::Load { src, .. } => *src,
+                // `ldmatrix` reads its storage like a load; the fill that
+                // writes it inside the loop makes it loop-carried.
+                Op::PTX(p) => match p.as_ref() {
+                    PTXOp::LdMatrix { src, .. } => *src,
+                    PTXOp::Bytes(_) => todo!(),
+                    PTXOp::WarpSync => continue,
+                },
+                _ => continue,
+            };
             let Some(loops) = storage_loops.get(&buf) else { continue };
             for &(opener, closer) in loops {
                 if opener < i && i < closer {

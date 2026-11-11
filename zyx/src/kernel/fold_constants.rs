@@ -18,7 +18,7 @@
 use crate::{
     DType, Map, Set,
     dtype::Constant,
-    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, UOp},
 };
 use std::hash::BuildHasherDefault;
 
@@ -670,6 +670,12 @@ impl Kernel {
                 params.push(op_id);
                 continue;
             }
+            // A warp sync has no result: without a root a dead-value sweep
+            // would delete the barrier and leave the tile unsynchronised.
+            if matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::WarpSync)) {
+                params.push(op_id);
+                continue;
+            }
             // A load from Circular storage is a FIFO pop: its value may
             // be dead (e.g. a drain pop that only frees the producer
             // slot) but the pop itself is a side effect, so the load is
@@ -745,6 +751,11 @@ impl Kernel {
                 }
                 op => {
                     let mut remove_op = false;
+                    // `ldmatrix` reads shared memory the loop rewrites: two
+                    // reads of the same tile and address are not the same
+                    // value once a fill has run between them, so it never
+                    // pools. (Remapping its operands still happens below.)
+                    let is_ldmatrix = matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::LdMatrix { .. }));
 
                     // For Load ops: remap the base before the
                     // stored-location check (bases dedup and a stale base
@@ -753,7 +764,9 @@ impl Kernel {
                     // base buffer counts (writers spell it directly now).
                     // Two reads of one buffer uninterrupted dedup;
                     // read-write-read blocks the second read.
-                    let can_cse = if let Op::Load { src, .. } = op {
+                    let can_cse = if is_ldmatrix {
+                        false
+                    } else if let Op::Load { src, .. } = op {
                         if let Some(&new_id) = remaps.get(src) {
                             *src = new_id;
                         }
@@ -798,7 +811,7 @@ impl Kernel {
                         }
                     }
 
-                    if !remove_op {
+                    if !remove_op && !is_ldmatrix {
                         stack.last_mut().unwrap().insert(op.clone(), op_id);
                     }
                 }

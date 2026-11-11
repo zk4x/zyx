@@ -548,6 +548,11 @@ impl Kernel {
                             Op::Index { vec, idx: j } if vec == op_id => {
                                 used.insert(j);
                             }
+                            // A vector load whose value is stored straight
+                            // back is a contiguous copy (the cooperative
+                            // shared-memory fill): the lane is the vector
+                            // width, not a work bundle.
+                            Op::Store { src, .. } if src == op_id => {}
                             // A fragment used directly, or through the Stack
                             // that builds the operand: the instruction's slot
                             // count is the proof it is a fragment, not a work

@@ -109,8 +109,15 @@ impl Optimization for Recipe {
     }
 }
 
+use super::mma::WARP_LAYOUTS;
+
 /// The tensor-core matmul recipe: split the two output ranges and the K loop
-/// into lanes (the tile grid), then let `opt_tensorize` match the tiled form.
+/// into lanes (the tile grid), then tensorize.
+///
+/// A recipe is a fixed order of ordinary optimizations, so its config space is
+/// the product of theirs: one tile grid per config, one staging form per
+/// config (`opt_tensorize` without staging, `opt_tensorize_staged` with it),
+/// one warp layout per config.
 #[derive(Debug)]
 pub struct TensorRecipe {
     /// `(m range, n range, k loop, m lanes, n lanes, k lanes)` per config.
@@ -119,17 +126,27 @@ pub struct TensorRecipe {
 
 impl Optimization for TensorRecipe {
     fn nconfigs(&self) -> u64 {
-        self.configs.len() as u64
+        // One config per tile grid, staging form and warp layout.
+        2 * WARP_LAYOUTS.len() as u64 * self.configs.len() as u64
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("tensor_recipe apply");
-        let Some(&(m, n, k, m_lanes, n_lanes, k_lanes)) = self.configs.get(config as usize) else {
+        let layouts = WARP_LAYOUTS.len() as u64;
+        let layout = WARP_LAYOUTS[(config % layouts) as usize];
+        let staged = (config / layouts) % 2 == 1;
+        // A register (unstage) block sums a K split through `mt * nt * slots`
+        // registers per warp, which is an IR and register blowout: only the
+        // staged form offers a split-K config.
+        if !staged && layout.2 > 1 {
+            return;
+        }
+        let Some(&(m, n, k, m_lanes, n_lanes, k_lanes)) = self.configs.get((config / layouts / 2) as usize) else {
             return;
         };
         // Build the tiled kernel on a copy: a config whose tile no
-        // `opt_tensorize_tiled` region can absorb is not a tensor recipe at
+        // `opt_tensorize` region can absorb is not a tensor recipe at
         // all, and the raw tiled form devectorizes the lanes^3 product into
         // tens of thousands of scalar ops (43 applied ops lowered to 35,363
         // for a 512x1024x4096 matmul; a 64x64x64 one was refused outright at
@@ -142,12 +159,19 @@ impl Optimization for TensorRecipe {
         {
             return;
         }
-        let tensor = tiled.opt_tensorize_tiled();
+        let tensor = if staged { tiled.opt_tensorize_staged() } else { tiled.opt_tensorize() };
         if tensor.nconfigs() == 0 {
             return;
         }
-        for c in 0..tensor.nconfigs() {
-            tensor.apply(&mut tiled, c);
+        // One tensorization config per region at the chosen layout, so every
+        // region is emitted exactly once.
+        for region in 0..(tensor.nconfigs() / layouts) {
+            tensor.apply(&mut tiled, config % layouts + layouts * region);
+        }
+        // A config whose emitted body crosses the render limit is not a
+        // kernel: drop it rather than install a state no backend accepts.
+        if tiled.ops.len().0 > crate::kernel::MAX_OPS {
+            return;
         }
         tiled.verify();
         *kernel = tiled;
@@ -161,7 +185,7 @@ impl Kernel {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tensor_recipe");
         /// Lane multipliers on the instruction tile.
-        const MULT: &[u16] = &[8, 4, 2, 1];
+        const MULT: &[u16] = &[32, 16, 8, 4, 2, 1];
         /// No config may emit more instructions than this.
         const MAX_TILES: Dim = 256;
 
@@ -174,7 +198,7 @@ impl Kernel {
         // The two output ranges, the contraction loop, and the dtypes the
         // instruction must match: operand element dtypes and the
         // accumulator's. A variant whose dtypes differ from these can never
-        // be absorbed by `opt_tensorize_tiled`, so the lane splits it asks
+        // be absorbed by `opt_tensorize`, so the lane splits it asks
         // for would only devectorize into a scalar body (an i64 matmul given
         // an f16 tile recipe renders tens of thousands of ops).
         let elem_dtype = |k: &Kernel, o: OpId| -> Option<crate::DType> {
@@ -220,10 +244,9 @@ impl Kernel {
         };
         ranges.sort_by_key(|&(_, axis, _)| axis);
         let ((m_range, _, m), (n_range, _, n)) = (ranges[0], ranges[1]);
-        let ops_len = self.ops.len().0 as Dim;
 
         for variant in &info.mma_variants {
-            // Same dtype gate `opt_tensorize_tiled` applies when it matches a
+            // Same dtype gate `opt_tensorize` applies when it matches a
             // region, minus which operand is A: the orientation is decided by
             // the accumulator's view, not by the multiply order.
             let dtypes_match = (variant.a_dtype == x_dtype && variant.b_dtype == y_dtype
@@ -255,19 +278,22 @@ impl Kernel {
                         if tiles > MAX_TILES {
                             continue;
                         }
-                        // Every emitted fragment is unfolded into scalar ops by
-                        // `devectorize`, so the final IR grows with the square
-                        // of the tile count. Bound the emitted size, not just
-                        // the tile count: a 47-tile recipe on a 40-op kernel
-                        // becomes ~90k ops, which is minutes per launch.
-                        if ops_len.saturating_mul(tiles).saturating_mul(tiles) > 50_000 {
-                            continue;
-                        }
+                        // No IR-growth bound here: this recipe tensorizes with
+                        // staging, whose body is one loop over fragments
+                        // whatever the tile count. A config that does not
+                        // tensorize is dropped by `apply`, and a lowering that
+                        // explodes is rejected at measurement.
                         let (Ok(m_lanes), Ok(n_lanes), Ok(k_lanes)) =
                             (u16::try_from(m_lanes), u16::try_from(n_lanes), u16::try_from(k_lanes))
                         else {
                             continue;
                         };
+                        if std::env::var_os("ZYX_RECIPE").is_some() {
+                            eprintln!(
+                                "recipe t={} m_lanes={m_lanes} n_lanes={n_lanes} k_lanes={k_lanes} tiles={tiles}",
+                                configs.len()
+                            );
+                        }
                         configs.push((m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes));
                     }
                 }

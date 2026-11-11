@@ -77,7 +77,7 @@ impl Kernel {
     /// Returns the new secondary node (`Local`/`Group`/`Unroll`/`Loop`);
     /// `OpId::NULL` when the config cannot apply. All validity gates
     /// live here so `OptSplit::apply` stays a straight call.
-    pub(crate) fn split(&mut self, axis_id: OpId, split_mode: SplitMode, factor: u16) -> OpId {
+    pub fn split(&mut self, axis_id: OpId, split_mode: SplitMode, factor: u16) -> OpId {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("split");
         // A split multiplies the IR by its factor (an unroll duplicates the

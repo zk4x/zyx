@@ -138,6 +138,8 @@ impl Kernel {
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!(),
                     PTXOp::LdMatrix { .. } => true,
+                    // Effect only.
+                    PTXOp::WarpSync => false,
                 },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
@@ -522,6 +524,11 @@ impl Kernel {
                     PTXOp::LdMatrix { .. } => {
                         wi_ops += loop_mult;
                         wi_compute_ops += loop_mult;
+                    }
+                    // A warp-level barrier: one instruction, and a stall.
+                    PTXOp::WarpSync => {
+                        wi_ops += loop_mult;
+                        wi_barriers += loop_mult;
                     }
                 },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {

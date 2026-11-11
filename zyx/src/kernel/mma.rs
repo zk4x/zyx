@@ -32,10 +32,10 @@
 //! own.
 
 use crate::{
-    Set, Map,
+    DType, Set, Map,
     backend::{FragAxis, FragMap, MMAVariant},
     dtype::Constant,
-    kernel::{BOp, Kernel, MemScope, Op, OpId, ParamKind, RangeKind, autotune::Optimization},
+    kernel::{BOp, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, autotune::Optimization},
     shape::Dim,
 };
 
@@ -119,25 +119,55 @@ struct Tiled {
     epilogue: Vec<Epi>,
 }
 
+/// Warp layouts a tensorized block may use, as `(m, n, k)` warps over the
+/// output rows, the output columns, and the contraction. One axis at a time:
+/// a warp grid owns disjoint output sub-tiles (nothing is summed), a K split
+/// sums the per-warp partials in shared memory.
+pub(crate) const WARP_LAYOUTS: [(u16, u16, u16); 13] = [
+    (1, 1, 1),
+    (2, 1, 1),
+    (1, 2, 1),
+    (4, 1, 1),
+    (2, 2, 1),
+    (1, 4, 1),
+    (8, 1, 1),
+    (4, 2, 1),
+    (2, 4, 1),
+    (1, 8, 1),
+    (1, 1, 2),
+    (1, 1, 4),
+    (1, 1, 8),
+];
+
 /// The tensorization optimization: one config per validated region.
 #[derive(Debug)]
 struct Tensorize {
     regions: Vec<Region>,
     tiled: Vec<Tiled>,
+    /// Warp layouts the block may use; one entry for a recipe, which has
+    /// already chosen, the whole [`WARP_LAYOUTS`] list otherwise.
+    layouts: Vec<(u16, u16, u16)>,
+    /// Stage the operands through shared memory (`ldmatrix`) instead of
+    /// reading their fragments from global memory.
+    staged: bool,
 }
 
 impl Optimization for Tensorize {
     fn nconfigs(&self) -> u64 {
-        (self.regions.len() + self.tiled.len()) as u64
+        // One config per region and warp layout; the staged form is its own
+        // optimization, not a parity of this one.
+        self.layouts.len() as u64 * (self.regions.len() + self.tiled.len()) as u64
     }
 
     fn apply(&self, kernel: &mut Kernel, config: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tensorize apply");
-        let config = config as usize;
+        let staged = self.staged;
+        let layout = self.layouts[(config % self.layouts.len() as u64) as usize];
+        let config = (config / self.layouts.len() as u64) as usize;
         if config >= self.regions.len() {
             if let Some(t) = self.tiled.get(config - self.regions.len()) {
-                tile_to_wmma(kernel, t);
+                tile_to_wmma(kernel, t, staged, layout);
             }
             return;
         }
@@ -239,24 +269,55 @@ impl Optimization for Tensorize {
         // device epilogue to devectorize in this kernel).
         let c_slots = v.c.slots.len();
         let acc = kernel.zeros(v.c_dtype, c_slots as i32);
+        // Staged form needs both K views contiguous for a vector fill.
+        let staged = staged && r.a_k == 1 && r.b_k == 1;
+        // Staged form: one cooperative shared tile per operand, refilled at
+        // every K step. `STAGE_PAD` keeps the rows `ldmatrix`-aligned and off
+        // each other's banks.
+        let (a_tile, b_tile, a_stride, b_stride) = if staged {
+            let a_stride = fk + STAGE_PAD;
+            let b_stride = fk + STAGE_PAD;
+            (
+                insert_local_f16_storage(kernel, fm * a_stride),
+                insert_local_f16_storage(kernel, fn_ * b_stride),
+                a_stride,
+                b_stride,
+            )
+        } else {
+            (OpId::NULL, OpId::NULL, 0, 0)
+        };
+        let threads = Dim::from(warp_size);
 
         // One mma per `fk` of K.
         let rounds = r.k / fk;
         kernel.loop_over(rounds, |k, kv| {
             let fk_c = k.const_idx(fk);
             let k_base = k.mul(kv, fk_c);
-            let mut a_elems = Vec::with_capacity(v.a.slots.len());
-            for &slot in &v.a.slots {
-                let idx = frag_index(k, &v.a, (m_base, k_base), (r.a_m, r.a_k), slot);
-                a_elems.push(k.load(r.a_src, idx));
-            }
-            let a_frag = k.stack(&a_elems);
-            let mut b_elems = Vec::with_capacity(v.b.slots.len());
-            for &slot in &v.b.slots {
-                let idx = frag_index(k, &v.b, (n_base, k_base), (r.b_n, r.b_k), slot);
-                b_elems.push(k.load(r.b_src, idx));
-            }
-            let b_frag = k.stack(&b_elems);
+            let (a_frag, b_frag) = if staged {
+                let a_k = k.mul(k_base, r.a_k);
+                let a_base = k.mad(m_base, r.a_m, a_k);
+                let b_k = k.mul(k_base, r.b_k);
+                let b_base = k.mad(n_base, r.b_n, b_k);
+                coop_fill(k, OpId::NULL, lane, r.a_src, a_base, r.a_m, r.a_k, fm, fk, a_tile, a_stride, threads, OpId::NULL);
+                coop_fill(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, b_tile, b_stride, threads, OpId::NULL);
+                k.push_back(Op::Barrier);
+                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, a_stride, 0, OpId::NULL);
+                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, b_stride, 0, OpId::NULL);
+                (a, b)
+            } else {
+                let mut a_elems = Vec::with_capacity(v.a.slots.len());
+                for &slot in &v.a.slots {
+                    let idx = frag_index(k, &v.a, (m_base, k_base), (r.a_m, r.a_k), slot);
+                    a_elems.push(k.load(r.a_src, idx));
+                }
+                let a_frag = k.stack(&a_elems);
+                let mut b_elems = Vec::with_capacity(v.b.slots.len());
+                for &slot in &v.b.slots {
+                    let idx = frag_index(k, &v.b, (n_base, k_base), (r.b_n, r.b_k), slot);
+                    b_elems.push(k.load(r.b_src, idx));
+                }
+                (a_frag, k.stack(&b_elems))
+            };
             let mut c_elems = Vec::with_capacity(c_slots);
             for i in 0..c_slots {
                 let at = k.const_idx(i as u32);
@@ -268,6 +329,11 @@ impl Optimization for Tensorize {
                 let at = k.const_idx(i as u32);
                 let elem = k.index(d, i);
                 k.store(acc, elem, at);
+            }
+            if staged {
+                // The next fill must not overwrite a tile the lanes are still
+                // reading.
+                k.push_back(Op::Barrier);
             }
         });
 
@@ -361,59 +427,373 @@ fn slot_addr(kernel: &mut Kernel, before: OpId, lane: OpId, map: &FragMap, base:
 
 /// Element index into the tiled accumulator for a fragment slot of tile
 /// `(tm, tn)`: `(tm * nt + tn) * slots + s`.
-fn acc_index(_kernel: &mut Kernel, _before: OpId, _lane: OpId, _map: &FragMap, t: &Tiled, _fm: Dim, _fn: Dim, tm: Dim, tn: Dim, slot: usize, _warp: u32) -> OpId {
-    let idx = (tm * t.nt + tn) * t.slots + Dim::from(slot as i64);
-    _kernel.insert_before(_before, Op::Const(Constant::idx(idx)))
+fn acc_index(kernel: &mut Kernel, before: OpId, nt: Dim, slots: Dim, tm: Dim, tn: Dim, slot: usize) -> OpId {
+    let idx = (tm * nt + tn) * slots + Dim::from(slot as i64);
+    kernel.insert_before(before, Op::Const(Constant::idx(idx)))
 }
 
 /// A fragment operand's slot values, pairing slots that are contiguous in
-/// memory into one vector load (the `half2` the instruction consumes).
+/// memory into one vector load (the `half2`/`half4` the instruction consumes).
 #[allow(clippy::too_many_arguments)]
 fn frag_elems(kernel: &mut Kernel, before: OpId, lane: OpId, map: &FragMap, src: OpId, base: OpId, sr: Dim, sc: Dim, warp: u32) -> Vec<OpId> {
+    /// f16 halves per vector access: 8 bytes, the `ldg8` the reference's
+    /// direct (unstage) kernel loads fragments with.
+    const VEC: usize = 4;
     let slots = &map.slots;
     let mut out = Vec::with_capacity(slots.len());
     let mut i = 0;
     while i < slots.len() {
-        if i + 1 < slots.len() {
-            let a = slots[i];
-            let b = slots[i + 1];
+        // The longest run of slots that is contiguous in memory, up to one
+        // vector access. Its innermost lane is the vector width:
+        // `devectorize` keeps it and the backend renders one vector load,
+        // which the `Stack` then reads lane by lane through `Index`.
+        let mut n = 1;
+        while i + n < slots.len() && n < VEC {
+            let a = slots[i + n - 1];
+            let b = slots[i + n];
             let delta = Dim::from(b.0 - a.0) * sr + Dim::from(b.1 - a.1) * sc;
-            if delta == 1 {
-                let addr = slot_addr(kernel, before, lane, map, base, sr, sc, a, warp);
-                // Two adjacent fragment slots: one scalar load each. A packed
-                // 2-lane load here would have to be unstacked by `Index`, and
-                // the lane expansion turns those into indexes of a scalar.
-                let one = kernel.insert_const_idx_before(before, 1i64);
-                let addr1 = kernel.insert_before(before, Op::Binary { x: addr, y: one, bop: BOp::Add });
-                out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr }));
-                out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr1 }));
-                i += 2;
-                continue;
+            if delta != 1 {
+                break;
             }
+            n += 1;
         }
         let addr = slot_addr(kernel, before, lane, map, base, sr, sc, slots[i], warp);
-        out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr }));
-        i += 1;
+        if n == 1 {
+            out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr }));
+        } else {
+            let vector = kernel.insert_before(before, Op::Unroll { axis: 0, len: n as u16 });
+            let idx = kernel.insert_before(before, Op::Binary { x: addr, y: vector, bop: BOp::Add });
+            let value = kernel.insert_before(before, Op::Load { src, src_idx: idx });
+            for lane_idx in 0..n {
+                out.push(kernel.insert_before(before, Op::Index { vec: value, idx: lane_idx }));
+            }
+        }
+        i += n;
     }
     out
+}
+
+/// f16 elements a staged tile row carries beyond the instruction's K extent,
+/// so consecutive rows do not land on the same shared-memory bank. Eight
+/// halves is 16 bytes: the smallest pad that keeps every row start
+/// `ldmatrix`-aligned.
+const STAGE_PAD: Dim = 8;
+
+/// Insert a local storage after the kernel's parameters (global params must
+/// precede local storages, the order `verify` expects).
+fn insert_local_storage(kernel: &mut Kernel, dtype: DType, len: Dim) -> OpId {
+    let mut at = kernel.head;
+    while matches!(kernel.at(at), Op::Param { .. }) {
+        at = kernel.next_op(at);
+    }
+    kernel.insert_before(at, Op::Storage { dtype, scope: MemScope::Local, len, id: 0 })
+}
+
+/// Insert a local f16 storage after the kernel's parameters (global params
+/// must precede local storages, the order `verify` expects).
+fn insert_local_f16_storage(kernel: &mut Kernel, len: Dim) -> OpId {
+    insert_local_storage(kernel, DType::F16, len)
+}
+
+/// Cooperatively fill a `rows x chunk` f16 tile with the global view `(src,
+/// base, sr, sc)`: every lane copies one `half2` of a row, so a warp moves a
+/// whole row (or several) per step with vectorized, coalesced accesses.
+/// `stride` is the padded row length in halves. Requires the K view to be
+/// contiguous (`sc == 1`).
+#[allow(clippy::too_many_arguments)]
+fn coop_fill(
+    kernel: &mut Kernel,
+    before: OpId,
+    lane: OpId,
+    src: OpId,
+    base: OpId,
+    sr: Dim,
+    sc: Dim,
+    rows: Dim,
+    chunk: Dim,
+    tile: OpId,
+    stride: Dim,
+    threads: Dim,
+    slot_base: OpId,
+) {
+    // The vector access this tile uses: one `half2` per lane, so a warp's
+    // loads stay spread across as many in-flight requests as the tile has
+    // words and consecutive steps coalesce on the same lines.
+    let vec: Dim = if chunk % Dim::from(2) == 0 { Dim::from(2) } else { Dim::from(1) };
+    let put = |kernel: &mut Kernel, op: Op| -> OpId {
+        if before.is_null() { kernel.push_back(op) } else { kernel.insert_before(before, op) }
+    };
+    debug_assert_eq!(sc, 1, "cooperative fill: the K view must be contiguous");
+    debug_assert_eq!(chunk % vec, 0, "cooperative fill: K chunk not a whole number of vectors");
+    let per_row = chunk / vec;
+    debug_assert_eq!(
+        rows * per_row % threads,
+        0,
+        "cooperative fill: vector count not divisible by the threads"
+    );
+    // The innermost lane is the vector width: `devectorize` keeps it and the
+    // backend renders one vector load/store.
+    let vector = put(kernel, Op::Unroll { axis: 0, len: u16::try_from(vec).expect("fill vector width") });
+    let prc = put(kernel, Op::Const(Constant::idx(per_row)));
+    let vc = put(kernel, Op::Const(Constant::idx(vec)));
+    for it in 0..rows * per_row / threads {
+        let off = put(kernel, Op::Const(Constant::idx(it * threads)));
+        let flat = put(kernel, Op::Binary { x: off, y: lane, bop: BOp::Add });
+        let row = put(kernel, Op::Binary { x: flat, y: prc, bop: BOp::Div });
+        let vcol = put(kernel, Op::Binary { x: flat, y: prc, bop: BOp::Mod });
+        let rterm = if sr == 1 {
+            row
+        } else {
+            let s = put(kernel, Op::Const(Constant::idx(sr)));
+            put(kernel, Op::Binary { x: row, y: s, bop: BOp::Mul })
+        };
+        let cterm = put(kernel, Op::Binary { x: vcol, y: vc, bop: BOp::Mul });
+        let b0 = put(kernel, Op::Binary { x: base, y: rterm, bop: BOp::Add });
+        let b1 = put(kernel, Op::Binary { x: b0, y: cterm, bop: BOp::Add });
+        let gidx = put(kernel, Op::Binary { x: b1, y: vector, bop: BOp::Add });
+        let value = put(kernel, Op::Load { src, src_idx: gidx });
+        let s = put(kernel, Op::Const(Constant::idx(stride)));
+        let slot_row = put(kernel, Op::Binary { x: row, y: s, bop: BOp::Mul });
+        let slot0 = put(kernel, Op::Binary { x: slot_row, y: cterm, bop: BOp::Add });
+        let slot0 = if slot_base.is_null() {
+            slot0
+        } else {
+            put(kernel, Op::Binary { x: slot0, y: slot_base, bop: BOp::Add })
+        };
+        // The vector lane must stay the outermost term: the backend strips it
+        // to form the scalar base address of the vector access.
+        let slot = put(kernel, Op::Binary { x: slot0, y: vector, bop: BOp::Add });
+        put(kernel, Op::Store { dst: tile, dst_idx: slot, src: value });
+    }
+}
+
+/// The `ldmatrix` that reads the `k_offset`-th instruction sub-tile of a
+/// staged `rows x chunk` tile in the fragment layout of the MMA: `frags` 8x8
+/// b16 tiles, lane `l` supplying the address of row `l`. A `m16n8k8` A tile is
+/// `x2` (two 8-row matrices), B is `x1`.
+#[allow(clippy::too_many_arguments)]
+fn coop_ldmatrix(
+    kernel: &mut Kernel,
+    before: OpId,
+    lane: OpId,
+    tile: OpId,
+    rows: Dim,
+    k: Dim,
+    stride: Dim,
+    k_offset: Dim,
+    slot_base: OpId,
+) -> OpId {
+    let put = |kernel: &mut Kernel, op: Op| -> OpId {
+        if before.is_null() { kernel.push_back(op) } else { kernel.insert_before(before, op) }
+    };
+    let frags = u8::try_from(rows / 8 * (k / 8)).expect("ldmatrix: too many fragments");
+    let naddr = put(kernel, Op::Const(Constant::idx(Dim::from(frags) * 8)));
+    let row = put(kernel, Op::Binary { x: lane, y: naddr, bop: BOp::Mod });
+    let s = put(kernel, Op::Const(Constant::idx(stride)));
+    let base = put(kernel, Op::Binary { x: row, y: s, bop: BOp::Mul });
+    let off = put(kernel, Op::Const(Constant::idx(k_offset)));
+    let addr = put(kernel, Op::Binary { x: base, y: off, bop: BOp::Add });
+    let addr = if slot_base.is_null() {
+        addr
+    } else {
+        put(kernel, Op::Binary { x: addr, y: slot_base, bop: BOp::Add })
+    };
+    put(kernel, Op::PTX(Box::new(PTXOp::LdMatrix { frags, src: tile, addr, trans: false })))
+}
+
+/// Emit one wmma for tile `(tm, tn)`: load the accumulator slots, run the
+/// instruction, store the results back.
+#[allow(clippy::too_many_arguments)]
+fn emit_tile_wmma(
+    kernel: &mut Kernel,
+    t: &Tiled,
+    v: &MMAVariant,
+    nt: Dim,
+    tm: Dim,
+    tn: Dim,
+    a_frag: OpId,
+    b_frag: OpId,
+) {
+    let mut c_elems = Vec::with_capacity(v.c.slots.len());
+    let mut c_idx = Vec::with_capacity(v.c.slots.len());
+    for (s, _slot) in v.c.slots.iter().enumerate() {
+        let idx = acc_index(kernel, t.update, nt, t.slots, tm, tn, s);
+        c_idx.push(idx);
+        c_elems.push(kernel.insert_before(t.update, Op::Load { src: t.acc, src_idx: idx }));
+    }
+    let c_frag = kernel.insert_before(t.update, Op::Stack { ops: c_elems.into() });
+    let d = kernel.insert_before(
+        t.update,
+        Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_frag, b: b_frag, c: c_frag },
+    );
+    for (i, &idx) in c_idx.iter().enumerate() {
+        let elem = kernel.insert_before(t.update, Op::Index { vec: d, idx: i });
+        kernel.insert_before(t.update, Op::Store { dst: t.acc, dst_idx: idx, src: elem });
+    }
 }
 
 /// Emit a matched tiled region as wmma instructions, in place: the
 /// accumulator storage keeps its identity, its accesses are rewritten in
 /// fragment order, and the split's reduce/update and the output stores are
 /// replaced (DCE drops their cones).
-fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled) {
+fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16, u16)) {
     let v = &t.variant;
     let (fm, fn_, fk) = {
         let (m, n, k) = v.dims.decompose_mnk();
         (m as Dim, n as Dim, k as Dim)
     };
     let warp = u32::from(kernel.device_info().warp_size);
+    let Op::Loop { len: loop_len_id } = *kernel.at(t.loop_id) else {
+        unreachable!("tiled tensorize: the K loop is not a loop")
+    };
+    let loop_len = kernel.resolve_const(loop_len_id).and_then(Constant::as_dim).unwrap_or(0);
+    let chunk = t.kt * fk;
+    let a_stride = chunk + STAGE_PAD;
+    let b_stride = chunk + STAGE_PAD;
+    // The block's warp layout: `m` warps over the output rows and `n` over the
+    // output columns (a warp grid — every warp owns its sub-tile, so nothing
+    // is summed across warps), or `k` warps over the contraction (the partial
+    // accumulators are summed through shared memory). One axis at a time.
+    let (wm, wn, wk) = layout;
+    let cols = t.nt * fn_;
+    let rows = if fn_ > fm { fn_ } else { fm };
+    let staged_form = staged && t.a_k == 1 && t.b_k == 1;
+    // The staged form holds one warp-private tile plus, for a K split, the
+    // combine buffer `[output column][warp * rows + row]`, which needs the
+    // block's output rows (`t.nt * fn_`) to be whole warp-wide stores.
+    let combine = wk > 1;
+    if combine && cols % Dim::from(warp) != 0 {
+        // The combine epilogue stores one warp of rows per column.
+        return;
+    }
+    let staged_bytes = |nw: Dim| {
+        // The block-wide form holds one tile per operand for the whole block;
+        // a split-K warp holds its own and merges through the combine buffer.
+        let tile = if combine {
+            nw * rows * a_stride * 2
+        } else {
+            (t.mt * fm + t.nt * fn_) * a_stride * 2
+        };
+        if combine {
+            tile + t.mt * fm * (nw * cols + 4) * 4
+        } else {
+            tile
+        }
+    };
+    // A layout whose K slice does not fit the loop, or whose warp grid does
+    // not split the tile grid evenly, falls back to the single-warp form.
+    let (wm, wn, wk) = if (wk > 1 && (loop_len <= 0 || loop_len % Dim::from(wk) != 0))
+        || (wm > 1 && t.mt % Dim::from(wm) != 0)
+        || (wn > 1 && t.nt % Dim::from(wn) != 0)
+    {
+        (1, 1, 1)
+    } else {
+        (wm, wn, wk)
+    };
+    // The tiles one warp owns: a warp grid hands each warp a contiguous band
+    // of the block's tile grid.
+    let mt_w = t.mt / Dim::from(if wm > 1 { wm } else { 1 });
+    let nt_w = t.nt / Dim::from(if wn > 1 { wn } else { 1 });
+    let warps = u32::from(wm) * u32::from(wn) * u32::from(wk);
+    let combine = wk > 1;
+    let mut warp_var = OpId::NULL;
+    let mut warp_off_a = OpId::NULL;
+    let mut warp_off_b = OpId::NULL;
+    let mut warp_off_m = OpId::NULL;
+    let mut warp_off_n = OpId::NULL;
+    // The staged form slices K round-robin: warp `y` takes chunks `y`,
+    // `y + n`, ... of one tile step each, so the warps' loads of a row stay
+    // in one window of it. A contiguous slice otherwise.
+    let interleave = staged_form && combine;
+    if warps > 1 {
+        warp_var = kernel.insert_before(t.loop_id, Op::Range { axis: 1, kind: RangeKind::Local(warps) });
+    }
+    if combine {
+        let sub = loop_len / Dim::from(wk);
+        let new_len = kernel.insert_const_idx_before(t.loop_id, sub);
+        kernel.ops[t.loop_id].op = Op::Loop { len: new_len };
+        let a_step = t.a_fixed.iter().find(|(v, _)| *v == t.loop_id).map(|&(_, s)| s).unwrap_or(0);
+        let b_step = t.b_fixed.iter().find(|(v, _)| *v == t.loop_id).map(|&(_, s)| s).unwrap_or(0);
+        let na = if interleave { 1 } else { sub };
+        let ca = kernel.insert_before(t.loop_id, Op::Const(Constant::idx(na * a_step)));
+        warp_off_a = kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: ca, bop: BOp::Mul });
+        let cb = kernel.insert_before(t.loop_id, Op::Const(Constant::idx(na * b_step)));
+        warp_off_b = kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: cb, bop: BOp::Mul });
+    }
+    // A warp grid moves each warp's output window: `wi = warp % wm` selects
+    // the row band, `wj = warp / wm` the column band. The offsets are element
+    // counts (rows, columns); each use scales them by its own stride.
+    if wm > 1 {
+        let c = kernel.insert_const_idx_before(t.loop_id, Dim::from(wm));
+        let wi = kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: c, bop: BOp::Mod });
+        let s = kernel.insert_const_idx_before(t.loop_id, mt_w * fm);
+        warp_off_m = kernel.insert_before(t.loop_id, Op::Binary { x: wi, y: s, bop: BOp::Mul });
+    }
+    if wn > 1 {
+        let wj = if wm > 1 {
+            let c = kernel.insert_const_idx_before(t.loop_id, Dim::from(wm));
+            kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: c, bop: BOp::Div })
+        } else {
+            warp_var
+        };
+        let s = kernel.insert_const_idx_before(t.loop_id, nt_w * fn_);
+        warp_off_n = kernel.insert_before(t.loop_id, Op::Binary { x: wj, y: s, bop: BOp::Mul });
+    }
+    // The same offsets as flat addresses: rows scale by A's row stride, the
+    // columns by B's. The store side scales them by the output's strides.
+    let scale_by = |kernel: &mut Kernel, off: OpId, stride: Dim| -> OpId {
+        if off.is_null() {
+            return OpId::NULL;
+        }
+        let s = kernel.insert_const_idx_before(t.loop_id, stride);
+        kernel.insert_before(t.loop_id, Op::Binary { x: off, y: s, bop: BOp::Mul })
+    };
+    let a_band = scale_by(kernel, warp_off_m, t.a_m);
+    let b_band = scale_by(kernel, warp_off_n, t.b_n);
+    // Interleaving walks the loop `wk` chunks at a time, so the loop
+    // variable's own step grows by `wk`.
+    let scale_loop = |fixed: &[(OpId, Dim)]| -> Vec<(OpId, Dim)> {
+        let n = Dim::from(wk);
+        fixed
+            .iter()
+            .map(|&(v, s)| (v, if v == t.loop_id && interleave { s * n } else { s }))
+            .collect()
+    };
+    let a_fixed = scale_loop(&t.a_fixed);
+    let b_fixed = scale_loop(&t.b_fixed);
+    // Add a base's warp offsets (K slice and/or output sub-tile) in place.
+    let shift = |kernel: &mut Kernel, before: OpId, base: OpId, offs: [OpId; 2]| -> OpId {
+        let mut addr = base;
+        for off in offs {
+            if !off.is_null() {
+                addr = kernel.insert_before(before, Op::Binary { x: addr, y: off, bop: BOp::Add });
+            }
+        }
+        addr
+    };
     let lane = kernel.insert_before(t.loop_id, Op::Range { axis: 0, kind: RangeKind::Local(warp) });
+    let nw = Dim::from(warps);
+    // Shared memory the tile and the combine buffer need, in bytes; fall back
+    // to the direct form otherwise. A block-wide fill also needs the tile to
+    // hold at least one vector per thread and to divide evenly among them.
+    let threads = Dim::from(warp);
+    let vecs = |rows: Dim| rows * (chunk / Dim::from(2));
+    let all = nw * threads;
+    let fill_fits = combine || (vecs(t.mt * fm) >= all && vecs(t.mt * fm) % all == 0)
+        && (vecs(t.nt * fn_) >= all && vecs(t.nt * fn_) % all == 0);
+    let staged = staged_form && fill_fits && staged_bytes(nw) <= kernel.device_info().local_mem_size;
 
     // The accumulator holds one register per (tile, slot): `m_len * n_len`
     // scalar elements would be 32x what the instruction layout needs.
-    let len = t.mt * t.nt * t.slots;
+    // A warp grid hands each warp its own band of the tile grid, so the
+    // accumulator only holds that band: the whole grid's `mt * nt * slots`
+    // would be eight times the registers a warp uses.
+    let len = mt_w * nt_w * t.slots;
+    // A thread's accumulators must fit the register file. Unstage has no
+    // fallback for a warp that would need more registers than the ISA has.
+    if !staged && len > Dim::from(128) {
+        return;
+    }
     if let Op::Storage { len: l, .. } = &mut kernel.ops[t.acc].op {
         *l = len;
     }
@@ -428,33 +808,297 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled) {
     }
     kernel.remove_op(t.init);
 
-    for tm in 0..t.mt {
-        for tn in 0..t.nt {
-            for tk in 0..t.kt {
-                let a_base =
-                    base_expr(kernel, t.update, &t.a_fixed, t.a_offset, tm * fm * t.a_m + tk * fk * t.a_k);
-                let a_elems = frag_elems(kernel, t.update, lane, &v.a, t.a_src, a_base, t.a_m, t.a_k, warp);
-                let a_frag = kernel.insert_before(t.update, Op::Stack { ops: a_elems.into() });
-                let b_base =
-                    base_expr(kernel, t.update, &t.b_fixed, t.b_offset, tn * fn_ * t.b_n + tk * fk * t.b_k);
-                let b_elems = frag_elems(kernel, t.update, lane, &v.b, t.b_src, b_base, t.b_n, t.b_k, warp);
-                let b_frag = kernel.insert_before(t.update, Op::Stack { ops: b_elems.into() });
-                let mut c_elems = Vec::with_capacity(v.c.slots.len());
-                let mut c_idx = Vec::with_capacity(v.c.slots.len());
-                for (s, _slot) in v.c.slots.iter().enumerate() {
-                    let idx = acc_index(kernel, t.update, lane, &v.c, t, fm, fn_, tm, tn, s, warp);
-                    c_idx.push(idx);
-                    c_elems.push(kernel.insert_before(t.update, Op::Load { src: t.acc, src_idx: idx }));
-                }
-                let c_frag = kernel.insert_before(t.update, Op::Stack { ops: c_elems.into() });
-                let d = kernel.insert_before(
-                    t.update,
-                    Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_frag, b: b_frag, c: c_frag },
+    if staged {
+        // The reference's iteration: one block-wide shared tile per operand,
+        // filled cooperatively by every thread from vector global loads, a
+        // block barrier, then `ldmatrix` from each warp's own band of it and
+        // the instructions. Every element is loaded from global once per
+        // block and reused by every warp that needs it.
+        let mt = mt_w as usize;
+        let nt = nt_w as usize;
+        let kt = t.kt as usize;
+        let a_rows = if combine { fm } else { t.mt * fm };
+        let b_rows = if combine { fn_ } else { t.nt * fn_ };
+        // A split-K warp keeps its own tile, so the buffer holds one per warp.
+        let copies = if combine { nw } else { Dim::from(1) };
+        let a_tile = insert_local_f16_storage(kernel, copies * a_rows * a_stride);
+        let b_tile = insert_local_f16_storage(kernel, copies * b_rows * b_stride);
+        // Split-K: `warp_var` selects the warp's own tile.
+        let per_warp = fm * a_stride;
+        let b_per_warp = fn_ * b_stride;
+        let own = |kernel: &mut Kernel, per: Dim| -> OpId {
+            if warp_var.is_null() {
+                kernel.insert_const_idx_before(t.update, 0i64)
+            } else {
+                let c = kernel.insert_const_idx_before(t.update, per);
+                kernel.insert_before(t.update, Op::Binary { x: warp_var, y: c, bop: BOp::Mul })
+            }
+        };
+        let (a_slot, b_slot) = (own(kernel, per_warp), own(kernel, b_per_warp));
+        let sync = |kernel: &mut Kernel| {
+            if combine {
+                kernel.insert_before(t.update, Op::PTX(Box::new(PTXOp::WarpSync)));
+            } else {
+                kernel.insert_before(t.update, Op::Barrier);
+            }
+        };
+        // The threads one fill covers: every thread of the block for the
+        // block-wide tile, one warp otherwise.
+        let (fill_lane, fill_threads) = if combine {
+            (lane, threads)
+        } else if warp_var.is_null() {
+            (lane, threads)
+        } else {
+            let w = kernel.insert_const_idx_before(t.loop_id, Dim::from(warp));
+            let base = kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: w, bop: BOp::Mul });
+            let tid = kernel.insert_before(t.loop_id, Op::Binary { x: base, y: lane, bop: BOp::Add });
+            (tid, Dim::from(warps) * Dim::from(warp))
+        };
+        let a_fill_rows = if combine { fm } else { t.mt * fm };
+        let b_fill_rows = if combine { fn_ } else { t.nt * fn_ };
+        if combine {
+            sync(kernel);
+            // A split-K warp owns one operand sub-tile, refilled per sub-tile
+            // and read back in full before the refill.
+            let mut a_frags = vec![vec![OpId::NULL; kt]; mt];
+            for tm in 0..mt {
+                let a_base = base_expr(kernel, t.update, &a_fixed, t.a_offset, tm as Dim * fm * t.a_m);
+                let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
+                let sb = a_slot;
+                sync(kernel);
+                coop_fill(
+                    kernel, t.update, fill_lane, t.a_src, a_base, t.a_m, t.a_k, fm, chunk, a_tile, a_stride,
+                    fill_threads, sb,
                 );
-                for (i, &idx) in c_idx.iter().enumerate() {
-                    let elem = kernel.insert_before(t.update, Op::Index { vec: d, idx: i });
-                    kernel.insert_before(t.update, Op::Store { dst: t.acc, dst_idx: idx, src: elem });
+                sync(kernel);
+                for tk in 0..kt {
+                    a_frags[tm][tk] =
+                        coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk, a_stride, tk as Dim * fk, sb);
                 }
+            }
+            for tn in 0..nt {
+                let b_base = base_expr(kernel, t.update, &b_fixed, t.b_offset, tn as Dim * fn_ * t.b_n);
+                let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
+                let sb = b_slot;
+                sync(kernel);
+                coop_fill(
+                    kernel, t.update, fill_lane, t.b_src, b_base, t.b_n, t.b_k, fn_, chunk, b_tile, b_stride,
+                    fill_threads, sb,
+                );
+                sync(kernel);
+                for tk in 0..kt {
+                    let b_frag = coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk, b_stride, tk as Dim * fk, sb);
+                    for tm in 0..mt {
+                        emit_tile_wmma(kernel, t, v, nt_w, tm as Dim, tn as Dim, a_frags[tm][tk], b_frag);
+                    }
+                }
+            }
+        } else {
+            // One block-wide tile per operand: every thread fills its share,
+            // one barrier, then each warp reads its own band with `ldmatrix`.
+            let a_fill_base = base_expr(kernel, t.update, &a_fixed, t.a_offset, 0);
+            let b_fill_base = base_expr(kernel, t.update, &b_fixed, t.b_offset, 0);
+            sync(kernel);
+            coop_fill(
+                kernel, t.update, fill_lane, t.a_src, a_fill_base, t.a_m, t.a_k, a_fill_rows, chunk, a_tile, a_stride,
+                fill_threads, OpId::NULL,
+            );
+            coop_fill(
+                kernel, t.update, fill_lane, t.b_src, b_fill_base, t.b_n, t.b_k, b_fill_rows, chunk, b_tile, b_stride,
+                fill_threads, OpId::NULL,
+            );
+            sync(kernel);
+            let mut a_frags = vec![vec![OpId::NULL; kt]; mt];
+            for tm in 0..mt {
+                let off = kernel.insert_const_idx_before(t.update, tm as Dim * fm * a_stride);
+                let sb = if warp_off_m.is_null() {
+                    off
+                } else {
+                    let s = kernel.insert_const_idx_before(t.update, a_stride);
+                    let b0 = kernel.insert_before(t.update, Op::Binary { x: warp_off_m, y: s, bop: BOp::Mul });
+                    kernel.insert_before(t.update, Op::Binary { x: b0, y: off, bop: BOp::Add })
+                };
+                for tk in 0..kt {
+                    a_frags[tm][tk] =
+                        coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk, a_stride, tk as Dim * fk, sb);
+                }
+            }
+            for tn in 0..nt {
+                let off = kernel.insert_const_idx_before(t.update, tn as Dim * fn_ * b_stride);
+                let sb = if warp_off_n.is_null() {
+                    off
+                } else {
+                    let s = kernel.insert_const_idx_before(t.update, b_stride);
+                    let b0 = kernel.insert_before(t.update, Op::Binary { x: warp_off_n, y: s, bop: BOp::Mul });
+                    kernel.insert_before(t.update, Op::Binary { x: b0, y: off, bop: BOp::Add })
+                };
+                for tk in 0..kt {
+                    let b_frag = coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk, b_stride, tk as Dim * fk, sb);
+                    for tm in 0..mt {
+                        emit_tile_wmma(kernel, t, v, nt_w, tm as Dim, tn as Dim, a_frags[tm][tk], b_frag);
+                    }
+                }
+            }
+            sync(kernel);
+        }
+    } else {
+        for tm in 0..mt_w {
+            for tn in 0..nt_w {
+                for tk in 0..t.kt {
+                    let a_base =
+                        base_expr(kernel, t.update, &a_fixed, t.a_offset, tm * fm * t.a_m + tk * fk * t.a_k);
+                    let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
+                    let b_base =
+                        base_expr(kernel, t.update, &b_fixed, t.b_offset, tn * fn_ * t.b_n + tk * fk * t.b_k);
+                    let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
+                    let a_elems = frag_elems(kernel, t.update, lane, &v.a, t.a_src, a_base, t.a_m, t.a_k, warp);
+                    let a_frag = kernel.insert_before(t.update, Op::Stack { ops: a_elems.into() });
+                    let b_elems = frag_elems(kernel, t.update, lane, &v.b, t.b_src, b_base, t.b_n, t.b_k, warp);
+                    let b_frag = kernel.insert_before(t.update, Op::Stack { ops: b_elems.into() });
+                    emit_tile_wmma(kernel, t, v, nt_w, tm, tn, a_frag, b_frag);
+                }
+            }
+        }
+    }
+
+    // The op that follows the K loop. The sum below has to run after the loop
+    // and before every store that reads the accumulator, so it anchors on IR
+    // order, not on the (unordered) epilogue list.
+    let mut anchor = kernel.next_op(t.loop_id);
+    let mut depth = 1u32;
+    while !anchor.is_null() && depth > 0 {
+        match kernel.at(anchor) {
+            Op::Loop { .. } => depth += 1,
+            Op::EndLoop => depth -= 1,
+            _ => {}
+        }
+        anchor = kernel.next_op(anchor);
+    }
+
+    if combine && !staged && !anchor.is_null() {
+        // Sum the per-warp partial accumulators: each warp writes its partial
+        // tile to shared memory indexed by warp, then every warp re-reads and
+        // adds all partials.
+        let acc_len = t.mt * t.nt * t.slots;
+        let red = insert_local_storage(kernel, DType::F32, Dim::from(wk) * Dim::from(warp) * acc_len);
+        let cw = |kernel: &mut Kernel| -> OpId { kernel.insert_const_idx_before(anchor, Dim::from(warp)) };
+        let cl = |kernel: &mut Kernel| -> OpId { kernel.insert_const_idx_before(anchor, acc_len) };
+        for i in 0..acc_len {
+            let at = kernel.insert_const_idx_before(anchor, i);
+            let v = kernel.insert_before(anchor, Op::Load { src: t.acc, src_idx: at });
+            let w = cw(kernel);
+            let wl = kernel.insert_before(anchor, Op::Binary { x: warp_var, y: w, bop: BOp::Mul });
+            let wl = kernel.insert_before(anchor, Op::Binary { x: wl, y: lane, bop: BOp::Add });
+            let c = cl(kernel);
+            let b = kernel.insert_before(anchor, Op::Binary { x: wl, y: c, bop: BOp::Mul });
+            let idx = kernel.insert_before(anchor, Op::Binary { x: b, y: at, bop: BOp::Add });
+            kernel.insert_before(anchor, Op::Store { dst: red, dst_idx: idx, src: v });
+        }
+        kernel.insert_before(anchor, Op::Barrier);
+        for i in 0..acc_len {
+            let mut sum = OpId::NULL;
+            for w in 0..wk {
+                let cw = kernel.insert_const_idx_before(anchor, Dim::from(w) * Dim::from(warp));
+                let wl = kernel.insert_before(anchor, Op::Binary { x: cw, y: lane, bop: BOp::Add });
+                let c = cl(kernel);
+                let b = kernel.insert_before(anchor, Op::Binary { x: wl, y: c, bop: BOp::Mul });
+                let ci = kernel.insert_const_idx_before(anchor, i);
+                let idx = kernel.insert_before(anchor, Op::Binary { x: b, y: ci, bop: BOp::Add });
+                let v = kernel.insert_before(anchor, Op::Load { src: red, src_idx: idx });
+                sum = if sum.is_null() {
+                    v
+                } else {
+                    kernel.insert_before(anchor, Op::Binary { x: sum, y: v, bop: BOp::Add })
+                };
+            }
+            let at = kernel.insert_const_idx_before(anchor, i);
+            kernel.insert_before(anchor, Op::Store { dst: t.acc, dst_idx: at, src: sum });
+        }
+    }
+
+    // llama.cpp `mul_mat_f`'s epilogue: every warp holds the whole tile, so
+    // each writes its partial into a shared buffer laid out
+    // `[output column][warp * rows + row]`; after the barrier the warps take
+    // turns owning one output column each, sum the per-warp copies and store
+    // one lane per output row.
+    if staged && combine && !anchor.is_null() && !t.epilogue.is_empty() {
+        let rows = t.mt * fm;
+        let cols = t.nt * fn_;
+        let kiw = Dim::from(wk) * cols + Dim::from(4);
+        let combine_buf = insert_local_storage(kernel, DType::F32, rows * kiw);
+        // llama.cpp always runs with `threadIdx.y`; one warp is warp 0.
+        let wid = if warp_var.is_null() {
+            kernel.insert_const_idx_before(anchor, 0i64)
+        } else {
+            warp_var
+        };
+        let crow = lane_coord(kernel, anchor, lane, &v.c, FragAxis::Row, warp);
+        let ccol = lane_coord(kernel, anchor, lane, &v.c, FragAxis::Col, warp);
+        for tm in 0..t.mt {
+            for tn in 0..t.nt {
+                for (s, slot) in v.c.slots.iter().enumerate() {
+                    let moff = kernel.insert_const_idx_before(anchor, tm * fm + Dim::from(slot.0));
+                    let mrow = kernel.insert_before(anchor, Op::Binary { x: moff, y: crow, bop: BOp::Add });
+                    let ck = kernel.insert_const_idx_before(anchor, kiw);
+                    let mbase = kernel.insert_before(anchor, Op::Binary { x: mrow, y: ck, bop: BOp::Mul });
+                    let wmul = kernel.insert_const_idx_before(anchor, cols);
+                    let wbase = kernel.insert_before(anchor, Op::Binary { x: wid, y: wmul, bop: BOp::Mul });
+                    let c0 = kernel.insert_before(anchor, Op::Binary { x: wbase, y: ccol, bop: BOp::Add });
+                    let c1 = kernel.insert_const_idx_before(anchor, tn * fn_ + Dim::from(slot.1));
+                    let cidx = kernel.insert_before(anchor, Op::Binary { x: c0, y: c1, bop: BOp::Add });
+                    let idx = kernel.insert_before(anchor, Op::Binary { x: mbase, y: cidx, bop: BOp::Add });
+                    let at = acc_index(kernel, anchor, nt_w, t.slots, tm, tn, s);
+                    let val = kernel.insert_before(anchor, Op::Load { src: t.acc, src_idx: at });
+                    kernel.insert_before(anchor, Op::Store { dst: combine_buf, dst_idx: idx, src: val });
+                }
+            }
+        }
+        // The combine buffer is read by warps other than the writer's with
+        // more than one warp; llama.cpp syncs the warp otherwise.
+        if wk > 1 {
+            kernel.insert_before(anchor, Op::Barrier);
+        } else {
+            kernel.insert_before(anchor, Op::PTX(Box::new(PTXOp::WarpSync)));
+        }
+        let rounds = usize::try_from(rows).expect("llama epilogue: rows") / usize::from(wk);
+        for epi in &t.epilogue {
+            for r in 0..rounds {
+                let moff = kernel.insert_const_idx_before(anchor, r as Dim * Dim::from(wk));
+                let m = kernel.insert_before(anchor, Op::Binary { x: wid, y: moff, bop: BOp::Add });
+                let ck = kernel.insert_const_idx_before(anchor, kiw);
+                let mbase = kernel.insert_before(anchor, Op::Binary { x: m, y: ck, bop: BOp::Mul });
+                let mut sum = OpId::NULL;
+                for w in 0..wk {
+                    let woff = kernel.insert_const_idx_before(anchor, w as Dim * cols);
+                    let wl = kernel.insert_before(anchor, Op::Binary { x: woff, y: lane, bop: BOp::Add });
+                    let idx = kernel.insert_before(anchor, Op::Binary { x: mbase, y: wl, bop: BOp::Add });
+                    let val = kernel.insert_before(anchor, Op::Load { src: combine_buf, src_idx: idx });
+                    sum = if sum.is_null() {
+                        val
+                    } else {
+                        kernel.insert_before(anchor, Op::Binary { x: sum, y: val, bop: BOp::Add })
+                    };
+                }
+                let mut elem = sum;
+                for dtype in epi.chain.iter().rev() {
+                    elem = kernel.insert_before(anchor, Op::Cast { x: elem, dtype: *dtype });
+                }
+                let mut addr = base_expr(kernel, anchor, &epi.fixed, epi.offset, 0);
+                let mm = if epi.m == 1 {
+                    m
+                } else {
+                    let s = kernel.insert_const_idx_before(anchor, epi.m);
+                    kernel.insert_before(anchor, Op::Binary { x: m, y: s, bop: BOp::Mul })
+                };
+                addr = kernel.insert_before(anchor, Op::Binary { x: addr, y: mm, bop: BOp::Add });
+                let ll = if epi.n == 1 {
+                    lane
+                } else {
+                    let s = kernel.insert_const_idx_before(anchor, epi.n);
+                    kernel.insert_before(anchor, Op::Binary { x: lane, y: s, bop: BOp::Mul })
+                };
+                addr = kernel.insert_before(anchor, Op::Binary { x: addr, y: ll, bop: BOp::Add });
+                kernel.insert_before(anchor, Op::Store { dst: epi.dst, dst_idx: addr, src: elem });
             }
         }
     }
@@ -462,16 +1106,30 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled) {
     // Output stores: the accumulator keeps the values, each slot is written
     // at its own output coordinate.
     for epi in &t.epilogue {
-        for tm in 0..t.mt {
-            for tn in 0..t.nt {
+        if staged && combine {
+            break;
+        }
+        for tm in 0..mt_w {
+            for tn in 0..nt_w {
                 for s in 0..v.c.slots.len() {
                     let slot = v.c.slots[s];
-                    let idx = acc_index(kernel, epi.store, lane, &v.c, t, fm, fn_, tm, tn, s, warp);
+                    let idx = acc_index(kernel, epi.store, nt_w, t.slots, tm, tn, s);
                     let mut elem = kernel.insert_before(epi.store, Op::Load { src: t.acc, src_idx: idx });
                     for dtype in epi.chain.iter().rev() {
                         elem = kernel.insert_before(epi.store, Op::Cast { x: elem, dtype: *dtype });
                     }
-                    let extra = (tm * fm + Dim::from(slot.0)) * epi.m + (tn * fn_ + Dim::from(slot.1)) * epi.n;                    let mut addr = base_expr(kernel, epi.store, &epi.fixed, epi.offset, extra);
+                    let extra = (tm * fm + Dim::from(slot.0)) * epi.m + (tn * fn_ + Dim::from(slot.1)) * epi.n;
+                    let mut addr = base_expr(kernel, epi.store, &epi.fixed, epi.offset, extra);
+                    // A warp grid moves the store into the warp's own output
+                    // window.
+                    for (off, stride) in [(warp_off_m, epi.m), (warp_off_n, epi.n)] {
+                        if off.is_null() {
+                            continue;
+                        }
+                        let s = kernel.insert_const_idx_before(epi.store, stride);
+                        let t2 = kernel.insert_before(epi.store, Op::Binary { x: off, y: s, bop: BOp::Mul });
+                        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: t2, bop: BOp::Add });
+                    }
                     let row = lane_coord(kernel, epi.store, lane, &v.c, FragAxis::Row, warp);
                     if epi.m != 1 {
                         let s = kernel.insert_before(epi.store, Op::Const(Constant::idx(epi.m)));
@@ -506,26 +1164,31 @@ impl Kernel {
     /// Make the tensorization optimization: scan the linearized IR for
     /// scalar matmul regions, one config per region the device can
     /// accelerate. Never mutates.
+    /// Tensorize without staging: the fragments are read straight from
+    /// global memory.
     pub fn opt_tensorize(&self) -> Box<dyn Optimization> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tensorize");
-        self.tensorize_impl(false)
+        self.tensorize_impl(false, WARP_LAYOUTS.to_vec(), false)
     }
 
-    /// The tiled-form configs only: used by the tensor recipe, which has
-    /// already done the splits. Never mutates.
-    pub(crate) fn opt_tensorize_tiled(&self) -> Box<dyn Optimization> {
-        self.tensorize_impl(true)
+    /// Tensorize with staging: each warp fills a shared tile cooperatively and
+    /// reads the fragments back with `ldmatrix`. Only the tiled form: staging
+    /// shapes the block around the tile grid the splits made.
+    pub fn opt_tensorize_staged(&self) -> Box<dyn Optimization> {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("opt_tensorize_staged");
+        self.tensorize_impl(true, WARP_LAYOUTS.to_vec(), true)
     }
 
-    fn tensorize_impl(&self, tiled_only: bool) -> Box<dyn Optimization> {
+    fn tensorize_impl(&self, tiled_only: bool, layouts: Vec<(u16, u16, u16)>, staged: bool) -> Box<dyn Optimization> {
         let mut regions = Vec::new();
         let info = self.device_info();
         {
             // Device gate: a tensor-core unit offering at least one
             // instruction variant.
             if !info.tensor_cores || info.mma_variants.is_empty() {
-                return Box::new(Tensorize { regions, tiled: Vec::new() });
+                return Box::new(Tensorize { regions, tiled: Vec::new(), layouts, staged });
             }
         }
 
@@ -1095,6 +1758,9 @@ impl Kernel {
                         continue;
                     }
                     let (mt, nt, kt) = (m_len / fm, n_len / fn_, k_len / fk);
+                    // A tile grid's fragments are emitted once each, and a
+                    // wider K step unrolls the loop body instead of adding
+                    // iterations, so the ceiling is the IR one.
                     if mt.saturating_mul(nt).saturating_mul(kt) > 256 {
                         continue;
                     }
@@ -1128,7 +1794,7 @@ impl Kernel {
             // ran against a kernel that no longer has a scalar region.
             regions.clear();
         }
-        Box::new(Tensorize { regions, tiled })
+        Box::new(Tensorize { regions, tiled, layouts, staged })
     }
 }
 
@@ -1230,7 +1896,7 @@ mod tests {
         k.store(c, res, c_idx);
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 1, "one scalar matmul region");
+        assert_eq!(opt.nconfigs(), 13, "one region per warp layout");
         opt.apply(&mut k, 0);
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
@@ -1274,7 +1940,7 @@ mod tests {
         k.store(c, res, c_idx);
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 1, "one NT scalar matmul region");
+        assert_eq!(opt.nconfigs(), 13, "one NT region per warp layout");
         opt.apply(&mut k, 0);
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
@@ -1338,7 +2004,7 @@ mod tests {
         // same form the autotuner sees.
         k.linearize();
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 1, "the llama prefill seed must select one region");
+        assert_eq!(opt.nconfigs(), 13, "the llama prefill seed selects one region, per warp layout");
         opt.apply(&mut k, 0);
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
@@ -1425,7 +2091,7 @@ mod tests {
         k.verify();
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 1, "the tiled form matches one region");
+        assert_eq!(opt.nconfigs(), 13, "the tiled form matches one region, per warp layout");
         opt.apply(&mut k, 0);
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
@@ -1530,7 +2196,9 @@ mod tests {
     #[test]
     fn tiled_split_values() {
         const M: i64 = 32;
-        const N: i64 = 16;
+        // The staged form needs the block's output rows warp-wide (the
+        // combine buffer stores one warp of rows per column).
+        const N: i64 = 32;
         const K: i64 = 32;
 
         let build = || {
@@ -1581,12 +2249,12 @@ mod tests {
 
         let (mut k, m, n, k_loop) = build();
         assert!(!k.split(m, split::SplitMode::Unroll, 32).is_null(), "m split");
-        assert!(!k.split(n, split::SplitMode::Unroll, 16).is_null(), "n split");
+        assert!(!k.split(n, split::SplitMode::Unroll, 32).is_null(), "n split");
         assert!(!k.split(k_loop, split::SplitMode::Unroll, 16).is_null(), "k split");
         k.verify();
         let scalar = k.clone();
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 1, "the tiled form matches");
+        assert_eq!(opt.nconfigs(), 13, "the tiled form matches, per warp layout");
         opt.apply(&mut k, 0);
         k.default_epilogue();
         k.device_epilogue().expect("tensorized kernel devectorizes");
@@ -1626,6 +2294,149 @@ mod tests {
         }
         println!("scalar vs host: max |err| = {host_worst}");
         assert!(host_worst < 1e-2, "scalar split kernel is wrong: {host_worst}");
+
+        // The staged half: the cooperative shared tile + `ldmatrix` must
+        // reproduce the same result as the direct fragment loads.
+        let (mut ks, ms, ns, kls) = build();
+        assert!(!ks.split(ms, split::SplitMode::Unroll, 32).is_null(), "staged m split");
+        assert!(!ks.split(ns, split::SplitMode::Unroll, 32).is_null(), "staged n split");
+        assert!(!ks.split(kls, split::SplitMode::Unroll, 16).is_null(), "staged k split");
+        ks.verify();
+        let sopt = ks.opt_tensorize_staged();
+        sopt.apply(&mut ks, 0);
+        ks.default_epilogue();
+        ks.device_epilogue().expect("staged tensorized kernel devectorizes");
+        ks.verify();
+        assert!(
+            ks.iter_unordered().any(|(_, op)| matches!(op, Op::PTX(_))),
+            "the staged kernel reads its operands with ldmatrix"
+        );
+        let Some(staged) = run(ks, &a, &b) else { return };
+        let mut staged_worst = 0.0f32;
+        for i in 0..(M * N) as usize {
+            staged_worst = staged_worst.max((staged[i] - want[i]).abs());
+        }
+        println!("staged vs scalar: max |err| = {staged_worst}");
+        assert!(staged_worst < 1e-2, "staged tensorize disagrees with the scalar kernel: {staged_worst}");
+
+        // Split-K across two warps: each warp runs one slice of the K loop and
+        // the per-warp partial accumulators are summed. The multiple M and N
+        // tiles here check that the reduction and the per-warp fragment bases
+        // hold for every tile, in both the direct and the staged form.
+        for staged in [false, true] {
+            let (mut kw, mw, nw_, klw) = build();
+            assert!(!kw.split(mw, split::SplitMode::Unroll, 32).is_null(), "split-K m split");
+            assert!(!kw.split(nw_, split::SplitMode::Unroll, 32).is_null(), "split-K n split");
+            assert!(!kw.split(klw, split::SplitMode::Unroll, 16).is_null(), "split-K k split");
+            kw.verify();
+            let wopt = if staged { kw.opt_tensorize_staged() } else { kw.opt_tensorize() };
+            wopt.apply(&mut kw, 10);
+            kw.default_epilogue();
+            kw.device_epilogue().expect("split-K kernel devectorizes");
+            kw.verify();
+            let Some(warped) = run(kw, &a, &b) else { return };
+            let mut warped_worst = 0.0f32;
+            for i in 0..(M * N) as usize {
+                warped_worst = warped_worst.max((warped[i] - want[i]).abs());
+            }
+            println!("split-k (staged={staged}) vs scalar: max |err| = {warped_worst}");
+            assert!(
+                warped_worst < 1e-2,
+                "split-K tensorize (staged={staged}) disagrees with the scalar kernel: {warped_worst}"
+            );
+        }
+    }
+
+    /// llama.cpp's `mul_mat_f` form: a warp-private tile of 16 rows refilled
+    /// per operand sub-tile, 32 output rows per block, K split across the
+    /// warps, and the shared combine epilogue. Values must match a host dot
+    /// product.
+    #[test]
+    fn llama_form_values() {
+        const M: i64 = 16;
+        const N: i64 = 32;
+        const K: i64 = 128;
+
+        let mut k = Kernel::new(Dev::Auto);
+        let mut info = cuda();
+        info.local_mem_size = 49152;
+        k.dev_info = Some(Arc::new(info));
+        let a = k.param(DType::F16);
+        let b = k.param(DType::F16);
+        let c32 = k.param_mut(DType::F32);
+        let m = k.group_range(0, M);
+        let n = k.group_range(1, N);
+        let acc = k.storage(DType::F32, MemScope::Register, 1);
+        let zero = k.const_val(0.0f32);
+        k.store(acc, zero, 0i64);
+        let mut k_loop = OpId::NULL;
+        k.loop_over(K, |k, lv| {
+            k_loop = lv;
+            let a_idx = k.mad(m, K, lv);
+            let a_load = k.load(a, a_idx);
+            let b_idx = k.mad(n, K, lv);
+            let b_load = k.load(b, b_idx);
+            let prod = k.mul(a_load, b_load);
+            let prod = k.cast(prod, DType::F32);
+            let prev = k.load(acc, 0i64);
+            let sum = k.add(prod, prev);
+            k.store(acc, sum, 0i64);
+        });
+        let res = k.load(acc, 0i64);
+        let c_idx = k.mad(m, N, n);
+        k.store(c32, res, c_idx);
+
+        // 16 output columns, 32 output rows (one warp), one warp_size of
+        // half2 per K step: llama.cpp's `mul_mat_f` instantiation.
+        assert!(!k.split(m, split::SplitMode::Unroll, 16).is_null(), "m split");
+        assert!(!k.split(n, split::SplitMode::Unroll, 32).is_null(), "n split");
+        assert!(!k.split(k_loop, split::SplitMode::Unroll, 64).is_null(), "k split");
+        k.verify();
+        let opt = k.opt_tensorize_staged();
+        opt.apply(&mut k, 10);
+        k.default_epilogue();
+        match k.device_epilogue() {
+            Ok(()) => println!("llama form lowered: {} ops", k.iter_unordered().count()),
+            Err(e) => panic!("llama form lowering failed: {e}"),
+        }
+        k.verify();
+        assert!(
+            k.iter_unordered().any(|(_, op)| matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::WarpSync))),
+            "the warp-private tile syncs its own warp"
+        );
+
+        let dev = match Dev::all().into_iter().find(|d| !matches!(d, Dev::C | Dev::Host)) {
+            Some(d) => d,
+            None => {
+                eprintln!("skipping: no device");
+                return;
+            }
+        };
+        let a = Tensor::rand([M, K], DType::F16).unwrap().to(dev).unwrap();
+        let b = Tensor::rand([N, K], DType::F16).unwrap().to(dev).unwrap();
+        let a_host: Vec<f32> = a.clone().cast(DType::F32).try_into().unwrap();
+        let b_host: Vec<f32> = b.clone().cast(DType::F32).try_into().unwrap();
+        let compiled = match k.compile() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("skipping: {e}");
+                return;
+            }
+        };
+        let out = compiled.forward(&[&a, &b], vec![[M, N]]).unwrap();
+        let got: Vec<f32> = out[0].clone().try_into().unwrap();
+        let mut worst = 0.0f32;
+        for i in 0..M as usize {
+            for j in 0..N as usize {
+                let mut sum = 0.0f32;
+                for t in 0..K as usize {
+                    sum += a_host[i * K as usize + t] * b_host[j * K as usize + t];
+                }
+                worst = worst.max((got[i * N as usize + j] - sum).abs());
+            }
+        }
+        println!("llama form vs host: max |err| = {worst}");
+        assert!(worst < 1e-2, "llama-form tensorize disagrees with the host dot product: {worst}");
     }
 
     /// The recipe wires the splits to the tiled matcher: one move from the
@@ -1713,7 +2524,7 @@ mod tests {
 
         let t = k.opt_tensorize();
         println!("tensorize nconfigs = {}", t.nconfigs());
-        assert_eq!(t.nconfigs(), 1, "tensorize must match the seed");
+        assert_eq!(t.nconfigs(), 13, "tensorize matches the seed, per warp layout");
         t.apply(&mut k, 0);
         k.verify();
         println!("--- after tensorize ---");
@@ -1900,7 +2711,7 @@ mod tests {
         k.store(c, res, c_idx);
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 1, "one scalar matmul region");
+        assert_eq!(opt.nconfigs(), 13, "one region per warp layout");
         opt.apply(&mut k, 0);
         k.verify();
 

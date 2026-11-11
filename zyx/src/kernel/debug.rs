@@ -723,6 +723,7 @@ impl Kernel {
                         writeln!(f, "{indent}ldmatrix x{frags} trans={trans} from OpId({}) at OpId({})", src.0, addr.0)
                             .unwrap();
                     }
+                    PTXOp::WarpSync => writeln!(f, "{indent}warpsync").unwrap(),
                 },
             }
             op_id = self.ops[op_id].next;

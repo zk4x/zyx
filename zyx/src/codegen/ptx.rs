@@ -350,6 +350,36 @@ impl Compiler {
                     reg + 3
                 );
             }
+            // A vector of f16 pairs: one 32-bit word per pair, unpacked into
+            // one 16-bit slot per element.
+            [n] if matches!(dtype, DType::F16 | DType::BF16) && *n % 2 == 0 && *n <= 8 => {
+                let words = usize::try_from(n / 2).expect("pack word count");
+                let t = self.new_reg(DType::U32, Vec::new(), words as u32);
+                match words {
+                    1 => _ = writeln!(self.body, "{}ld.{}.b32 %r{t}, [%address];", self.indent, space),
+                    2 => _ = writeln!(
+                        self.body,
+                        "{}ld.{}.v2.b32 {{%r{t}, %r{}}}, [%address];",
+                        self.indent,
+                        space,
+                        t + 1
+                    ),
+                    _ => _ = writeln!(
+                        self.body,
+                        "{}ld.{}.v4.b32 {{%r{t}, %r{}, %r{}, %r{}}}, [%address];",
+                        self.indent,
+                        space,
+                        t + 1,
+                        t + 2,
+                        t + 3
+                    ),
+                }
+                for w in 0..words {
+                    let (lo, hi) = (reg + 2 * w as u16, reg + 2 * w as u16 + 1);
+                    _ = writeln!(self.body, "{}mov.b32 {{%r{lo}, %r{hi}}}, %r{};", self.indent, t + w as u16);
+                }
+                self.release_reg(t);
+            }
             [_] => {
                 todo!("PTX: vector load of {shape:?} {dtype:?} not implemented")
             }
@@ -389,6 +419,35 @@ impl Compiler {
                     x + 2,
                     x + 3
                 );
+            }
+            // A vector of f16 pairs: pack the 16-bit slots into 32-bit words.
+            [n] if matches!(dtype, DType::F16 | DType::BF16) && *n % 2 == 0 && *n <= 8 => {
+                let words = usize::try_from(n / 2).expect("pack word count");
+                let t = self.new_reg(DType::U32, Vec::new(), words as u32);
+                for w in 0..words {
+                    let (lo, hi) = (x + 2 * w as u16, x + 2 * w as u16 + 1);
+                    _ = writeln!(self.body, "{}mov.b32 %r{}, {{%r{lo}, %r{hi}}};", self.indent, t + w as u16);
+                }
+                match words {
+                    1 => _ = writeln!(self.body, "{}st.{}.b32 [%address], %r{t};", self.indent, space),
+                    2 => _ = writeln!(
+                        self.body,
+                        "{}st.{}.v2.b32 [%address], {{%r{t}, %r{}}};",
+                        self.indent,
+                        space,
+                        t + 1
+                    ),
+                    _ => _ = writeln!(
+                        self.body,
+                        "{}st.{}.v4.b32 [%address], {{%r{t}, %r{}, %r{}, %r{}}};",
+                        self.indent,
+                        space,
+                        t + 1,
+                        t + 2,
+                        t + 3
+                    ),
+                }
+                self.release_reg(t);
             }
             [_] => {
                 todo!("PTX: vector store of {shape:?} {dtype:?} not implemented")
@@ -881,6 +940,13 @@ impl Kernel {
                 Op::Barrier => {
                     _ = writeln!(comp.body, "{}bar.sync 1;", comp.indent);
                 }
+                // A kept lane is the vector width: the access covers its
+                // lanes, so the address is the lane-0 base and the value's
+                // shape (from `Op::Unroll` in the cone) is the access width.
+                Op::Unroll { .. } => {
+                    let reg = comp.new_var(op_id, DType::I64, Vec::new(), 1);
+                    _ = writeln!(comp.body, "{}mov.s64 %r{reg}, 0;", comp.indent);
+                }
                 // A Stack is a pure register grouping (e.g. an mma operand
                 // fragment): its components are already mapped registers and
                 // consumers read them via `components_of`. Nothing to emit.
@@ -894,7 +960,15 @@ impl Kernel {
                     debug_assert!(idx < len as usize, "PTX: Op::Index {idx} out of bounds for len {len}");
                     let vb = comp.get_var(vec);
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
-                    _ = writeln!(comp.body, "{}mov.{} %r{reg}, %r{};", comp.indent, dtype.ptx(), vb + idx as u16);
+                    // Element extraction is a bit-level move: `f16` has no
+                    // register-move form of its own.
+                    _ = writeln!(
+                        comp.body,
+                        "{}mov.b{} %r{reg}, %r{};",
+                        comp.indent,
+                        dtype.bit_size(),
+                        vb + idx as u16
+                    );
                 }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
                     // Only the m16n8k8 f16->f32 path is implemented; other

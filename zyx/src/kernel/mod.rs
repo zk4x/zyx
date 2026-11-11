@@ -104,6 +104,7 @@ pub use ops::{
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};
+pub use split::SplitMode;
 
 use crate::{
     DType, Map, Set,
@@ -522,6 +523,8 @@ impl Kernel {
                         *rcs.entry(*src).or_insert(0) += 1;
                         *rcs.entry(*addr).or_insert(0) += 1;
                     }
+                    // Effect only: no result, no operands.
+                    PTXOp::WarpSync => {}
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => todo!("Detach in ordered kernel"),
@@ -879,6 +882,7 @@ impl Kernel {
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload has no dtype"),
                     PTXOp::LdMatrix { .. } => return DType::F16,
+                    PTXOp::WarpSync => todo!("warp sync has no result dtype"),
                 },
                 Op::Const(c) => return c.dtype(),
                 Op::Param { dtype, .. } => return dtype,
