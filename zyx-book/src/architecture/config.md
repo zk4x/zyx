@@ -31,7 +31,8 @@ A complete example (every section is optional):
 ```
 
 `wgpu` (`"wgpu": { "enabled": true }`) exists only when the crate is built with
-the `wgpu` feature.
+the `wgpu` feature; the `tenstorrent` section only has an effect when the crate
+is built with the `tenstorrent` feature.
 
 ### Backend Sections
 
@@ -41,7 +42,7 @@ the `wgpu` feature.
 | `cuda` | `device_ids`, `cudnn`, `queues` | all GPUs, cuDNN off, 8 queues | `"device_ids": []` |
 | `opencl` | `platform_ids`, `queues` | all platforms, 8 queues | `"platform_ids": []` |
 | `vulkan` | `device_ids` | all devices | `"device_ids": []` |
-| `tenstorrent` | `device_ids` | all devices | `"device_ids": []` |
+| `tenstorrent` | `device_ids` | all devices (with the feature) | `"device_ids": []` |
 | `wgpu` | `enabled` | `true` | `"enabled": false` |
 
 `device_ids` / `platform_ids`: `null`/absent means "every device the backend
@@ -77,7 +78,7 @@ that ordinal). It accepts the same syntax as `Dev::from_str`:
 ```bash
 ZYX_DEV=cpu          # C backend
 ZYX_DEV=cuda:0        # CUDA driver ordinal 0
-ZYX_DEV=tt            # Tenstorrent, device 0
+ZYX_DEV=tt            # Tenstorrent, device 0 (feature "tenstorrent")
 ZYX_DEV=vulkan        # Vulkan device 0
 ZYX_DEV=opencl:1      # OpenCL platform 1
 ```

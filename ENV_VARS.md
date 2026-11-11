@@ -56,6 +56,9 @@ wins on the fixed placeholder).
 | `ZYX_KERN_TRACE` | Kernelizer split/store tracing on stderr |
 | `AGENT=1` | Colorless debug output (also auto-detected when stdout is not a terminal) |
 
+The `ZYX_TT_*`, `TT_TTSIM_*`, and `TT_MATH` variables apply only to builds with
+the `tenstorrent` feature.
+
 **First debug step**: run with `ZYX_DEBUG=1` to see which backends initialized
 and how many devices they found. If no devices appear, check whether a
 [config file](CONFIG.md) is disabling them.

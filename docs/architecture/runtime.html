@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-7478f1f3.js";
+            window.path_to_searchindex_js = "../searchindex-5ec49b71.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e6cf6f81.js"></script>
@@ -231,12 +231,12 @@ allocating.</p>
 <h2 id="memory-pools-and-placements"><a class="header" href="#memory-pools-and-placements">Memory Pools and Placements</a></h2>
 <p>Pools are process-wide and never deinitialized:</p>
 <pre><code class="language-rust ignore">pub enum Pool {
-    Host,          // RAM, shared by C, CBLAS and Host
+    Host,          // RAM, shared by C and Host
     Disk,          // file-backed chunks (paths, not bytes)
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),
+    TT(u16),       // feature = "tenstorrent"
     WGPU(u16),     // feature = "wgpu"
 }</code></pre>
 <p>Each backend owns its globals — one mutex per pool ordinal — and lazily
@@ -260,7 +260,7 @@ pool from the device, never the reverse.</p>
 <li>start from <code>Dev::all()</code> — lazy init of every compiled-in backend, cached in a
 <code>OnceLock</code>; backends that are configured out or whose hardware/driver is
 missing contribute nothing;</li>
-<li>drop AOT-only devices (<code>Dev::aot_only()</code>, e.g. CBLAS) for generic kernels;</li>
+<li>drop AOT-only devices (<code>Dev::aot_only()</code>) for generic kernels;</li>
 <li>keep devices whose pool has at least <code>bytes</code> free;</li>
 <li>sort by <code>free_compute()</code> descending and take the first.</li>
 </ol>

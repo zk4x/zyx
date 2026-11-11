@@ -35,7 +35,7 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-7478f1f3.js";
+            window.path_to_searchindex_js = "../searchindex-5ec49b71.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-e6cf6f81.js"></script>
@@ -193,7 +193,6 @@ whether the file was found and parsed.</p>
         "n_total_opts": 1000
     },
     "c": { "enabled": true },
-    "cblas": { "enabled": true },
     "cuda": { "device_ids": [0], "cudnn": true, "queues": 8 },
     "opencl": { "platform_ids": [0], "queues": 8 },
     "vulkan": { "device_ids": [0] },
@@ -201,7 +200,8 @@ whether the file was found and parsed.</p>
 }
 </code></pre>
 <p><code>wgpu</code> (<code>"wgpu": { "enabled": true }</code>) exists only when the crate is built with
-the <code>wgpu</code> feature.</p>
+the <code>wgpu</code> feature; the <code>tenstorrent</code> section only has an effect when the crate
+is built with the <code>tenstorrent</code> feature.</p>
 <h3 id="backend-sections"><a class="header" href="#backend-sections">Backend Sections</a></h3>
 <div class="table-wrapper">
 <table>
@@ -210,11 +210,10 @@ the <code>wgpu</code> feature.</p>
 </thead>
 <tbody>
 <tr><td><code>c</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
-<tr><td><code>cblas</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
 <tr><td><code>cuda</code></td><td><code>device_ids</code>, <code>cudnn</code>, <code>queues</code></td><td>all GPUs, cuDNN off, 8 queues</td><td><code>"device_ids": []</code></td></tr>
 <tr><td><code>opencl</code></td><td><code>platform_ids</code>, <code>queues</code></td><td>all platforms, 8 queues</td><td><code>"platform_ids": []</code></td></tr>
 <tr><td><code>vulkan</code></td><td><code>device_ids</code></td><td>all devices</td><td><code>"device_ids": []</code></td></tr>
-<tr><td><code>tenstorrent</code></td><td><code>device_ids</code></td><td>all devices</td><td><code>"device_ids": []</code></td></tr>
+<tr><td><code>tenstorrent</code></td><td><code>device_ids</code></td><td>all devices (with the feature)</td><td><code>"device_ids": []</code></td></tr>
 <tr><td><code>wgpu</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
 </tbody>
 </table>
@@ -250,11 +249,11 @@ every other backend is configured out (and a device with an ordinal keeps only
 that ordinal). It accepts the same syntax as <code>Dev::from_str</code>:</p>
 <pre><code class="language-bash">ZYX_DEV=cpu          # C backend
 ZYX_DEV=cuda:0        # CUDA driver ordinal 0
-ZYX_DEV=tt            # Tenstorrent, device 0
+ZYX_DEV=tt            # Tenstorrent, device 0 (feature "tenstorrent")
 ZYX_DEV=vulkan        # Vulkan device 0
 ZYX_DEV=opencl:1      # OpenCL platform 1
 </code></pre>
-<p>Names are case-insensitive: <code>auto</code>, <code>c</code>/<code>cpu</code>, <code>cblas</code>/<code>blas</code>, <code>host</code>, <code>cuda</code>,
+<p>Names are case-insensitive: <code>auto</code>, <code>c</code>/<code>cpu</code>, <code>host</code>, <code>cuda</code>,
 <code>tt</code>/<code>tenstorrent</code>, <code>vulkan</code>/<code>vk</code>, <code>opencl</code>/<code>cl</code>, <code>wgpu</code>. An index on an
 indexless device (<code>c:1</code>) is an error. A bad value panics — silently falling back
 would run on the wrong hardware — and <code>ZYX_DEV=auto</code> is a no-op (no narrowing).</p>

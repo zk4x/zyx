@@ -27,8 +27,9 @@ building the bindings with `maturin`.
 ## Backend prerequisites
 
 zyx itself is pure Rust: backends load their runtime libraries at load time, so
-nothing is linked at build time. A backend whose runtime is missing is simply
-skipped.
+nothing is linked at build time. The optional Tenstorrent backend is the one
+build-time exception: it compiles RISC-V firmware and needs the target and LLVM
+tools listed below.
 
 | Backend | Needs | Debian/Ubuntu | Notes |
 |---------|-------|---------------|-------|
@@ -37,7 +38,7 @@ skipped.
 | OpenCL | ICD loader (`libOpenCL.so`) plus a vendor ICD | `sudo apt install ocl-icd-libopencl1`; CPU-only: `sudo apt install pocl-opencl-icd` | |
 | Vulkan | `libvulkan.so.1` plus a Vulkan driver | `sudo apt install libvulkan1 mesa-vulkan-drivers vulkan-tools` | |
 | WGPU | cargo feature `wgpu` plus a wgpu backend | build with `--features wgpu` | uses Vulkan/Metal/DX12/GLES; large optional dependency tree |
-| Tenstorrent | the `libttsim_bh.so` simulator (obtain it from Tenstorrent) | — | set `TT_TTSIM_LIB=/path/to/libttsim_bh.so`; default is `<parent-of-repo>/vendor/libttsim_bh.so`; multi-chip builds use `TT_TTSIM_LIB_X2` / `TT_TTSIM_LIB_X4` |
+| Tenstorrent | cargo feature `tenstorrent`, the `libttsim_bh.so` simulator (obtain it from Tenstorrent), the `riscv32im-unknown-none-elf` target, and `llvm-tools` | `rustup target add riscv32im-unknown-none-elf`; `rustup component add llvm-tools` | build with `--features tenstorrent`; set `TT_TTSIM_LIB=/path/to/libttsim_bh.so`; default is `<parent-of-repo>/vendor/libttsim_bh.so`; multi-chip builds use `TT_TTSIM_LIB_X2` / `TT_TTSIM_LIB_X4` |
 
 With no C compiler and no GPU runtime, zyx has no devices. To see what was
 found:
@@ -51,32 +52,36 @@ are in [ENV_VARS.md](ENV_VARS.md).
 
 ## Building from source
 
-The `zyx` crate has path dependencies on two crates from
-[metalium-rs](https://github.com/Knight-Ops/metalium-rs) — the Tenstorrent ISA
-tables and firmware images — so a **sibling checkout is required**:
+The Tenstorrent firmware lives in `zyx/firmware/tt-firmware` and is built by
+`zyx/build.rs` only when the `tenstorrent` feature is enabled; the ISA tables
+come from the [`tt-isa`](https://github.com/zk4x/tt-isa) crate. No sibling
+checkout is required:
 
 ```bash
 git clone https://github.com/zk4x/zyx
-git clone https://github.com/Knight-Ops/metalium-rs
 cd zyx/zyx
 cargo build
 ```
 
-The two repositories must be siblings:
+The Tenstorrent backend additionally needs the RISC-V target and LLVM tools
+that `build.rs` uses for the firmware images:
 
-```text
-your-workspace/
-├── zyx/
-└── metalium-rs/
+```bash
+rustup target add riscv32im-unknown-none-elf
+rustup component add llvm-tools
+cargo build --features tenstorrent
 ```
 
 Run the tests (no GPU needed):
 
 ```bash
 cd zyx/zyx
-AGENT=1 ZYX_DEV=cpu cargo test
+AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist
 AGENT=1 cargo test --doc
 ```
+
+`--skip mnist` leaves out the integration test that needs
+`examples/data/mnist_dataset.safetensors`; `run_ci.sh` uses the same filter.
 
 Run the full local gate (unit and integration tests, doctests, private-item
 docs, formatting, examples, Python tests when available, and the architecture

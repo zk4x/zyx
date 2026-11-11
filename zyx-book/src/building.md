@@ -8,26 +8,28 @@ or `pip install zyx-py` is enough. Prerequisites for every backend are listed in
 
 - Rust **1.88** or newer
 - a C compiler (`clang` or `gcc`) for the C backend
-- optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU) or the Tenstorrent
-  simulator; a missing runtime only means that backend contributes no devices
+- optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU); a missing runtime only
+  means that backend contributes no devices
+- for the optional Tenstorrent backend, the `libttsim_bh.so` simulator, the
+  `riscv32im-unknown-none-elf` target, and `llvm-tools`
 
-The `zyx` crate has path dependencies on two crates from
-[metalium-rs](https://github.com/Knight-Ops/metalium-rs): the Tenstorrent ISA
-tables and firmware images. A **sibling checkout** is therefore required:
+The Tenstorrent firmware lives in `zyx/firmware/tt-firmware` and is built by
+`zyx/build.rs` when the `tenstorrent` feature is enabled; the ISA tables come
+from the `tt-isa` crate. No sibling checkout is required:
 
 ```bash
 git clone https://github.com/zk4x/zyx
-git clone https://github.com/Knight-Ops/metalium-rs
 cd zyx/zyx
 cargo build
 ```
 
-The layout must be:
+The Tenstorrent backend additionally needs the RISC-V target and LLVM tools that
+`build.rs` uses for the firmware images:
 
-```text
-your-workspace/
-├── zyx/
-└── metalium-rs/
+```bash
+rustup target add riscv32im-unknown-none-elf
+rustup component add llvm-tools
+cargo build --features tenstorrent
 ```
 
 ## Tests
@@ -36,18 +38,18 @@ No GPU is needed for the CPU backend:
 
 ```bash
 cd zyx
-AGENT=1 ZYX_DEV=cpu cargo test
+AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist
 AGENT=1 cargo test --doc
 ```
 
-`AGENT=1` strips ANSI colors; `ZYX_DEV=cpu` pins the C backend. A single test
-binary is `cargo test --test 01_unary`, and a single test is
-`cargo test --test 01_unary abs_1 -- --exact`.
+`AGENT=1` strips ANSI colors; `ZYX_DEV=cpu` pins the C backend. `--skip mnist`
+leaves out the integration test that needs the MNIST dataset in
+`examples/data/`. A single test binary is `cargo test --test 01_unary`, and a
+single test is `cargo test --test 01_unary abs_1 -- --exact`.
 
 ## The Local Check Gate
 
-The same checks the pre-push hook runs live in `run_ci.sh` at the repository
-root:
+The full local check gate lives in `run_ci.sh` at the repository root:
 
 ```bash
 ./run_ci.sh

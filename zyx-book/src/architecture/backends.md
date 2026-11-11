@@ -1,6 +1,6 @@
 # Backend System
 
-Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (only WGPU is feature-gated), and selected at runtime through a lightweight `Copy` handle.
+Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (WGPU and Tenstorrent are feature-gated), and selected at runtime through a lightweight `Copy` handle.
 
 ## `Dev` — Device Handle and Selector
 
@@ -17,7 +17,7 @@ pub enum Dev {
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),
     /// Tenstorrent chip with the given id.
-    TT(u16),
+    TT(u16),          // feature = "tenstorrent"
     /// Vulkan physical device with the given index.
     Vulkan(u16),
     /// OpenCL device with the given index.
@@ -42,7 +42,7 @@ pub enum Pool {
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),
+    TT(u16),          // feature = "tenstorrent"
     WGPU(u16),        // feature = "wgpu"
 }
 ```
@@ -89,10 +89,10 @@ What is left for a backend is exactly the **non-searchable, non-SSA residue**: r
 | CUDA | `cuda.rs` | CUDA C → SASS, cuDNN for AOT matmul | CUDA driver via `libloading` |
 | OpenCL | `opencl.rs` | OpenCL C | OpenCL runtime via `libloading` |
 | Vulkan | `vulkan.rs` | SPIR-V | Vulkan via `ash` crate |
-| WGPU | `wgpu.rs` | SPIR-V | WGPU (feature: `wgpu`) |
-| Tenstorrent | `tenstorrent/` | Tensix RISC-V programs | Bundled tt-sim simulator |
+| WGPU | `wgpu.rs` | WGSL | WGPU (feature: `wgpu`) |
+| Tenstorrent | `tenstorrent/` | Tensix RISC-V programs | Bundled tt-sim simulator (feature: `tenstorrent`) |
 
-Every backend except WGPU is compiled in unconditionally.
+Every backend except WGPU and Tenstorrent is compiled in unconditionally.
 
 ### CUDA: micro-batched submission
 

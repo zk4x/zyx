@@ -56,21 +56,21 @@ CUDA, any GPU driver with Vulkan support is sufficient.
 
 - **Eager mode, Lazy JIT Execution** — tensor operations fuse into kernels as you write them; when fusion is no longer possible, the kernel executes. For one-off computations.
 - **Tape (e-graph)** — wrap loop bodies in a `Tape` for lazy graph building, autograd and e-graph-based fusion optimization. Computation happens when realize is called. For repeated computations.
-- **Cross‑Platform Backends** — codegen for C, CUDA (CUDA C or PTX), OpenCL, SPIR-V (Vulkan/WGPU), and the Tensix RISC-V path for Tenstorrent.
+- **Cross‑Platform Backends** — codegen for C, CUDA (CUDA C or PTX), OpenCL, SPIR-V (Vulkan), WGSL (WGPU), and the Tensix RISC-V path for Tenstorrent.
 - **Linear‑Algebra Coverage** — mirrors the PyTorch ops API (matmul, convolutions, pooling, reductions, indexing, etc.) by stacking ops. Stack more ops yourself to get more op coverage; zyx auto fuses and optimizes it.
 - **Explicit In-Place Writes** — tensors are values, so nothing mutates behind your back; the one in-place write is `Tensor::assign`, and it is recorded as an op in the graph.
 - **Explicit Tape** — you control what is recorded via `Tape`; no need for `torch.no_grad()` or requires_grad semantics.
 - **Everything is diff** — every tensor in a tape can be differentiated w.r.t. any other tensor in a tape.
 - **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed.
 - **Parallel Pipelining** — the graph's fusion and device paths compete and extraction keeps the fastest measured one; plans pipeline kernels and cross-device copies across heterogeneous devices automatically.
-- **Lean Dependencies** — the core needs `libloading` (driver loading) and `nanoserde` (config), plus `libc`/`libm` for the simulator; the Tenstorrent path adds its firmware and ISA crates. WGPU is the only large optional dependency.
+- **Lean Dependencies** — the core needs `libloading` (driver loading) and `nanoserde` (config); the optional Tenstorrent backend (`tenstorrent` feature) adds `libc`/`libm`, its firmware images, and the `tt-isa` crate. WGPU is the only large optional dependency.
 
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
-| `zyx` | Core tensor library with all backends and autodiff |
+| `zyx` | Core tensor library with the C, CUDA, OpenCL, and Vulkan backends plus autodiff |
 | `zyx-nn` | Neural network layers (Linear, Conv2d, Attention, etc.) and `#[derive(Module)]` |
 | `zyx-optim` | Optimizers (SGD, Adam, AdamW, RMSprop) |
 
@@ -81,7 +81,7 @@ CUDA, any GPU driver with Vulkan support is sufficient.
 # from crates.io
 cargo add zyx zyx-nn zyx-optim
 
-# from PyPI, contains all backends, nn and optim
+# from PyPI, contains the C/CUDA/OpenCL/Vulkan backends, nn and optim
 pip install zyx-py
 ```
 
@@ -250,8 +250,8 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 - [x] **CUDA**
 - [x] **OpenCL**
 - [x] **Vulkan** - SPIR-V codegen
-- [x] **WGPU** - SPIR-V codegen, feature: `wgpu`
-- [ ] **Tenstorrent** - preliminary, always built, runs through the bundled simulator (`TT_TTSIM_LIB`)
+- [x] **WGPU** - WGSL codegen, feature: `wgpu`
+- [ ] **Tenstorrent** - preliminary, feature: `tenstorrent`, runs through the bundled simulator (`TT_TTSIM_LIB`)
 
 If you'd like to add a new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)

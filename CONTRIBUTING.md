@@ -26,7 +26,6 @@ Prerequisites are in [INSTALL.md](INSTALL.md). The short version:
 
 ```bash
 git clone https://github.com/zk4x/zyx
-git clone https://github.com/Knight-Ops/metalium-rs   # sibling: required path deps
 cd zyx/zyx
 cargo build
 ```
@@ -38,19 +37,23 @@ commands with `cd zyx` (the book is `zyx-book/`, examples are `examples/`).
 
 ```bash
 cd zyx
-AGENT=1 ZYX_DEV=cpu cargo test                  # full suite on CPU
+AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist
 AGENT=1 ZYX_DEV=cpu cargo test --test 01_unary  # one test binary
 AGENT=1 cargo test --doc                        # doctests
 ```
+
+`--skip mnist` leaves out the integration test that needs the MNIST dataset in
+`examples/data/`; it is the same filter `run_ci.sh` uses.
 
 `AGENT=1` only strips ANSI colors. `ZYX_DEV=cpu` avoids GPU-driver flakiness
 when you do not need a GPU; omit it to let zyx pick the fastest available
 device. Backend selection is described in [CONFIG.md](CONFIG.md) and
 [ENV_VARS.md](ENV_VARS.md).
 
-Tenstorrent hardware needs the simulator library (`TT_TTSIM_LIB`); see
-[INSTALL.md](INSTALL.md). A failed simulator init is an error, never a retry —
-do not loop on it.
+Tenstorrent hardware needs the `tenstorrent` cargo feature, the
+`riscv32im-unknown-none-elf` target, `llvm-tools`, and the simulator library
+(`TT_TTSIM_LIB`); see [INSTALL.md](INSTALL.md). A failed simulator init is an
+error, never a retry — do not loop on it.
 
 ## Checks before a PR
 

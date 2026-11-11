@@ -72,7 +72,7 @@ pub enum Pool {
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),
+    TT(u16),       // feature = "tenstorrent"
     WGPU(u16),     // feature = "wgpu"
 }
 ```

@@ -646,34 +646,66 @@ impl Kernel {
 /// collector's keys can never drift from the model's inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Features {
+    /// Number of workgroups in the launch: the product of the `Group` range
+    /// lengths.
     pub num_groups: u32,
+    /// Work-items per workgroup: the product of the `Local` range lengths.
     pub wi_per_group: u32,
+    /// Instructions executed per work-item, after loop unrolling and lane
+    /// expansion.
     pub wi_ops: u32,
+    /// The subset of [`Self::wi_ops`] that is compute rather than index
+    /// arithmetic.
     pub wi_compute_ops: u32,
+    /// Barriers executed per work-item.
     pub wi_barriers: u32,
+    /// Global-memory load traffic per work-item, in bits.
     pub wi_global_load_bits: u32,
+    /// Global-memory store traffic per work-item, in bits.
     pub wi_global_store_bits: u32,
+    /// Local/circular-memory load traffic per work-item, in bits.
     pub wi_local_load_bits: u32,
+    /// Local/circular-memory store traffic per work-item, in bits.
     pub wi_local_store_bits: u32,
+    /// Peak live register bytes in the simulated register allocation.
     pub wi_peak_reg_bytes: u32,
+    /// Conditional branches per work-item (boolean `Loop`s).
     pub wi_branches: u32,
+    /// Traffic-weighted average linear-index stride of global loads.
     pub wi_global_load_lidx_stride: u32,
+    /// Traffic-weighted average linear-index stride of global stores.
     pub wi_global_store_lidx_stride: u32,
+    /// Traffic-weighted average linear-index stride of local loads.
     pub wi_local_load_lidx_stride: u32,
+    /// Traffic-weighted average linear-index stride of local stores.
     pub wi_local_store_lidx_stride: u32,
+    /// Device warp/wavefront width, in work-items.
     pub warp_size: u32,
+    /// Device maximum number of work-items per workgroup.
     pub max_local_threads: u32,
+    /// Device private-memory (register) budget per work-item, in bytes.
     pub max_register_bytes: u32,
+    /// Register/private-memory load traffic per work-item, in bits.
     pub wi_register_load_bits: u32,
+    /// Register/private-memory store traffic per work-item, in bits.
     pub wi_register_store_bits: u32,
+    /// Global work size on axis 0.
     pub gws0: u32,
+    /// Global work size on axis 1.
     pub gws1: u32,
+    /// Global work size on axis 2.
     pub gws2: u32,
+    /// Local work size on axis 0.
     pub lws0: u32,
+    /// Local work size on axis 1.
     pub lws1: u32,
+    /// Local work size on axis 2.
     pub lws2: u32,
+    /// Deepest counted-loop nesting in the kernel.
     pub max_loop_depth: u32,
+    /// Device-preferred vector width, in bytes.
     pub preferred_vector_size: u32,
+    /// Device local/shared memory size, in bytes.
     pub local_mem_size: u32,
     /// Product of every `Op::Unroll` length in the kernel.
     ///

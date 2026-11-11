@@ -40,15 +40,11 @@ use crate::{
 };
 
 /// One scalar matmul region and the instruction variant it will be built
-/// with: the accumulator's init store, the final store of the sum, and the
-/// affine views of all three operands.
+/// with: the region's range and the affine views of all three operands.
 #[derive(Debug, Clone)]
 struct Region {
     variant: MMAVariant,
     init_store: OpId,
-    final_store: OpId,
-    /// The scalar accumulator this region accumulates into.
-    acc: OpId,
     /// The update store inside the K loop that writes `acc + prod`.
     update: OpId,
     /// Every output store that reads `acc` through a cast chain, with the
@@ -62,7 +58,6 @@ struct Region {
     b_src: OpId,
     b_n: Dim,
     b_k: Dim,
-    c_src: OpId,
     c_m: Dim,
     c_n: Dim,
 
@@ -112,9 +107,6 @@ struct Tiled {
     mt: Dim,
     nt: Dim,
     kt: Dim,
-    /// Unroll extents of the m and n axes (the accumulator's row width).
-    m_len: Dim,
-    n_len: Dim,
     /// Fragment slots per tile (the new accumulator length is
     /// `mt * nt * slots`).
     slots: Dim,
@@ -745,7 +737,7 @@ impl Kernel {
             if !store_only {
                 continue;
             }
-            let &Op::Store { dst: c_src, dst_idx: c_idx, .. } = self.at(final_store) else {
+            let &Op::Store { dst_idx: c_idx, .. } = self.at(final_store) else {
                 unreachable!()
             };
 
@@ -862,8 +854,6 @@ impl Kernel {
                 regions.push(Region {
                     variant: variant.clone(),
                     init_store,
-                    final_store,
-                    acc,
                     update,
                     epilogue: epilogue.clone(),
                     a_src,
@@ -872,7 +862,6 @@ impl Kernel {
                     b_src,
                     b_n: b_map[&n_range].1,
                     b_k: b_map[&k_loop].1,
-                    c_src,
                     c_m: c_map[&m_range].1,
                     c_n: c_map[&n_range].1,
                     m_range,
@@ -1125,8 +1114,6 @@ impl Kernel {
                         mt,
                         nt,
                         kt,
-                        m_len,
-                        n_len,
                         slots: Dim::from(variant.c.slots.len() as i64),
                         init,
                         loop_id,
@@ -1933,7 +1920,7 @@ mod tests {
         Optimization::apply(&m_split, &mut k, 0);
         let n_split = split::OptSplit { configs: vec![(n_range, split::SplitMode::Unroll, 8)] };
         Optimization::apply(&n_split, &mut k, 0);
-        k.devectorize();
+        k.devectorize().unwrap();
 
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
         assert_eq!(wmmas, 32, "4 M fragments x 8 N fragments, one mma each");

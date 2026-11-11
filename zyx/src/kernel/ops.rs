@@ -430,7 +430,7 @@ pub enum Op {
     /// CSE shares them. Void leaf, no operands. Boxed so `Op` keeps its
     /// 24-byte budget (mirrors `Op::Kernel`).
     GPU(Box<GPUOp>),
-    /// SPIR-V payload shared by Vulkan/wgpu: compiled word stream plus
+    /// SPIR-V payload for Vulkan: compiled word stream plus
     /// SPIR-V-specific annotations. Pure value: equal contents compare
     /// equal so CSE shares them. Void leaf, no operands. Boxed so `Op`
     /// keeps its 24-byte budget (mirrors `Op::GPU`).

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7478f1f3.js";
+            window.path_to_searchindex_js = "searchindex-5ec49b71.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e6cf6f81.js"></script>
@@ -221,38 +221,42 @@ or <code>pip install zyx-py</code> is enough. Prerequisites for every backend ar
 <ul>
 <li>Rust <strong>1.88</strong> or newer</li>
 <li>a C compiler (<code>clang</code> or <code>gcc</code>) for the C backend</li>
-<li>optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU) or the Tenstorrent
-simulator; a missing runtime only means that backend contributes no devices</li>
+<li>optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU); a missing runtime only
+means that backend contributes no devices</li>
+<li>for the optional Tenstorrent backend, the <code>libttsim_bh.so</code> simulator, the
+<code>riscv32im-unknown-none-elf</code> target, and <code>llvm-tools</code></li>
 </ul>
-<p>The <code>zyx</code> crate has path dependencies on two crates from
-<a href="https://github.com/Knight-Ops/metalium-rs">metalium-rs</a>: the Tenstorrent ISA
-tables and firmware images. A <strong>sibling checkout</strong> is therefore required:</p>
+<p>The Tenstorrent firmware lives in <code>zyx/firmware/tt-firmware</code> and is built by
+<code>zyx/build.rs</code> when the <code>tenstorrent</code> feature is enabled; the ISA tables come
+from the <code>tt-isa</code> crate. No sibling checkout is required:</p>
 <pre><code class="language-bash">git clone https://github.com/zk4x/zyx
-git clone https://github.com/Knight-Ops/metalium-rs
 cd zyx/zyx
 cargo build
 </code></pre>
-<p>The layout must be:</p>
-<pre><code class="language-text">your-workspace/
-├── zyx/
-└── metalium-rs/
+<p>The Tenstorrent backend additionally needs the RISC-V target and LLVM tools that
+<code>build.rs</code> uses for the firmware images:</p>
+<pre><code class="language-bash">rustup target add riscv32im-unknown-none-elf
+rustup component add llvm-tools
+cargo build --features tenstorrent
 </code></pre>
 <h2 id="tests"><a class="header" href="#tests">Tests</a></h2>
 <p>No GPU is needed for the CPU backend:</p>
 <pre><code class="language-bash">cd zyx
-AGENT=1 ZYX_DEV=cpu cargo test
+AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist
 AGENT=1 cargo test --doc
 </code></pre>
-<p><code>AGENT=1</code> strips ANSI colors; <code>ZYX_DEV=cpu</code> pins the C backend. A single test
-binary is <code>cargo test --test 01_unary</code>, and a single test is
-<code>cargo test --test 01_unary abs_1 -- --exact</code>.</p>
+<p><code>AGENT=1</code> strips ANSI colors; <code>ZYX_DEV=cpu</code> pins the C backend. <code>--skip mnist</code>
+leaves out the integration test that needs the MNIST dataset in
+<code>examples/data/</code>. A single test binary is <code>cargo test --test 01_unary</code>, and a
+single test is <code>cargo test --test 01_unary abs_1 -- --exact</code>.</p>
 <h2 id="the-local-check-gate"><a class="header" href="#the-local-check-gate">The Local Check Gate</a></h2>
-<p>The same checks the pre-push hook runs live in <code>ci.sh</code> at the repository root:</p>
-<pre><code class="language-bash">./ci.sh
+<p>The full local check gate lives in <code>run_ci.sh</code> at the repository root:</p>
+<pre><code class="language-bash">./run_ci.sh
 </code></pre>
-<p>It runs the unit tests, the doctests for every README-bearing crate, rustdoc
-with private items (so stale doc links fail), <code>cargo fmt --check</code>, and the
-book’s code examples.</p>
+<p>It runs the unit and integration tests, the doctests for every README-bearing
+crate, rustdoc with private items (so stale doc links fail), the examples,
+the Python bindings when a torch-enabled interpreter is available,
+<code>cargo fmt --check</code>, and the book’s code examples.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <pre><code class="language-bash">cd examples
 ./tiny-net/run.sh          # simplest
@@ -352,7 +356,7 @@ fused into the kernel of its consumer when the surrounding ops allow it, and a
 value with several consumers is produced once with one output copy per consumer.
 Storing a value and reloading it for later consumers creates a load kernel at
 that boundary. <code>fill_gaps</code> runs the same machinery per connected region so that
-AOT kernels (e.g. a CBLAS matmul) and custom kernels can compete with fused
+AOT kernels (e.g. a cuDNN matmul) and custom kernels can compete with fused
 kernels inside the same graph.</p>
 <p>Movement ops are not materialized just to be read back. Their index arithmetic
 is replayed into the consumer, and the <code>linearize</code> pass unfolds it, so a
@@ -407,18 +411,17 @@ see <a href="#codegen-and-the-physical-ir">Codegen and the Physical IR</a>.</p>
 <pre><code class="language-rust ignore">pub enum Dev {
     Auto,
     C,
-    Cblas,
     Host,
     Cuda(u16),
-    TT(u16),
+    TT(u16),     // feature = "tenstorrent"
     Vulkan(u16),
     OpenCL(u16),
     WGPU(u16),   // feature = "wgpu"
 }</code></pre>
-<p>Every backend except WGPU is compiled in unconditionally and selected at
-runtime. A backend whose driver, hardware, or (for Tenstorrent) simulator is
-missing simply contributes no devices; initialization failures are errors, not
-panics.</p>
+<p>Except for the feature-gated WGPU and Tenstorrent backends, every backend is
+compiled in unconditionally and selected at runtime. A backend whose driver,
+hardware, or (for Tenstorrent) simulator is missing simply contributes no
+devices; initialization failures are errors, not panics.</p>
 <h3 id="8-runtime"><a class="header" href="#8-runtime">8. Runtime</a></h3>
 <p>The runtime (<code>runtime.rs</code>) is the process-wide state: graphs, tensors, kernels,
 programs, timings, interned shape expressions, RNG, and the plan cache. A global
@@ -613,7 +616,7 @@ several alternative producers, and extraction chooses between them:</p>
 <li><strong>Kernel twins</strong>: the kernelizer mints an <code>Op::Program</code> node for every fused
 kernel candidate, on the class it produces.</li>
 <li><strong>AOT pattern matches</strong>: backends add <code>Op::Program</code> nodes for precompiled
-kernels (cuDNN, CBLAS, …), so they compete with fused kernels.</li>
+kernels (cuDNN, …), so they compete with fused kernels.</li>
 <li><strong>Transfers</strong>: extraction inserts <code>Op::ToDevice</code> nodes where the chosen
 producer and consumer live on different devices.</li>
 </ul>
@@ -897,7 +900,7 @@ Op::Program { inputs: OpId, outputs: OpId, info: Box&lt;(ProgramId, u64)&gt; }
 Op::Kernel(Box&lt;CustomKernel&gt;)                  // user custom kernel boundary
 Op::TT(TTOp)                                   // Tenstorrent physical IR
 Op::GPU(Box&lt;GPUOp&gt;)                            // shared GPU launch config
-Op::Spirv(Box&lt;SpirvOp&gt;)                        // Vulkan/wgpu SPIR-V payload
+Op::Spirv(Box&lt;SpirvOp&gt;)                        // Vulkan SPIR-V payload
 Op::PTX(Box&lt;PTXOp&gt;)                            // CUDA direct-PTX payload</code></pre>
 <p><code>Program</code>’s <code>inputs</code> and <code>outputs</code> are <code>Stack</code> classes, not per-kernel boxes;
 <code>info</code> carries the program id and its measured time. Timings are ignored by
@@ -1176,7 +1179,7 @@ silently alias a wrong transformation. <code>Kernel::verify</code> checks IR con
 <code>debug_assertions</code> builds; the Tenstorrent physical IR is checked by <code>tt_verify</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="backend-system"><a class="header" href="#backend-system">Backend System</a></h1>
-<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (only WGPU is feature-gated), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
+<p>Zyx supports multiple hardware backends. Backends are enum-dispatched, compiled into the library (WGPU and Tenstorrent are feature-gated), and selected at runtime through a lightweight <code>Copy</code> handle.</p>
 <h2 id="dev--device-handle-and-selector"><a class="header" href="#dev--device-handle-and-selector"><code>Dev</code> — Device Handle and Selector</a></h2>
 <p>There is no <code>dyn Backend</code> and no device ids separate from the devices: <code>Dev</code> is both the selector and the handle — a <code>Copy</code> enum naming the backend plus the hardware ordinal.</p>
 <pre><code class="language-rust ignore">pub enum Dev {
@@ -1184,14 +1187,12 @@ silently alias a wrong transformation. <code>Kernel::verify</code> checks IR con
     Auto,
     /// CPU backend (runs on Pool::Host).
     C,
-    /// CBLAS backend for AOT matmuls (runs on Pool::Host).
-    Cblas,
     /// Transfer-only pseudo-device (runs on Pool::Host); never enumerated.
     Host,
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),
     /// Tenstorrent chip with the given id.
-    TT(u16),
+    TT(u16),          // feature = "tenstorrent"
     /// Vulkan physical device with the given index.
     Vulkan(u16),
     /// OpenCL device with the given index.
@@ -1203,14 +1204,14 @@ silently alias a wrong transformation. <code>Kernel::verify</code> checks IR con
 <h2 id="pool--memory"><a class="header" href="#pool--memory"><code>Pool</code> — Memory</a></h2>
 <p>Memory belongs to pools, and pools are process-wide: they outlive any <code>Runtime</code> and are never deinitialized.</p>
 <pre><code class="language-rust ignore">pub enum Pool {
-    /// Host RAM. Shared by the C, CBLAS and Host devices, which own no pool.
+    /// Host RAM. Shared by the C and Host devices, which own no pool.
     Host,
     /// Disk-backed tensors (paths, not bytes).
     Disk,
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),
+    TT(u16),          // feature = "tenstorrent"
     WGPU(u16),        // feature = "wgpu"
 }</code></pre>
 <p>Each variant owns its globals — one <code>Mutex&lt;pool&gt;</code> per ordinal (<code>Host</code> is a <code>OnceLock&lt;Mutex&lt;_&gt;&gt;</code>, <code>Disk</code> is a const <code>Mutex</code> with no <code>OnceLock</code> at all, the rest are <code>OnceLock&lt;Vec&lt;Mutex&lt;_&gt;&gt;&gt;</code> with one <code>Mutex&lt;()&gt;</code> per backend serializing first construction where it matters — cheap backends have no init lock). All globals live at the top of each <code>backend/*.rs</code> file, so the process-wide state is visible before any logic. The only lock takers are the device-API entry points (alloc/free/copy/compile/launch); the per-op tensor path never touches them.</p>
@@ -1218,7 +1219,7 @@ silently alias a wrong transformation. <code>Kernel::verify</code> checks IR con
 <p>There is no upfront backend-initialization phase. <code>Dev::all()</code> triggers lazy init of every backend; backends that are configured out, whose driver is missing, or whose hardware is absent contribute nothing to the returned list. This keeps startup free and makes device discovery idempotent. By default, zyx will search for all devices and use the fastest for the computations. If only one device is accessed by manually using Tensor::to(Dev), then only that device is initialized and other devices are left uninitiaized. So initialization is lazy and happens at the latest possible moment.</p>
 <pre><code class="language-rust ignore">impl Dev {
     pub fn all() -&gt; Vec&lt;Dev&gt; {
-        // C, CBLAS: single devices, included if init succeeds.
+        // C: single device, included if init succeeds.
         // CUDA / TT / Vulkan / OpenCL / WGPU: one entry per detected device.
     }
 }</code></pre>
@@ -1239,18 +1240,15 @@ pub fn launch_timed(self, program_id: DeviceProgramId, args: &amp;[LaunchArg]) -
 </thead>
 <tbody>
 <tr><td>C</td><td><code>c.rs</code></td><td>C99 (compiled to .so)</td><td>Clang/GCC</td></tr>
-<tr><td>CBLAS</td><td><code>cblas.rs</code></td><td>AOT matmul calls</td><td>Host BLAS (shares <code>Pool::Host</code>)</td></tr>
 <tr><td>CUDA</td><td><code>cuda.rs</code></td><td>CUDA C → SASS, cuDNN for AOT matmul</td><td>CUDA driver via <code>libloading</code></td></tr>
 <tr><td>OpenCL</td><td><code>opencl.rs</code></td><td>OpenCL C</td><td>OpenCL runtime via <code>libloading</code></td></tr>
 <tr><td>Vulkan</td><td><code>vulkan.rs</code></td><td>SPIR-V</td><td>Vulkan via <code>ash</code> crate</td></tr>
-<tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>SPIR-V</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
-<tr><td>Tenstorrent</td><td><code>tenstorrent/</code></td><td>Tensix RISC-V programs</td><td>Bundled tt-sim simulator</td></tr>
+<tr><td>WGPU</td><td><code>wgpu.rs</code></td><td>WGSL</td><td>WGPU (feature: <code>wgpu</code>)</td></tr>
+<tr><td>Tenstorrent</td><td><code>tenstorrent/</code></td><td>Tensix RISC-V programs</td><td>Bundled tt-sim simulator (feature: <code>tenstorrent</code>)</td></tr>
 </tbody>
 </table>
 </div>
-<p>Every backend except WGPU is compiled in unconditionally.</p>
-<h3 id="cblas"><a class="header" href="#cblas">CBLAS</a></h3>
-<p>The CBLAS device runs <strong>only AOT (precompiled) matmul kernels</strong> and cannot compile generic zyx kernels. <code>Dev::aot_only()</code> marks it, and generic kernel autotuning skips it — it competes only where a precompiled BLAS call is an option.</p>
+<p>Every backend except WGPU and Tenstorrent is compiled in unconditionally.</p>
 <h3 id="cuda-micro-batched-submission"><a class="header" href="#cuda-micro-batched-submission">CUDA: micro-batched submission</a></h3>
 <p>Each CUDA device is owned by a worker thread behind a command channel. Launches accumulate in a pending window (<code>MICRO_BATCH_WINDOW = 100</code>); the <strong>batched-submission algorithm</strong> then distributes the whole window over per-device hardware queues (CUDA streams, default 12, config <code>cuda.queues</code>) with stream-wait dependencies computed between them, and submits the window at once. Events exist only inside this worker — for queue dependencies and timing (<code>launch_timed</code>) — never as user-facing or runtime-level objects. Buffers carry a host-side refcount and are freed behind all their in-flight work.</p>
 <h2 id="configuration"><a class="header" href="#configuration">Configuration</a></h2>
@@ -1488,12 +1486,12 @@ allocating.</p>
 <h2 id="memory-pools-and-placements"><a class="header" href="#memory-pools-and-placements">Memory Pools and Placements</a></h2>
 <p>Pools are process-wide and never deinitialized:</p>
 <pre><code class="language-rust ignore">pub enum Pool {
-    Host,          // RAM, shared by C, CBLAS and Host
+    Host,          // RAM, shared by C and Host
     Disk,          // file-backed chunks (paths, not bytes)
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),
+    TT(u16),       // feature = "tenstorrent"
     WGPU(u16),     // feature = "wgpu"
 }</code></pre>
 <p>Each backend owns its globals — one mutex per pool ordinal — and lazily
@@ -1517,7 +1515,7 @@ pool from the device, never the reverse.</p>
 <li>start from <code>Dev::all()</code> — lazy init of every compiled-in backend, cached in a
 <code>OnceLock</code>; backends that are configured out or whose hardware/driver is
 missing contribute nothing;</li>
-<li>drop AOT-only devices (<code>Dev::aot_only()</code>, e.g. CBLAS) for generic kernels;</li>
+<li>drop AOT-only devices (<code>Dev::aot_only()</code>) for generic kernels;</li>
 <li>keep devices whose pool has at least <code>bytes</code> free;</li>
 <li>sort by <code>free_compute()</code> descending and take the first.</li>
 </ol>
@@ -1613,7 +1611,6 @@ whether the file was found and parsed.</p>
         "n_total_opts": 1000
     },
     "c": { "enabled": true },
-    "cblas": { "enabled": true },
     "cuda": { "device_ids": [0], "cudnn": true, "queues": 8 },
     "opencl": { "platform_ids": [0], "queues": 8 },
     "vulkan": { "device_ids": [0] },
@@ -1621,7 +1618,8 @@ whether the file was found and parsed.</p>
 }
 </code></pre>
 <p><code>wgpu</code> (<code>"wgpu": { "enabled": true }</code>) exists only when the crate is built with
-the <code>wgpu</code> feature.</p>
+the <code>wgpu</code> feature; the <code>tenstorrent</code> section only has an effect when the crate
+is built with the <code>tenstorrent</code> feature.</p>
 <h3 id="backend-sections"><a class="header" href="#backend-sections">Backend Sections</a></h3>
 <div class="table-wrapper">
 <table>
@@ -1630,11 +1628,10 @@ the <code>wgpu</code> feature.</p>
 </thead>
 <tbody>
 <tr><td><code>c</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
-<tr><td><code>cblas</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
 <tr><td><code>cuda</code></td><td><code>device_ids</code>, <code>cudnn</code>, <code>queues</code></td><td>all GPUs, cuDNN off, 8 queues</td><td><code>"device_ids": []</code></td></tr>
 <tr><td><code>opencl</code></td><td><code>platform_ids</code>, <code>queues</code></td><td>all platforms, 8 queues</td><td><code>"platform_ids": []</code></td></tr>
 <tr><td><code>vulkan</code></td><td><code>device_ids</code></td><td>all devices</td><td><code>"device_ids": []</code></td></tr>
-<tr><td><code>tenstorrent</code></td><td><code>device_ids</code></td><td>all devices</td><td><code>"device_ids": []</code></td></tr>
+<tr><td><code>tenstorrent</code></td><td><code>device_ids</code></td><td>all devices (with the feature)</td><td><code>"device_ids": []</code></td></tr>
 <tr><td><code>wgpu</code></td><td><code>enabled</code></td><td><code>true</code></td><td><code>"enabled": false</code></td></tr>
 </tbody>
 </table>
@@ -1670,11 +1667,11 @@ every other backend is configured out (and a device with an ordinal keeps only
 that ordinal). It accepts the same syntax as <code>Dev::from_str</code>:</p>
 <pre><code class="language-bash">ZYX_DEV=cpu          # C backend
 ZYX_DEV=cuda:0        # CUDA driver ordinal 0
-ZYX_DEV=tt            # Tenstorrent, device 0
+ZYX_DEV=tt            # Tenstorrent, device 0 (feature "tenstorrent")
 ZYX_DEV=vulkan        # Vulkan device 0
 ZYX_DEV=opencl:1      # OpenCL platform 1
 </code></pre>
-<p>Names are case-insensitive: <code>auto</code>, <code>c</code>/<code>cpu</code>, <code>cblas</code>/<code>blas</code>, <code>host</code>, <code>cuda</code>,
+<p>Names are case-insensitive: <code>auto</code>, <code>c</code>/<code>cpu</code>, <code>host</code>, <code>cuda</code>,
 <code>tt</code>/<code>tenstorrent</code>, <code>vulkan</code>/<code>vk</code>, <code>opencl</code>/<code>cl</code>, <code>wgpu</code>. An index on an
 indexless device (<code>c:1</code>) is an error. A bad value panics — silently falling back
 would run on the wrong hardware — and <code>ZYX_DEV=auto</code> is a no-op (no narrowing).</p>

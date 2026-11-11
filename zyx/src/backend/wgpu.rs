@@ -204,7 +204,7 @@ pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<
         ops[DType::I8 as usize] = DTypeCapability::none();
         ops[DType::U16 as usize] = DTypeCapability::none();
         ops[DType::I16 as usize] = DTypeCapability::none();
-        // SPIR-V has no 8-bit float type: fp8 casts are unusable.
+        // WGSL has no 8-bit float type: fp8 casts are unusable.
         ops[DType::F8E4M3 as usize] = DTypeCapability::none();
         ops[DType::F8E5M2 as usize] = DTypeCapability::none();
         ops
@@ -408,8 +408,8 @@ impl WGPUDevice {
     }
 
     pub fn compile(&mut self, kernel: &Kernel, _debug_asm: bool) -> Result<DeviceProgramId, BackendError> {
-        // Debugging TBD: render takes no debug flag, so SPIR-V disassembly
-        // is off here.
+        // Debugging TBD: render takes no debug flag, so WGSL source
+        // is not printed here.
         let rendered = kernel.render()?;
         let mut order = rendered.ops_in_order();
         let Some(GPUOp::Params(params)) = order.next().and_then(Op::as_gpu) else {

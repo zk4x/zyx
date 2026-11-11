@@ -2441,16 +2441,16 @@ impl Runtime {
                                     vi += 1;
                                 }
                                 ParamKind::Global | ParamKind::GlobalMut => {
-                                    let (len, is_mut, cid) = if kind == ParamKind::GlobalMut {
+                                    let (len, is_mut, _cid) = if kind == ParamKind::GlobalMut {
                                         let len = mut_lens[mli];
-                                        let cid = ek.stores[mli];
+                                        let _cid = ek.stores[mli];
                                         mli += 1;
-                                        (len, true, cid)
+                                        (len, true, _cid)
                                     } else {
                                         let len = ro_lens[rli];
-                                        let cid = ek.loads[rli];
+                                        let _cid = ek.loads[rli];
                                         rli += 1;
-                                        (len, false, cid)
+                                        (len, false, _cid)
                                     };
                                     // A TT param buffer is *physical*: whole 32x32
                                     // tile images, row/column padded, exactly what
@@ -2462,7 +2462,7 @@ impl Runtime {
                                     let bytes_alloc = if pool_id.is_tt_layout() {
                                         #[cfg(feature = "tenstorrent")]
                                         {
-                                        let shape = self.graphs[graph_id].shape(cid);
+                                        let shape = self.graphs[graph_id].shape(_cid);
                                         let mut dims: Vec<Dim> = Vec::with_capacity(shape.len());
                                         for &d in &shape {
                                             let v = self

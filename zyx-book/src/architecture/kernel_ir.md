@@ -232,7 +232,7 @@ Op::Program { inputs: OpId, outputs: OpId, info: Box<(ProgramId, u64)> }
 Op::Kernel(Box<CustomKernel>)                  // user custom kernel boundary
 Op::TT(TTOp)                                   // Tenstorrent physical IR
 Op::GPU(Box<GPUOp>)                            // shared GPU launch config
-Op::Spirv(Box<SpirvOp>)                        // Vulkan/wgpu SPIR-V payload
+Op::Spirv(Box<SpirvOp>)                        // Vulkan SPIR-V payload
 Op::PTX(Box<PTXOp>)                            // CUDA direct-PTX payload
 ```
 

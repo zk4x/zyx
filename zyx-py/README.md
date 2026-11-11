@@ -5,7 +5,8 @@
 
 **zyx** is a machine learning library that runs on your hardware: a lazy tensor
 library with automatic kernel fusion and autotuning, written in Rust, with
-backends for CUDA, Vulkan, OpenCL, CPU (C), WGPU, and Tenstorrent.
+backends for CUDA, Vulkan, OpenCL, CPU (C), and WGPU. Tenstorrent is an optional
+cargo feature.
 
 The whole install is **2 MB and has no required dependencies** — there is no
 bundled CUDA runtime, no BLAS to link, no toolchain to install. Backends are
@@ -228,9 +229,9 @@ Backends can be disabled, enabled, or restricted through
 - `[]` = disable that backend
 - `[0]` = use device 0 only
 
-CUDA, OpenCL, Vulkan, and Tenstorrent are always compiled in and look for
-their driver libraries (or, for Tenstorrent, the simulator) at runtime. WGPU is
-a cargo feature.
+CUDA, OpenCL, and Vulkan are always compiled in and look for their driver
+libraries at runtime. WGPU and Tenstorrent are cargo features and are not
+enabled by default.
 
 ## Data types
 

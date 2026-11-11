@@ -34,7 +34,8 @@ Every section is optional:
 }
 ```
 
-`wgpu` exists only when the crate is built with the `wgpu` feature.
+`wgpu` exists only when the crate is built with the `wgpu` feature, and
+`tenstorrent` only with the `tenstorrent` feature.
 
 ## Options Reference
 
@@ -88,9 +89,10 @@ Uses the `ash` crate for Vulkan compute.
 
 ### `tenstorrent` — Tenstorrent backend
 
-Always compiled in; it runs through the bundled simulator, which is found
-through `TT_TTSIM_LIB` (default `vendor/libttsim_bh.so`). A machine without a
-usable simulator simply contributes no devices.
+Available when the crate is built with `--features tenstorrent`. It runs through
+the bundled simulator, which is found through `TT_TTSIM_LIB` (default
+`vendor/libttsim_bh.so`). A machine without a usable simulator simply
+contributes no devices.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -112,17 +114,17 @@ Requires `--features wgpu`. Supports Vulkan, Metal, DX12, and OpenGL ES.
 | `cuda` | yes | `"device_ids": []` |
 | `opencl` | yes | `"platform_ids": []` |
 | `vulkan` | yes | `"device_ids": []` |
-| `tenstorrent` | yes | `"device_ids": []` |
+| `tenstorrent` | yes (with the `tenstorrent` feature) | `"device_ids": []` |
 | `wgpu` | yes (with the feature) | `"enabled": false` |
 
 `null`/absent means “every device the backend finds”; a list selects exactly
 those ordinals.
 
-C, CUDA, OpenCL, Vulkan, and Tenstorrent are compiled in
-unconditionally (they locate their runtimes at load time); only WGPU is behind a
-cargo feature. There is no global “initialize all backends” step: `Dev::all()`
-probes each compiled-in backend lazily, and backends whose driver, device, or
-simulator is missing contribute nothing.
+C, CUDA, OpenCL, and Vulkan are compiled in unconditionally (they locate their
+runtimes at load time); WGPU and Tenstorrent are behind cargo features. There is
+no global “initialize all backends” step: `Dev::all()` probes each compiled-in
+backend lazily, and backends whose driver, device, or simulator is missing
+contribute nothing.
 
 ## `ZYX_DEV` — pin one device
 

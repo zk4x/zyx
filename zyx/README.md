@@ -5,10 +5,10 @@ Zyx is a machine learning library that runs on your hardware.
 
 ## Install
 
-Zyx comes with autograd and all backends built in — no feature flags needed (with the exception of WGPU).
+Zyx comes with autograd and the CPU/GPU backends built in — no feature flags needed (WGPU and Tenstorrent are optional features).
 
 ```toml
-# Core library (tensors, autograd, all backends)
+# Core library (tensors, autograd, all non-optional backends)
 zyx = "*"
 # Neural network modules - Linear, normalization layers, recurrent nets, transformers ...
 zyx-nn = "*"
@@ -42,7 +42,7 @@ let bb_grad = tape.gradient(&b_grad, [&b])[0].clone();
 
 ## Quick Start
 
-No config file needed — all backends try to initialize by default.
+No config file needed — all compiled-in backends try to initialize by default.
 Run `ZYX_DEBUG=1` to see which ones found hardware.
 
 See [CONFIG.md](https://github.com/zk4x/zyx/blob/main/CONFIG.md) for device selection, autotune, and advanced options.
@@ -55,8 +55,8 @@ See [ENV_VARS.md](https://github.com/zk4x/zyx/blob/main/ENV_VARS.md) for debuggi
 - [x] `CUDA` — NVIDIA GPU acceleration, via CUDA C or PTX codegen
 - [x] `OpenCL`
 - [x] `Vulkan` — via SPIR-V codegen
-- [x] `WGPU` - via SPIR-V codegen, feature: `wgpu`
-- [ ] `Tenstorrent` — preliminary, always built, runs through the bundled simulator (`TT_TTSIM_LIB`)
+- [x] `WGPU` - via WGSL codegen, feature: `wgpu`
+- [ ] `Tenstorrent` — preliminary, feature: `tenstorrent`, runs through the bundled simulator (`TT_TTSIM_LIB`)
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)
@@ -94,24 +94,25 @@ proper paths to backend runtimes (e.g. libcuda.so).
 ## Features
 
 - **wgpu** — enables the WGPU backend
+- **tenstorrent** — enables the Tenstorrent backend and its lowering
 - **py** — Python bindings (`zyx-py`)
 - **viz** — graph visualization
 - **time** — timing instrumentation for passes and launches
 
-Tenstorrent is always compiled in; it needs the bundled simulator (`TT_TTSIM_LIB`).
+The Tenstorrent backend needs the bundled simulator (`TT_TTSIM_LIB`).
 
 
 ## Dependencies
 
 Zyx uses a small, deliberately chosen set of dependencies: `nanoserde` for config parsing,
-`libloading` for dynamically loading backend drivers, and `libc`/`libm` for the Tenstorrent
-simulator. The Tenstorrent path also uses the firmware-images and ISA crates.
+`libloading` for dynamically loading backend drivers, and (with the `tenstorrent` feature)
+`libc`/`libm` for the simulator. The Tenstorrent path also uses the firmware images and the
+`tt-isa` crate.
 
 zyx is about 100k lines of Rust. Runtimes are needed for their respective backends (e.g. libcuda.so)
 and hardware drivers.
 
-Optional dependencies do not have a size limit. This is currently only WGPU, whose dependency
-tree is much larger than zyx itself.
+The only large optional dependency is WGPU, whose dependency tree is much larger than zyx itself.
 
 For more architecture details, there is a [book](https://zk4x.github.io/zyx).
 

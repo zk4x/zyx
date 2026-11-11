@@ -35,7 +35,7 @@
             const path_to_root = "";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-7478f1f3.js";
+            window.path_to_searchindex_js = "searchindex-5ec49b71.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-e6cf6f81.js"></script>
@@ -182,38 +182,42 @@ or <code>pip install zyx-py</code> is enough. Prerequisites for every backend ar
 <ul>
 <li>Rust <strong>1.88</strong> or newer</li>
 <li>a C compiler (<code>clang</code> or <code>gcc</code>) for the C backend</li>
-<li>optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU) or the Tenstorrent
-simulator; a missing runtime only means that backend contributes no devices</li>
+<li>optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU); a missing runtime only
+means that backend contributes no devices</li>
+<li>for the optional Tenstorrent backend, the <code>libttsim_bh.so</code> simulator, the
+<code>riscv32im-unknown-none-elf</code> target, and <code>llvm-tools</code></li>
 </ul>
-<p>The <code>zyx</code> crate has path dependencies on two crates from
-<a href="https://github.com/Knight-Ops/metalium-rs">metalium-rs</a>: the Tenstorrent ISA
-tables and firmware images. A <strong>sibling checkout</strong> is therefore required:</p>
+<p>The Tenstorrent firmware lives in <code>zyx/firmware/tt-firmware</code> and is built by
+<code>zyx/build.rs</code> when the <code>tenstorrent</code> feature is enabled; the ISA tables come
+from the <code>tt-isa</code> crate. No sibling checkout is required:</p>
 <pre><code class="language-bash">git clone https://github.com/zk4x/zyx
-git clone https://github.com/Knight-Ops/metalium-rs
 cd zyx/zyx
 cargo build
 </code></pre>
-<p>The layout must be:</p>
-<pre><code class="language-text">your-workspace/
-├── zyx/
-└── metalium-rs/
+<p>The Tenstorrent backend additionally needs the RISC-V target and LLVM tools that
+<code>build.rs</code> uses for the firmware images:</p>
+<pre><code class="language-bash">rustup target add riscv32im-unknown-none-elf
+rustup component add llvm-tools
+cargo build --features tenstorrent
 </code></pre>
 <h2 id="tests"><a class="header" href="#tests">Tests</a></h2>
 <p>No GPU is needed for the CPU backend:</p>
 <pre><code class="language-bash">cd zyx
-AGENT=1 ZYX_DEV=cpu cargo test
+AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist
 AGENT=1 cargo test --doc
 </code></pre>
-<p><code>AGENT=1</code> strips ANSI colors; <code>ZYX_DEV=cpu</code> pins the C backend. A single test
-binary is <code>cargo test --test 01_unary</code>, and a single test is
-<code>cargo test --test 01_unary abs_1 -- --exact</code>.</p>
+<p><code>AGENT=1</code> strips ANSI colors; <code>ZYX_DEV=cpu</code> pins the C backend. <code>--skip mnist</code>
+leaves out the integration test that needs the MNIST dataset in
+<code>examples/data/</code>. A single test binary is <code>cargo test --test 01_unary</code>, and a
+single test is <code>cargo test --test 01_unary abs_1 -- --exact</code>.</p>
 <h2 id="the-local-check-gate"><a class="header" href="#the-local-check-gate">The Local Check Gate</a></h2>
-<p>The same checks the pre-push hook runs live in <code>ci.sh</code> at the repository root:</p>
-<pre><code class="language-bash">./ci.sh
+<p>The full local check gate lives in <code>run_ci.sh</code> at the repository root:</p>
+<pre><code class="language-bash">./run_ci.sh
 </code></pre>
-<p>It runs the unit tests, the doctests for every README-bearing crate, rustdoc
-with private items (so stale doc links fail), <code>cargo fmt --check</code>, and the
-book’s code examples.</p>
+<p>It runs the unit and integration tests, the doctests for every README-bearing
+crate, rustdoc with private items (so stale doc links fail), the examples,
+the Python bindings when a torch-enabled interpreter is available,
+<code>cargo fmt --check</code>, and the book’s code examples.</p>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
 <pre><code class="language-bash">cd examples
 ./tiny-net/run.sh          # simplest

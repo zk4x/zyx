@@ -167,17 +167,17 @@ pub enum Dev {
     C,
     Host,
     Cuda(u16),
-    TT(u16),
+    TT(u16),     // feature = "tenstorrent"
     Vulkan(u16),
     OpenCL(u16),
     WGPU(u16),   // feature = "wgpu"
 }
 ```
 
-Every backend except WGPU is compiled in unconditionally and selected at
-runtime. A backend whose driver, hardware, or (for Tenstorrent) simulator is
-missing simply contributes no devices; initialization failures are errors, not
-panics.
+Except for the feature-gated WGPU and Tenstorrent backends, every backend is
+compiled in unconditionally and selected at runtime. A backend whose driver,
+hardware, or (for Tenstorrent) simulator is missing simply contributes no
+devices; initialization failures are errors, not panics.
 
 ### 8. Runtime
 
