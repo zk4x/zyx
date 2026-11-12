@@ -127,8 +127,8 @@ mod devectorize;
 mod fold_constants;
 mod fold_loops;
 mod fuse;
-mod interpreter;
 mod instr_sched;
+mod interpreter;
 mod licm;
 mod linearize;
 mod local_reduce;
@@ -679,10 +679,7 @@ impl Kernel {
                         // an unset (0) slot is none, so `[0, 8]` and `[8]`
                         // are the same rank.
                         let rank = |d: &[Dim]| d.iter().filter(|&&d| d != 0).count();
-                        debug_assert!(
-                            rank(&dtypes[&x].1) <= rank(&dtypes[&dst_idx].1),
-                            "store value rank exceeds access rank"
-                        );
+                        debug_assert!(rank(&dtypes[&x].1) <= rank(&dtypes[&dst_idx].1), "store value rank exceeds access rank");
                     }
                     dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(dst).or_insert(0) += 1;

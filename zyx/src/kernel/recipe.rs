@@ -159,7 +159,11 @@ impl Optimization for TensorRecipe {
         {
             return;
         }
-        let tensor = if staged { tiled.opt_tensorize_staged() } else { tiled.opt_tensorize() };
+        let tensor = if staged {
+            tiled.opt_tensorize_staged()
+        } else {
+            tiled.opt_tensorize()
+        };
         if tensor.nconfigs() == 0 {
             return;
         }

@@ -267,10 +267,8 @@ impl Kernel {
                         // shared address directly (llama.cpp does the same).
                         let t = if *trans { ".trans" } else { "" };
                         let pattern = (0..*frags).map(|i| format!("%{i}")).collect::<Vec<_>>().join(",");
-                        let outs = (0..*frags)
-                            .map(|i| format!("\"=r\"(((unsigned*)&r{reg})[{i}])"))
-                            .collect::<Vec<_>>()
-                            .join(", ");
+                        let outs =
+                            (0..*frags).map(|i| format!("\"=r\"(((unsigned*)&r{reg})[{i}])")).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             source,
                             "{indent}asm volatile(\"ldmatrix.sync.aligned.m8n8.x{frags}{t}.b16 {{{pattern}}}, [%{frags}];\" : {outs} : \"l\"(&p{src}[{idx}]));"
@@ -286,10 +284,7 @@ impl Kernel {
                     // PTX-direct render (`ZYX_PTX`), which discards this
                     // source: only the register bookkeeping has to stay
                     // consistent.
-                    PTXOp::LdMatrix { .. }
-                    | PTXOp::CvtaShared { .. }
-                    | PTXOp::SharedBase { .. }
-                    | PTXOp::LdShared { .. } => {
+                    PTXOp::LdMatrix { .. } | PTXOp::CvtaShared { .. } | PTXOp::SharedBase { .. } | PTXOp::LdShared { .. } => {
                         assert!(
                             std::env::var("ZYX_PTX").is_ok(),
                             "CUDA codegen: device-lowered PTX is only formed for the PTX-direct render"
@@ -308,15 +303,7 @@ impl Kernel {
                     PTXOp::Shfl { value, lane } => {
                         let dtype = dtypes[&op_id].clone();
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
-                        let src = get_var(
-                            *value,
-                            &constants,
-                            &indices,
-                            &reg_map,
-                            &mut registers,
-                            loop_id,
-                            &var_params,
-                        )?;
+                        let src = get_var(*value, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                         let l = get_var(*lane, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                         _ = writeln!(
                             source,

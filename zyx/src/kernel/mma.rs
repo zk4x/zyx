@@ -32,7 +32,7 @@
 //! own.
 
 use crate::{
-    DType, Set, Map,
+    DType, Map, Set,
     backend::{FragAxis, FragMap, MMAVariant},
     dtype::Constant,
     kernel::{BOp, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, autotune::Optimization},
@@ -272,19 +272,14 @@ impl Optimization for Tensorize {
         // Staged form needs both K views contiguous for a vector fill.
         let staged = staged && r.a_k == 1 && r.b_k == 1;
         // Staged form: one cooperative shared tile per operand, refilled at
-        // every K step. `STAGE_PAD` keeps the rows `ldmatrix`-aligned and off
-        // each other's banks.
-        let (a_tile, b_tile, a_stride, b_stride) = if staged {
-            let a_stride = fk + STAGE_PAD;
-            let b_stride = fk + STAGE_PAD;
-            (
-                insert_local_f16_storage(kernel, fm * a_stride),
-                insert_local_f16_storage(kernel, fn_ * b_stride),
-                a_stride,
-                b_stride,
-            )
+        // every K step. The tile is k-block-major (`((k/8)*(rows/8) + (m/8))*64
+        // + (m%8)*8 + (k%8)`), so it packs to `rows * k` halves with no padding
+        // and needs none: an eight-half row of a block is 16 B and the rows of
+        // a block walk the banks.
+        let (a_tile, b_tile) = if staged {
+            (insert_local_f16_storage(kernel, fm * fk), insert_local_f16_storage(kernel, fn_ * fk))
         } else {
-            (OpId::NULL, OpId::NULL, 0, 0)
+            (OpId::NULL, OpId::NULL)
         };
         let threads = Dim::from(warp_size);
 
@@ -298,13 +293,13 @@ impl Optimization for Tensorize {
                 let a_base = k.mad(m_base, r.a_m, a_k);
                 let b_k = k.mul(k_base, r.b_k);
                 let b_base = k.mad(n_base, r.b_n, b_k);
-                let (asl, av) = coop_fill_load(k, OpId::NULL, lane, r.a_src, a_base, r.a_m, r.a_k, fm, fk, a_stride, threads);
+                let (asl, av) = coop_fill_load(k, OpId::NULL, lane, r.a_src, a_base, r.a_m, r.a_k, fm, fk, threads);
                 coop_fill_store(k, OpId::NULL, a_tile, OpId::NULL, asl, av);
-                let (bsl, bv) = coop_fill_load(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, b_stride, threads);
+                let (bsl, bv) = coop_fill_load(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, threads);
                 coop_fill_store(k, OpId::NULL, b_tile, OpId::NULL, bsl, bv);
                 k.push_back(Op::Barrier);
-                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, a_stride, 0, OpId::NULL, OpId::NULL);
-                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, b_stride, 0, OpId::NULL, OpId::NULL);
+                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, fm, 0, OpId::NULL, OpId::NULL);
+                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, fn_, 0, OpId::NULL, OpId::NULL);
                 (a, b)
             } else {
                 let mut a_elems = Vec::with_capacity(v.a.slots.len());
@@ -403,7 +398,17 @@ fn lane_coord(kernel: &mut Kernel, before: OpId, lane: OpId, map: &FragMap, axis
 }
 
 /// One fragment slot's element address: `base + row * sr + col * sc + slot`.
-fn slot_addr(kernel: &mut Kernel, before: OpId, lane: OpId, map: &FragMap, base: OpId, sr: Dim, sc: Dim, slot: (i16, i16), warp: u32) -> OpId {
+fn slot_addr(
+    kernel: &mut Kernel,
+    before: OpId,
+    lane: OpId,
+    map: &FragMap,
+    base: OpId,
+    sr: Dim,
+    sc: Dim,
+    slot: (i16, i16),
+    warp: u32,
+) -> OpId {
     let mut addr = base;
     for axis in [FragAxis::Row, FragAxis::Col] {
         let stride = if axis == FragAxis::Row { sr } else { sc };
@@ -437,7 +442,17 @@ fn acc_index(kernel: &mut Kernel, before: OpId, nt: Dim, slots: Dim, tm: Dim, tn
 /// A fragment operand's slot values, pairing slots that are contiguous in
 /// memory into one vector load (the `half2`/`half4` the instruction consumes).
 #[allow(clippy::too_many_arguments)]
-fn frag_elems(kernel: &mut Kernel, before: OpId, lane: OpId, map: &FragMap, src: OpId, base: OpId, sr: Dim, sc: Dim, warp: u32) -> Vec<OpId> {
+fn frag_elems(
+    kernel: &mut Kernel,
+    before: OpId,
+    lane: OpId,
+    map: &FragMap,
+    src: OpId,
+    base: OpId,
+    sr: Dim,
+    sc: Dim,
+    warp: u32,
+) -> Vec<OpId> {
     /// f16 halves per vector access: 8 bytes, the `ldg8` the reference's
     /// direct (unstage) kernel loads fragments with.
     const VEC: usize = 4;
@@ -474,12 +489,6 @@ fn frag_elems(kernel: &mut Kernel, before: OpId, lane: OpId, map: &FragMap, src:
     }
     out
 }
-
-/// f16 elements a staged tile row carries beyond the instruction's K extent,
-/// so consecutive rows do not land on the same shared-memory bank. Eight
-/// halves is 16 bytes: the smallest pad that keeps every row start
-/// `ldmatrix`-aligned.
-const STAGE_PAD: Dim = 8;
 
 /// Insert a local storage after the kernel's parameters (global params must
 /// precede local storages, the order `verify` expects).
@@ -519,7 +528,6 @@ fn coop_fill_load(
     sc: Dim,
     rows: Dim,
     chunk: Dim,
-    stride: Dim,
     threads: Dim,
 ) -> (OpId, OpId) {
     // The widest vector access this tile can use: 16 bytes (`half8`) where
@@ -533,16 +541,16 @@ fn coop_fill_load(
         .find(|v| rows * (chunk / *v) % threads == 0)
         .unwrap_or(2);
     let put = |kernel: &mut Kernel, op: Op| -> OpId {
-        if before.is_null() { kernel.push_back(op) } else { kernel.insert_before(before, op) }
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
     };
     debug_assert_eq!(sc, 1, "cooperative fill: the K view must be contiguous");
     debug_assert_eq!(chunk % vec, 0, "cooperative fill: K chunk not a whole number of vectors");
     let per_row = chunk / vec;
-    debug_assert_eq!(
-        rows * per_row % threads,
-        0,
-        "cooperative fill: vector count not divisible by the threads"
-    );
+    debug_assert_eq!(rows * per_row % threads, 0, "cooperative fill: vector count not divisible by the threads");
     // One vector access per step, with the steps emitted rather than laned:
     // a step *lane* makes the value a two-dimensional `[steps x vec]`, which
     // no backend renders as one vector access, and `devectorize` then unfolds
@@ -592,7 +600,6 @@ fn coop_fill_load(
         put(kernel, Op::Binary { x: tid_row, y: c, bop: BOp::Mul })
     };
     let cterm = put(kernel, Op::Binary { x: tid_col, y: vc, bop: BOp::Mul });
-    let ssc = put(kernel, Op::Const(Constant::idx(stride)));
     let rterm_s = if sr == 1 {
         rrow
     } else {
@@ -604,10 +611,25 @@ fn coop_fill_load(
     let gidx = put(kernel, Op::Binary { x: gidx, y: rterm_s, bop: BOp::Add });
     let gidx = put(kernel, Op::Binary { x: gidx, y: vector, bop: BOp::Add });
     let value = put(kernel, Op::Load { src, src_idx: gidx });
-    let slot = put(kernel, Op::Binary { x: tid_row, y: ssc, bop: BOp::Mul });
-    let slot = put(kernel, Op::Binary { x: slot, y: cterm, bop: BOp::Add });
-    let srow = put(kernel, Op::Binary { x: rrow, y: ssc, bop: BOp::Mul });
-    let slot = put(kernel, Op::Binary { x: slot, y: srow, bop: BOp::Add });
+    // The shared slot is the k-block-major tile layout —
+    // `((k/8)*(rows/8) + (m/8))*64 + (m%8)*8 + (k%8)` — so a vector is one
+    // eight-half row of a k-block and its lanes are contiguous. Every other
+    // term is a shift or a mask, and the tile packs to `rows * chunk` halves
+    // with no padding: the reference's 16 KB per operand, and the 32 KB that
+    // keeps two blocks resident per SM.
+    let row = put(kernel, Op::Binary { x: tid_row, y: rrow, bop: BOp::Add });
+    let three = put(kernel, Op::Const(Constant::idx(3i64)));
+    let seven = put(kernel, Op::Const(Constant::idx(7i64)));
+    let mblk = put(kernel, Op::Binary { x: row, y: three, bop: BOp::BitShiftRight });
+    let mrow = put(kernel, Op::Binary { x: row, y: seven, bop: BOp::BitAnd });
+    let mrow = put(kernel, Op::Binary { x: mrow, y: three, bop: BOp::BitShiftLeft });
+    let kblk = put(kernel, Op::Binary { x: cterm, y: three, bop: BOp::BitShiftRight });
+    let rblk = put(kernel, Op::Const(Constant::idx(rows / 8)));
+    let kblk = put(kernel, Op::Binary { x: kblk, y: rblk, bop: BOp::Mul });
+    let blk = put(kernel, Op::Binary { x: kblk, y: mblk, bop: BOp::Add });
+    let pack = put(kernel, Op::Const(Constant::idx(64i64)));
+    let slot = put(kernel, Op::Binary { x: blk, y: pack, bop: BOp::Mul });
+    let slot = put(kernel, Op::Binary { x: slot, y: mrow, bop: BOp::Add });
     let slot = put(kernel, Op::Binary { x: slot, y: vector, bop: BOp::Add });
     (slot, value)
 }
@@ -619,7 +641,11 @@ fn coop_fill_load(
 /// (`LDG` early, `STS` late, before the barrier).
 fn coop_fill_store(kernel: &mut Kernel, before: OpId, tile: OpId, slot_base: OpId, slot: OpId, value: OpId) {
     let put = |kernel: &mut Kernel, op: Op| -> OpId {
-        if before.is_null() { kernel.push_back(op) } else { kernel.insert_before(before, op) }
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
     };
     let slot = if slot_base.is_null() {
         slot
@@ -639,18 +665,31 @@ fn coop_fill_store(kernel: &mut Kernel, before: OpId, tile: OpId, slot_base: OpI
 /// next eight columns for the lane groups above `rows`. Constant across the
 /// sub-tile offsets, so one per tile (the reference keeps it in one register
 /// and reaches the other sub-tiles with immediates).
-fn ldmatrix_lane_base(kernel: &mut Kernel, before: OpId, lane: OpId, rows: Dim, k: Dim, stride: Dim) -> OpId {
+fn ldmatrix_lane_base(kernel: &mut Kernel, before: OpId, lane: OpId, rows: Dim, k: Dim, tile_rows: Dim) -> OpId {
     let put = |kernel: &mut Kernel, op: Op| -> OpId {
-        if before.is_null() { kernel.push_back(op) } else { kernel.insert_before(before, op) }
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
     };
+    // The lane's row inside the loaded region, and — with more than one K step
+    // in the load — which 8-K block the upper lane groups read.
     let rconst = put(kernel, Op::Const(Constant::idx(rows)));
     let row = put(kernel, Op::Binary { x: lane, y: rconst, bop: BOp::Mod });
-    let s = put(kernel, Op::Const(Constant::idx(stride)));
-    let mut addr = put(kernel, Op::Binary { x: row, y: s, bop: BOp::Mul });
+    // k-block-major: the row's block is `(m/8)`, its eight-half row `m%8`.
+    let three = put(kernel, Op::Const(Constant::idx(3i64)));
+    let seven = put(kernel, Op::Const(Constant::idx(7i64)));
+    let mblk = put(kernel, Op::Binary { x: row, y: three, bop: BOp::BitShiftRight });
+    let mrow = put(kernel, Op::Binary { x: row, y: seven, bop: BOp::BitAnd });
+    let mrow = put(kernel, Op::Binary { x: mrow, y: three, bop: BOp::BitShiftLeft });
+    let pack = put(kernel, Op::Const(Constant::idx(64i64)));
+    let mut addr = put(kernel, Op::Binary { x: mblk, y: pack, bop: BOp::Mul });
+    addr = put(kernel, Op::Binary { x: addr, y: mrow, bop: BOp::Add });
     if k / 8 > 1 {
         let seg = put(kernel, Op::Binary { x: lane, y: rconst, bop: BOp::Div });
-        let eight = put(kernel, Op::Const(Constant::idx(8i64)));
-        let ko = put(kernel, Op::Binary { x: seg, y: eight, bop: BOp::Mul });
+        let kstride = put(kernel, Op::Const(Constant::idx(tile_rows / 8 * 64)));
+        let ko = put(kernel, Op::Binary { x: seg, y: kstride, bop: BOp::Mul });
         addr = put(kernel, Op::Binary { x: addr, y: ko, bop: BOp::Add });
     }
     addr
@@ -664,20 +703,24 @@ fn coop_ldmatrix(
     tile: OpId,
     rows: Dim,
     k: Dim,
-    stride: Dim,
+    tile_rows: Dim,
     k_offset: Dim,
     slot_base: OpId,
     lane_base: OpId,
 ) -> OpId {
     let put = |kernel: &mut Kernel, op: Op| -> OpId {
-        if before.is_null() { kernel.push_back(op) } else { kernel.insert_before(before, op) }
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
     };
     let frags = u8::try_from(rows / 8 * (k / 8)).expect("ldmatrix: too many fragments");
     // The lane's own row/column offset is the same for every sub-tile of the
     // tile: reuse the caller's (one per tile) instead of rebuilding it per
     // load. `OpId::NULL` computes it here for a single-use load.
     let addr = if lane_base.is_null() {
-        ldmatrix_lane_base(kernel, before, lane, rows, k, stride)
+        ldmatrix_lane_base(kernel, before, lane, rows, k, tile_rows)
     } else {
         lane_base
     };
@@ -691,19 +734,12 @@ fn coop_ldmatrix(
     } else {
         put(kernel, Op::Binary { x: addr, y: slot_base, bop: BOp::Add })
     };
-    let off = put(kernel, Op::Const(Constant::idx(k_offset)));
+    // A K offset in halves is `k_offset / 8` k-blocks, each one 64-half block
+    // per eight tile rows: the k-block-major pack strides them by
+    // `tile_rows / 8 * 64`.
+    let off = put(kernel, Op::Const(Constant::idx(k_offset * (tile_rows / 8 * 8))));
     let addr = put(kernel, Op::Binary { x: addr, y: off, bop: BOp::Add });
     put(kernel, Op::PTX(Box::new(PTXOp::VLdMatrix { frags, src: tile, addr, trans: false })))
-}
-
-/// Index of a fragment in a lane-indexed register storage: `base * slots +
-/// Unroll(slots)`, i.e. the whole fragment as one vector access on top of a
-/// base that may itself be a lane (`tm`, `tn` or the tile lane).
-fn frag_index(kernel: &mut Kernel, before: OpId, base: OpId, slots: usize, axis: u32) -> OpId {
-    let sc = kernel.insert_const_idx_before(before, Dim::from(slots as i64));
-    let b = kernel.insert_before(before, Op::Binary { x: base, y: sc, bop: BOp::Mul });
-    let lanes = kernel.insert_before(before, Op::Unroll { axis, len: u16::try_from(slots).expect("fragment slots") });
-    kernel.insert_before(before, Op::Binary { x: b, y: lanes, bop: BOp::Add })
 }
 
 fn acc_frag_index(
@@ -746,8 +782,6 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
     };
     let loop_len = kernel.resolve_const(loop_len_id).and_then(Constant::as_dim).unwrap_or(0);
     let chunk = t.kt * fk;
-    let a_stride = chunk + STAGE_PAD;
-    let b_stride = chunk + STAGE_PAD;
     // The block-wide form stages a window of two K steps (one `ldmatrix` per
     // row group covering both) in two buffers, so the output tile is not
     // limited by the whole K chunk living in shared memory.
@@ -775,10 +809,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
         // split-K warp holds its own tile and merges through the combine
         // buffer.
         let tile = if combine {
-            nw * rows * a_stride * 2
+            nw * rows * chunk * 2
         } else {
-            let wstride = window_width + STAGE_PAD;
-            2 * (t.mt * fm + t.nt * fn_) * wstride * 2
+            (t.mt * fm + t.nt * fn_) * chunk * 2
         };
         if combine {
             tile + t.mt * fm * (nw * cols + 4) * 4
@@ -860,10 +893,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
     // variable's own step grows by `wk`.
     let scale_loop = |fixed: &[(OpId, Dim)]| -> Vec<(OpId, Dim)> {
         let n = Dim::from(wk);
-        fixed
-            .iter()
-            .map(|&(v, s)| (v, if v == t.loop_id && interleave { s * n } else { s }))
-            .collect()
+        fixed.iter().map(|&(v, s)| (v, if v == t.loop_id && interleave { s * n } else { s })).collect()
     };
     let a_fixed = scale_loop(&t.a_fixed);
     let b_fixed = scale_loop(&t.b_fixed);
@@ -885,9 +915,15 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
     let threads = Dim::from(warp);
     let vecs = |rows: Dim| rows * (window_width / Dim::from(2));
     let all = nw * threads;
-    let fill_fits = combine || (vecs(t.mt * fm) >= all && vecs(t.mt * fm) % all == 0)
-        && (vecs(t.nt * fn_) >= all && vecs(t.nt * fn_) % all == 0);
-    let staged = staged_form && fill_fits && staged_bytes(nw) <= kernel.device_info().local_mem_size;
+    let fill_fits = combine
+        || (vecs(t.mt * fm) >= all && vecs(t.mt * fm) % all == 0) && (vecs(t.nt * fn_) >= all && vecs(t.nt * fn_) % all == 0);
+    // The staged form's `ldmatrix` group is one lane over both operands and
+    // every K pair, which needs the operands' loads to share shape and stride:
+    // equal tile rows and half as many m tiles per warp as n tiles. Otherwise
+    // the config runs the per-tile form.
+    // A split-K warp owns a private tile and never forms the block-wide group.
+    let lane_group = combine || (t.mt * fm == t.nt * fn_ && mt_w * Dim::from(2) == nt_w);
+    let staged = staged_form && lane_group && fill_fits && staged_bytes(nw) <= kernel.device_info().local_mem_size;
 
     // The accumulator holds one register per (tile, slot): `m_len * n_len`
     // scalar elements would be 32x what the instruction layout needs.
@@ -915,14 +951,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
     {
         let slots: Dim = Dim::from(t.variant.c.slots.len() as i64);
         let frags = len / slots;
-        let fr = kernel.insert_before(
-            t.init,
-            Op::Unroll { axis: 0, len: u16::try_from(frags).expect("accumulator fragment count") },
-        );
-        let sl = kernel.insert_before(
-            t.init,
-            Op::Unroll { axis: 1, len: u16::try_from(slots).expect("fragment slot count") },
-        );
+        let fr =
+            kernel.insert_before(t.init, Op::Unroll { axis: 0, len: u16::try_from(frags).expect("accumulator fragment count") });
+        let sl = kernel.insert_before(t.init, Op::Unroll { axis: 1, len: u16::try_from(slots).expect("fragment slot count") });
         let sc = kernel.insert_const_idx_before(t.init, slots);
         let base = kernel.insert_before(t.init, Op::Binary { x: fr, y: sc, bop: BOp::Mul });
         let idx = kernel.insert_before(t.init, Op::Binary { x: base, y: sl, bop: BOp::Add });
@@ -943,11 +974,11 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
         let b_rows = if combine { fn_ } else { t.nt * fn_ };
         // A split-K warp keeps its own tile, so the buffer holds one per warp.
         let copies = if combine { nw } else { Dim::from(1) };
-        let a_tile = insert_local_f16_storage(kernel, copies * a_rows * a_stride);
-        let b_tile = insert_local_f16_storage(kernel, copies * b_rows * b_stride);
+        let a_tile = insert_local_f16_storage(kernel, copies * a_rows * chunk);
+        let b_tile = insert_local_f16_storage(kernel, copies * b_rows * chunk);
         // Split-K: `warp_var` selects the warp's own tile.
-        let per_warp = fm * a_stride;
-        let b_per_warp = fn_ * b_stride;
+        let per_warp = fm * chunk;
+        let b_per_warp = fn_ * chunk;
         let own = |kernel: &mut Kernel, per: Dim| -> OpId {
             if warp_var.is_null() {
                 kernel.insert_const_idx_before(t.update, 0i64)
@@ -995,84 +1026,98 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
             sync(kernel);
             // A warp-private tile holds one operand sub-tile, refilled per
             // sub-tile and read back in full before the refill.
-        for tm in 0..mt {
-            let a_base = base_expr(kernel, t.update, &a_fixed, t.a_offset, tm as Dim * fm * t.a_m);
-            let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
-            let sb = a_slot;
-            sync(kernel);
-            let (asl, av) = coop_fill_load(
-                kernel, t.update, fill_lane, t.a_src, a_base, t.a_m, t.a_k, fm, chunk, a_stride, fill_threads,
-            );
-            coop_fill_store(kernel, t.update, a_tile, sb, asl, av);
-            sync(kernel);
-            let mut tk = 0;
-            while tk < kt {
-                if tk + 1 < kt {
-                    let value =
-                        coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk * 2, a_stride, tk as Dim * fk, sb, OpId::NULL);
-                    a_frags[tm][tk] = slice(kernel, t.update, value, false, a_slots);
-                    a_frags[tm][tk + 1] = slice(kernel, t.update, value, true, a_slots);
-                    tk += 2;
-                } else {
-                    a_frags[tm][tk] =
-                        coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk, a_stride, tk as Dim * fk, sb, OpId::NULL);
-                    tk += 1;
+            for tm in 0..mt {
+                let a_base = base_expr(kernel, t.update, &a_fixed, t.a_offset, tm as Dim * fm * t.a_m);
+                let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
+                let sb = a_slot;
+                sync(kernel);
+                let (asl, av) =
+                    coop_fill_load(kernel, t.update, fill_lane, t.a_src, a_base, t.a_m, t.a_k, fm, chunk, fill_threads);
+                coop_fill_store(kernel, t.update, a_tile, sb, asl, av);
+                sync(kernel);
+                let mut tk = 0;
+                while tk < kt {
+                    if tk + 1 < kt {
+                        let value = coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk * 2, fm, tk as Dim * fk, sb, OpId::NULL);
+                        a_frags[tm][tk] = slice(kernel, t.update, value, false, a_slots);
+                        a_frags[tm][tk + 1] = slice(kernel, t.update, value, true, a_slots);
+                        tk += 2;
+                    } else {
+                        a_frags[tm][tk] =
+                            coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk, fm, tk as Dim * fk, sb, OpId::NULL);
+                        tk += 1;
+                    }
                 }
             }
-        }
-        for tn in 0..nt {
-            let b_base = base_expr(kernel, t.update, &b_fixed, t.b_offset, tn as Dim * fn_ * t.b_n);
-            let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
-            let sb = b_slot;
-            sync(kernel);
-            let (bsl, bv) = coop_fill_load(
-                kernel, t.update, fill_lane, t.b_src, b_base, t.b_n, t.b_k, fn_, chunk, b_stride, fill_threads,
-            );
-            coop_fill_store(kernel, t.update, b_tile, sb, bsl, bv);
-            sync(kernel);
-            // The accumulator stays in registers across the warp's K steps:
-            // one read before them, one write after them, and each step's
-            // instruction takes the previous step's result as its `c`. That
-            // `c` is an in-place accumulate (the instruction overwrites it),
-            // so the storage round-trip between steps disappears.
-            let tmos: Vec<OpId> = (0..mt).map(|tm| kernel.insert_const_idx_before(t.update, tm as Dim)).collect();
-            let tno = kernel.insert_const_idx_before(t.update, tn as Dim);
-            let mut acc_idx = Vec::with_capacity(mt);
-            let mut acc = Vec::with_capacity(mt);
-            for &tmo in &tmos {
-                let idx = acc_frag_index(kernel, t, v, nt_w, tmo, tno, 0, t.update);
-                acc.push(kernel.insert_before(t.update, Op::Load { src: t.acc, src_idx: idx }));
-                acc_idx.push(idx);
-            }
-            let mut tk = 0;
-            while tk < kt {
-                if tk + 1 < kt {
-                    let value =
-                        coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk * 2, b_stride, tk as Dim * fk, sb, OpId::NULL);
-                    for (step, frag) in [(tk, slice(kernel, t.update, value, false, b_slots)), (tk + 1, slice(kernel, t.update, value, true, b_slots))] {
+            for tn in 0..nt {
+                let b_base = base_expr(kernel, t.update, &b_fixed, t.b_offset, tn as Dim * fn_ * t.b_n);
+                let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
+                let sb = b_slot;
+                sync(kernel);
+                let (bsl, bv) =
+                    coop_fill_load(kernel, t.update, fill_lane, t.b_src, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads);
+                coop_fill_store(kernel, t.update, b_tile, sb, bsl, bv);
+                sync(kernel);
+                // The accumulator stays in registers across the warp's K steps:
+                // one read before them, one write after them, and each step's
+                // instruction takes the previous step's result as its `c`. That
+                // `c` is an in-place accumulate (the instruction overwrites it),
+                // so the storage round-trip between steps disappears.
+                let tmos: Vec<OpId> = (0..mt).map(|tm| kernel.insert_const_idx_before(t.update, tm as Dim)).collect();
+                let tno = kernel.insert_const_idx_before(t.update, tn as Dim);
+                let mut acc_idx = Vec::with_capacity(mt);
+                let mut acc = Vec::with_capacity(mt);
+                for &tmo in &tmos {
+                    let idx = acc_frag_index(kernel, t, v, nt_w, tmo, tno, 0, t.update);
+                    acc.push(kernel.insert_before(t.update, Op::Load { src: t.acc, src_idx: idx }));
+                    acc_idx.push(idx);
+                }
+                let mut tk = 0;
+                while tk < kt {
+                    if tk + 1 < kt {
+                        let value =
+                            coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk * 2, fn_, tk as Dim * fk, sb, OpId::NULL);
+                        for (step, frag) in [
+                            (tk, slice(kernel, t.update, value, false, b_slots)),
+                            (tk + 1, slice(kernel, t.update, value, true, b_slots)),
+                        ] {
+                            for tm in 0..mt {
+                                acc[tm] = kernel.insert_before(
+                                    t.update,
+                                    Op::Wmma {
+                                        dims: v.dims,
+                                        layout: v.layout,
+                                        dtype: v.dtype,
+                                        a: a_frags[tm][step],
+                                        b: frag,
+                                        c: acc[tm],
+                                    },
+                                );
+                            }
+                        }
+                        tk += 2;
+                    } else {
+                        let frag = coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk, fn_, tk as Dim * fk, sb, OpId::NULL);
                         for tm in 0..mt {
                             acc[tm] = kernel.insert_before(
                                 t.update,
-                                Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_frags[tm][step], b: frag, c: acc[tm] },
+                                Op::Wmma {
+                                    dims: v.dims,
+                                    layout: v.layout,
+                                    dtype: v.dtype,
+                                    a: a_frags[tm][tk],
+                                    b: frag,
+                                    c: acc[tm],
+                                },
                             );
                         }
+                        tk += 1;
                     }
-                    tk += 2;
-                } else {
-                    let frag = coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk, b_stride, tk as Dim * fk, sb, OpId::NULL);
-                    for tm in 0..mt {
-                        acc[tm] = kernel.insert_before(
-                            t.update,
-                            Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_frags[tm][tk], b: frag, c: acc[tm] },
-                        );
-                    }
-                    tk += 1;
+                }
+                for tm in 0..mt {
+                    kernel.insert_before(t.update, Op::Store { dst: t.acc, dst_idx: acc_idx[tm], src: acc[tm] });
                 }
             }
-            for tm in 0..mt {
-                kernel.insert_before(t.update, Op::Store { dst: t.acc, dst_idx: acc_idx[tm], src: acc[tm] });
-            }
-        }
         } else {
             // One tile per operand, refilled in place: the reference's
             // mainloop. The whole K chunk is the window, so there is no window
@@ -1083,9 +1128,12 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
             let paired = kt >= 2;
             let win_steps = kt;
             let win_k = Dim::from(win_steps as i64) * fk;
-            let wstride = win_k + STAGE_PAD;
-            let a_win = (t.mt * fm) * wstride;
-            let b_win = (t.nt * fn_) * wstride;
+            // k-block-major, so a tile is exactly `rows * k` halves: 16 KB per
+            // operand, 32 KB for the pair, and no row padding at all.
+            let a_rows = t.mt * fm;
+            let b_rows = t.nt * fn_;
+            let a_win = a_rows * win_k;
+            let b_win = b_rows * win_k;
             // The K element a chunk covers, wrapped into the contraction: the
             // fill of the last chunk of an iteration is the first chunk of the
             // next one, so the loads are already in flight while the
@@ -1097,20 +1145,21 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
             let b_rest: Vec<(OpId, Dim)> = b_fixed.iter().copied().filter(|(v, _)| *v != t.loop_id).collect();
             let a_origin = base_expr(kernel, t.update, &a_rest, t.a_offset, 0);
             let b_origin = base_expr(kernel, t.update, &b_rest, t.b_offset, 0);
-            let a_buf = insert_local_f16_storage(kernel, a_win);
-            let b_buf = insert_local_f16_storage(kernel, b_win);
+            // One tile for both operands, A first: the reference's single 32 KB
+            // buffer, with B one A-section after it, so the K pairs of both
+            // operands are one lane of eight equal-strided `ldmatrix`es.
+            let ab_buf = insert_local_f16_storage(kernel, a_win + b_win);
+            let a_win_c = kernel.insert_const_idx_before(t.loop_id, a_win);
             // Prologue: the first chunk of the loop's first iteration.
             {
                 let a0 = base_expr(kernel, t.loop_id, &a_rest, t.a_offset, 0);
                 let b0 = base_expr(kernel, t.loop_id, &b_rest, t.b_offset, 0);
-                let (asl, av) = coop_fill_load(
-                    kernel, t.loop_id, fill_lane, t.a_src, a0, t.a_m, t.a_k, t.mt * fm, win_k, wstride, fill_threads,
-                );
-                coop_fill_store(kernel, t.loop_id, a_buf, OpId::NULL, asl, av);
-                let (bsl, bv) = coop_fill_load(
-                    kernel, t.loop_id, fill_lane, t.b_src, b0, t.b_n, t.b_k, t.nt * fn_, win_k, wstride, fill_threads,
-                );
-                coop_fill_store(kernel, t.loop_id, b_buf, OpId::NULL, bsl, bv);
+                let (asl, av) =
+                    coop_fill_load(kernel, t.loop_id, fill_lane, t.a_src, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads);
+                coop_fill_store(kernel, t.loop_id, ab_buf, OpId::NULL, asl, av);
+                let (bsl, bv) =
+                    coop_fill_load(kernel, t.loop_id, fill_lane, t.b_src, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads);
+                coop_fill_store(kernel, t.loop_id, ab_buf, a_win_c, bsl, bv);
                 // Every warp reads rows other threads wrote, so the prologue's
                 // chunk has to be published before the first `ldmatrix`.
                 kernel.insert_before(t.loop_id, Op::Barrier);
@@ -1159,22 +1208,11 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 b_init = kernel.insert_before(t.update, Op::Binary { x: b_init, y: s, bop: BOp::Mul });
             }
             kernel.insert_before(t.update, Op::Store { dst: b_off_st, dst_idx: off_idx, src: b_init });
-            // The warp's fragments for this chunk, in registers and indexed by
-            // their tile lane: the mma group below reads them with the lane, so
-            // one `wmma` + one accumulator store cover the whole tile grid.
+            // The warp's staged fragments: one section per `ldmatrix` lane
+            // (`operand * pairs + pair`), each `mt * width` halves, indexed by
+            // its tile lane so one `wmma` + one accumulator store cover the
+            // whole tile grid.
             let steps_here = 2;
-            let a_st = insert_scoped_storage(
-                kernel,
-                DType::F16,
-                MemScope::Register,
-                Dim::from((mt * steps_here * a_slots) as i64),
-            );
-            let b_st = insert_scoped_storage(
-                kernel,
-                DType::F16,
-                MemScope::Register,
-                Dim::from((nt * steps_here * b_slots) as i64),
-            );
             // The body is the K loop's own: the chunk in shared memory is
             // consumed by the instructions, then overwritten by the chunk the
             // body loaded at its top.
@@ -1208,33 +1246,14 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 // The next chunk's loads go out here, before the compute of
                 // this one; their stores follow it, so the global round trip is
                 // covered by the chunk's HMMAs.
-                let (asl, av) = coop_fill_load(
-                    kernel, end, fill_lane, t.a_src, a_fill, t.a_m, t.a_k, t.mt * fm, win_k, wstride, fill_threads,
-                );
-                let (bsl, bv) = coop_fill_load(
-                    kernel, end, fill_lane, t.b_src, b_fill, t.b_n, t.b_k, t.nt * fn_, win_k, wstride, fill_threads,
-                );
-                let cur_a = kernel.insert_const_idx_before(end, 0i64);
-                let cur_b = kernel.insert_const_idx_before(end, 0i64);
-                // One lane base per operand tile: every `ldmatrix` of the
-                // tile adds only its sub-tile offset to it.
-                let a_lb = ldmatrix_lane_base(
-                    kernel,
-                    end,
-                    lane,
-                    fm,
-                    if paired { fk * 2 } else { fk },
-                    wstride,
-                );
-                let b_lb_pair = if paired { ldmatrix_lane_base(kernel, end, lane, fn_ * 2, fk * 2, wstride) } else { OpId::NULL };
-                let b_lb = ldmatrix_lane_base(
-                    kernel,
-                    end,
-                    lane,
-                    fn_,
-                    if paired { fk * 2 } else { fk },
-                    wstride,
-                );
+                let (asl, av) =
+                    coop_fill_load(kernel, end, fill_lane, t.a_src, a_fill, t.a_m, t.a_k, a_rows, win_k, fill_threads);
+                let (bsl, bv) =
+                    coop_fill_load(kernel, end, fill_lane, t.b_src, b_fill, t.b_n, t.b_k, b_rows, win_k, fill_threads);
+                // One lane base for the whole tile: every `ldmatrix` of every
+                // operand, pair and tile adds only its own offset to it — A's
+                // loads and B's pair loads are the same 16-row, 2-K-step shape.
+                let a_lb = ldmatrix_lane_base(kernel, end, lane, fm, if paired { fk * 2 } else { fk }, a_rows);
                 // The whole tile grid as one lane: `tm`/`tn` are the lane's
                 // quotient and remainder (a shift and a mask, the way the
                 // reference derives its lane geometry — the lane counts from
@@ -1244,10 +1263,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 // its last K step: the steps chain through the instruction's
                 // `c`, which accumulates in place.
                 let grid = mt * nt;
-                let tl = kernel.insert_before(
-                    end,
-                    Op::Unroll { axis: 0, len: u16::try_from(grid).expect("tile count") },
-                );
+                let tl = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(grid).expect("tile count") });
                 debug_assert!(nt.is_power_of_two(), "tile-grid lane split: n tile count is not a power of two");
                 let shift = kernel.insert_const_idx_before(end, Dim::from(nt.trailing_zeros() as i64));
                 let tml = kernel.insert_before(end, Op::Binary { x: tl, y: shift, bop: BOp::BitShiftRight });
@@ -1261,152 +1277,128 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 // (`+0x1000`, `+0x4000`, ...), as the reference's unrolled body
                 // does. Everything else is a lane.
                 let npairs = (win_steps / 2).max(1);
-                for pi in 0..npairs {
-                    let koff_a = if paired {
-                        kernel.insert_const_idx_before(end, Dim::from((pi * 2) as i64) * fk)
-                    } else {
+                let eight = Dim::from(8i64);
+                // One `ldmatrix` for both operands and every K pair: the lane is
+                // `operand * npairs + pair`, B sits one A-section later in the
+                // same tile, and each pair is one k-block pair further in, so the
+                // lane's slot is `lane * pair_stride` — `[Rbase]`,
+                // `[Rbase+0x1000]`, ... the way the reference reads its single
+                // 32 KB buffer. The tile is the next lane and the fragment width
+                // the innermost, so one op covers all eight loads.
+                debug_assert_eq!(a_rows, b_rows, "one tile for both operands needs one row count");
+                debug_assert_eq!(mt, nt / 2, "one tile lane for both operands needs one tile count");
+                let width = a_slots * if paired { 2 } else { 1 };
+                let nlanes = 2 * npairs;
+                let ab_st =
+                    insert_scoped_storage(kernel, DType::F16, MemScope::Register, Dim::from((nlanes * mt * width) as i64));
+                let obl =
+                    kernel.insert_before(end, Op::Unroll { axis: 3, len: u16::try_from(nlanes).expect("operand-pair lane") });
+                let tlane = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(mt).expect("tile count") });
+                // The lane's slot: its pair section, its tile, and the warp's own
+                // band (A's rows for A's lanes, B's for B's).
+                let ps = kernel.insert_const_idx_before(end, Dim::from(2 * fk) * a_rows);
+                let mut sb = kernel.insert_before(end, Op::Binary { x: obl, y: ps, bop: BOp::Mul });
+                let ts = kernel.insert_const_idx_before(end, fm * eight);
+                let toff = kernel.insert_before(end, Op::Binary { x: tlane, y: ts, bop: BOp::Mul });
+                sb = kernel.insert_before(end, Op::Binary { x: sb, y: toff, bop: BOp::Add });
+                if !warp_off_m.is_null() || !warp_off_n.is_null() {
+                    let wa = if warp_off_m.is_null() {
                         kernel.insert_const_idx_before(end, 0i64)
-                    };
-                    let mut acc = kernel.insert_before(end, Op::Load { src: t.acc, src_idx: acc_idx });
-                    // The A tile's `ldmatrix` results go in as one vector each:
-                    // the load covers both K steps of the pair, so one store
-                    // writes the whole 8-half group at the tile's slot (layout
-                    // `[tm][step][slot]`, which keeps the two steps adjacent).
-                    // The tile index is a lane, so one `ldmatrix` and one store
-                    // cover every m tile of the warp.
-                    {
-                        let tml = kernel.insert_before(
-                            end,
-                            Op::Unroll { axis: 0, len: u16::try_from(mt).expect("m tile count") },
-                        );
-                        let tmc = kernel.insert_const_idx_before(end, fm * wstride);
-                        let toff = kernel.insert_before(end, Op::Binary { x: tml, y: tmc, bop: BOp::Mul });
-                        let mut sb = if warp_off_m.is_null() {
-                            toff
-                        } else {
-                            let s = kernel.insert_const_idx_before(end, wstride);
-                            let b0 = kernel.insert_before(end, Op::Binary { x: warp_off_m, y: s, bop: BOp::Mul });
-                            kernel.insert_before(end, Op::Binary { x: b0, y: toff, bop: BOp::Add })
-                        };
-                        sb = kernel.insert_before(end, Op::Binary { x: sb, y: cur_a, bop: BOp::Add });
-                        {
-                            let sb = kernel.insert_before(end, Op::Binary { x: sb, y: koff_a, bop: BOp::Add });
-                            let value = coop_ldmatrix(
-                                kernel,
-                                end,
-                                lane,
-                                a_buf,
-                                fm,
-                                if paired { fk * 2 } else { fk },
-                                wstride,
-                                0,
-                                sb,
-                                a_lb,
-                            );
-                            let width = a_slots * if paired { 2 } else { 1 };
-                            let sc = kernel.insert_const_idx_before(end, Dim::from(steps_here as i64));
-                            let base = kernel.insert_before(end, Op::Binary { x: tml, y: sc, bop: BOp::Mul });
-                            let asl = kernel.insert_const_idx_before(end, Dim::from(a_slots as i64));
-                            let abase = kernel.insert_before(end, Op::Binary { x: base, y: asl, bop: BOp::Mul });
-                            let alane = kernel.insert_before(
-                                end,
-                                Op::Unroll { axis: 1, len: u16::try_from(width).expect("a fragment width") },
-                            );
-                            let aidx = kernel.insert_before(end, Op::Binary { x: abase, y: alane, bop: BOp::Add });
-                            kernel.insert_before(end, Op::Store { dst: a_st, dst_idx: aidx, src: value });
-                        }
-                    }
-                    // One N tile per load, or two where the grid allows it: an
-                    // `x4` covers both tiles and both K steps, like the
-                    // reference's `ldmatrix.x4`-only mainloop, and its words are
-                    // `(tile0, k0), (tile1, k0), (tile0, k8), (tile1, k8)`.
-                    // The tiles are a lane: the tile-pair index is the lane and
-                    // the word its low bits, so one `ldmatrix` and one store
-                    // cover every N tile of the warp.
-                    let n_pair = paired && nt % 2 == 0;
-                    let (nlanes, nrows, nk, nstride, nwords) = if n_pair {
-                        let words = (fn_ * 2 / 8) * (fk * 2 / 8) * Dim::from(b_slots as i64);
-                        (nt / 2, fn_ * 2, fk * 2, 2 * fn_ * wstride, words)
                     } else {
-                        let kk = if paired { fk * 2 } else { fk };
-                        (nt, fn_, kk, fn_ * wstride, (fn_ / 8) * (kk / 8) * Dim::from(b_slots as i64))
+                        let s = kernel.insert_const_idx_before(end, eight);
+                        kernel.insert_before(end, Op::Binary { x: warp_off_m, y: s, bop: BOp::Mul })
                     };
-                    // The N tiles are their own lane on their own axis: axis 0
-                    // is the M-tile lane and the grid lane.
-                    let nl = kernel.insert_before(
-                        end,
-                        Op::Unroll { axis: 2, len: u16::try_from(nlanes).expect("n tile count") },
-                    );
-                    let ns = kernel.insert_const_idx_before(end, nstride);
-                    let off = kernel.insert_before(end, Op::Binary { x: nl, y: ns, bop: BOp::Mul });
-                    let sb = if warp_off_n.is_null() {
-                        off
+                    let wb = if warp_off_n.is_null() {
+                        kernel.insert_const_idx_before(end, 0i64)
                     } else {
-                        let s = kernel.insert_const_idx_before(end, wstride);
-                        let b0 = kernel.insert_before(end, Op::Binary { x: warp_off_n, y: s, bop: BOp::Mul });
-                        kernel.insert_before(end, Op::Binary { x: b0, y: off, bop: BOp::Add })
+                        let s = kernel.insert_const_idx_before(end, eight);
+                        kernel.insert_before(end, Op::Binary { x: warp_off_n, y: s, bop: BOp::Mul })
                     };
-                    let sb = kernel.insert_before(end, Op::Binary { x: sb, y: cur_b, bop: BOp::Add });
-                    let sb = kernel.insert_before(end, Op::Binary { x: sb, y: koff_a, bop: BOp::Add });
+                    let half = kernel.insert_const_idx_before(end, Dim::from(npairs as i64));
+                    let is_b = kernel.insert_before(end, Op::Binary { x: obl, y: half, bop: BOp::Cmpge });
+                    let w = kernel.insert_before(end, Op::Select { cond: is_b, if_true: wb, if_false: wa });
+                    sb = kernel.insert_before(end, Op::Binary { x: sb, y: w, bop: BOp::Add });
+                }
+                {
                     let value = coop_ldmatrix(
                         kernel,
                         end,
                         lane,
-                        b_buf,
-                        nrows,
-                        nk,
-                        wstride,
-                        0,
+                        ab_buf,
+                        fm,
+                        if paired { fk * 2 } else { fk },
+                        a_rows,
+                        Dim::from(0),
                         sb,
-                        if n_pair { b_lb_pair } else { b_lb },
+                        a_lb,
                     );
-                    // The staging keeps the words in the `ldmatrix`'s own
-                    // order, `[pair][word][slot]`, so the whole result is one
-                    // contiguous run and one lane stores it.
-                    let nwc = kernel.insert_const_idx_before(end, nwords);
-                    let base = kernel.insert_before(end, Op::Binary { x: nl, y: nwc, bop: BOp::Mul });
-                    let blane = kernel.insert_before(
-                        end,
-                        Op::Unroll { axis: 1, len: u16::try_from(nwords).expect("b fragment halves") },
-                    );
-                    let bidx = kernel.insert_before(end, Op::Binary { x: base, y: blane, bop: BOp::Add });
-                    kernel.insert_before(end, Op::Store { dst: b_st, dst_idx: bidx, src: value });
-                // One `wmma` per (tile, K step) covers the grid: `a`/`b` are
-                // lane-indexed reads of the fragments just staged and the
-                // accumulator chain runs through the instruction's `c`.
-                for sl in 0..steps_here {
-                    let sc = kernel.insert_const_idx_before(end, Dim::from(steps_here as i64));
-                    let abase = kernel.insert_before(end, Op::Binary { x: tml, y: sc, bop: BOp::Mul });
-                    let am = kernel.insert_const_idx_before(end, Dim::from(sl as i64));
-                    let abase = kernel.insert_before(end, Op::Binary { x: abase, y: am, bop: BOp::Add });
-                    let aidx = frag_index(kernel, end, abase, a_slots, 1);
-                    let a_frag = kernel.insert_before(end, Op::Load { src: a_st, src_idx: aidx });
-                    // B: `[pair][word][slot]`, the word being
-                    // `(tn - pair*2) + 2*step` in the `ldmatrix`'s own order.
-                    let pair = kernel.insert_const_idx_before(end, Dim::from(2i64));
-                    let tpair = kernel.insert_before(end, Op::Binary { x: tnl, y: pair, bop: BOp::Div });
-                    let twos = kernel.insert_const_idx_before(end, Dim::from(2 * steps_here as i64));
-                    let bbase = kernel.insert_before(end, Op::Binary { x: tpair, y: twos, bop: BOp::Mul });
-                    let trem = kernel.insert_before(end, Op::Binary { x: tnl, y: pair, bop: BOp::Mod });
-                    let bbase = kernel.insert_before(end, Op::Binary { x: bbase, y: trem, bop: BOp::Add });
-                    let tmn = kernel.insert_const_idx_before(end, Dim::from(2 * sl as i64));
-                    let bbase = kernel.insert_before(end, Op::Binary { x: bbase, y: tmn, bop: BOp::Add });
-                    let bidx = frag_index(kernel, end, bbase, b_slots, 1);
-                    let b_frag = kernel.insert_before(end, Op::Load { src: b_st, src_idx: bidx });
-                    acc = kernel.insert_before(
-                        end,
-                        Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_frag, b: b_frag, c: acc },
-                    );
+                    // `[lane][tile][half]`: one contiguous run per tile, so one
+                    // store per lane writes the whole `ldmatrix` result.
+                    let sect = kernel.insert_const_idx_before(end, Dim::from((mt * width) as i64));
+                    let base = kernel.insert_before(end, Op::Binary { x: obl, y: sect, bop: BOp::Mul });
+                    let ws = kernel.insert_const_idx_before(end, Dim::from(width as i64));
+                    let tb = kernel.insert_before(end, Op::Binary { x: tlane, y: ws, bop: BOp::Mul });
+                    let base = kernel.insert_before(end, Op::Binary { x: base, y: tb, bop: BOp::Add });
+                    let wl =
+                        kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(width).expect("fragment width") });
+                    let idx = kernel.insert_before(end, Op::Binary { x: base, y: wl, bop: BOp::Add });
+                    kernel.insert_before(end, Op::Store { dst: ab_st, dst_idx: idx, src: value });
                 }
-                    kernel.insert_before(end, Op::Store { dst: t.acc, dst_idx: acc_idx, src: acc });
+                // The K pairs are serial — each step's `c` is the previous
+                // result — so every pair reads its own staged section by a
+                // constant and only the chain is a loop. The accumulator itself
+                // is read once for the whole chunk and written back once: the
+                // register storage is the K loop's carried state, not a hop per
+                // pair, so the `wmma` chain stays live in registers across all
+                // of them the way the reference's 64 accumulators do.
+                let mut acc = kernel.insert_before(end, Op::Load { src: t.acc, src_idx: acc_idx });
+                for pi in 0..npairs {
+                    // One `wmma` per (tile, K step) covers the grid: `a`/`b` are
+                    // lane-indexed reads of the staged sections and the chain
+                    // runs through the instruction's `c`.
+                    for sl in 0..steps_here {
+                        // A: `[operand][pair][tile][step][slot]`, operand 0.
+                        let asec = kernel.insert_const_idx_before(end, Dim::from((pi * mt * width) as i64));
+                        let ws = kernel.insert_const_idx_before(end, Dim::from(width as i64));
+                        let abase = kernel.insert_before(end, Op::Binary { x: tml, y: ws, bop: BOp::Mul });
+                        let abase = kernel.insert_before(end, Op::Binary { x: abase, y: asec, bop: BOp::Add });
+                        let am = kernel.insert_const_idx_before(end, Dim::from((sl * a_slots) as i64));
+                        let abase = kernel.insert_before(end, Op::Binary { x: abase, y: am, bop: BOp::Add });
+                        let alane = kernel
+                            .insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(a_slots).expect("a fragment slots") });
+                        let aidx = kernel.insert_before(end, Op::Binary { x: abase, y: alane, bop: BOp::Add });
+                        let a_frag = kernel.insert_before(end, Op::Load { src: ab_st, src_idx: aidx });
+                        // B: operand 1, the `ldmatrix`'s own word order:
+                        // `(tile-in-pair) + 2 * K step`, one `b_slots` each.
+                        let bsec = kernel.insert_const_idx_before(end, Dim::from(((npairs + pi) * mt * width) as i64));
+                        let two = kernel.insert_const_idx_before(end, Dim::from(2i64));
+                        let tpair = kernel.insert_before(end, Op::Binary { x: tnl, y: two, bop: BOp::Div });
+                        let bbase = kernel.insert_before(end, Op::Binary { x: tpair, y: ws, bop: BOp::Mul });
+                        let bbase = kernel.insert_before(end, Op::Binary { x: bbase, y: bsec, bop: BOp::Add });
+                        let trem = kernel.insert_before(end, Op::Binary { x: tnl, y: two, bop: BOp::Mod });
+                        let tmn = kernel.insert_const_idx_before(end, Dim::from(2 * sl as i64));
+                        let tidx = kernel.insert_before(end, Op::Binary { x: trem, y: tmn, bop: BOp::Add });
+                        let bsl = kernel.insert_const_idx_before(end, Dim::from(b_slots as i64));
+                        let bmid = kernel.insert_before(end, Op::Binary { x: tidx, y: bsl, bop: BOp::Mul });
+                        let bbase = kernel.insert_before(end, Op::Binary { x: bbase, y: bmid, bop: BOp::Add });
+                        let blane = kernel
+                            .insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(b_slots).expect("b fragment slots") });
+                        let bidx = kernel.insert_before(end, Op::Binary { x: bbase, y: blane, bop: BOp::Add });
+                        let b_frag = kernel.insert_before(end, Op::Load { src: ab_st, src_idx: bidx });
+                        acc = kernel.insert_before(
+                            end,
+                            Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_frag, b: b_frag, c: acc },
+                        );
+                    }
                 }
+                kernel.insert_before(end, Op::Store { dst: t.acc, dst_idx: acc_idx, src: acc });
                 // Read-protect: no thread may overwrite the tile until every
                 // warp has finished the `ldmatrix`es of the chunk in it. Then
                 // the next chunk lands in the same 16 KB, and the second
                 // barrier publishes it for the next iteration's `ldmatrix`es.
                 kernel.insert_before(end, Op::Barrier);
-                coop_fill_store(kernel, end, a_buf, OpId::NULL, asl, av);
-                coop_fill_store(kernel, end, b_buf, OpId::NULL, bsl, bv);
+                coop_fill_store(kernel, end, ab_buf, OpId::NULL, asl, av);
+                coop_fill_store(kernel, end, ab_buf, a_win_c, bsl, bv);
                 kernel.insert_before(end, Op::Barrier);
             }
         }
@@ -1420,11 +1412,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let acc_idx = acc_frag_index(kernel, t, v, nt_w, tmo, tno, 0, t.update);
                 let mut acc = kernel.insert_before(t.update, Op::Load { src: t.acc, src_idx: acc_idx });
                 for tk in 0..t.kt {
-                    let a_base =
-                        base_expr(kernel, t.update, &a_fixed, t.a_offset, tm * fm * t.a_m + tk * fk * t.a_k);
+                    let a_base = base_expr(kernel, t.update, &a_fixed, t.a_offset, tm * fm * t.a_m + tk * fk * t.a_k);
                     let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
-                    let b_base =
-                        base_expr(kernel, t.update, &b_fixed, t.b_offset, tn * fn_ * t.b_n + tk * fk * t.b_k);
+                    let b_base = base_expr(kernel, t.update, &b_fixed, t.b_offset, tn * fn_ * t.b_n + tk * fk * t.b_k);
                     let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
                     let a_elems = frag_elems(kernel, t.update, lane, &v.a, t.a_src, a_base, t.a_m, t.a_k, warp);
                     let a_frag = kernel.insert_before(t.update, Op::Stack { ops: a_elems.into() });
@@ -1464,10 +1454,8 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
         let cl = |kernel: &mut Kernel| -> OpId { kernel.insert_const_idx_before(anchor, acc_len) };
         // One lane over the accumulator's elements: the partial write and the
         // cross-warp sum are each one op, duplicated per element.
-        let il = kernel.insert_before(
-            anchor,
-            Op::Unroll { axis: 0, len: u16::try_from(acc_len).expect("accumulator element count") },
-        );
+        let il =
+            kernel.insert_before(anchor, Op::Unroll { axis: 0, len: u16::try_from(acc_len).expect("accumulator element count") });
         {
             let at = il;
             let v = kernel.insert_before(anchor, Op::Load { src: t.acc, src_idx: at });
@@ -1608,87 +1596,84 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
             kernel.insert_const_idx_before(epi.store, 0i64)
         };
         {
-                // The value of one accumulator slot, cast through the
-                // epilogue's dtype chain.
-                // The instruction slots are a lane too: the accumulator
-                // read, the cast chain, the address and the store are one op
-                // each, over three lanes — the warp's tile grid and the slots.
-                let nslots = v.c.slots.len();
-                let half = u16::try_from(nslots / 2).expect("fragment slot rows");
-                let drow = Dim::from(v.c.slots.get(half as usize).map(|s| s.0).unwrap_or(0) as i64);
-                let dcol = Dim::from(v.c.slots.get(1).map(|s| s.1).unwrap_or(0) as i64);
-                let sl = kernel.insert_before(
-                    epi.store,
-                    Op::Unroll { axis: 2, len: u16::try_from(nslots).expect("fragment slots") },
-                );
-                let hc = kernel.insert_const_idx_before(epi.store, Dim::from(half as i64));
-                let slot_row = kernel.insert_before(epi.store, Op::Binary { x: sl, y: hc, bop: BOp::Div });
-                let slot_col = kernel.insert_before(epi.store, Op::Binary { x: sl, y: hc, bop: BOp::Mod });
-                {
-                    // Value: the whole fragment, cast element-wise.
-                    let ntc = kernel.insert_const_idx_before(epi.store, nt_w);
-                    let mut idx = kernel.insert_before(epi.store, Op::Binary { x: tm, y: ntc, bop: BOp::Mul });
-                    idx = kernel.insert_before(epi.store, Op::Binary { x: idx, y: tn, bop: BOp::Add });
-                    let slots_c = kernel.insert_const_idx_before(epi.store, t.slots);
-                    idx = kernel.insert_before(epi.store, Op::Binary { x: idx, y: slots_c, bop: BOp::Mul });
-                    idx = kernel.insert_before(epi.store, Op::Binary { x: idx, y: sl, bop: BOp::Add });
-                    let mut elem = kernel.insert_before(epi.store, Op::Load { src: t.acc, src_idx: idx });
-                    for dtype in epi.chain.iter().rev() {
-                        elem = kernel.insert_before(epi.store, Op::Cast { x: elem, dtype: *dtype });
-                    }
-                    // Address: `base + (tm*fm + slot_row*drow)*m + (tn*fn +
-                    // slot_col*dcol)*n`, plus the warp's window and lane.
-                    let mut addr = base_expr(kernel, epi.store, &epi.fixed, epi.offset, 0);
-                    let fmc = kernel.insert_const_idx_before(epi.store, fm);
-                    let mut mrow = kernel.insert_before(epi.store, Op::Binary { x: tm, y: fmc, bop: BOp::Mul });
-                    let dc = kernel.insert_const_idx_before(epi.store, drow);
-                    let moff = kernel.insert_before(epi.store, Op::Binary { x: slot_row, y: dc, bop: BOp::Mul });
-                    mrow = kernel.insert_before(epi.store, Op::Binary { x: mrow, y: moff, bop: BOp::Add });
-                    let mut extra = if epi.m != 1 {
-                        let st = kernel.insert_const_idx_before(epi.store, epi.m);
-                        kernel.insert_before(epi.store, Op::Binary { x: mrow, y: st, bop: BOp::Mul })
-                    } else {
-                        mrow
-                    };
-                    let fnc = kernel.insert_const_idx_before(epi.store, fn_);
-                    let mut ncol = kernel.insert_before(epi.store, Op::Binary { x: tn, y: fnc, bop: BOp::Mul });
-                    let dc2 = kernel.insert_const_idx_before(epi.store, dcol);
-                    let noff = kernel.insert_before(epi.store, Op::Binary { x: slot_col, y: dc2, bop: BOp::Mul });
-                    ncol = kernel.insert_before(epi.store, Op::Binary { x: ncol, y: noff, bop: BOp::Add });
-                    let nterm = if epi.n != 1 {
-                        let st = kernel.insert_const_idx_before(epi.store, epi.n);
-                        kernel.insert_before(epi.store, Op::Binary { x: ncol, y: st, bop: BOp::Mul })
-                    } else {
-                        ncol
-                    };
-                    extra = kernel.insert_before(epi.store, Op::Binary { x: extra, y: nterm, bop: BOp::Add });
-                    addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: extra, bop: BOp::Add });
-                    for (off, stride) in [(warp_off_m, epi.m), (warp_off_n, epi.n)] {
-                        if off.is_null() {
-                            continue;
-                        }
-                        let st = kernel.insert_const_idx_before(epi.store, stride);
-                        let t2 = kernel.insert_before(epi.store, Op::Binary { x: off, y: st, bop: BOp::Mul });
-                        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: t2, bop: BOp::Add });
-                    }
-                    let row = lane_coord(kernel, epi.store, lane, &v.c, FragAxis::Row, warp);
-                    let rowt = if epi.m != 1 {
-                        let st = kernel.insert_const_idx_before(epi.store, epi.m);
-                        kernel.insert_before(epi.store, Op::Binary { x: row, y: st, bop: BOp::Mul })
-                    } else {
-                        row
-                    };
-                    addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: rowt, bop: BOp::Add });
-                    let col = lane_coord(kernel, epi.store, lane, &v.c, FragAxis::Col, warp);
-                    let colt = if epi.n != 1 {
-                        let st = kernel.insert_const_idx_before(epi.store, epi.n);
-                        kernel.insert_before(epi.store, Op::Binary { x: col, y: st, bop: BOp::Mul })
-                    } else {
-                        col
-                    };
-                    addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: colt, bop: BOp::Add });
-                    kernel.insert_before(epi.store, Op::Store { dst: epi.dst, dst_idx: addr, src: elem });
+            // The value of one accumulator slot, cast through the
+            // epilogue's dtype chain.
+            // The instruction slots are a lane too: the accumulator
+            // read, the cast chain, the address and the store are one op
+            // each, over three lanes — the warp's tile grid and the slots.
+            let nslots = v.c.slots.len();
+            let half = u16::try_from(nslots / 2).expect("fragment slot rows");
+            let drow = Dim::from(v.c.slots.get(half as usize).map(|s| s.0).unwrap_or(0) as i64);
+            let dcol = Dim::from(v.c.slots.get(1).map(|s| s.1).unwrap_or(0) as i64);
+            let sl = kernel.insert_before(epi.store, Op::Unroll { axis: 2, len: u16::try_from(nslots).expect("fragment slots") });
+            let hc = kernel.insert_const_idx_before(epi.store, Dim::from(half as i64));
+            let slot_row = kernel.insert_before(epi.store, Op::Binary { x: sl, y: hc, bop: BOp::Div });
+            let slot_col = kernel.insert_before(epi.store, Op::Binary { x: sl, y: hc, bop: BOp::Mod });
+            {
+                // Value: the whole fragment, cast element-wise.
+                let ntc = kernel.insert_const_idx_before(epi.store, nt_w);
+                let mut idx = kernel.insert_before(epi.store, Op::Binary { x: tm, y: ntc, bop: BOp::Mul });
+                idx = kernel.insert_before(epi.store, Op::Binary { x: idx, y: tn, bop: BOp::Add });
+                let slots_c = kernel.insert_const_idx_before(epi.store, t.slots);
+                idx = kernel.insert_before(epi.store, Op::Binary { x: idx, y: slots_c, bop: BOp::Mul });
+                idx = kernel.insert_before(epi.store, Op::Binary { x: idx, y: sl, bop: BOp::Add });
+                let mut elem = kernel.insert_before(epi.store, Op::Load { src: t.acc, src_idx: idx });
+                for dtype in epi.chain.iter().rev() {
+                    elem = kernel.insert_before(epi.store, Op::Cast { x: elem, dtype: *dtype });
                 }
+                // Address: `base + (tm*fm + slot_row*drow)*m + (tn*fn +
+                // slot_col*dcol)*n`, plus the warp's window and lane.
+                let mut addr = base_expr(kernel, epi.store, &epi.fixed, epi.offset, 0);
+                let fmc = kernel.insert_const_idx_before(epi.store, fm);
+                let mut mrow = kernel.insert_before(epi.store, Op::Binary { x: tm, y: fmc, bop: BOp::Mul });
+                let dc = kernel.insert_const_idx_before(epi.store, drow);
+                let moff = kernel.insert_before(epi.store, Op::Binary { x: slot_row, y: dc, bop: BOp::Mul });
+                mrow = kernel.insert_before(epi.store, Op::Binary { x: mrow, y: moff, bop: BOp::Add });
+                let mut extra = if epi.m != 1 {
+                    let st = kernel.insert_const_idx_before(epi.store, epi.m);
+                    kernel.insert_before(epi.store, Op::Binary { x: mrow, y: st, bop: BOp::Mul })
+                } else {
+                    mrow
+                };
+                let fnc = kernel.insert_const_idx_before(epi.store, fn_);
+                let mut ncol = kernel.insert_before(epi.store, Op::Binary { x: tn, y: fnc, bop: BOp::Mul });
+                let dc2 = kernel.insert_const_idx_before(epi.store, dcol);
+                let noff = kernel.insert_before(epi.store, Op::Binary { x: slot_col, y: dc2, bop: BOp::Mul });
+                ncol = kernel.insert_before(epi.store, Op::Binary { x: ncol, y: noff, bop: BOp::Add });
+                let nterm = if epi.n != 1 {
+                    let st = kernel.insert_const_idx_before(epi.store, epi.n);
+                    kernel.insert_before(epi.store, Op::Binary { x: ncol, y: st, bop: BOp::Mul })
+                } else {
+                    ncol
+                };
+                extra = kernel.insert_before(epi.store, Op::Binary { x: extra, y: nterm, bop: BOp::Add });
+                addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: extra, bop: BOp::Add });
+                for (off, stride) in [(warp_off_m, epi.m), (warp_off_n, epi.n)] {
+                    if off.is_null() {
+                        continue;
+                    }
+                    let st = kernel.insert_const_idx_before(epi.store, stride);
+                    let t2 = kernel.insert_before(epi.store, Op::Binary { x: off, y: st, bop: BOp::Mul });
+                    addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: t2, bop: BOp::Add });
+                }
+                let row = lane_coord(kernel, epi.store, lane, &v.c, FragAxis::Row, warp);
+                let rowt = if epi.m != 1 {
+                    let st = kernel.insert_const_idx_before(epi.store, epi.m);
+                    kernel.insert_before(epi.store, Op::Binary { x: row, y: st, bop: BOp::Mul })
+                } else {
+                    row
+                };
+                addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: rowt, bop: BOp::Add });
+                let col = lane_coord(kernel, epi.store, lane, &v.c, FragAxis::Col, warp);
+                let colt = if epi.n != 1 {
+                    let st = kernel.insert_const_idx_before(epi.store, epi.n);
+                    kernel.insert_before(epi.store, Op::Binary { x: col, y: st, bop: BOp::Mul })
+                } else {
+                    col
+                };
+                addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: colt, bop: BOp::Add });
+                kernel.insert_before(epi.store, Op::Store { dst: epi.dst, dst_idx: addr, src: elem });
+            }
         }
     }
 
@@ -1904,10 +1889,7 @@ impl Kernel {
             }
             // The epilogue stores may share one accumulator load (the llama
             // seed stores `f16(a)` and `f32(f16(a))`), so count distinct loads.
-            let n_loads = order
-                .iter()
-                .filter(|&&id| matches!(self.at(id), Op::Load { src, .. } if *src == acc))
-                .count();
+            let n_loads = order.iter().filter(|&&id| matches!(self.at(id), Op::Load { src, .. } if *src == acc)).count();
             if n_loads != epi_loads.len() + 1 {
                 continue;
             }
@@ -2127,8 +2109,7 @@ impl Kernel {
                 };
                 let a_unrolls = unroll_keys(&a_map);
                 let b_unrolls = unroll_keys(&b_map);
-                let Some(&(k_var, k_len_u16)) = a_unrolls.iter().find(|(v, _)| b_unrolls.iter().any(|(w, _)| w == v))
-                else {
+                let Some(&(k_var, k_len_u16)) = a_unrolls.iter().find(|(v, _)| b_unrolls.iter().any(|(w, _)| w == v)) else {
                     continue;
                 };
                 if a_unrolls.iter().filter(|(v, _)| *v != k_var).count() != 1
@@ -2718,10 +2699,7 @@ mod tests {
         k.opt_tensorize().apply(&mut k, 0);
         k.default_epilogue();
         k.verify();
-        assert!(
-            k.iter_unordered().any(|(_, op)| matches!(op, Op::Stack { .. })),
-            "the tensorized kernel has fragment stacks"
-        );
+        assert!(k.iter_unordered().any(|(_, op)| matches!(op, Op::Stack { .. })), "the tensorized kernel has fragment stacks");
 
         let bytes = k.serialize_bin();
         let mut offset = 0;
@@ -2871,7 +2849,11 @@ mod tests {
             assert!(!kw.split(nw_, split::SplitMode::Unroll, 32).is_null(), "split-K n split");
             assert!(!kw.split(klw, split::SplitMode::Unroll, 16).is_null(), "split-K k split");
             kw.verify();
-            let wopt = if staged { kw.opt_tensorize_staged() } else { kw.opt_tensorize() };
+            let wopt = if staged {
+                kw.opt_tensorize_staged()
+            } else {
+                kw.opt_tensorize()
+            };
             wopt.apply(&mut kw, 10);
             kw.default_epilogue();
             kw.device_epilogue().expect("split-K kernel devectorizes");
@@ -2882,10 +2864,7 @@ mod tests {
                 warped_worst = warped_worst.max((warped[i] - want[i]).abs());
             }
             println!("split-k (staged={staged}) vs scalar: max |err| = {warped_worst}");
-            assert!(
-                warped_worst < 1e-2,
-                "split-K tensorize (staged={staged}) disagrees with the scalar kernel: {warped_worst}"
-            );
+            assert!(warped_worst < 1e-2, "split-K tensorize (staged={staged}) disagrees with the scalar kernel: {warped_worst}");
         }
     }
 
@@ -3129,16 +3108,19 @@ mod tests {
         let l = Pat::bind('l');
         let row = (l.clone() / 4) % 8;
         let col = (l.clone() % 4) * 2;
-        let idx = (Pat::bind('m') + row) * Pat::bind_const('K')
-            + (Pat::bind('k') + col + Pat::bind_const('s'));
+        let idx = (Pat::bind('m') + row) * Pat::bind_const('K') + (Pat::bind('k') + col + Pat::bind_const('s'));
         let slot = Pat::load(Pat::bind('a'), idx);
 
         let wmma = k
             .iter_unordered()
             .find_map(|(id, op)| matches!(op, Op::Wmma { .. }).then_some(id))
             .expect("tensorize emitted a wmma");
-        let Op::Wmma { a: a_frag, .. } = *k.at(wmma) else { unreachable!() };
-        let Op::Stack { ref ops } = *k.at(a_frag) else { panic!("A operand is not a stack") };
+        let Op::Wmma { a: a_frag, .. } = *k.at(wmma) else {
+            unreachable!()
+        };
+        let Op::Stack { ref ops } = *k.at(a_frag) else {
+            panic!("A operand is not a stack")
+        };
         let mut matched = 0;
         for &slot_op in ops.iter() {
             if let Some(b) = k.match_pat(slot_op, &slot) {
@@ -3203,15 +3185,18 @@ mod tests {
             .collect();
         assert_eq!(locals.len(), 2, "A and B each get a shared tile");
 
-        let wmma = k
-            .iter_unordered()
-            .find_map(|(id, op)| matches!(op, Op::Wmma { .. }).then_some(id))
-            .expect("wmma present");
-        let Op::Wmma { a: a_frag, b: b_frag, .. } = *k.at(wmma) else { unreachable!() };
+        let wmma = k.iter_unordered().find_map(|(id, op)| matches!(op, Op::Wmma { .. }).then_some(id)).expect("wmma present");
+        let Op::Wmma { a: a_frag, b: b_frag, .. } = *k.at(wmma) else {
+            unreachable!()
+        };
         for operand in [a_frag, b_frag] {
-            let Op::Stack { ref ops } = *k.at(operand) else { panic!("operand is not a stack") };
+            let Op::Stack { ref ops } = *k.at(operand) else {
+                panic!("operand is not a stack")
+            };
             for &slot in ops.iter() {
-                let Op::Load { src, .. } = *k.at(slot) else { panic!("slot is not a load") };
+                let Op::Load { src, .. } = *k.at(slot) else {
+                    panic!("slot is not a load")
+                };
                 assert!(locals.contains(&src), "fragment slot still reads global memory");
             }
         }

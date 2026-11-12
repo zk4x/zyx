@@ -1948,12 +1948,7 @@ impl Tensor {
     /// # Errors
     ///
     /// Returns a shape error if the tensors have incompatible shapes.
-    pub fn dot_dtype_output(
-        &self,
-        rhs: impl Into<Tensor>,
-        acc_dtype: DType,
-        out_dtype: DType,
-    ) -> Result<Tensor, ZyxError> {
+    pub fn dot_dtype_output(&self, rhs: impl Into<Tensor>, acc_dtype: DType, out_dtype: DType) -> Result<Tensor, ZyxError> {
         let rhs = rhs.into();
         let xres = self.resolve_shape();
         let yres = rhs.resolve_shape();

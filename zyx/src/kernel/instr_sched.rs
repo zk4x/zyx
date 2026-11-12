@@ -302,7 +302,14 @@ impl Kernel {
                 | Op::TT(TTOp::PushBack { .. })
                 | Op::TT(TTOp::WaitFront { .. })
                 | Op::TT(TTOp::PopFront { .. }) => {}
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
+                Op::Source(_)
+                | Op::GPU(_)
+                | Op::Spirv(_)
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Program { .. }
+                | Op::Kernel(_) => {
                     todo!()
                 }
                 // PTX-level instruction: schedule it after the storage and

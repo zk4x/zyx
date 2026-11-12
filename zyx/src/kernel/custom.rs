@@ -24,8 +24,8 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::{
-    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, SourceBlock,
-    UOp, ops::TileDim,
+    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, SourceBlock, UOp,
+    ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
@@ -138,9 +138,10 @@ impl Kernel {
             }
         }
 
-        self.instruction_schedule();
-        self.constant_folding();
-        self.dead_code_elimination();
+        // Scheduling, constant folding and DCE belong to the device epilogue:
+        // it runs them (folding, CSE and DCE end `devectorize`) on every path
+        // that reaches a backend, so doing them here as well would hand the
+        // two paths different orders for the same kernel.
         self.verify();
 
         let mut inputs = Vec::new();

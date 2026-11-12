@@ -742,14 +742,11 @@ impl Kernel {
                         .unwrap();
                     }
                     PTXOp::CvtaShared { addr } => writeln!(f, "{indent}r{out_id} = cvta.shared r{}", addr.0).unwrap(),
-                    PTXOp::SharedBase { buf } => {
-                        writeln!(f, "{indent}r{out_id} = shared_base r{}", buf.0).unwrap()
-                    }
+                    PTXOp::SharedBase { buf } => writeln!(f, "{indent}r{out_id} = shared_base r{}", buf.0).unwrap(),
                     PTXOp::LdShared { buf, addr } => {
                         let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::F16);
                         let shp = self.shape_suffix(op_id, &shapes);
-                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = ld.shared r{} [r{}]", buf.0, addr.0)
-                            .unwrap();
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = ld.shared r{} [r{}]", buf.0, addr.0).unwrap();
                     }
                     PTXOp::StShared { buf, addr, src } => {
                         writeln!(f, "{indent}st.shared r{} [r{}] = r{}", buf.0, addr.0, src.0).unwrap();

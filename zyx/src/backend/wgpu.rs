@@ -306,9 +306,9 @@ impl WGPUMemoryPool {
     /// Tries to reuse existing allocations, all or nothing: every id must
     /// be on the free list (stable addresses) or nothing is claimed.
     pub fn try_reuse_allocations(&mut self, buffer_ids: &Set<ChunkId>) -> bool {
-        let ok = buffer_ids.iter().all(|id| {
-            self.free_set.get(&(self.buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id))
-        });
+        let ok = buffer_ids
+            .iter()
+            .all(|id| self.free_set.get(&(self.buffers[*id].bytes as usize)).is_some_and(|ids| ids.contains(id)));
         if ok {
             for id in buffer_ids {
                 if let Some(ids) = self.free_set.get_mut(&(self.buffers[*id].bytes as usize)) {

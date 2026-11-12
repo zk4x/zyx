@@ -53,12 +53,7 @@ impl Kernel {
     /// param's dtype. `print` prints every executed op with its first thread's
     /// value; `stop` ends the launch right after that op, so one window of the
     /// mainloop can be inspected instead of all of them.
-    pub fn interpret(
-        &self,
-        params: &[&[u8]],
-        print: bool,
-        stop: Option<OpId>,
-    ) -> Result<Vec<Vec<u8>>, ZyxError> {
+    pub fn interpret(&self, params: &[&[u8]], print: bool, stop: Option<OpId>) -> Result<Vec<Vec<u8>>, ZyxError> {
         // A lane bundle is many instructions (`a` of `wmma` is `[tile][slot]`),
         // so the interpreter runs the device-lowered form: devectorize a copy
         // first. `stop` therefore names an op of the *lowered* IR.
@@ -68,12 +63,7 @@ impl Kernel {
     }
 
     /// The evaluator: `self` is already in scalar form.
-    fn interpret_flat(
-        &self,
-        params: &[&[u8]],
-        print: bool,
-        stop: Option<OpId>,
-    ) -> Result<Vec<Vec<u8>>, ZyxError> {
+    fn interpret_flat(&self, params: &[&[u8]], print: bool, stop: Option<OpId>) -> Result<Vec<Vec<u8>>, ZyxError> {
         let mut op_ids: Vec<OpId> = Vec::new();
         let mut groups: Vec<usize> = Vec::new();
         let mut locals: Vec<usize> = Vec::new();
@@ -97,16 +87,20 @@ impl Kernel {
                         }
                         RangeKind::Local(len) => usize::try_from(*len).expect("local extent fits usize"),
                     };
-                    let axes = if let RangeKind::Group(_) = kind { &mut groups } else { &mut locals };
+                    let axes = if let RangeKind::Group(_) = kind {
+                        &mut groups
+                    } else {
+                        &mut locals
+                    };
                     if axes.len() <= axis {
                         axes.resize(axis + 1, 1);
                     }
                     axes[axis] = extent;
                 }
                 Op::Param { dtype, kind, .. } if !matches!(kind, ParamKind::Variable) => {
-                    let bytes = params.get(buffers).ok_or_else(|| {
-                        ZyxError::kernel_error(format!("interpret: no buffer for {path:?}").into())
-                    })?;
+                    let bytes = params
+                        .get(buffers)
+                        .ok_or_else(|| ZyxError::kernel_error(format!("interpret: no buffer for {path:?}").into()))?;
                     buffers += 1;
                     let len = bytes.len() / (dtype.bit_size() as usize / 8);
                     globals.insert(path, decode(*dtype, bytes, len));
@@ -193,7 +187,8 @@ impl Kernel {
                     op => {
                         self.interpret_one(id, &op, &mut values, &mut mem, &mut globals, &group_at, nthreads, warp);
                         if print {
-                            let shown = values.get(&id).and_then(|v| v.first()).map(|v| (v.dtype, v.shape.clone(), v.data.clone()));
+                            let shown =
+                                values.get(&id).and_then(|v| v.first()).map(|v| (v.dtype, v.shape.clone(), v.data.clone()));
                             println!("interpret {id:?}: {op:?} => {shown:?}");
                         }
                     }
@@ -248,11 +243,16 @@ impl Kernel {
             Op::Binary { x, y, bop } => {
                 let shape = self.shape(id);
                 let n = product(&shape);
-                let dtype = if bop.returns_bool() { DType::Bool } else { values[&x][0].dtype };
+                let dtype = if bop.returns_bool() {
+                    DType::Bool
+                } else {
+                    values[&x][0].dtype
+                };
                 let per_thread = (0..nthreads)
                     .map(|t| {
                         let (a, b) = (val(*x, t), val(*y, t));
-                        let data = (0..n).map(|j| binary(*bop, dtype, a.data[j % a.data.len()], b.data[j % b.data.len()])).collect();
+                        let data =
+                            (0..n).map(|j| binary(*bop, dtype, a.data[j % a.data.len()], b.data[j % b.data.len()])).collect();
                         Value { dtype, shape: shape.clone(), data }
                     })
                     .collect();
@@ -434,7 +434,9 @@ impl Kernel {
                         let cv = val(*c, t);
                         let (row, col) = (lane / 4, 2 * (lane % 4));
                         let mut data = Vec::with_capacity(4);
-                        for (i, (r, c)) in [(row, col), (row, col + 1), (row + 8, col), (row + 8, col + 1)].into_iter().enumerate() {
+                        for (i, (r, c)) in
+                            [(row, col), (row, col + 1), (row + 8, col), (row + 8, col + 1)].into_iter().enumerate()
+                        {
                             let mut sum = to_f64(cv.data[i]) as f32;
                             for k in 0..8 {
                                 sum += af[r][k] * bf[k][c];

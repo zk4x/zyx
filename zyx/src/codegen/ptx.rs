@@ -389,22 +389,18 @@ impl Compiler {
                 let t = self.new_reg(DType::U32, vec![Dim::from(words as i64)], words as u32);
                 match words {
                     1 => _ = writeln!(self.body, "{}ld.{}.b32 %r{t}, [{addr}];", self.indent, space),
-                    2 => _ = writeln!(
-                        self.body,
-                        "{}ld.{}.v2.b32 {{%r{t}, %r{}}}, [{addr}];",
-                        self.indent,
-                        space,
-                        t + 1
-                    ),
-                    _ => _ = writeln!(
-                        self.body,
-                        "{}ld.{}.v4.b32 {{%r{t}, %r{}, %r{}, %r{}}}, [{addr}];",
-                        self.indent,
-                        space,
-                        t + 1,
-                        t + 2,
-                        t + 3
-                    ),
+                    2 => _ = writeln!(self.body, "{}ld.{}.v2.b32 {{%r{t}, %r{}}}, [{addr}];", self.indent, space, t + 1),
+                    _ => {
+                        _ = writeln!(
+                            self.body,
+                            "{}ld.{}.v4.b32 {{%r{t}, %r{}, %r{}, %r{}}}, [{addr}];",
+                            self.indent,
+                            space,
+                            t + 1,
+                            t + 2,
+                            t + 3
+                        )
+                    }
                 }
                 for w in 0..words {
                     let (lo, hi) = (reg + 2 * w as u16, reg + 2 * w as u16 + 1);
@@ -471,22 +467,18 @@ impl Compiler {
                 }
                 match words {
                     1 => _ = writeln!(self.body, "{}st.{}.b32 [{addr}], %r{t};", self.indent, space),
-                    2 => _ = writeln!(
-                        self.body,
-                        "{}st.{}.v2.b32 [{addr}], {{%r{t}, %r{}}};",
-                        self.indent,
-                        space,
-                        t + 1
-                    ),
-                    _ => _ = writeln!(
-                        self.body,
-                        "{}st.{}.v4.b32 [{addr}], {{%r{t}, %r{}, %r{}, %r{}}};",
-                        self.indent,
-                        space,
-                        t + 1,
-                        t + 2,
-                        t + 3
-                    ),
+                    2 => _ = writeln!(self.body, "{}st.{}.v2.b32 [{addr}], {{%r{t}, %r{}}};", self.indent, space, t + 1),
+                    _ => {
+                        _ = writeln!(
+                            self.body,
+                            "{}st.{}.v4.b32 [{addr}], {{%r{t}, %r{}, %r{}, %r{}}};",
+                            self.indent,
+                            space,
+                            t + 1,
+                            t + 2,
+                            t + 3
+                        )
+                    }
                 }
                 self.release_reg(t);
             }
@@ -681,7 +673,21 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}add.u64 %r{address}, %p{buf}, %r{offset};", comp.indent);
                             comp.release_reg(offset);
                             let addr = format!("%r{address}");
-                            comp.emit_load(&access_shape, dtype, reg, "global", &addr)?;
+                            // A read-only parameter is never written by the
+                            // kernel, so its loads may take the non-coherent
+                            // path: `ld.global.nc` renders as
+                            // `LDG.E...CONSTANT` (the read-only cache) and
+                            // frees ptxas to hoist the load, which is what the
+                            // reference's `LDG.E.LTC128B.128.CONSTANT.GPU` is.
+                            // `.L2::128B` is the 128-byte L2 sector promotion
+                            // that gives it the `.LTC128B` modifier: a hint
+                            // only, so it changes no value, and the reads are
+                            // streaming tiles whose neighbours are used next.
+                            let space = match self.ops[buf].op {
+                                Op::Param { kind: ParamKind::Global, .. } => "global.nc.L2::128B",
+                                _ => "global",
+                            };
+                            comp.emit_load(&access_shape, dtype, reg, space, &addr)?;
                             comp.release_reg(address);
                         }
                         MemScope::Local => {
@@ -818,10 +824,7 @@ impl Kernel {
                     // casts the lane-0 base and the access covers the rest
                     // (same convention as `Binary` below). A real per-element
                     // cast never reaches codegen: `devectorize` unfolds it.
-                    debug_assert!(
-                        dtypes[&x].1.len() <= 1,
-                        "PTX: element-wise cast of a nested vector is not implemented"
-                    );
+                    debug_assert!(dtypes[&x].1.len() <= 1, "PTX: element-wise cast of a nested vector is not implemented");
                     let x = comp.get_var(x);
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
                     match (dtype, xdtype) {
@@ -951,29 +954,24 @@ impl Kernel {
                         // Bit-size instructions: PTX has no signed or unsigned
                         // form for them, and `.s64`/`.u64` are rejected by
                         // ptxas. Booleans keep the predicate form.
-                        BOp::BitShiftLeft | BOp::BitShiftRight | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::And
-                        | BOp::Or => match dtypes[&x].0 {
-                            DType::Bool => "pred",
-                            dtype => match dtype.bit_size() {
-                                32 => "b32",
-                                64 => "b64",
-                                n => {
-                                    return Err(BackendError {
-                                        status: ErrorStatus::KernelCompilation,
-                                        context: format!("PTX: unsupported bitwise bit size {n}").into(),
-                                    });
-                                }
-                            },
-                        },
+                        BOp::BitShiftLeft | BOp::BitShiftRight | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::And | BOp::Or => {
+                            match dtypes[&x].0 {
+                                DType::Bool => "pred",
+                                dtype => match dtype.bit_size() {
+                                    32 => "b32",
+                                    64 => "b64",
+                                    n => {
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("PTX: unsupported bitwise bit size {n}").into(),
+                                        });
+                                    }
+                                },
+                            }
+                        }
                         _ => dtypes[&x].0.ptx(),
                     };
-                    _ = writeln!(
-                        comp.body,
-                        "{}{}.{} %r{reg}, {xs}, {ys};",
-                        comp.indent,
-                        comp.bop_to_ptx(bop, dtype),
-                        type_ext,
-                    );
+                    _ = writeln!(comp.body, "{}{}.{} %r{reg}, {xs}, {ys};", comp.indent, comp.bop_to_ptx(bop, dtype), type_ext,);
                 }
                 // Branchless select as a predicated mov-pair (tinygrad's
                 // WHERE lowers the same way): the winning arm's bits are
@@ -1119,11 +1117,7 @@ impl Kernel {
                         let vb = comp.get_var(*value);
                         let l = comp.get_var(*lane);
                         let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(2)], rcs[&op_id]);
-                        _ = writeln!(
-                            comp.body,
-                            "{}shfl.sync.idx.b32 %r{reg}, %r{vb}, %r{l}, 0x1f, 0xffffffff;",
-                            comp.indent
-                        );
+                        _ = writeln!(comp.body, "{}shfl.sync.idx.b32 %r{reg}, %r{vb}, %r{l}, 0x1f, 0xffffffff;", comp.indent);
                     }
                     PTXOp::Bytes(_) => todo!("PTX: assembled payload in kernel IR"),
                     // `ldmatrix` reads one 8x8 b16 tile per group of eight
@@ -1162,8 +1156,7 @@ impl Kernel {
                         // the words land in temporaries and are split into the
                         // fragment's two 16-bit halves (`ptxas` coalesces the
                         // moves into the fragment's registers).
-                        let pattern =
-                            (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
+                        let pattern = (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             comp.body,
                             "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%r{rd}];",
@@ -1189,11 +1182,10 @@ impl Kernel {
                         let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(i64::from(*frags) * 2)], rcs[&op_id]);
                         let t = comp.new_reg(DType::U32, vec![Dim::from(i64::from(*frags))], u32::from(*frags));
                         let t_suffix = if *trans { ".trans" } else { "" };
-                        let pattern =
-                            (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
+                        let pattern = (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             comp.body,
-                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%r{a}];",
+                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.shared.b16 {{{pattern}}}, [%r{a}];",
                             comp.indent
                         );
                         for i in 0..u16::from(*frags) {

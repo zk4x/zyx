@@ -285,15 +285,15 @@ impl Kernel {
                             // sharing one body below. Integer operands only (float
                             // remainder is never exact here). Commutativity retry covers
                             // the orderings; the shl form computes its 2^k multiple.
-                            let mul_like =
-                                self.match_pat(x, &pat_mod_mullike).map(|ma| (ma.op('a'), ma.int('c'), ma.op('b'))).or_else(
-                                    || {
-                                        self.match_pat(x, &pat_mod_shllike).and_then(|ma| {
-                                            let kv = ma.int('k');
-                                            (0..64).contains(&kv).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
-                                        })
-                                    },
-                                );
+                            let mul_like = self
+                                .match_pat(x, &pat_mod_mullike)
+                                .map(|ma| (ma.op('a'), ma.int('c'), ma.op('b')))
+                                .or_else(|| {
+                                    self.match_pat(x, &pat_mod_shllike).and_then(|ma| {
+                                        let kv = ma.int('k');
+                                        (0..64).contains(&kv).then(|| (ma.op('a'), 1i64 << kv, ma.op('b')))
+                                    })
+                                });
                             if let Some((a, c, b)) = mul_like {
                                 // Pattern 2: (a*c + b) % c -> b % c (because (a*c) % c = 0)
                                 // Math: (a*c + b) % c = ((a*c) % c + b % c) % c = (0 + b % c) % c = b % c
@@ -489,9 +489,7 @@ impl Kernel {
                             pred(self, x)
                                 .filter(|_| !matches!(self.ops[y].op, Op::Const(_)))
                                 .map(|c| (c, y, z))
-                                .or_else(|| {
-                                    pred(self, y).filter(|_| !matches!(self.ops[x].op, Op::Const(_))).map(|c| (c, x, z))
-                                })
+                                .or_else(|| pred(self, y).filter(|_| !matches!(self.ops[x].op, Op::Const(_))).map(|c| (c, x, z)))
                         });
                         match pick {
                             Some((cond, keep, zero)) => {

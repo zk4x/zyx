@@ -2185,10 +2185,7 @@ impl DeBin for PTXOp {
                 trans: DeBin::de_bin(offset, bytes)?,
             },
             2 => PTXOp::WarpSync,
-            3 => PTXOp::Shfl {
-                value: DeBin::de_bin(offset, bytes)?,
-                lane: DeBin::de_bin(offset, bytes)?,
-            },
+            3 => PTXOp::Shfl { value: DeBin::de_bin(offset, bytes)?, lane: DeBin::de_bin(offset, bytes)? },
             4 => PTXOp::LdMatrix {
                 frags: DeBin::de_bin(offset, bytes)?,
                 addr: DeBin::de_bin(offset, bytes)?,
@@ -2196,10 +2193,7 @@ impl DeBin for PTXOp {
             },
             5 => PTXOp::CvtaShared { addr: DeBin::de_bin(offset, bytes)? },
             6 => PTXOp::SharedBase { buf: DeBin::de_bin(offset, bytes)? },
-            7 => PTXOp::LdShared {
-                buf: DeBin::de_bin(offset, bytes)?,
-                addr: DeBin::de_bin(offset, bytes)?,
-            },
+            7 => PTXOp::LdShared { buf: DeBin::de_bin(offset, bytes)?, addr: DeBin::de_bin(offset, bytes)? },
             8 => PTXOp::StShared {
                 buf: DeBin::de_bin(offset, bytes)?,
                 addr: DeBin::de_bin(offset, bytes)?,

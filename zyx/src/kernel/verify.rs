@@ -726,7 +726,14 @@ impl Kernel {
                     stack.pop();
                 }
                 Op::Barrier => {}
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
+                Op::Source(_)
+                | Op::GPU(_)
+                | Op::Spirv(_)
+                | Op::After { .. }
+                | Op::ToDevice { .. }
+                | Op::Contiguous { .. }
+                | Op::Program { .. }
+                | Op::Kernel(_) => {
                     todo!()
                 }
                 // PTX-level instruction: `ldmatrix` reads a shared storage at

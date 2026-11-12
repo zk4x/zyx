@@ -676,7 +676,13 @@ pub struct MmaStaging {
 
 /// Build one fragment axis from the lane bit-fields: sum of
 /// `((lane >> shift) & mask) * stride` over the fields feeding `axis`.
-fn lane_axis(kernel: &mut Kernel, before: OpId, lane: OpId, fields: &[crate::backend::FragField], axis: crate::backend::FragAxis) -> OpId {
+fn lane_axis(
+    kernel: &mut Kernel,
+    before: OpId,
+    lane: OpId,
+    fields: &[crate::backend::FragField],
+    axis: crate::backend::FragAxis,
+) -> OpId {
     let mut sum = kernel.insert_before(before, Op::Const(Constant::idx(0u32)));
     for f in fields.iter().filter(|f| f.axis == axis) {
         let mut term = lane;
@@ -715,10 +721,7 @@ impl Optimization for MmaStaging {
         while matches!(kernel.at(at), Op::Param { .. }) {
             at = kernel.next_op(at);
         }
-        let buf = kernel.insert_before(
-            at,
-            Op::Storage { dtype: DType::F16, scope: MemScope::Local, len: st.rows * st.k, id: 0 },
-        );
+        let buf = kernel.insert_before(at, Op::Storage { dtype: DType::F16, scope: MemScope::Local, len: st.rows * st.k, id: 0 });
 
         let row = lane_axis(kernel, wmma, st.lane, &st.fields, crate::backend::FragAxis::Row);
         let col = lane_axis(kernel, wmma, st.lane, &st.fields, crate::backend::FragAxis::Col);
@@ -776,9 +779,8 @@ impl Kernel {
         if info.mma_variants.is_empty() {
             return Box::new(MmaStaging { stages });
         }
-        let lane = self.iter_unordered().find_map(|(id, op)| {
-            matches!(op, Op::Range { kind: RangeKind::Local(_), .. }).then_some(id)
-        });
+        let lane =
+            self.iter_unordered().find_map(|(id, op)| matches!(op, Op::Range { kind: RangeKind::Local(_), .. }).then_some(id));
         let Some(lane) = lane else {
             return Box::new(MmaStaging { stages });
         };
@@ -786,11 +788,7 @@ impl Kernel {
             let Op::Wmma { dims, layout, dtype, a, b, .. } = *op else {
                 continue;
             };
-            let Some(v) = info
-                .mma_variants
-                .iter()
-                .find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype)
-            else {
+            let Some(v) = info.mma_variants.iter().find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype) else {
                 continue;
             };
             let (fm, fn_, fk) = dims.decompose_mnk();

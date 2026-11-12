@@ -46,12 +46,17 @@ impl Kernel {
                     self.ops[op_id].op = Op::PTX(Box::new(PTXOp::StShared { buf, addr, src }));
                 }
                 Op::PTX(ref p) => {
-                    let PTXOp::VLdMatrix { frags, src, addr, trans } = **p else { continue };
-                    let byte = self.shared_byte_addr(op_id, src, addr);
-                    // `ldmatrix` takes a generic 64-bit address; the shared
-                    // window offset reaches it through `cvta.shared`.
-                    let wide = self.insert_before(op_id, Op::Cast { x: byte, dtype: DType::U64 });
-                    let addr = self.insert_before(op_id, Op::PTX(Box::new(PTXOp::CvtaShared { addr: wide })));
+                    let PTXOp::VLdMatrix { frags, src, addr, trans } = **p else {
+                        continue;
+                    };
+                    // `ldmatrix` reads the shared window directly: its address
+                    // is the same 32-bit byte offset a `ld.shared` takes, so the
+                    // window base is one register per storage and each sub-tile
+                    // offset folds into the instruction's immediate — the
+                    // reference's `[R200+UR8+0x1000]`. A generic 64-bit address
+                    // (a `cvta` per load) gives every load a register pair of
+                    // its own and no immediates at all.
+                    let addr = self.shared_byte_addr(op_id, src, addr);
                     self.ops[op_id].op = Op::PTX(Box::new(PTXOp::LdMatrix { frags, addr, trans }));
                 }
                 _ => {}

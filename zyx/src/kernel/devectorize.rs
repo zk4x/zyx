@@ -72,9 +72,8 @@ impl Kernel {
                 self.devectorize_reduce_one(found);
                 continue;
             }
-            let found = self
-                .iter_unordered()
-                .find_map(|(op, x)| (matches!(x, Op::Unroll { .. }) && !kept.contains(&op)).then_some(op));
+            let found =
+                self.iter_unordered().find_map(|(op, x)| (matches!(x, Op::Unroll { .. }) && !kept.contains(&op)).then_some(op));
             let Some(unroll_id) = found else { break };
             // A lane is a vector width wherever the access it shapes is
             // contiguous and the device supports the width; only the
@@ -375,8 +374,8 @@ impl Kernel {
                         let one_fragment = |k: &Self, p: OpId| {
                             k.wmma_operand_slots(walk_id, p).is_some_and(|slots| len_dim * k.elements(p) == slots)
                         };
-                        let slots_packed = (!conditional(a) || one_fragment(self, a))
-                            && (!conditional(b) || one_fragment(self, b));
+                        let slots_packed =
+                            (!conditional(a) || one_fragment(self, a)) && (!conditional(b) || one_fragment(self, b));
                         if !conditional(c) && slots_packed && (conditional(a) || conditional(b)) {
                             let pack = |k: &mut Self, operand: OpId| {
                                 let mut ops = Vec::with_capacity(len as usize);
@@ -423,10 +422,7 @@ impl Kernel {
             walk_id = next;
         }
 
-        if self
-            .iter_unordered()
-            .any(|(_, op)| op.parameters().any(|p| p == unroll_id))
-        {
+        if self.iter_unordered().any(|(_, op)| op.parameters().any(|p| p == unroll_id)) {
             // Still a vector width for the kept dependents.
             return false;
         }
@@ -442,10 +438,7 @@ impl Kernel {
             return None;
         };
         let info = self.device_info();
-        let v = info
-            .mma_variants
-            .iter()
-            .find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype)?;
+        let v = info.mma_variants.iter().find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype)?;
         if operand == a {
             Some(v.a.slots.len() as Dim)
         } else if operand == b {
@@ -487,9 +480,7 @@ impl Kernel {
                     stack.push(b);
                 }
                 Op::Binary { x: a, y: b, bop: BOp::Mul } => {
-                    let one = |k: &Kernel, v: OpId| {
-                        k.resolve_const(v).and_then(Constant::as_dim) == Some(1)
-                    };
+                    let one = |k: &Kernel, v: OpId| k.resolve_const(v).and_then(Constant::as_dim) == Some(1);
                     if (a == id && one(self, b)) || (b == id && one(self, a)) {
                         return true;
                     }
@@ -548,11 +539,7 @@ impl Kernel {
         }
         // A width the device cannot access as one vector is a thread/lane
         // bundle throughout: every dependent is scalar.
-        let supported = self
-            .device_info()
-            .supported_vec_lens
-            .iter()
-            .any(|&v| Dim::from(v) == width);
+        let supported = self.device_info().supported_vec_lens.iter().any(|&v| Dim::from(v) == width);
         if !supported {
             return dep;
         }
@@ -565,10 +552,8 @@ impl Kernel {
                 if reaches.contains(&op) {
                     continue;
                 }
-                let downstream = self.is_access(op)
-                    || consumers
-                        .get(&op)
-                        .is_some_and(|cs| cs.iter().any(|c| reaches.contains(c)));
+                let downstream =
+                    self.is_access(op) || consumers.get(&op).is_some_and(|cs| cs.iter().any(|c| reaches.contains(c)));
                 if downstream {
                     reaches.insert(op);
                     changed = true;
@@ -590,13 +575,9 @@ impl Kernel {
                 if !keep[&op] {
                     continue;
                 }
-                let survives = consumers.get(&op).is_none_or(|cs| {
-                    cs.iter().all(|c| {
-                        *keep
-                            .get(c)
-                            .expect("devectorize: dependent op outside the lane's cone")
-                    })
-                });
+                let survives = consumers
+                    .get(&op)
+                    .is_none_or(|cs| cs.iter().all(|c| *keep.get(c).expect("devectorize: dependent op outside the lane's cone")));
                 if !survives {
                     keep.insert(op, false);
                     changed = true;
@@ -615,10 +596,7 @@ impl Kernel {
                 if !keep[&op] || matches!(self.at(op), Op::Wmma { .. }) {
                     continue;
                 }
-                let operands_kept = self
-                    .at(op)
-                    .parameters()
-                    .all(|p| p == id || !dep.contains(&p) || keep[&p]);
+                let operands_kept = self.at(op).parameters().all(|p| p == id || !dep.contains(&p) || keep[&p]);
                 if !operands_kept {
                     keep.insert(op, false);
                     changed = true;
@@ -659,9 +637,7 @@ impl Kernel {
                     && (self.value_elements(*src) == width || self.value_elements(*src) == self.elements(*dst_idx))
             }
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::VLdMatrix { addr, .. } => {
-                    !self.depends_on(*addr, id, &mut Set::default()) || self.vector_lane(*addr, id)
-                }
+                PTXOp::VLdMatrix { addr, .. } => !self.depends_on(*addr, id, &mut Set::default()) || self.vector_lane(*addr, id),
                 _ => false,
             },
             _ => true,
