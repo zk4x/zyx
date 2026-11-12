@@ -427,7 +427,10 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst: dst_buf, dst_idx, src } => {
-                    let access_shape = self.shape(op_id);
+                    // The access shape rides on the index: a store's value may
+                    // be narrower (a broadcast) or an instruction result with
+                    // no lane shape of its own.
+                    let access_shape = self.shape(dst_idx);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let idx = get_var_addr(
                         lane_base.get(&op_id).copied().unwrap_or(dst_idx),

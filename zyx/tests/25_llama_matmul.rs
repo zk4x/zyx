@@ -11,31 +11,27 @@
 //! tensor-core instruction come from optimizations applied afterwards, so the
 //! test isolates what the passes do and what they are worth.
 //!
-//! Prints the generated CUDA, measures the kernel, and asserts the result is
-//! compute- and bandwidth-competitive with the reference: torch 2.11 (cuBLAS,
-//! `turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_tn`) runs this exact GEMM in
-//! 0.2999 ms, 21.48 TFLOP/s, 177.4 GB/s on this card (336 GB/s peak).
+//! Asserts the result against a host GEMM on the same f16 operands
+//! (`matrixmultiply`), and asserts the kernel is compute- and
+//! bandwidth-competitive with the reference: torch 2.11 (cuBLAS,
+//! `turing_fp16_s1688gemm_fp16_128x128_ldg8_f2f_tn`) runs this exact GEMM in
+//! 0.277-0.284 ms, 22.7-23.2 TFLOP/s on this card (336 GB/s peak).
 //!
 //! The selected config is the reference kernel's shape: a 128 x 128 output
-//! tile — half the reference's 256 x 128 CTA tile, the grid that fills this
-//! card's 30 SMs — eight warps as a 2 x 4 grid (a 64 x 64 warp tile, the
-//! reference's), operands staged through two block-wide shared buffers of a
-//! two-K-step window filled with 16-byte vector loads (`ld.global.nc.v4.u32`)
-//! and read back with `ldmatrix.x4` only, two K steps per load. The loop runs
-//! 24 iterations of 256 `m16n8k8` instructions per warp, the reference's
-//! mainloop depth. In the tensor recipe that is tile `(128, 128, 128)`,
-//! staged, warp layout `(2, 4, 1)`.
+//! tile, eight warps as a 2 x 4 grid (a 64 x 32 warp tile), operands staged
+//! through two block-wide shared buffers of a two-K-step window filled with
+//! 16-byte vector loads and read back with `ldmatrix.x4`. In the tensor
+//! recipe that is tile `(128, 128, 128)`, staged, warp layout `(2, 4, 1)`.
 
 use std::time::Instant;
 
-use zyx::kernel::{Dev, Kernel, MemScope, Op};
+use zyx::kernel::{Dev, Kernel, MemScope};
 use zyx::{DType, Tensor, ZyxError};
 
 /// The recipe config of the reference kernel's shape: `(tile * 2 + staged) *
 /// layouts + layout`, i.e. `(4 * 2 + 1) * 13 + 8` — tile index 4 is
-/// `(m lanes 128, n lanes 128, k lanes 128)` (16 `m16n8k8` K steps, so the
-/// loop runs 24 iterations of 256 instructions a warp, the reference's
-/// mainloop depth), staged, warp layout index 8 is `(2, 4, 1)`.
+/// `(m lanes 128, n lanes 128, k lanes 128)` (16 `m16n8k8` K steps), staged,
+/// warp layout index 8 is `(2, 4, 1)`.
 const TORCH_TILE_8_WARPS: u64 = 125;
 
 #[test]
@@ -93,26 +89,52 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
         "the recipe's config space must contain the cuBLAS shape: {} configs",
         recipe.nconfigs()
     );
-    let a = Tensor::rand([M, K], DType::F16)?.to(dev)?;
-    let b = Tensor::rand([N, K], DType::F16)?.to(dev)?;
     recipe.apply(&mut k, TORCH_TILE_8_WARPS);
     k.default_epilogue();
-    k.device_epilogue()?;
+    // The device epilogue (devectorize) runs once, inside `compile`.
     k.verify();
 
-    // ---- the generated CUDA, for inspection ----------------------------
-    let rendered = k.render()?;
-    let mut op_id = rendered.head;
-    while !op_id.is_null() {
-        if let Op::Source(src) = rendered.at(op_id) {
-            println!("{}", src.as_str());
-        }
-        op_id = rendered.next_op(op_id);
-    }
+    // ---- the operands, and the reference they must reproduce ------------
+    let probe = std::env::var("PROBE_K").ok().and_then(|v| v.parse::<i64>().ok());
+    let a = match probe {
+        Some(_) => Tensor::from_vec(vec![1.0f32; (M * K) as usize], [M, K])?.cast(DType::F16)?.to(dev)?,
+        None => Tensor::rand([M, K], DType::F16)?.to(dev)?,
+    };
+    let b = match probe {
+        Some(k0) => Tensor::from_vec(
+            (0..N * K).map(|i| if i % K == k0 { 1.0f32 } else { 0.0 }).collect(),
+            [N, K],
+        )?
+        .cast(DType::F16)?
+        .to(dev)?,
+        None => Tensor::rand([N, K], DType::F16)?.to(dev)?,
+    };
+    // `sgemm` is row-major `a @ b.T`: A is the m x k `a` (row stride k), B is
+    // k x n laid out as the row-major n x k `b` (row stride 1, column stride
+    // k). Both sides see the same f16 operands, in f32.
+    let a_host: Vec<f32> = a.clone().cast(DType::F32).try_into().unwrap();
+    let b_host: Vec<f32> = b.clone().cast(DType::F32).try_into().unwrap();
+    let mut want = vec![0f32; (M * N) as usize];
+    unsafe {
+        matrixmultiply::sgemm(
+            M as usize,
+            K as usize,
+            N as usize,
+            1.0,
+            a_host.as_ptr(),
+            K as isize,
+            1,
+            b_host.as_ptr(),
+            1,
+            K as isize,
+            0.0,
+            want.as_mut_ptr(),
+            N as isize,
+            1,
+        )
+    };
 
     // ---- measure -------------------------------------------------------
-    let a = Tensor::rand([M, K], DType::F16)?.to(dev)?;
-    let b = Tensor::rand([N, K], DType::F16)?.to(dev)?;
     let compiled = k.compile()?;
     // Warmup: the first launch pays the module load and fabric init.
     let _ = compiled.forward(&[&a, &b], vec![[M, N]])?;
@@ -125,9 +147,33 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
     // One readback drains the stream: it costs the same for every repeat, so
     // it is timed outside the loop.
     let out: Vec<f32> = last.unwrap().pop().unwrap().try_into()?;
-    std::hint::black_box(out.len());
     let nanos = t0.elapsed().as_secs_f64() / REPS as f64;
 
+    // ---- the kernel must reproduce the reference ------------------------
+    // The epilogue rounds the f32 accumulator through f16, so a kernel
+    // element is the reference rounded to f16: a few f16 ulps are the whole
+    // budget for the accumulation order.
+    let mut worst = (0f32, 0i64, 0i64);
+    for i in 0..M as usize {
+        for j in 0..N as usize {
+            let got = out[i * N as usize + j];
+            let want = want[i * N as usize + j];
+            let err = (got - want).abs();
+            let tol = 1e-3f32.max(2e-3 * want.abs());
+            if err > tol {
+                return Err(ZyxError::kernel_error(
+                    format!("gate_proj disagrees with the host GEMM at (m={i}, n={j}): {got} vs {want}, tol {tol}")
+                        .into(),
+                ));
+            }
+            if err > worst.0 {
+                worst = (err, i as i64, j as i64);
+            }
+        }
+    }
+    println!("gate_proj matches the host GEMM, max |err| = {:.3e} at (m={}, n={})", worst.0, worst.1, worst.2);
+
+    // ---- the reference's numbers ---------------------------------------
     let flop = 2.0 * (M * N * K) as f64;
     let bytes = ((M * K + N * K + M * N) as f64) * 2.0;
     let tflops = flop / nanos / 1e12;

@@ -715,7 +715,10 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst: dst_buf, dst_idx, src: x } => {
-                    let access_shape = self.shape(op_id);
+                    // The access shape rides on the index: a store's value may
+                    // be narrower (a broadcast) or an instruction result with
+                    // no lane shape of its own.
+                    let access_shape = self.shape(dst_idx);
                     let dtype = dtypes[&x].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, Vec::new(), 1);
@@ -1105,6 +1108,12 @@ impl Kernel {
                         _ = writeln!(comp.body, "{}shl.b32 %r{off}, %r{off}, 1;", comp.indent);
                         _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{off};", comp.indent);
                         comp.release_reg(off);
+                        // The instruction takes the generic address of the
+                        // shared slot (`mov.u32` yields the window address; a
+                        // 32-bit operand is left for the driver's JIT to
+                        // resolve and it does not always convert it).
+                        _ = writeln!(comp.body, "{}cvt.u64.u32 %rd_saddress, %saddress;", comp.indent);
+                        _ = writeln!(comp.body, "{}cvta.shared.u64 %rd_saddress, %rd_saddress;", comp.indent);
                         let t = comp.new_reg(DType::U32, vec![Dim::from(i64::from(*frags))], u32::from(*frags));
                         let t_suffix = if *trans { ".trans" } else { "" };
                         // `ldmatrix` writes one 32-bit word per 8x8 tile, so
@@ -1115,7 +1124,7 @@ impl Kernel {
                             (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             comp.body,
-                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%saddress];",
+                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%rd_saddress];",
                             comp.indent
                         );
                         for i in 0..u16::from(*frags) {
@@ -1168,6 +1177,7 @@ impl Kernel {
 
         _ = writeln!(comp.header, "{}.reg .u64 %address;", comp.indent);
         _ = writeln!(comp.header, "{}.reg .b32 %saddress;", comp.indent);
+        _ = writeln!(comp.header, "{}.reg .u64 %rd_saddress;", comp.indent);
         for (dtype_layout, _, _, base) in comp.registers.iter() {
             let len = Compiler::slot_len(&dtype_layout.1);
             for i in 0..len {

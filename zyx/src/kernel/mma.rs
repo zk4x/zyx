@@ -1142,8 +1142,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 // Fill the next window's stage, then compute this window's.
                 // One window per iteration has no stage to spare: it fills
                 // and computes the same buffer around a barrier.
+                let one = kernel.insert_const_idx_before(end, Dim::from(1));
                 let two = kernel.insert_const_idx_before(end, Dim::from(2));
-                let w1 = kernel.insert_before(end, Op::Binary { x: wl, y: two, bop: BOp::Add });
+                let w1 = kernel.insert_before(end, Op::Binary { x: wl, y: one, bop: BOp::Add });
                 let next_stage = kernel.insert_before(end, Op::Binary { x: w1, y: two, bop: BOp::Mod });
                 let cur_stage = if pipelined {
                     kernel.insert_before(end, Op::Binary { x: wl, y: two, bop: BOp::Mod })
@@ -1171,8 +1172,8 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     let bw = kernel.insert_const_idx_before(end, b_win);
                     kernel.insert_before(end, Op::Binary { x: cur_stage, y: bw, bop: BOp::Mul })
                 };
-                let a_fill = k_addr_op(kernel, end, wl, a_origin, a_step, next_k, t.a_k, total_k);
-                let b_fill = k_addr_op(kernel, end, wl, b_origin, b_step, next_k, t.b_k, total_k);
+                let a_fill = k_addr_op(kernel, end, t.loop_id, a_origin, a_step, next_k, t.a_k, total_k);
+                let b_fill = k_addr_op(kernel, end, t.loop_id, b_origin, b_step, next_k, t.b_k, total_k);
                 coop_fill(
                     kernel, end, fill_lane, t.a_src, a_fill, t.a_m, t.a_k, t.mt * fm, window_width, a_buf,
                     wstride, fill_threads, a_slot,
@@ -1182,7 +1183,13 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     wstride, fill_threads, b_slot,
                 );
                 if !pipelined {
-                    sync(kernel);
+                    // Inside the window loop: the fill and the compute it
+                    // feeds are one window apart, so the barrier belongs
+                    // before the loop's `EndLoop`, not at the pass anchor.
+                    kernel.insert_before(
+                        end,
+                        if combine { Op::PTX(Box::new(PTXOp::WarpSync)) } else { Op::Barrier },
+                    );
                 }
                 let aw = kernel.insert_const_idx_before(end, a_win);
                 let cur_a = kernel.insert_before(end, Op::Binary { x: cur_stage, y: aw, bop: BOp::Mul });
@@ -1303,11 +1310,11 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                         };
                         // The `ldmatrix` result is `frags` words of `b_slots`
                         // halves; an `x4` covers `(tile0,k0), (tile1,k0),
-                        // (tile0,k8), (tile1,k8)`. The storage layout is
-                        // `[tn][step][slot]`, so the words land at bases that
-                        // are not adjacent: the lane cannot select the word (it
-                        // would have to slice the value too), so one store per
-                        // word, each with a `b_slots`-wide lane.
+                        // (tile0,k8), (tile1,k8)`. The staging keeps the words
+                        // in exactly that order, `[pair][word][slot]`, so the
+                        // whole result is one contiguous `frags * b_slots` run
+                        // and one lane stores it: the mma finds its word by
+                        // arithmetic below.
                         let frags = match kernel.at(value) {
                             Op::PTX(p) => match p.as_ref() {
                                 PTXOp::LdMatrix { frags, .. } => usize::from(*frags),
@@ -1315,20 +1322,14 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                             },
                             _ => unreachable!("B fragment from a non-PTX op"),
                         };
-                        let tiles = if pair { 2 } else { 1 };
-                        for word in 0..frags {
-                            let tile = word % tiles;
-                            let step = word / tiles;
-                            let wbase = ((tn + tile) * steps_here + sl + step) * b_slots;
-                            let base = kernel.insert_const_idx_before(end, Dim::from(wbase as i64));
-                            let blane = kernel.insert_before(
-                                end,
-                                Op::Unroll { axis: 1, len: u16::try_from(b_slots).expect("b fragment slots") },
-                            );
-                            let bidx = kernel.insert_before(end, Op::Binary { x: base, y: blane, bop: BOp::Add });
-                            let frag = slice_at(kernel, end, value, word * b_slots, b_slots);
-                            kernel.insert_before(end, Op::Store { dst: b_st, dst_idx: bidx, src: frag });
-                        }
+                        let wbase = (tn / 2) * (2 * steps_here * b_slots);
+                        let base = kernel.insert_const_idx_before(end, Dim::from(wbase as i64));
+                        let blane = kernel.insert_before(
+                            end,
+                            Op::Unroll { axis: 1, len: u16::try_from(frags * b_slots).expect("b fragment halves") },
+                        );
+                        let bidx = kernel.insert_before(end, Op::Binary { x: base, y: blane, bop: BOp::Add });
+                        kernel.insert_before(end, Op::Store { dst: b_st, dst_idx: bidx, src: value });
                     }
                     tn += if pair { 2 } else { 1 };
                 }
@@ -1351,15 +1352,26 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     let abase = kernel.insert_before(end, Op::Binary { x: abase, y: am, bop: BOp::Add });
                     let aidx = frag_index(kernel, end, abase, a_slots, 1);
                     let a_frag = kernel.insert_before(end, Op::Load { src: a_st, src_idx: aidx });
-                    let bbase = kernel.insert_before(end, Op::Binary { x: tnl, y: sc, bop: BOp::Mul });
-                    let tmn = kernel.insert_const_idx_before(end, Dim::from(sl as i64));
+                    // B: `[pair][word][slot]`, the word being
+                    // `(tn - pair*2) + 2*step` in the `ldmatrix`'s own order.
+                    let pair = kernel.insert_const_idx_before(end, Dim::from(2i64));
+                    let tpair = kernel.insert_before(end, Op::Binary { x: tnl, y: pair, bop: BOp::Div });
+                    let twos = kernel.insert_const_idx_before(end, Dim::from(2 * steps_here as i64));
+                    let bbase = kernel.insert_before(end, Op::Binary { x: tpair, y: twos, bop: BOp::Mul });
+                    let trem = kernel.insert_before(end, Op::Binary { x: tnl, y: pair, bop: BOp::Mod });
+                    let bbase = kernel.insert_before(end, Op::Binary { x: bbase, y: trem, bop: BOp::Add });
+                    let tmn = kernel.insert_const_idx_before(end, Dim::from(2 * sl as i64));
                     let bbase = kernel.insert_before(end, Op::Binary { x: bbase, y: tmn, bop: BOp::Add });
                     let bidx = frag_index(kernel, end, bbase, b_slots, 1);
                     let b_frag = kernel.insert_before(end, Op::Load { src: b_st, src_idx: bidx });
                     emit_tile_wmma(kernel, t, v, nt_w, tml, tnl, a_frag, b_frag, 1, end);
                 }
-                sync(kernel);
-                
+                // Same for the closing barrier of the window: it separates
+                // this window's fill from the next window's load.
+                kernel.insert_before(
+                    end,
+                    if combine { Op::PTX(Box::new(PTXOp::WarpSync)) } else { Op::Barrier },
+                );
             }
         }
     } else {

@@ -95,6 +95,9 @@ impl Kernel {
         self.constant_folding();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
+        if std::env::var_os("ZYX_DV_AFTER").is_some() {
+            self.debug();
+        }
         self.verify();
         Ok(())
     }
