@@ -1082,9 +1082,14 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     }
                 }
                 // One N tile per load: a `ldmatrix.x2` covers both K steps.
+                // Two N tiles per load where the grid allows it: one `x4`
+                // covers both tiles and both K steps, like the reference's
+                // `ldmatrix.x4`-only mainloop. The load's words are
+                // `(tile0, k0), (tile1, k0), (tile0, k8), (tile1, k8)`.
                 let mut tn = 0;
                 while tn < nt {
-                    let rows = fn_;
+                    let pair = paired && tn + 1 < nt;
+                    let rows = if pair { fn_ * 2 } else { fn_ };
                     let off = kernel.insert_const_idx_before(t.update, tn as Dim * fn_ * wstride);
                     let sb = if warp_off_n.is_null() {
                         off
@@ -1097,21 +1102,36 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     let mut runs = Vec::new();
                     for kq in 0..(win_steps / 2).max(1) {
                         let koff = if paired { kq as Dim * 2 * fk } else { 0 };
-                        let value = coop_ldmatrix(
-                            kernel,
-                            t.update,
-                            lane,
-                            b_buf,
-                            rows,
-                            if paired { fk * 2 } else { fk },
-                            wstride,
-                            koff,
-                            sb,
-                        );
-                        let step = w * win_steps + kq * 2;
-                        runs.push((step, tn, slice_at(kernel, t.update, value, 0, b_slots)));
-                        if paired && step + 1 < kt {
-                            runs.push((step + 1, tn, slice_at(kernel, t.update, value, b_slots, b_slots)));
+                        if pair {
+                            let value = coop_ldmatrix(kernel, t.update, lane, b_buf, rows, fk * 2, wstride, koff, sb);
+                            let step = w * win_steps + kq * 2;
+                            for (j, tile) in (0..2usize).enumerate() {
+                                runs.push((step, tn + tile, slice_at(kernel, t.update, value, j * b_slots, b_slots)));
+                                if step + 1 < kt {
+                                    runs.push((
+                                        step + 1,
+                                        tn + tile,
+                                        slice_at(kernel, t.update, value, (j + 2) * b_slots, b_slots),
+                                    ));
+                                }
+                            }
+                        } else {
+                            let value = coop_ldmatrix(
+                                kernel,
+                                t.update,
+                                lane,
+                                b_buf,
+                                rows,
+                                if paired { fk * 2 } else { fk },
+                                wstride,
+                                koff,
+                                sb,
+                            );
+                            let step = w * win_steps + kq * 2;
+                            runs.push((step, tn, slice_at(kernel, t.update, value, 0, b_slots)));
+                            if paired && step + 1 < kt {
+                                runs.push((step + 1, tn, slice_at(kernel, t.update, value, b_slots, b_slots)));
+                            }
                         }
                     }
                     for (step, tile, frag) in runs {
@@ -1119,7 +1139,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                             emit_tile_wmma(kernel, t, v, nt_w, tm as Dim, tile as Dim, a_frags[tm][step], frag);
                         }
                     }
-                    tn += 1;
+                    tn += if pair { 2 } else { 1 };
                 }
             }
             sync(kernel);
@@ -1294,42 +1314,73 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
         }
         for tm in 0..mt_w {
             for tn in 0..nt_w {
-                for s in 0..v.c.slots.len() {
-                    let slot = v.c.slots[s];
-                    let idx = acc_index(kernel, epi.store, nt_w, t.slots, tm, tn, s);
-                    let mut elem = kernel.insert_before(epi.store, Op::Load { src: t.acc, src_idx: idx });
+                // The value of one accumulator slot, cast through the
+                // epilogue's dtype chain.
+                let elem_at = |kernel: &mut Kernel, before: OpId, s: usize| -> OpId {
+                    let idx = acc_index(kernel, before, nt_w, t.slots, tm, tn, s);
+                    let mut elem = kernel.insert_before(before, Op::Load { src: t.acc, src_idx: idx });
                     for dtype in epi.chain.iter().rev() {
-                        elem = kernel.insert_before(epi.store, Op::Cast { x: elem, dtype: *dtype });
+                        elem = kernel.insert_before(before, Op::Cast { x: elem, dtype: *dtype });
                     }
+                    elem
+                };
+                let addr_at = |kernel: &mut Kernel, before: OpId, s: usize| -> OpId {
+                    let slot = v.c.slots[s];
                     let extra = (tm * fm + Dim::from(slot.0)) * epi.m + (tn * fn_ + Dim::from(slot.1)) * epi.n;
-                    let mut addr = base_expr(kernel, epi.store, &epi.fixed, epi.offset, extra);
+                    let mut addr = base_expr(kernel, before, &epi.fixed, epi.offset, extra);
                     // A warp grid moves the store into the warp's own output
                     // window.
                     for (off, stride) in [(warp_off_m, epi.m), (warp_off_n, epi.n)] {
                         if off.is_null() {
                             continue;
                         }
-                        let s = kernel.insert_const_idx_before(epi.store, stride);
-                        let t2 = kernel.insert_before(epi.store, Op::Binary { x: off, y: s, bop: BOp::Mul });
-                        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: t2, bop: BOp::Add });
+                        let st = kernel.insert_const_idx_before(before, stride);
+                        let t2 = kernel.insert_before(before, Op::Binary { x: off, y: st, bop: BOp::Mul });
+                        addr = kernel.insert_before(before, Op::Binary { x: addr, y: t2, bop: BOp::Add });
                     }
-                    let row = lane_coord(kernel, epi.store, lane, &v.c, FragAxis::Row, warp);
+                    let row = lane_coord(kernel, before, lane, &v.c, FragAxis::Row, warp);
                     if epi.m != 1 {
-                        let s = kernel.insert_before(epi.store, Op::Const(Constant::idx(epi.m)));
-                        let t2 = kernel.insert_before(epi.store, Op::Binary { x: row, y: s, bop: BOp::Mul });
-                        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: t2, bop: BOp::Add });
+                        let st = kernel.insert_before(before, Op::Const(Constant::idx(epi.m)));
+                        let t2 = kernel.insert_before(before, Op::Binary { x: row, y: st, bop: BOp::Mul });
+                        addr = kernel.insert_before(before, Op::Binary { x: addr, y: t2, bop: BOp::Add });
                     } else {
-                        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: row, bop: BOp::Add });
+                        addr = kernel.insert_before(before, Op::Binary { x: addr, y: row, bop: BOp::Add });
                     }
-                    let col = lane_coord(kernel, epi.store, lane, &v.c, FragAxis::Col, warp);
+                    let col = lane_coord(kernel, before, lane, &v.c, FragAxis::Col, warp);
                     if epi.n != 1 {
-                        let s = kernel.insert_before(epi.store, Op::Const(Constant::idx(epi.n)));
-                        let t2 = kernel.insert_before(epi.store, Op::Binary { x: col, y: s, bop: BOp::Mul });
-                        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: t2, bop: BOp::Add });
+                        let st = kernel.insert_before(before, Op::Const(Constant::idx(epi.n)));
+                        let t2 = kernel.insert_before(before, Op::Binary { x: col, y: st, bop: BOp::Mul });
+                        addr = kernel.insert_before(before, Op::Binary { x: addr, y: t2, bop: BOp::Add });
                     } else {
-                        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: col, bop: BOp::Add });
+                        addr = kernel.insert_before(before, Op::Binary { x: addr, y: col, bop: BOp::Add });
                     }
-                    kernel.insert_before(epi.store, Op::Store { dst: epi.dst, dst_idx: addr, src: elem });
+                    addr
+                };
+                // Slots that are adjacent columns of one output row go out as
+                // one vector store (the reference's epilogue is not one store
+                // per instruction slot).
+                let mut s = 0;
+                while s < v.c.slots.len() {
+                    let slot = v.c.slots[s];
+                    let pair = epi.n == 1
+                        && s + 1 < v.c.slots.len()
+                        && v.c.slots[s + 1].0 == slot.0
+                        && v.c.slots[s + 1].1 == slot.1 + 1;
+                    if pair {
+                        let addr = addr_at(kernel, epi.store, s);
+                        let e0 = elem_at(kernel, epi.store, s);
+                        let e1 = elem_at(kernel, epi.store, s + 1);
+                        let value = kernel.insert_before(epi.store, Op::Stack { ops: vec![e0, e1].into() });
+                        let vector = kernel.insert_before(epi.store, Op::Unroll { axis: 0, len: 2 });
+                        let idx = kernel.insert_before(epi.store, Op::Binary { x: addr, y: vector, bop: BOp::Add });
+                        kernel.insert_before(epi.store, Op::Store { dst: epi.dst, dst_idx: idx, src: value });
+                        s += 2;
+                    } else {
+                        let addr = addr_at(kernel, epi.store, s);
+                        let elem = elem_at(kernel, epi.store, s);
+                        kernel.insert_before(epi.store, Op::Store { dst: epi.dst, dst_idx: addr, src: elem });
+                        s += 1;
+                    }
                 }
             }
         }

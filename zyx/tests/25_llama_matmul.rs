@@ -17,12 +17,14 @@
 //! 0.2999 ms, 21.48 TFLOP/s, 177.4 GB/s on this card (336 GB/s peak).
 //!
 //! The selected config is the reference kernel's shape: a 128 x 128 output
-//! tile, eight warps as a 1 x 8 grid, operands staged through one block-wide
-//! shared tile filled with 16-byte vector loads (`ld.global.nc.v4.u32`) and
-//! read back with `ldmatrix` covering two `m16n8k8` K steps per load
-//! (`ldmatrix.x4` for A, `.x2` for B) — the instruction mix of
-//! `turing_fp16_s1688gemm_fp16_256x128_ldg8_f2f_tn`. In the tensor recipe
-//! that is tile `(128, 128, 64)`, staged, warp layout `(1, 8, 1)`.
+//! tile — half the reference's 256 x 128 CTA tile, the grid that fills this
+//! card's 30 SMs — eight warps as a 2 x 4 grid (a 64 x 64 warp tile, the
+//! reference's), operands staged through two block-wide shared buffers of a
+//! two-K-step window filled with 16-byte vector loads (`ld.global.nc.v4.u32`)
+//! and read back with `ldmatrix.x4` only, two K steps per load. A warp runs
+//! 256 `m16n8k8` instructions per loop iteration, the reference's mainloop
+//! depth. In the tensor recipe that is tile `(128, 128, 64)`, staged, warp
+//! layout `(2, 4, 1)`.
 
 use std::time::Instant;
 
@@ -30,12 +32,10 @@ use zyx::kernel::{Dev, Kernel, MemScope, Op};
 use zyx::{DType, Tensor, ZyxError};
 
 /// The recipe config of the reference kernel's shape: `(tile * 2 + staged) *
-/// layouts + layout`, i.e. `(5 * 2 + 1) * 13 + 9` — tile index 5 is
-/// `(m lanes 128, n lanes 128, k lanes 64)`: a 128 x 128 output tile with
-/// eight `m16n8k8` K steps per loop iteration, staged through one block-wide
-/// shared tile filled with 16-byte vector loads and read back with `ldmatrix`
-/// covering two K steps per load; warp layout index 9 is `(1, 8, 1)`.
-const TORCH_TILE_8_WARPS: u64 = 21;
+/// layouts + layout`, i.e. `(5 * 2 + 1) * 13 + 8` — tile index 5 is
+/// `(m lanes 128, n lanes 128, k lanes 64)` (eight `m16n8k8` K steps per loop
+/// iteration), staged, warp layout index 8 is `(2, 4, 1)`.
+const TORCH_TILE_8_WARPS: u64 = 151;
 
 #[test]
 fn llama_gate_proj() -> Result<(), ZyxError> {
