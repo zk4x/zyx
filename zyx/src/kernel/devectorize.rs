@@ -21,7 +21,7 @@
 use crate::{
     Map, Set, ZyxError,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemScope, Op, OpId},
+    kernel::{BOp, Kernel, Op, OpId, PTXOp},
     shape::Dim,
 };
 
@@ -76,18 +76,20 @@ impl Kernel {
                 .iter_unordered()
                 .find_map(|(op, x)| (matches!(x, Op::Unroll { .. }) && !kept.contains(&op)).then_some(op));
             let Some(unroll_id) = found else { break };
-            // A lane that is a contiguous access vector the device supports
-            // stays in the IR: it is the vector width, not a thread/lane
-            // bundle to unfold. The backend renders the load/store as one
-            // vector access.
-            if self.keep_address_lane(unroll_id) {
+            // A lane is a vector width wherever the access it shapes is
+            // contiguous and the device supports the width; only the
+            // dependents that cannot carry it that way are unfolded. So one
+            // lane may stay in the IR for its vector accesses while the same
+            // lane's scalar consumers are expanded.
+            let dup = self.lane_expansion(unroll_id);
+            if dup.is_empty() {
                 kept.insert(unroll_id);
                 continue;
             }
-            // A refused node (none exist today) stays in place — stop
-            // instead of looping on it forever.
-            if !self.devectorize_unroll_one(unroll_id) {
-                break;
+            if !self.devectorize_unroll_one(unroll_id, &dup) {
+                // The lane is still read as a vector width somewhere: it stays
+                // in the IR, its scalar consumers are expanded.
+                kept.insert(unroll_id);
             }
         }
         self.constant_folding();
@@ -284,13 +286,14 @@ impl Kernel {
         self.remove_op(reduce_id);
     }
 
-    /// Unfold a single unroll node: recreate every element-conditional op
-    /// once per element with the node substituted by that element's
-    /// constant, rewrite the originals in place as element 0, then remove
-    /// the node. Returns false when the node must stay (none today).
+    /// Unfold the dependent ops in `dup` per element: recreate each one once
+    /// per element with the node substituted by that element's constant,
+    /// rewrite element 0 in place, then drop the node when nothing reads it
+    /// any more. Returns false when the node is still a vector width for the
+    /// dependents outside `dup`.
     /// A `Reduce` here is a driver bug: the joint loop expands reduces
     /// first, so none survive to the unroll rounds.
-    fn devectorize_unroll_one(&mut self, unroll_id: OpId) -> bool {
+    fn devectorize_unroll_one(&mut self, unroll_id: OpId, dup: &Set<OpId>) -> bool {
         let len = match self.at(unroll_id) {
             Op::Unroll { len, .. } => u64::from(*len),
             _ => unreachable!("devectorize: not an unroll node"),
@@ -324,6 +327,12 @@ impl Kernel {
         // original successor) never re-visits them.
         while !walk_id.is_null() {
             let next = self.next_op(walk_id);
+            if !dup.contains(&walk_id) {
+                // Kept: the lane is a vector width here (or nothing of this
+                // lane survives), so the op reads the lane unchanged.
+                walk_id = next;
+                continue;
+            }
             match self.ops[walk_id].op.clone() {
                 Op::Storage { .. }
                 | Op::Range { .. }
@@ -411,6 +420,13 @@ impl Kernel {
             walk_id = next;
         }
 
+        if self
+            .iter_unordered()
+            .any(|(_, op)| op.parameters().any(|p| p == unroll_id))
+        {
+            // Still a vector width for the kept dependents.
+            return false;
+        }
         self.remove_op(unroll_id);
         true
     }
@@ -483,144 +499,215 @@ impl Kernel {
         false
     }
 
-    /// A lane that is the innermost, unit-stride term of a load/store access
-    /// and whose width the device supports is a *vector width*, not a
-    /// thread/lane bundle: keep it so the backend renders one vector access.
-    fn keep_address_lane(&self, id: OpId) -> bool {
-        let dbg = std::env::var_os("ZYX_DV2").is_some();
-        let Op::Unroll { len, .. } = *self.at(id) else {
-            return false;
-        };
-        let info = self.device_info();
-        let len = Dim::from(len);
-        if !info.supported_vec_lens.iter().any(|&v| Dim::from(v) == len) {
-            if dbg { eprintln!("DV {id:?}: len {len} not a supported vec len"); }
-            return false;
+    /// `id` names a load, store or `ldmatrix` (with an address operand).
+    fn is_access(&self, op: OpId) -> bool {
+        match self.at(op) {
+            Op::Load { .. } | Op::Store { .. } => true,
+            Op::PTX(p) => matches!(p.as_ref(), PTXOp::LdMatrix { .. }),
+            _ => false,
         }
+    }
 
-        // The lane must feed addresses only: it and every op it reaches must
-        // be part of some load/store index expression.
-        let mut address: Set<OpId> = Set::default();
-        let mut stack: Vec<OpId> = Vec::new();
-        for (_, op) in self.iter_unordered() {
-            match op {
-                Op::Load { src_idx, .. } => stack.push(*src_idx),
-                Op::Store { dst_idx, .. } => stack.push(*dst_idx),
-                _ => {}
+    /// The ops to unfold when lane `id` leaves the IR as scalars.
+    ///
+    /// The lane is a *vector width* where the access it shapes is contiguous
+    /// and the device supports the width, and a *work bundle* everywhere
+    /// else. An op survives only when its own access carries the lane as a
+    /// vector width and every op consuming it survives too; the rest of the
+    /// lane's dependents are unfolded, together with the index math that
+    /// feeds them (it would otherwise hand them a vector).
+    ///
+    /// Empty when the lane is a vector width throughout, i.e. when nothing
+    /// needs unfolding.
+    fn lane_expansion(&self, id: OpId) -> Set<OpId> {
+        let Op::Unroll { len, .. } = *self.at(id) else {
+            return Set::default();
+        };
+        let width = Dim::from(len);
+        let mut consumers: Map<OpId, Vec<OpId>> = Map::default();
+        for (op, x) in self.iter_unordered() {
+            for p in x.parameters() {
+                if !p.is_null() {
+                    consumers.entry(p).or_default().push(op);
+                }
             }
         }
-        while let Some(op) = stack.pop() {
-            if !address.insert(op) {
+        // Every op transitively consuming the lane, in dependency order of
+        // discovery (the loop below only needs the set).
+        let mut dep: Set<OpId> = Set::default();
+        let mut stack = vec![id];
+        while let Some(x) = stack.pop() {
+            for &c in consumers.get(&x).map_or(&[][..], |v| v.as_slice()) {
+                if dep.insert(c) {
+                    stack.push(c);
+                }
+            }
+        }
+        // A width the device cannot access as one vector is a thread/lane
+        // bundle throughout: every dependent is scalar.
+        let supported = self
+            .device_info()
+            .supported_vec_lens
+            .iter()
+            .any(|&v| Dim::from(v) == width);
+        if !supported {
+            return dep;
+        }
+        // An op can stay only if its value still reaches an access: a chain
+        // that ends in no memory traffic has nowhere to render the lane.
+        let mut reaches: Set<OpId> = Set::default();
+        loop {
+            let mut changed = false;
+            for &op in dep.iter() {
+                if reaches.contains(&op) {
+                    continue;
+                }
+                let downstream = self.is_access(op)
+                    || consumers
+                        .get(&op)
+                        .is_some_and(|cs| cs.iter().any(|c| reaches.contains(c)));
+                if downstream {
+                    reaches.insert(op);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let mut keep: Map<OpId, bool> = Map::default();
+        for &op in dep.iter() {
+            keep.insert(op, reaches.contains(&op) && self.lane_access_ok(op, id, width));
+        }
+        // A kept op must have only kept consumers: an unfolded consumer reads
+        // one lane of a vector.
+        loop {
+            let mut changed = false;
+            for &op in dep.iter() {
+                if !keep[&op] {
+                    continue;
+                }
+                let survives = consumers.get(&op).is_none_or(|cs| {
+                    cs.iter().all(|c| {
+                        *keep
+                            .get(c)
+                            .expect("devectorize: dependent op outside the lane's cone")
+                    })
+                });
+                if !survives {
+                    keep.insert(op, false);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        dep.iter().filter(|op| !keep[*op]).copied().collect()
+    }
+
+    /// Whether `op` can render as one access of width `width` in lane `id`:
+    /// the lane is the innermost contiguous term of the address, and the
+    /// value side carries exactly that width (a broadcast scalar or a wider
+    /// value is a work bundle, not a vector). An operand the lane does not
+    /// shape at all is not this access' business.
+    fn lane_access_ok(&self, op: OpId, id: OpId, width: Dim) -> bool {
+        match self.at(op) {
+            Op::Load { src_idx, .. } => {
+                if !self.depends_on(*src_idx, id, &mut Set::default()) {
+                    return true;
+                }
+                self.vector_lane(*src_idx, id) && self.lane_load_consumers_ok(op, width)
+            }
+            Op::Store { dst_idx, src, .. } => {
+                if !self.depends_on(*dst_idx, id, &mut Set::default()) {
+                    return true;
+                }
+                self.vector_lane(*dst_idx, id) && self.value_elements(*src) == width
+            }
+            Op::PTX(p) => match p.as_ref() {
+                PTXOp::LdMatrix { addr, .. } => {
+                    !self.depends_on(*addr, id, &mut Set::default()) || self.vector_lane(*addr, id)
+                }
+                _ => false,
+            },
+            _ => true,
+        }
+    }
+
+    /// Element count of a store's value: an `ldmatrix` result is its
+    /// fragment halves (`frags` 32-bit words, two halves each) and has no
+    /// lane shape of its own.
+    fn value_elements(&self, op: OpId) -> Dim {
+        match self.at(op) {
+            Op::PTX(p) => match p.as_ref() {
+                PTXOp::LdMatrix { frags, .. } => Dim::from(i64::from(*frags) * 2),
+                _ => Dim::from(2),
+            },
+            _ => self.elements(op),
+        }
+    }
+
+    /// The lane is the innermost unit-stride term of `idx` and no other lane
+    /// competes for that role: one access has one innermost dimension, so a
+    /// second unit-stride lane would widen the vector past the access.
+    fn vector_lane(&self, idx: OpId, id: OpId) -> bool {
+        if !self.unit_lane_term(idx, id) {
+            return false;
+        }
+        let mut stack = vec![idx];
+        let mut seen = Set::default();
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
                 continue;
             }
-            for p in self.at(op).parameters() {
+            if matches!(self.at(x), Op::Unroll { .. }) {
+                if x != id && self.unit_lane_term(idx, x) {
+                    return false;
+                }
+                continue;
+            }
+            for p in self.at(x).parameters() {
                 if !p.is_null() {
                     stack.push(p);
                 }
             }
         }
-        if !address.contains(&id) {
-            if dbg { eprintln!("DV {id:?}: not an address lane"); }
-            return false;
-        }
-        for (cid, op) in self.iter_unordered() {
-            if op.parameters().any(|p| p == id) && !address.contains(&cid) {
-                // A load/store that *is* the access shaped by the lane (the
-                // lane is its index direct) is an address use, not a value
-                // use of the lanes.
-                let index_is_lane = match self.at(cid) {
-                    Op::Load { src_idx, .. } => *src_idx == id,
-                    Op::Store { dst_idx, .. } => *dst_idx == id,
-                    _ => false,
-                };
-                if !index_is_lane {
-                    if dbg { eprintln!("DV {id:?}: used by non-address op {cid:?} {:?}", self.at(cid)); }
-                    return false;
-                }
-            }
-        }
+        true
+    }
 
-        // A rank-1 access of exactly this width with the lane at stride 1:
-        // the contiguous innermost term the vector load/store covers.
-        // The lane must be the width of *every* access it shapes, and each
-        // such access must use its value as a full vector: a load consumed
-        // lane by lane through `Index`, or a store of a vector into memory.
-        // A split lane also shapes accesses whose values are lane bundles
-        // (the mma operands), so it is rejected.
-        let mut qualified = false;
-        for (op_id, op) in self.iter_unordered() {
-            let idx = match op {
-                Op::Load { src_idx, .. } => *src_idx,
-                Op::Store { dst_idx, .. } => *dst_idx,
-                _ => continue,
-            };
-            if !self.unit_lane_term(idx, id) {
+    /// Every consumer of a vector load must take the whole width: a
+    /// per-element extract (`Index`), a copy (`Store`) or an instruction
+    /// whose slot count is exactly the width (`Wmma`, through the `Stack`
+    /// that packs its operand).
+    fn lane_load_consumers_ok(&self, load: OpId, width: Dim) -> bool {
+        for (cid, cop) in self.iter_unordered() {
+            if !cop.parameters().any(|p| p == load) {
                 continue;
             }
-            if self.shape(op_id) != vec![len] {
-                return false;
-            }
-            match op {
-                Op::Load { .. } => {
-                    let mut used: Set<usize> = Set::default();
-                    for (cid, cop) in self.iter_unordered() {
-                        if !cop.parameters().any(|p| p == op_id) {
-                            continue;
-                        }
-                        match *cop {
-                            Op::Index { vec, idx: j } if vec == op_id => {
-                                used.insert(j);
-                            }
-                            // A vector load whose value is stored straight
-                            // back is a contiguous copy (the cooperative
-                            // shared-memory fill): the lane is the vector
-                            // width, not a work bundle.
-                            Op::Store { src, .. } if src == op_id => {}
-                            // A fragment used directly, or through the Stack
-                            // that builds the operand: the instruction's slot
-                            // count is the proof it is a fragment, not a work
-                            // bundle.
-                            Op::Wmma { .. } => {
-                                if self.wmma_operand_slots(cid, op_id) != Some(self.elements(op_id)) {
-                                    return false;
-                                }
-                            }
-                            Op::Stack { ref ops } => {
-                                let total: Dim = ops.iter().map(|&o| self.elements(o)).sum();
-                                let fragment = self.iter_unordered().any(|(wid, wop)| {
-                                    matches!(wop, Op::Wmma { a, b, .. }
-                                        if (*a == cid || *b == cid) && self.wmma_operand_slots(wid, cid) == Some(total))
-                                });
-                                if !fragment {
-                                    return false;
-                                }
-                            }
-                            _ => return false,
-                        }
-                    }
-                    if !used.is_empty() && used.len() as Dim != len {
-                        if dbg { eprintln!("DV {id:?}: load consumed lane by lane ({}/{} used)", used.len(), len); }
+            match *cop {
+                Op::Index { vec, .. } if vec == load => {}
+                Op::Store { src, .. } if src == load => {}
+                Op::Wmma { .. } => {
+                    if self.wmma_operand_slots(cid, load) != Some(width) {
                         return false;
                     }
-                    qualified = true;
                 }
-                Op::Store { src, dst, .. } => {
-                    if self.shape(*src) != vec![len] {
+                Op::Stack { ref ops } => {
+                    let total: Dim = ops.iter().map(|&o| self.elements(o)).sum();
+                    let fragment = self.iter_unordered().any(|(wid, wop)| {
+                        matches!(wop, Op::Wmma { a, b, .. }
+                            if (*a == cid || *b == cid)
+                                && self.wmma_operand_slots(wid, cid) == Some(total))
+                    });
+                    if !fragment {
                         return false;
                     }
-                    // A register-scope storage is a register file: a fragment
-                    // written as a whole stays one vector access (the `.v2` /
-                    // `.v4` of accumulators); a wider lane is work bundles and
-                    // is duplicated below.
-                    if matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. }) && !matches!(len, 2 | 4) {
-                        return false;
-                    }
-                    qualified = true;
                 }
-                _ => {}
+                _ => return false,
             }
         }
-        qualified
+        true
     }
 }
 

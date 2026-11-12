@@ -1246,12 +1246,21 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                         // One store for the whole `ldmatrix` result (both K
                         // steps are adjacent in the tile's slot): the lanes are
                         // the tile and the fragment's width, so no unpacking.
+                        // The base counts *steps* of `a_slots` slots each, so
+                        // the multiplier is `a_slots` even though the lane spans
+                        // both steps.
                         let width = a_slots * if paired { 2 } else { 1 };
                         let sc = kernel.insert_const_idx_before(end, Dim::from(steps_here as i64));
                         let base = kernel.insert_before(end, Op::Binary { x: tml, y: sc, bop: BOp::Mul });
                         let so = kernel.insert_const_idx_before(end, Dim::from(sl as i64));
                         let base = kernel.insert_before(end, Op::Binary { x: base, y: so, bop: BOp::Add });
-                        let aidx = frag_index(kernel, end, base, width, 1);
+                        let asl = kernel.insert_const_idx_before(end, Dim::from(a_slots as i64));
+                        let abase = kernel.insert_before(end, Op::Binary { x: base, y: asl, bop: BOp::Mul });
+                        let alane = kernel.insert_before(
+                            end,
+                            Op::Unroll { axis: 1, len: u16::try_from(width).expect("a fragment width") },
+                        );
+                        let aidx = kernel.insert_before(end, Op::Binary { x: abase, y: alane, bop: BOp::Add });
                         kernel.insert_before(end, Op::Store { dst: a_st, dst_idx: aidx, src: value });
                     }
                 }
@@ -1292,37 +1301,34 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                                 b_lb,
                             )
                         };
-                        // One store for the whole `ldmatrix` result, with the
-                        // half index as the lane: the x4's word order is
-                        // `(tile0,k0), (tile1,k0), (tile0,k8), (tile1,k8)`, so
-                        // the storage offset is `((tn + (h/2)%2) * steps +
-                        // sl + h/4) * slots + h%2` — a lane, no unpacking.
-                        let halves = if pair { 2 * b_slots } else { b_slots * if paired { 2 } else { 1 } };
-                        let hl = kernel.insert_before(
-                            end,
-                            Op::Unroll { axis: 0, len: u16::try_from(halves).expect("b fragment halves") },
-                        );
-                        let two = kernel.insert_const_idx_before(end, Dim::from(2i64));
-                        let four = kernel.insert_const_idx_before(end, Dim::from(4i64));
-                        let tile = kernel.insert_before(end, Op::Binary { x: hl, y: two, bop: BOp::Div });
-                        let tile = kernel.insert_before(end, Op::Binary { x: tile, y: two, bop: BOp::Mod });
-                        let tnoff = if pair {
-                            let tnc = kernel.insert_const_idx_before(end, Dim::from(tn as i64));
-                            kernel.insert_before(end, Op::Binary { x: tnc, y: tile, bop: BOp::Add })
-                        } else {
-                            kernel.insert_const_idx_before(end, Dim::from(tn as i64))
+                        // The `ldmatrix` result is `frags` words of `b_slots`
+                        // halves; an `x4` covers `(tile0,k0), (tile1,k0),
+                        // (tile0,k8), (tile1,k8)`. The storage layout is
+                        // `[tn][step][slot]`, so the words land at bases that
+                        // are not adjacent: the lane cannot select the word (it
+                        // would have to slice the value too), so one store per
+                        // word, each with a `b_slots`-wide lane.
+                        let frags = match kernel.at(value) {
+                            Op::PTX(p) => match p.as_ref() {
+                                PTXOp::LdMatrix { frags, .. } => usize::from(*frags),
+                                _ => unreachable!("B fragment from a non-ldmatrix PTX op"),
+                            },
+                            _ => unreachable!("B fragment from a non-PTX op"),
                         };
-                        let stepi = kernel.insert_before(end, Op::Binary { x: hl, y: four, bop: BOp::Div });
-                        let j = kernel.insert_before(end, Op::Binary { x: hl, y: two, bop: BOp::Mod });
-                        let sc = kernel.insert_const_idx_before(end, Dim::from(steps_here as i64));
-                        let b0 = kernel.insert_before(end, Op::Binary { x: tnoff, y: sc, bop: BOp::Mul });
-                        let so = kernel.insert_const_idx_before(end, Dim::from(sl as i64));
-                        let b0 = kernel.insert_before(end, Op::Binary { x: b0, y: so, bop: BOp::Add });
-                        let b0 = kernel.insert_before(end, Op::Binary { x: b0, y: stepi, bop: BOp::Add });
-                        let bc = kernel.insert_const_idx_before(end, Dim::from(b_slots as i64));
-                        let b0 = kernel.insert_before(end, Op::Binary { x: b0, y: bc, bop: BOp::Mul });
-                        let bidx = kernel.insert_before(end, Op::Binary { x: b0, y: j, bop: BOp::Add });
-                        kernel.insert_before(end, Op::Store { dst: b_st, dst_idx: bidx, src: value });
+                        let tiles = if pair { 2 } else { 1 };
+                        for word in 0..frags {
+                            let tile = word % tiles;
+                            let step = word / tiles;
+                            let wbase = ((tn + tile) * steps_here + sl + step) * b_slots;
+                            let base = kernel.insert_const_idx_before(end, Dim::from(wbase as i64));
+                            let blane = kernel.insert_before(
+                                end,
+                                Op::Unroll { axis: 1, len: u16::try_from(b_slots).expect("b fragment slots") },
+                            );
+                            let bidx = kernel.insert_before(end, Op::Binary { x: base, y: blane, bop: BOp::Add });
+                            let frag = slice_at(kernel, end, value, word * b_slots, b_slots);
+                            kernel.insert_before(end, Op::Store { dst: b_st, dst_idx: bidx, src: frag });
+                        }
                     }
                     tn += if pair { 2 } else { 1 };
                 }
