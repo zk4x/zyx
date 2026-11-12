@@ -297,8 +297,14 @@ impl Kernel {
                             let src_shape = shapes[&x].1.clone();
                             if !dst_idx.is_null() {
                                 let access_shape = shapes[&dst_idx].1.clone();
+                                // A value produced by an instruction that
+                                // *consumes* its operand lanes (the mma reads
+                                // its `a`/`b` slots itself) carries the store's
+                                // access shape whatever lanes its operands
+                                // name, so it is not held to the subset rule.
+                                let instruction = matches!(self.ops[x].op, Op::Wmma { .. } | Op::PTX(_));
                                 // Scalar src broadcasts to any access.
-                                let mut subset = src_shape == access_shape || src_shape.is_empty();
+                                let mut subset = instruction || src_shape == access_shape || src_shape.is_empty();
                                 if !subset && !src_shape.is_empty() {
                                     let mut src_seen = Set::default();
                                     let mut src_unrolls = Set::default();

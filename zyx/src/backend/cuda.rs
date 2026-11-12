@@ -1037,6 +1037,18 @@ fn spawn_worker(
                         continue;
                     }
 
+                    if std::env::var_os("ZYX_SASS").is_some()
+                        && let Ok(get_attr) = unsafe {
+                            _lib.get::<unsafe extern "C" fn(*mut c_int, c_int, CUfunction) -> CUDAStatus>(b"cuFuncGetAttribute\0")
+                        }
+                    {
+                        // CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES = 1, NUM_REGS = 4
+                        let mut n = 0i32;
+                        let _ = unsafe { get_attr(&raw mut n, 1, function) };
+                        let mut regs = 0i32;
+                        let _ = unsafe { get_attr(&raw mut regs, 4, function) };
+                        println!("[cuda] launched kernel: {n} bytes shared, {regs} registers");
+                    }
                     let program_id = programs.push(CUDAProgram::Module { module, function, lws, gws, params });
                     _ = reply.send(Ok(program_id));
                 }
@@ -2040,6 +2052,10 @@ impl CUDADevice {
                 println!();
                 println!("{}", String::from_utf8_lossy(&ptx_vec));
             }
+            if std::env::var_os("ZYX_SASS").is_some() {
+                println!("ZYX_SASS: assembling {} PTX bytes", ptx_vec.len());
+                print_sass(&ptx_vec, self.compute_capability);
+            }
             name += "\0";
             let (reply, reply_rx) = channel();
             self.tx
@@ -2493,6 +2509,39 @@ impl CudaPartition {
         }
         Ok(())
     }
+}
+
+/// Assemble the rendered PTX exactly as the driver's JIT will (ptxas for the
+/// device's `sm_<cc>`) and print the SASS, so the emitted instructions can be
+/// compared with a reference kernel's. `ZYX_SASS` only: nothing here feeds the
+/// launch path. The disassembler needs a regular file (cuobjdump and nvdisasm
+/// both reject `/dev/stdin`), so the PTX and the cubin live in the temp
+/// directory for the length of one compile and are removed after.
+fn print_sass(ptx: &[u8], cc: [c_int; 2]) {
+    let dir = std::env::temp_dir();
+    let stem = dir.join(format!("zyx_jit_{}", std::process::id()));
+    let ptx_path = stem.with_extension("ptx");
+    let cubin_path = stem.with_extension("cubin");
+    if std::fs::write(&ptx_path, ptx).is_err() {
+        return;
+    }
+    let arch = format!("-arch=sm_{}{}", cc[0], cc[1]);
+    match std::process::Command::new("ptxas").arg(&arch).arg("-v").arg("-o").arg(&cubin_path).arg(&ptx_path).output() {
+        Ok(out) => {
+            let log = String::from_utf8_lossy(&out.stderr);
+            for line in log.lines().filter(|l| l.contains("Used") || l.contains("spill") || l.contains("error")) {
+                println!("{line}");
+            }
+            if out.status.success() {
+                if let Ok(sass) = std::process::Command::new("cuobjdump").arg("-sass").arg(&cubin_path).output() {
+                    println!("{}", String::from_utf8_lossy(&sass.stdout));
+                }
+            }
+        }
+        Err(e) => println!("ZYX_SASS: ptxas did not run: {e}"),
+    }
+    let _ = std::fs::remove_file(&ptx_path);
+    let _ = std::fs::remove_file(&cubin_path);
 }
 
 /// Resolves a launch arg region to a device pointer: chunk base plus the

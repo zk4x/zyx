@@ -4,7 +4,7 @@
 //! PTX assembly codegen from zyx kernel IR.
 
 use crate::{
-    DType, Map,
+    DType, Map, Set,
     backend::gws_from_kernel,
     dtype::Constant,
     error::{BackendError, ErrorStatus},
@@ -107,8 +107,37 @@ impl Constant {
     }
 }
 
+/// The element offset and width of a register-scope access. A register file
+/// has no address, so the index must name registers statically: a constant, or
+/// a constant base plus an `Unroll(n)` lane — the index vector `{0, .., n-1}`,
+/// which is a run of `n` consecutive registers.
+fn slot_span(kernel: &Kernel, idx: OpId) -> (u16, u16) {
+    let as_dim = |o: OpId| kernel.resolve_const(o).and_then(Constant::as_dim);
+    match kernel.at(idx) {
+        Op::Binary { x, y, bop: BOp::Add } => match (kernel.at(*x), kernel.at(*y)) {
+            (_, Op::Unroll { len, .. }) | (Op::Unroll { len, .. }, _) => {
+                let base = as_dim(*x).or_else(|| as_dim(*y)).expect("PTX: register base is not constant");
+                (u16::try_from(base).expect("PTX: register index out of range"), *len)
+            }
+            _ => match as_dim(idx) {
+                Some(d) => (u16::try_from(d).expect("PTX: register index out of range"), 1),
+                None => todo!("PTX: register-scope access with a computed index"),
+            },
+        },
+        Op::Unroll { len, .. } => (0, *len),
+        _ => match as_dim(idx) {
+            Some(d) => (u16::try_from(d).expect("PTX: register index out of range"), 1),
+            None => todo!("PTX: register-scope access with a runtime index"),
+        },
+    }
+}
+
 struct Compiler {
     var_map: Map<OpId, u16>,
+    /// Ops that name an existing register instead of owning one (a component
+    /// extract): their value is one register of another op, so reading them
+    /// must not consume that op's slot.
+    aliases: Set<OpId>,
     loops: Vec<(u16, u16, u16)>,
     if_labels: Vec<u16>,
     // Parallels every open Loop: true = boolean (conditional) close,
@@ -282,6 +311,9 @@ impl Compiler {
 
     fn get_var(&mut self, x: OpId) -> u16 {
         let r = self.var_map[&x];
+        if self.aliases.contains(&x) {
+            return r;
+        }
         let slot = self.slot_of(r);
         if self.loop_level == self.registers[slot].2 {
             self.registers[slot].1 -= 1;
@@ -393,45 +425,47 @@ impl Compiler {
     }
 
     /// Emit a store of the register(s) at `x` to `[ %address ]` in global space.
-    fn emit_store(&mut self, shape: &[Dim], dtype: DType, x: u16) -> Result<(), BackendError> {
+    fn emit_store(&mut self, shape: &[Dim], dtype: DType, regs: &[u16]) -> Result<(), BackendError> {
         if matches!(dtype, DType::F16 | DType::BF16) && shape.is_empty() {
             let tmp = self.new_reg(DType::U16, Vec::new(), 1);
-            _ = writeln!(self.body, "{}mov.b16 %r{tmp}, %r{x};", self.indent);
+            _ = writeln!(self.body, "{}mov.b16 %r{tmp}, %r{};", self.indent, regs[0]);
             _ = writeln!(self.body, "{}st.global.b16 [%address], %r{tmp};", self.indent);
             self.release_reg(tmp);
         } else {
-            self.emit_store_space(shape, dtype, x, "global")?;
+            self.emit_store_space(shape, dtype, regs, "global")?;
         }
         Ok(())
     }
 
-    /// Emit a store of the register(s) at `x` to `[ %address ]`.
-    /// `space` is one of "global", "shared", "local".
-    fn emit_store_space(&mut self, shape: &[Dim], dtype: DType, x: u16, space: &str) -> Result<(), BackendError> {
+    /// Emit a store of the operand's registers (in component order) to
+    /// `[ %address ]`. `space` is one of "global", "shared", "local".
+    fn emit_store_space(&mut self, shape: &[Dim], dtype: DType, regs: &[u16], space: &str) -> Result<(), BackendError> {
         // A shared variable's address is a 32-bit offset in the shared
         // window (`%saddress`); global and local use the generic `%address`.
         let addr = if space == "shared" { "%saddress" } else { "%address" };
+        let list = |regs: &[u16]| regs.iter().map(|r| format!("%r{r}")).collect::<Vec<_>>().join(", ");
         match shape {
             [] => {
-                _ = writeln!(self.body, "{}st.{}.{} [{addr}], %r{x};", self.indent, space, dtype.mem_ptx());
+                _ = writeln!(self.body, "{}st.{}.{} [{addr}], %r{};", self.indent, space, dtype.mem_ptx(), regs[0]);
             }
-            [4] if dtype == DType::F32 => {
-                _ = writeln!(
-                    self.body,
-                    "{}st.{}.v4.f32 [{addr}], {{%r{x}, %r{}, %r{}, %r{}}};",
-                    self.indent,
-                    space,
-                    x + 1,
-                    x + 2,
-                    x + 3
-                );
+            // A vector of f32 (or any non-f16 element): one `v<n>` store of
+            // the operand's registers, in component order — a `Stack` of
+            // accumulator slots is exactly this.
+            [n] if dtype != DType::F16 && dtype != DType::BF16 && *n <= 4 => {
+                let v = usize::try_from(*n).expect("vector width");
+                let (op, list) = if v == 1 {
+                    (format!("st.{}.{}", space, dtype.mem_ptx()), list(regs))
+                } else {
+                    (format!("st.{}.v{v}.{}", space, dtype.mem_ptx()), list(regs))
+                };
+                _ = writeln!(self.body, "{}{op} [{addr}], {{{list}}};", self.indent);
             }
             // A vector of f16 pairs: pack the 16-bit slots into 32-bit words.
             [n] if matches!(dtype, DType::F16 | DType::BF16) && *n % 2 == 0 && *n <= 8 => {
                 let words = usize::try_from(n / 2).expect("pack word count");
                 let t = self.new_reg(DType::U32, vec![Dim::from(words as i64)], words as u32);
                 for w in 0..words {
-                    let (lo, hi) = (x + 2 * w as u16, x + 2 * w as u16 + 1);
+                    let (lo, hi) = (regs[2 * w], regs[2 * w + 1]);
                     _ = writeln!(self.body, "{}mov.b32 %r{}, {{%r{lo}, %r{hi}}};", self.indent, t + w as u16);
                 }
                 match words {
@@ -473,6 +507,7 @@ impl Kernel {
         gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
         let mut comp = Compiler {
             var_map: Map::default(),
+            aliases: Set::default(),
             loops: Vec::new(),
             if_labels: Vec::new(),
             scope_is_bool: Vec::new(),
@@ -573,7 +608,13 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}.shared .align 16 .{} __ld{op_id}[{len}];", comp.indent, dtype.ptx());
                         }
                         MemScope::Register => {
-                            _ = writeln!(comp.body, "{}.local .align 16 .{} __ld{op_id}[{len}];", comp.indent, dtype.ptx());
+                            // A register-scope storage is a register file, not
+                            // memory: reserve `len` registers and index them
+                            // statically (the CUDA backend gets this from the
+                            // C compiler promoting `T p[len]`). A `.local`
+                            // array would put every accumulator access through
+                            // local memory.
+                            _ = comp.new_var(op_id, dtype, vec![len], u32::MAX);
                         }
                         MemScope::Circular | MemScope::Global => {
                             unreachable!("ptx only supports local or register storage")
@@ -654,20 +695,22 @@ impl Kernel {
                             comp.emit_load(&access_shape, dtype, reg, "shared")?;
                         }
                         MemScope::Register => {
-                            let idx = comp.get_var_addr(src_idx);
+                            // Static component of a register-scope storage: a
+                            // register move, not a memory access.
+                            let (at, n) = slot_span(self, src_idx);
+                            let base = comp.var_map[&buf];
                             let reg = comp.new_var(op_id, dtype, access_shape.clone(), rcs[&op_id]);
-                            let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{buf};", comp.indent);
-                            let t = comp.new_reg(DType::U64, Vec::new(), 1);
-                            if IDX_T.bit_size() == 64 {
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
-                            } else {
-                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            let len = n.max(u16::try_from(Compiler::slot_len(&access_shape)).expect("slot count"));
+                            for i in 0..len {
+                                _ = writeln!(
+                                    comp.body,
+                                    "{}mov.b{} %r{}, %r{};",
+                                    comp.indent,
+                                    dtype.bit_size(),
+                                    reg + i as u16,
+                                    base + at + i as u16
+                                );
                             }
-                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
-                            comp.release_reg(t);
-                            comp.emit_load(&access_shape, dtype, reg, "local")?;
                         }
                     }
                 }
@@ -696,7 +739,7 @@ impl Kernel {
                                 comp.release_reg(gstu);
                             } else {
                                 let idx = comp.get_var_addr(dst_idx);
-                                let x = comp.get_var(x);
+                                let regs = comp.components_of(self, x, &dtypes)?;
                                 if IDX_T.bit_size() == 64 {
                                     if offset != idx {
                                         _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
@@ -706,12 +749,12 @@ impl Kernel {
                                 }
                                 _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
                                 _ = writeln!(comp.body, "{}add.u64 %address, %p{dst_buf}, %r{offset};", comp.indent);
-                                comp.emit_store(&access_shape, dtype, x)?;
+                                comp.emit_store(&access_shape, dtype, &regs)?;
                             }
                         }
                         MemScope::Local => {
                             let idx = comp.get_var_addr(dst_idx);
-                            let x = comp.get_var(x);
+                            let regs = comp.components_of(self, x, &dtypes)?;
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             // A shared variable's address is a 32-bit offset in
                             // the shared window.
@@ -725,23 +768,21 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}shl.b32 %r{t}, %r{t}, {byte_shift};", comp.indent);
                             _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{t};", comp.indent);
                             comp.release_reg(t);
-                            comp.emit_store_space(&access_shape, dtype, x, "shared")?;
+                            comp.emit_store_space(&access_shape, dtype, &regs, "shared")?;
                         }
                         MemScope::Register => {
-                            let idx = comp.get_var_addr(dst_idx);
-                            let x = comp.get_var(x);
-                            let byte_shift = (dtype.bit_size() / 8).ilog2();
-                            _ = writeln!(comp.body, "{}mov.u64 %address, __ld{dst_buf};", comp.indent);
-                            let t = comp.new_reg(DType::U64, Vec::new(), 1);
-                            if IDX_T.bit_size() == 64 {
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{idx}, {byte_shift};", comp.indent);
-                            } else {
-                                _ = writeln!(comp.body, "{}cvt.u64.u32 %r{t}, %r{idx};", comp.indent);
-                                _ = writeln!(comp.body, "{}shl.b64 %r{t}, %r{t}, {byte_shift};", comp.indent);
+                            let (at, _) = slot_span(self, dst_idx);
+                            let regs = comp.components_of(self, x, &dtypes)?;
+                            let base = comp.var_map[&dst_buf];
+                            for (i, &r) in regs.iter().enumerate() {
+                                _ = writeln!(
+                                    comp.body,
+                                    "{}mov.b{} %r{}, %r{r};",
+                                    comp.indent,
+                                    dtype.bit_size(),
+                                    base + at + i as u16
+                                );
                             }
-                            _ = writeln!(comp.body, "{}add.u64 %address, %address, %r{t};", comp.indent);
-                            comp.release_reg(t);
-                            comp.emit_store_space(&access_shape, dtype, x, "local")?;
                         }
                     }
                     comp.release_reg(offset);
@@ -862,8 +903,17 @@ impl Kernel {
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id].0;
-                    let xr = comp.get_var(x);
-                    let yr = comp.get_var(y);
+                    // A constant operand is written as the literal, not a
+                    // register: ptxas folds `x / 8192` and `x % 8192` into a
+                    // shift and a mask only when it sees the value, and a
+                    // register divisor makes it call the 64-bit integer
+                    // division helper instead (which spills the kernel).
+                    let imm = |kernel: &Kernel, o: OpId| match kernel.ops[o].op {
+                        Op::Const(ref c) => Some(c.ptx()),
+                        _ => None,
+                    };
+                    let xs = imm(self, x).unwrap_or_else(|| format!("%r{}", comp.get_var(x)));
+                    let ys = imm(self, y).unwrap_or_else(|| format!("%r{}", comp.get_var(y)));
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
                     let type_ext = if matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight) {
                         match dtypes[&x].0.bit_size() {
@@ -881,7 +931,7 @@ impl Kernel {
                     };
                     _ = writeln!(
                         comp.body,
-                        "{}{}.{} %r{reg}, %r{xr}, %r{yr};",
+                        "{}{}.{} %r{reg}, {xs}, {ys};",
                         comp.indent,
                         comp.bop_to_ptx(bop, dtype),
                         type_ext,
@@ -954,7 +1004,10 @@ impl Kernel {
                 // lanes, so the address is the lane-0 base and the value's
                 // shape (from `Op::Unroll` in the cone) is the access width.
                 Op::Unroll { .. } => {
-                    let reg = comp.new_var(op_id, DType::I64, Vec::new(), 1);
+                    // A lane marker read by every access of the vector: its
+                    // value is always zero and it is never released, so it
+                    // must not be refcounted (like a constant).
+                    let reg = comp.new_var(op_id, DType::I64, Vec::new(), u32::MAX);
                     _ = writeln!(comp.body, "{}mov.s64 %r{reg}, 0;", comp.indent);
                 }
                 // A Stack is a pure register grouping (e.g. an mma operand
@@ -962,23 +1015,19 @@ impl Kernel {
                 // consumers read them via `components_of`. Nothing to emit.
                 Op::Stack { .. } => {}
                 Op::Index { vec, idx } => {
-                    // Component extract: with a constant index the component
-                    // is a fixed register — emit a move.
+                    // Component extract: the component *is* a register of the
+                    // vector, so the extraction is a rename, not an
+                    // instruction. Consumers then read the vector's own
+                    // registers (`LDSM` output straight into `HMMA`, like the
+                    // reference), instead of moving through a copy.
                     let (dtype, shape) = dtypes[&vec].clone();
                     debug_assert!(!shape.is_empty(), "PTX: Op::Index on a scalar");
                     let len = Compiler::slot_len(&shape);
                     debug_assert!(idx < len as usize, "PTX: Op::Index {idx} out of bounds for len {len}");
-                    let vb = comp.get_var(vec);
-                    let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
-                    // Element extraction is a bit-level move: `f16` has no
-                    // register-move form of its own.
-                    _ = writeln!(
-                        comp.body,
-                        "{}mov.b{} %r{reg}, %r{};",
-                        comp.indent,
-                        dtype.bit_size(),
-                        vb + idx as u16
-                    );
+                    let _ = dtype;
+                    let vb = comp.components_of(self, vec, &dtypes)?;
+                    comp.var_map.insert(op_id, vb[idx]);
+                    comp.aliases.insert(op_id);
                 }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
                     // Only the m16n8k8 f16->f32 path is implemented; other

@@ -719,14 +719,20 @@ impl Kernel {
                     PTXOp::Bytes(bytes) => {
                         writeln!(f, "{indent}ptx_bytes={}", bytes.len()).unwrap();
                     }
+                    // Destination first, source second: the result is the
+                    // register group this op fills.
                     PTXOp::LdMatrix { frags, src, addr, trans } => {
-                        writeln!(f, "{indent}ldmatrix x{frags} trans={trans} from OpId({}) at OpId({})", src.0, addr.0)
-                            .unwrap();
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: f16{reset} = {green}ldmatrix{reset} x{frags} trans={trans} src r{}, slot r{}",
+                            src.0, addr.0
+                        )
+                        .unwrap();
                     }
                     PTXOp::WarpSync => writeln!(f, "{indent}warpsync").unwrap(),
                     PTXOp::Shfl { value, lane } => writeln!(
                         f,
-                        "{indent}shfl of OpId({}) from lane OpId({})",
+                        "{indent}r{out_id}{grey}: f16{reset} = {green}shfl{reset} of r{} lane r{}",
                         value.0, lane.0
                     )
                     .unwrap(),

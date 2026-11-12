@@ -39,6 +39,9 @@ impl Kernel {
     /// per-lane index expressions into literals, CSE merges the
     /// identical forms, DCE removes what is dead.
     pub fn devectorize(&mut self) -> Result<(), ZyxError> {
+        if std::env::var_os("ZYX_DV").is_some() {
+            self.debug();
+        }
         let mut kept: Set<OpId> = Set::default();
         for _ in 0..10000 {
             // The expansion multiplies the IR by the lane count. Stop at the
@@ -416,7 +419,7 @@ impl Kernel {
 impl Kernel {
     /// Slots the instruction expects in `operand` (`a`/`b`) of `wmma`.
     fn wmma_operand_slots(&self, wmma: OpId, operand: OpId) -> Option<Dim> {
-        let Op::Wmma { dims, layout, dtype, a, b, .. } = *self.at(wmma) else {
+        let Op::Wmma { dims, layout, dtype, a, b, c } = *self.at(wmma) else {
             return None;
         };
         let info = self.device_info();
@@ -428,6 +431,8 @@ impl Kernel {
             Some(v.a.slots.len() as Dim)
         } else if operand == b {
             Some(v.b.slots.len() as Dim)
+        } else if operand == c {
+            Some(v.c.slots.len() as Dim)
         } else {
             None
         }
@@ -441,6 +446,10 @@ impl Kernel {
     /// The lane appears as an additive term with coefficient one in `idx`:
     /// the innermost contiguous element of the access.
     fn unit_lane_term(&self, idx: OpId, id: OpId) -> bool {
+        if idx == id {
+            // The lane is the whole index (base zero folded away).
+            return true;
+        }
         let mut stack = vec![idx];
         let mut seen = Set::default();
         while let Some(x) = stack.pop() {
@@ -478,12 +487,14 @@ impl Kernel {
     /// and whose width the device supports is a *vector width*, not a
     /// thread/lane bundle: keep it so the backend renders one vector access.
     fn keep_address_lane(&self, id: OpId) -> bool {
+        let dbg = std::env::var_os("ZYX_DV2").is_some();
         let Op::Unroll { len, .. } = *self.at(id) else {
             return false;
         };
         let info = self.device_info();
         let len = Dim::from(len);
         if !info.supported_vec_lens.iter().any(|&v| Dim::from(v) == len) {
+            if dbg { eprintln!("DV {id:?}: len {len} not a supported vec len"); }
             return false;
         }
 
@@ -509,11 +520,23 @@ impl Kernel {
             }
         }
         if !address.contains(&id) {
+            if dbg { eprintln!("DV {id:?}: not an address lane"); }
             return false;
         }
         for (cid, op) in self.iter_unordered() {
             if op.parameters().any(|p| p == id) && !address.contains(&cid) {
-                return false;
+                // A load/store that *is* the access shaped by the lane (the
+                // lane is its index direct) is an address use, not a value
+                // use of the lanes.
+                let index_is_lane = match self.at(cid) {
+                    Op::Load { src_idx, .. } => *src_idx == id,
+                    Op::Store { dst_idx, .. } => *dst_idx == id,
+                    _ => false,
+                };
+                if !index_is_lane {
+                    if dbg { eprintln!("DV {id:?}: used by non-address op {cid:?} {:?}", self.at(cid)); }
+                    return false;
+                }
             }
         }
 
@@ -576,14 +599,20 @@ impl Kernel {
                         }
                     }
                     if !used.is_empty() && used.len() as Dim != len {
+                        if dbg { eprintln!("DV {id:?}: load consumed lane by lane ({}/{} used)", used.len(), len); }
                         return false;
                     }
                     qualified = true;
                 }
                 Op::Store { src, dst, .. } => {
-                    if self.shape(*src) != vec![len]
-                        || matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. })
-                    {
+                    if self.shape(*src) != vec![len] {
+                        return false;
+                    }
+                    // A register-scope storage is a register file: a fragment
+                    // written as a whole stays one vector access (the `.v2` /
+                    // `.v4` of accumulators); a wider lane is work bundles and
+                    // is duplicated below.
+                    if matches!(self.at(*dst), Op::Storage { scope: MemScope::Register, .. }) && !matches!(len, 2 | 4) {
                         return false;
                     }
                     qualified = true;

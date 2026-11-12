@@ -631,7 +631,19 @@ impl Kernel {
                     // whole `Dst` tile whatever the logical rank it stands
                     // for, and a scalar reduce's store writes that tile's
                     // first lane into a rank-0 access.
-                    if !dst_idx.is_null() && !matches!(self.ops[x].op, Op::TT(_)) {
+                    // A value produced by an instruction that consumes its
+                    // operand lanes (the mma) carries its own access width:
+                    // the store names the fragment's base, not each slot.
+                    if !dst_idx.is_null() && !matches!(self.ops[x].op, Op::TT(_) | Op::Wmma { .. } | Op::PTX(_)) {
+                        if dtypes[&x].1.len() > dtypes[&dst_idx].1.len() {
+                            eprintln!(
+                                "STORE-RANK op={op_id:?} src={x:?} {:?} {:?} idx={dst_idx:?} {:?} dst={dst:?} {:?}",
+                                self.ops[x].op,
+                                dtypes[&x],
+                                self.ops[dst_idx].op,
+                                dtypes[&dst_idx]
+                            );
+                        }
                         debug_assert!(dtypes[&x].1.len() <= dtypes[&dst_idx].1.len(), "store value rank exceeds access rank");
                     }
                     dtypes.insert(op_id, dtypes[&x].clone());
