@@ -21,10 +21,10 @@
 //! card's 30 SMs — eight warps as a 2 x 4 grid (a 64 x 64 warp tile, the
 //! reference's), operands staged through two block-wide shared buffers of a
 //! two-K-step window filled with 16-byte vector loads (`ld.global.nc.v4.u32`)
-//! and read back with `ldmatrix.x4` only, two K steps per load. A warp runs
-//! 256 `m16n8k8` instructions per loop iteration, the reference's mainloop
-//! depth. In the tensor recipe that is tile `(128, 128, 64)`, staged, warp
-//! layout `(2, 4, 1)`.
+//! and read back with `ldmatrix.x4` only, two K steps per load. The loop runs
+//! 24 iterations of 256 `m16n8k8` instructions per warp, the reference's
+//! mainloop depth. In the tensor recipe that is tile `(128, 128, 128)`,
+//! staged, warp layout `(2, 4, 1)`.
 
 use std::time::Instant;
 
@@ -32,10 +32,11 @@ use zyx::kernel::{Dev, Kernel, MemScope, Op};
 use zyx::{DType, Tensor, ZyxError};
 
 /// The recipe config of the reference kernel's shape: `(tile * 2 + staged) *
-/// layouts + layout`, i.e. `(5 * 2 + 1) * 13 + 8` — tile index 5 is
-/// `(m lanes 128, n lanes 128, k lanes 64)` (eight `m16n8k8` K steps per loop
-/// iteration), staged, warp layout index 8 is `(2, 4, 1)`.
-const TORCH_TILE_8_WARPS: u64 = 151;
+/// layouts + layout`, i.e. `(4 * 2 + 1) * 13 + 8` — tile index 4 is
+/// `(m lanes 128, n lanes 128, k lanes 128)` (16 `m16n8k8` K steps, so the
+/// loop runs 24 iterations of 256 instructions a warp, the reference's
+/// mainloop depth), staged, warp layout index 8 is `(2, 4, 1)`.
+const TORCH_TILE_8_WARPS: u64 = 125;
 
 #[test]
 fn llama_gate_proj() -> Result<(), ZyxError> {
