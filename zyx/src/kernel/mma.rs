@@ -668,21 +668,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
     // The block-wide form stages a window of two K steps (one `ldmatrix` per
     // row group covering both) in two buffers, so the output tile is not
     // limited by the whole K chunk living in shared memory.
-    // The staged window: as many K steps as two buffers can hold (the wider
-    // the window, the fewer block barriers per loop iteration), but never
-    // fewer than the two a single `ldmatrix` covers.
-    let window_width = {
-        let stage = |steps: Dim| 2 * ((t.mt * fm) + (t.nt * fn_)) * (steps * fk + STAGE_PAD) * 2;
-        let budget = kernel.device_info().local_mem_size;
-        let four = fk * 4;
-        if t.kt % 4 == 0 && stage(Dim::from(4)) <= budget {
-            four
-        } else if t.kt % 2 == 0 {
-            fk * 2
-        } else {
-            fk
-        }
-    };
+    // The staged window: the two K steps one `ldmatrix` covers, in two
+    // buffers. A wider window costs shared memory and measured slower.
+    let window_width = if t.kt % 2 == 0 { fk * 2 } else { fk };
     // The block's warp layout: `m` warps over the output rows and `n` over the
     // output columns (a warp grid — every warp owns its sub-tile, so nothing
     // is summed across warps), or `k` warps over the contraction (the partial
@@ -976,13 +964,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
             let b_buf = insert_local_f16_storage(kernel, b_win * Dim::from(2));
             let paired = kt >= 2;
             // K steps per window, and windows per loop iteration.
-            let win_steps = if window_width == fk * 4 {
-                Dim::from(4) as usize
-            } else if window_width == fk * 2 {
-                2
-            } else {
-                1
-            };
+            let win_steps = if window_width == fk * 2 { 2 } else { 1 };
             let steps = kt / win_steps;
             // The K element a window covers, wrapped into the contraction: the
             // fill of the last window of an iteration is the first window of
