@@ -304,21 +304,13 @@ impl Kernel {
                     let op = self.at(op_id);
                     let next_op_id = self.next_op(op_id);
 
-                    if !matches!(
-                        op,
-                        Op::Store { .. }
-                            | Op::Copy { .. }
-                            | Op::TT(_)
-                            | Op::Load { .. }
-                            // `ldmatrix` reads shared memory the loop writes,
-                            // exactly like a load; hoisting it would read a
-                            // fill that has not run yet.
-                            | Op::PTX(_)
-                            | Op::Loop { .. }
-                            | Op::EndLoop
-                            | Op::Storage { .. }
-                            | Op::Barrier
-                    ) && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
+                    // Nothing that touches memory lifts out (the loop is what
+                    // wrote it), and the structural ops stay where they are.
+                    // Everything else — including a shared window base, a
+                    // `cvta` and a lane shuffle — is a pure value and hoists.
+                    if !op.is_effect()
+                        && !matches!(op, Op::Loop { .. } | Op::EndLoop | Op::Storage { .. })
+                        && op.parameters().all(|op_id| !op_ids_in_loop.contains(&op_id))
                     {
                         self.move_op_before(op_id, loop_id);
                     } else {

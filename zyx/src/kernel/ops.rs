@@ -1973,6 +1973,33 @@ impl Op {
         matches!(self, Op::Load { .. })
     }
 
+    /// Reads or writes memory, or orders other operations.
+    ///
+    /// Such an op is never loop-invariant (the memory it sees is whatever the
+    /// loop wrote) and is never dead merely because its result is unused. It
+    /// is a property of what the op touches, not of which op family it belongs
+    /// to: a lowered shared load, a `ldmatrix` and a plain `Load` are all
+    /// effects, while a shared window base, a `cvta` and a lane shuffle are
+    /// pure values.
+    pub(crate) fn is_effect(&self) -> bool {
+        if matches!(self, Op::Load { .. } | Op::Store { .. } | Op::Copy { .. } | Op::Barrier | Op::TT(_)) {
+            return true;
+        }
+        matches!(
+            self,
+            Op::PTX(p)
+                if matches!(
+                    p.as_ref(),
+                    PTXOp::Bytes(_)
+                        | PTXOp::VLdMatrix { .. }
+                        | PTXOp::LdMatrix { .. }
+                        | PTXOp::LdShared { .. }
+                        | PTXOp::StShared { .. }
+                        | PTXOp::WarpSync
+                )
+        )
+    }
+
     /// Remap parameter IDs according to a mapping.
     pub(crate) fn remap_params(&mut self, remapping: &Map<OpId, OpId>) {
         for param in self.parameters_mut() {
