@@ -21,7 +21,7 @@
 use crate::{
     Map, Set, ZyxError,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, PTXOp},
+    kernel::{BOp, Kernel, MemScope, Op, OpId, PTXOp},
     shape::Dim,
 };
 
@@ -92,6 +92,7 @@ impl Kernel {
             }
         }
         self.constant_folding();
+        self.forward_register_stores();
         self.common_subexpression_elimination();
         self.dead_code_elimination();
         if std::env::var_os("ZYX_DV_AFTER").is_some() {
@@ -99,6 +100,122 @@ impl Kernel {
         }
         self.verify();
         Ok(())
+    }
+
+    /// The slot run an index op names: `(base, count)`.
+    ///
+    /// After `devectorize` a register-storage index is either a literal or
+    /// `base + lane`, where the lane is an `Unroll` kept because the access it
+    /// shapes is a vector width — the store and the value it writes then cover
+    /// the same contiguous run. Anything else (`base + thread`, a compound
+    /// expression) is not a slot the pass can name, and is left alone.
+    fn slot_run(&self, idx: OpId) -> Option<(i64, i64)> {
+        if let Some(base) = self.resolve_const(idx).and_then(Constant::as_dim) {
+            return Some((base, 1));
+        }
+        // A lane on its own is the run `0..len`.
+        if let Op::Unroll { len, .. } = self.at(idx) {
+            return Some((0, i64::from(*len)));
+        }
+        let Op::Binary { x, y, bop: BOp::Add } = self.at(idx) else {
+            return None;
+        };
+        for (a, b) in [(*x, *y), (*y, *x)] {
+            if let Op::Unroll { len, .. } = self.at(a) {
+                if let Some(base) = self.resolve_const(b).and_then(Constant::as_dim) {
+                    return Some((base, i64::from(*len)));
+                }
+            }
+        }
+        None
+    }
+
+    /// Forward `MemScope::Register` storage traffic to the values stored in it.
+    ///
+    /// A register storage is not memory: once the lanes are unfolded its slots
+    /// are literal indices, so `store s[i] = v` followed by `load s[i + k]` is a
+    /// register rename. Forwarding the load to the slice of `v` that it names
+    /// takes the storage out of the dataflow, so a consumer depends on its
+    /// producer directly: a `wmma` reads the `ldmatrix` that staged it instead
+    /// of reading it back through an array, which is what lets the scheduler
+    /// count the fragment loads it has in flight and frees the registers the
+    /// staging array held.
+    ///
+    /// Only straight-line traffic is forwarded: a loop edge, a barrier, an
+    /// opaque side effect or a copy clears what is known, so a load can never
+    /// pick up a value from another iteration or from the other side of a sync.
+    fn forward_register_stores(&mut self) {
+        // storage slot -> (value, offset inside that value) for the slots whose
+        // contents are known at this point of the walk.
+        let mut origin: Map<(OpId, i64), (OpId, usize)> = Map::default();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            match self.at(op_id) {
+                Op::Loop { .. }
+                | Op::EndLoop
+                | Op::Barrier
+                | Op::Asm { .. }
+                | Op::Copy { .. }
+                | Op::TT(crate::kernel::TTOp::Copy { .. }) => origin.clear(),
+                Op::PTX(p) if matches!(**p, PTXOp::WarpSync) => origin.clear(),
+                Op::Store { dst, dst_idx, src } => {
+                    let dst = *dst;
+                    let src = *src;
+                    let is_reg = matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. });
+                    // The index's run length *is* the access width, so the value
+                    // covers exactly those slots.
+                    if let (true, Some((base, len))) = (is_reg, self.slot_run(*dst_idx)) {
+                        for k in 0..len {
+                            origin.insert((dst, base + k), (src, k as usize));
+                        }
+                    }
+                }
+                Op::Load { src, src_idx } => {
+                    let src = *src;
+                    let is_reg = matches!(self.at(src), Op::Storage { scope: MemScope::Register, .. });
+                    let (true, Some((base, len))) = (is_reg, self.slot_run(*src_idx)) else {
+                        op_id = next;
+                        continue;
+                    };
+                    // Each element is forwarded to the value that stored it: a
+                    // fragment can span two staging results, so the elements are
+                    // gathered one by one and only the single-value case uses the
+                    // stored value directly.
+                    let mut from: Vec<(OpId, usize)> = Vec::with_capacity(len as usize);
+                    for k in 0..len {
+                        match origin.get(&(src, base + k)) {
+                            Some(&(v, off)) => from.push((v, off)),
+                            None => {
+                                from.clear();
+                                break;
+                            }
+                        }
+                    }
+                    if from.is_empty() {
+                        op_id = next;
+                        continue;
+                    }
+                    let (first, start) = from[0];
+                    let contiguous = from.iter().enumerate().all(|(k, &(v, off))| v == first && off == start + k);
+                    let whole = contiguous && start == 0 && self.shape(first).iter().product::<i64>() == len;
+                    let replacement = if whole {
+                        first
+                    } else if len == 1 {
+                        self.insert_before(op_id, Op::Index { vec: first, idx: start })
+                    } else {
+                        let mut ops = Vec::with_capacity(from.len());
+                        for &(v, off) in &from {
+                            ops.push(self.insert_before(op_id, Op::Index { vec: v, idx: off }));
+                        }
+                        self.insert_before(op_id, Op::Stack { ops: ops.into() })
+                    };
+                    self.remap(op_id, replacement);
+                }
+                _ => {}
+            }
+            op_id = next;
+        }
     }
 
     /// Expand one lane-space reduce: substitute the reduce axis' unroll nodes
