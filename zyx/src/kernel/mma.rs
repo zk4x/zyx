@@ -621,9 +621,17 @@ fn coop_fill_load(
     let three = put(kernel, Op::Const(Constant::idx(3i64)));
     let seven = put(kernel, Op::Const(Constant::idx(7i64)));
     let mblk = put(kernel, Op::Binary { x: row, y: three, bop: BOp::BitShiftRight });
-    let mrow = put(kernel, Op::Binary { x: row, y: seven, bop: BOp::BitAnd });
-    let mrow = put(kernel, Op::Binary { x: mrow, y: three, bop: BOp::BitShiftLeft });
     let kblk = put(kernel, Op::Binary { x: cterm, y: three, bop: BOp::BitShiftRight });
+    // Row swizzle: the eight lanes of a store share a row of their 128-byte
+    // block and differ only in their k-block, so with a linear index every one
+    // of them lands on banks 0-3 (measured: 8-way conflict on each of the 16
+    // fill stores, `mio_throttle` the top stall). XORing the row field with the
+    // unit's k-block spreads them over the banks, and `coop_ldmatrix` mirrors it
+    // with the k-block of the unit it reads.
+    let mrow = put(kernel, Op::Binary { x: row, y: seven, bop: BOp::BitAnd });
+    let swz = put(kernel, Op::Binary { x: kblk, y: seven, bop: BOp::BitAnd });
+    let mrow = put(kernel, Op::Binary { x: mrow, y: swz, bop: BOp::BitXor });
+    let mrow = put(kernel, Op::Binary { x: mrow, y: three, bop: BOp::BitShiftLeft });
     let rblk = put(kernel, Op::Const(Constant::idx(rows / 8)));
     let kblk = put(kernel, Op::Binary { x: kblk, y: rblk, bop: BOp::Mul });
     let blk = put(kernel, Op::Binary { x: kblk, y: mblk, bop: BOp::Add });
@@ -734,6 +742,21 @@ fn coop_ldmatrix(
     } else {
         put(kernel, Op::Binary { x: addr, y: slot_base, bop: BOp::Add })
     };
+    // Row swizzle, the read half. The fill XORs the row field with the k-block
+    // it wrote, so the read must address the row the element actually lives in:
+    // XOR the same field (8 halves per row, bits 3..5 of the element index) with
+    // the k-block of the unit being read. Reading it back off the index itself
+    // (`index / halves per k-block`) is what keeps this identical to the fill's
+    // key without either side restating the other's lane geometry — and since
+    // every shared address here is loop-invariant, it is computed once, not per
+    // iteration.
+    let seven = put(kernel, Op::Const(Constant::idx(7i64)));
+    let eight = put(kernel, Op::Const(Constant::idx(8i64)));
+    let kbh = put(kernel, Op::Const(Constant::idx(tile_rows / 8 * 64)));
+    let key = put(kernel, Op::Binary { x: addr, y: kbh, bop: BOp::Div });
+    let key = put(kernel, Op::Binary { x: key, y: seven, bop: BOp::BitAnd });
+    let swz = put(kernel, Op::Binary { x: key, y: eight, bop: BOp::Mul });
+    let addr = put(kernel, Op::Binary { x: addr, y: swz, bop: BOp::BitXor });
     // A K offset in halves is `k_offset / 8` k-blocks, each one 64-half block
     // per eight tile rows: the k-block-major pack strides them by
     // `tile_rows / 8 * 64`.

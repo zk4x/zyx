@@ -112,13 +112,6 @@ impl Kernel {
     /// that is `devectorize` growing the IR past [`crate::kernel::MAX_OPS`],
     /// which is a property of the candidate, not of the device.
     pub fn device_epilogue(&mut self) -> Result<(), ZyxError> {
-        // The single scheduling call in the runtime: every kernel that reaches
-        // a backend passes through here, whether it came from the search or
-        // from `Kernel::compile`, so both hand codegen the same order. It sits
-        // before the lowering passes so it orders the element-indexed ops the
-        // tensorizer emitted; the passes below run identically on both paths,
-        // which is what keeps the two orders equal.
-        self.instruction_schedule();
         // `Pow` -> `exp2(y * log2 x)` is a *lowering* decision, so it happens
         // exactly once, here, for every backend: the pairs this creates are
         // what the backend-specific passes below turn into primitives
@@ -255,6 +248,12 @@ impl Kernel {
                     self.default_epilogue();
                 }
             }
+            // Last, so this order is the one codegen writes: scheduling above
+            // the lowering works on lane bundles (`ldmatrix` covering eight
+            // lanes, the fill covering sixteen loads), and only the scalar form
+            // lets a body interleave the fragment loads with the `mma`s that
+            // consume them. Nothing reorders the IR after this point.
+            self.instruction_schedule();
         }
         Ok(())
     }

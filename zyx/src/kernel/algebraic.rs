@@ -56,13 +56,17 @@ impl Kernel {
     }
 
     /// Push the constant part of an additive chain out of an exact scaling:
-    /// `(s + c) << k` and `(s + c) * 2^k` become `(s << k) + (c << k)`.
+    /// `(s + c) << k` and `(s + c) * 2^k` become `(s << k) + (c << k)`, and
+    /// `(s + c) >> k` becomes `(s >> k) + (c >> k)` when `c` is a whole
+    /// number of `2^k`.
     ///
-    /// Both scalings are exact (`<<` truncates, `* 2^k` is a shift), so the
-    /// rewrite is value-preserving for any wrap-around, and the constant it
-    /// exposes is a literal at the top of the chain: the backend folds that
-    /// into an instruction's immediate, and two accesses that differ only in
-    /// their offset then share the whole scaled part.
+    /// All three scalings are exact under that condition (`<<` and `* 2^k`
+    /// truncate, and a right shift only splits the constant when its low `k`
+    /// bits are zero — otherwise the shift's rounding stays inside `s`), so
+    /// the rewrite is value-preserving for any wrap-around, and the constant
+    /// it exposes is a literal at the top of the chain: the backend folds
+    /// that into an instruction's immediate, and two accesses that differ
+    /// only in their offset then share the whole scaled part.
     fn distribute_scaling_constants(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("distribute_scaling_constants");
@@ -99,17 +103,25 @@ impl Kernel {
                 op_id = next;
                 continue;
             };
-            // The scaling amount: `<< k` always, `* c` only for a power of two.
-            let shift = match bop {
+            // The scaling amount and its direction: `<< k` and `* 2^k` scale
+            // up, `>> k` scales down.
+            let (shift, right) = match bop {
                 BOp::BitShiftLeft => match self.resolve_const(y).and_then(Constant::as_dim) {
-                    Some(k) if (0..63).contains(&k) => k,
+                    Some(k) if (0..63).contains(&k) => (k, false),
                     _ => {
                         op_id = next;
                         continue;
                     }
                 },
                 BOp::Mul => match self.resolve_const(y).and_then(Constant::as_dim) {
-                    Some(c) if c > 0 && c & (c - 1) == 0 => i64::from(c.trailing_zeros()),
+                    Some(c) if c > 0 && c & (c - 1) == 0 => (i64::from(c.trailing_zeros()), false),
+                    _ => {
+                        op_id = next;
+                        continue;
+                    }
+                },
+                BOp::BitShiftRight => match self.resolve_const(y).and_then(Constant::as_dim) {
+                    Some(k) if (0..63).contains(&k) => (k, true),
                     _ => {
                         op_id = next;
                         continue;
@@ -131,7 +143,19 @@ impl Kernel {
                 continue;
             }
             let dtype = self.dtype(terms[0]);
-            let Some(scaled) = scaled_constant(konst, shift, dtype) else {
+            // A right shift only splits the constant when its low `k` bits are
+            // zero: `(s + c) >> k` is `(s >> k) + (c >> k)` exactly then, and
+            // otherwise the shift's rounding of `s` would be lost.
+            if right && konst & ((1i64 << shift) - 1) != 0 {
+                op_id = next;
+                continue;
+            }
+            let scaled = if right {
+                Some(Constant::idx(konst >> shift))
+            } else {
+                scaled_constant(konst, shift, dtype)
+            };
+            let Some(scaled) = scaled else {
                 op_id = next;
                 continue;
             };
@@ -194,7 +218,7 @@ impl Kernel {
             let op_id = next;
             next = self.next_op(next);
             match self.ops[op_id].op {
-                Op::Binary { bop, .. } => match bop {
+                Op::Binary { x, y, bop } => match bop {
                     BOp::BitShiftRight => {
                         // shl_shr roundtrip: ((y << d) + rest) >> d -> y when
                         // 0 <= rest < 2^d: the residue shifts out exactly. Both shift
@@ -225,7 +249,36 @@ impl Kernel {
                         if let Some(replacement) = self.match_pat(op_id, &pat_and_or).map(|m| m.op('x')) {
                             record(&mut remaps, op_id, replacement);
                         } else {
-                            self.fold_binary_const(op_id, bounds);
+                            // A low-bit mask keeps only the bits a constant addend
+                            // cannot reach: `(s + c) & (2^j - 1)` is `s & mask` when
+                            // `c` is a whole number of `2^j`. Left in place, the mask
+                            // makes every step of an additive index walk a value of
+                            // its own — one base register per step — instead of one
+                            // base plus immediates.
+                            let mut rewritten = false;
+                            if bop == BOp::BitAnd
+                                && let Some(mask) = self.resolve_const(y).and_then(Constant::as_dim)
+                                && mask > 0
+                                && mask & (mask + 1) == 0
+                            {
+                                let mut terms = Vec::new();
+                                let mut konst = 0i64;
+                                if flatten_add(self, x, &mut terms, &mut konst)
+                                    && konst != 0
+                                    && !terms.is_empty()
+                                    && konst.rem_euclid(mask + 1) == 0
+                                {
+                                    let mut sum = terms[0];
+                                    for &term in &terms[1..] {
+                                        sum = self.insert_before(op_id, Op::Binary { x: sum, y: term, bop: BOp::Add });
+                                    }
+                                    self.ops[op_id].op = Op::Binary { x: sum, y, bop: BOp::BitAnd };
+                                    rewritten = true;
+                                }
+                            }
+                            if !rewritten {
+                                self.fold_binary_const(op_id, bounds);
+                            }
                         }
                     }
                     BOp::Div => {

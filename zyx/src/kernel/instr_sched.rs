@@ -140,6 +140,15 @@ impl Kernel {
         let mut barrier = vec![false; n];
         let mut store = vec![false; n];
         let mut load = vec![false; n];
+        // The latency each op's result takes to become usable, used to rank
+        // ready ops by critical path. A global load pays the memory round trip
+        // (several hundred cycles), a shared fragment load the shared latency,
+        // a tensor-core instruction a few cycles, and everything else is
+        // integer/ALU work of a couple of cycles.
+        let mut latency = vec![4u64; n];
+        // Shared-memory fragment loads whose results occupy registers: only a
+        // few may be in flight at once (see `FRAGMENT_SLOTS`).
+        let mut frag_load = vec![false; n];
         for (i, &id) in rest.iter().enumerate() {
             match self.at(id) {
                 Op::Barrier
@@ -162,12 +171,19 @@ impl Kernel {
                 | Op::TT(TTOp::Writer(_)) => {
                     structural[i] = true;
                     barrier[i] = true;
+                    latency[i] = 1;
                 }
-                Op::Loop { .. } | Op::EndLoop => structural[i] = true,
+                Op::Loop { .. } | Op::EndLoop => {
+                    structural[i] = true;
+                    latency[i] = 1;
+                }
                 // Opaque side effect (inline asm, TT LLK call):
                 // program-ordered like a barrier for placement (never
                 // crosses one), but not a barrier itself.
-                Op::Asm { .. } => structural[i] = true,
+                Op::Asm { .. } => {
+                    structural[i] = true;
+                    latency[i] = 1;
+                }
                 Op::TT(TTOp::Sfpu { .. })
                 | Op::TT(TTOp::SfpLoad(_))
                 | Op::TT(TTOp::SfpStore(_))
@@ -183,30 +199,56 @@ impl Kernel {
                 | Op::TT(TTOp::Setc16 { .. })
                 | Op::TT(TTOp::Post { .. })
                 | Op::TT(TTOp::Wait { .. })
-                | Op::TT(TTOp::WaitBelowMax { .. }) => structural[i] = true,
-                Op::Store { .. } => store[i] = true,
-                Op::Load { .. } => load[i] = true,
+                | Op::TT(TTOp::WaitBelowMax { .. }) => {
+                    structural[i] = true;
+                    latency[i] = 1;
+                }
+                Op::Store { .. } => {
+                    store[i] = true;
+                    latency[i] = 8;
+                }
+                Op::Load { src, .. } => {
+                    load[i] = true;
+                    // A parameter is memory; a storage is a register move.
+                    latency[i] = if matches!(self.at(*src), Op::Param { .. }) { 400 } else { 4 };
+                }
+                Op::Wmma { .. } => latency[i] = 12,
                 // `ldmatrix` reads local storage the loop refills: pin it
-                // inside the loop exactly like a load of that storage.
+                // inside the loop exactly like a load of that storage. Its
+                // result is a fragment, so it takes a fragment slot.
                 Op::PTX(p) => match p.as_ref() {
-                    PTXOp::Bytes(_) => todo!(),
-                    PTXOp::VLdMatrix { .. } => load[i] = true,
+                    // Opaque pre-assembled PTX: ordered like inline asm.
+                    PTXOp::Bytes(_) => {
+                        structural[i] = true;
+                        latency[i] = 1;
+                    }
+                    PTXOp::VLdMatrix { .. } | PTXOp::LdMatrix { .. } => {
+                        load[i] = true;
+                        frag_load[i] = true;
+                        latency[i] = 30;
+                    }
                     // A warp barrier orders the shared accesses around it.
                     PTXOp::WarpSync => {
                         structural[i] = true;
                         barrier[i] = true;
+                        latency[i] = 1;
                     }
                     // A shuffle reads two registers and writes one: no shared
                     // state to order against.
-                    PTXOp::Shfl { .. } => {}
-                    // The device lowering runs after scheduling: it never
-                    // sees these.
-                    PTXOp::LdMatrix { .. }
-                    | PTXOp::CvtaShared { .. }
-                    | PTXOp::SharedBase { .. }
-                    | PTXOp::LdShared { .. }
-                    | PTXOp::StShared { .. } => {
-                        todo!("instruction_schedule: device-lowered PTX is formed after scheduling")
+                    PTXOp::Shfl { .. } => latency[i] = 20,
+                    // The shared window base and its generic-address form: one
+                    // definition each, carrying no state of their own.
+                    PTXOp::CvtaShared { .. } | PTXOp::SharedBase { .. } => latency[i] = 1,
+                    // A shared load feeds registers from the tile the loop
+                    // refills, so it pins like an `ldmatrix`.
+                    PTXOp::LdShared { .. } => {
+                        load[i] = true;
+                        latency[i] = 20;
+                    }
+                    // The fill's own store into that tile.
+                    PTXOp::StShared { .. } => {
+                        store[i] = true;
+                        latency[i] = 8;
                     }
                 },
                 // A copy reads its src and writes its dst: it pins like a
@@ -224,18 +266,21 @@ impl Kernel {
         // allocation per operation.
         let mut edges: Vec<(usize, usize)> = Vec::new();
         let mut in_degree = vec![0usize; n];
-        let mut n_params = vec![0usize; n];
+        // The operands of every op in `rest`, flattened as `rest` indices: the
+        // data edges and, for the priority below, the record of when a
+        // producer is consumed.
+        let mut params_flat: Vec<usize> = Vec::new();
+        let mut param_start = vec![0usize; n + 1];
 
         // Uses must come after their declarations. Iterate params directly
         // without collecting into a Vec.
         for (i, &id) in rest.iter().enumerate() {
-            let mut count = 0usize;
             macro_rules! add_param {
                 ($p:expr) => {{
                     if !$p.is_null() {
-                        count += 1;
                         let j = idx[$p.0 as usize];
                         if j != usize::MAX {
+                            params_flat.push(j);
                             edges.push((j, i));
                             in_degree[i] += 1;
                         }
@@ -315,7 +360,9 @@ impl Kernel {
                 // PTX-level instruction: schedule it after the storage and
                 // index it reads.
                 Op::PTX(p) => match p.as_ref() {
-                    PTXOp::Bytes(_) => todo!(),
+                    // Pre-assembled PTX is opaque: it pins nowhere and carries
+                    // no operand the scheduler can name.
+                    PTXOp::Bytes(_) => {}
                     PTXOp::VLdMatrix { src, addr, .. } => {
                         add_param!(src);
                         add_param!(addr);
@@ -326,12 +373,17 @@ impl Kernel {
                         add_param!(value);
                         add_param!(lane);
                     }
-                    PTXOp::LdMatrix { .. }
-                    | PTXOp::CvtaShared { .. }
-                    | PTXOp::SharedBase { .. }
-                    | PTXOp::LdShared { .. }
-                    | PTXOp::StShared { .. } => {
-                        todo!("instruction_schedule: device-lowered PTX is formed after scheduling")
+                    PTXOp::LdMatrix { addr, .. } => add_param!(addr),
+                    PTXOp::CvtaShared { addr } => add_param!(addr),
+                    PTXOp::SharedBase { buf } => add_param!(buf),
+                    PTXOp::LdShared { buf, addr } => {
+                        add_param!(buf);
+                        add_param!(addr);
+                    }
+                    PTXOp::StShared { buf, addr, src } => {
+                        add_param!(buf);
+                        add_param!(addr);
+                        add_param!(src);
                     }
                 },
                 // Graph-only marker, erased at kernelization: never present.
@@ -401,7 +453,7 @@ impl Kernel {
                 }
                 Op::Index { vec, .. } => add_param!(vec),
             }
-            n_params[i] = count;
+            param_start[i + 1] = params_flat.len();
         }
 
         // Loads, stores, and copies to the same buffer keep their relative
@@ -438,6 +490,14 @@ impl Kernel {
                         }
                     }
                 }
+                // The lowered shared traffic names its storage directly, so it
+                // keeps its relative order with every other access to it.
+                Op::PTX(p) => match p.as_ref() {
+                    PTXOp::LdShared { buf, .. } | PTXOp::StShared { buf, .. } => {
+                        by_memory_target.entry(*buf).or_default().push(i);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -613,32 +673,47 @@ impl Kernel {
                 continue;
             }
             let buf = match self.at(rest[i]) {
-                Op::Load { src, .. } => *src,
+                Op::Load { src, .. } => Some(*src),
                 // `ldmatrix` reads its storage like a load; the fill that
                 // writes it inside the loop makes it loop-carried.
                 Op::PTX(p) => match p.as_ref() {
-                    PTXOp::VLdMatrix { src, .. } => *src,
-                    PTXOp::Bytes(_) => todo!(),
-                    PTXOp::WarpSync => continue,
-                    // A shuffle reads a register, not a storage.
-                    PTXOp::Shfl { .. } => continue,
-                    PTXOp::LdMatrix { .. }
+                    PTXOp::VLdMatrix { src, .. } => Some(*src),
+                    PTXOp::LdShared { buf, .. } => Some(*buf),
+                    // The lowered `ldmatrix` names a generic address, not the
+                    // storage, so the loop it belongs to cannot be named here:
+                    // pin it inside every loop that encloses it, which is the
+                    // same rule with a wider set of candidates.
+                    PTXOp::LdMatrix { .. } => None,
+                    PTXOp::Bytes(_)
+                    | PTXOp::WarpSync
+                    | PTXOp::Shfl { .. }
                     | PTXOp::CvtaShared { .. }
                     | PTXOp::SharedBase { .. }
-                    | PTXOp::LdShared { .. }
-                    | PTXOp::StShared { .. } => {
-                        todo!("instruction_schedule: device-lowered PTX is formed after scheduling")
-                    }
+                    | PTXOp::StShared { .. } => continue,
                 },
                 _ => continue,
             };
-            let Some(loops) = storage_loops.get(&buf) else { continue };
-            for &(opener, closer) in loops {
-                if opener < i && i < closer {
-                    edges.push((opener, i));
-                    in_degree[i] += 1;
-                    edges.push((i, closer));
-                    in_degree[closer] += 1;
+            match buf {
+                None => {
+                    for &(opener, closer) in &loop_bounds {
+                        if opener < i && i < closer {
+                            edges.push((opener, i));
+                            in_degree[i] += 1;
+                            edges.push((i, closer));
+                            in_degree[closer] += 1;
+                        }
+                    }
+                }
+                Some(buf) => {
+                    let Some(loops) = storage_loops.get(&buf) else { continue };
+                    for &(opener, closer) in loops {
+                        if opener < i && i < closer {
+                            edges.push((opener, i));
+                            in_degree[i] += 1;
+                            edges.push((i, closer));
+                            in_degree[closer] += 1;
+                        }
+                    }
                 }
             }
         }
@@ -726,22 +801,84 @@ impl Kernel {
             fill[u] += 1;
         }
 
-        // Stable topological sort: among ready operations, emit the one that
-        // depends on the fewest other operations first, ties broken by
-        // original position.
+        // Height of every op: the longest latency-weighted path from it to a
+        // sink. Every precedence edge points forward in the original order (see
+        // the rules above), so the original order is already a topological
+        // order and one reverse sweep computes all heights.
+        let mut height = vec![0u64; n];
+        for i in (0..n).rev() {
+            let mut h = 0u64;
+            for &j in &targets[offsets[i]..offsets[i + 1]] {
+                h = h.max(height[j]);
+            }
+            height[i] = h + latency[i];
+        }
+        // How many consumers each op still has to be emitted for. At zero the op
+        // has been consumed, which is what frees a capped slot below.
+        let mut users = vec![0u32; n];
+        for i in 0..n {
+            for &p in &params_flat[param_start[i]..param_start[i + 1]] {
+                users[p] += 1;
+            }
+        }
+
+        // Latency-ordered topological sort: among ready operations, emit the
+        // one on the longest path to a sink, so the work that a long-latency
+        // result unblocks starts as early as its inputs allow. Read-only
+        // memory ops are the longest paths in a GEMM body, which is what puts
+        // the next chunk's global loads at the top of the loop; ties break by
+        // original position, so the result is deterministic.
+        //
+        // A shared fragment load holds its result in registers until its
+        // consumer runs, so only `FRAGMENT_SLOTS` of them may be in flight:
+        // issuing four and letting their consumers drain is what makes the
+        // body alternate fragment loads with the tensor-core work that uses
+        // them, instead of reading the whole tile before the first `mma`.
+        const FRAGMENT_SLOTS: usize = 4;
+        let mut in_flight = 0usize;
+        let mut deferred: Vec<usize> = Vec::new();
         let mut ready: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new();
         for i in 0..n {
             if in_degree[i] == 0 {
-                ready.push(Reverse((n_params[i], i)));
+                ready.push(Reverse((usize::MAX - height[i] as usize, i)));
             }
         }
         let mut result = Vec::with_capacity(n);
-        while let Some(Reverse((_, i))) = ready.pop() {
+        while result.len() < n {
+            // Pop until an op is selectable: a capped fragment load that finds
+            // every slot taken waits for the next round instead of forcing the
+            // register file past its budget.
+            let mut chosen = None;
+            while let Some(Reverse((_, i))) = ready.pop() {
+                if frag_load[i] && in_flight >= FRAGMENT_SLOTS {
+                    deferred.push(i);
+                    continue;
+                }
+                chosen = Some(i);
+                break;
+            }
+            // A capped op is emitted anyway when nothing else is ready: the cap
+            // orders the body, it must never stall or reorder it into a cycle.
+            let Some(i) = chosen.or_else(|| (!deferred.is_empty()).then(|| deferred.remove(0))) else {
+                break;
+            };
+            for j in deferred.drain(..) {
+                ready.push(Reverse((usize::MAX - height[j] as usize, j)));
+            }
+            if frag_load[i] && users[i] > 0 {
+                in_flight += 1;
+            }
             result.push(rest[i]);
+            for &p in &params_flat[param_start[i]..param_start[i + 1]] {
+                users[p] -= 1;
+                if users[p] == 0 && frag_load[p] {
+                    in_flight -= 1;
+                }
+            }
             for &j in &targets[offsets[i]..offsets[i + 1]] {
                 in_degree[j] -= 1;
                 if in_degree[j] == 0 {
-                    ready.push(Reverse((n_params[j], j)));
+                    ready.push(Reverse((usize::MAX - height[j] as usize, j)));
                 }
             }
         }
