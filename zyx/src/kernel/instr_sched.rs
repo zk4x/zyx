@@ -190,7 +190,7 @@ impl Kernel {
                 // inside the loop exactly like a load of that storage.
                 Op::PTX(p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!(),
-                    PTXOp::LdMatrix { .. } => load[i] = true,
+                    PTXOp::VLdMatrix { .. } => load[i] = true,
                     // A warp barrier orders the shared accesses around it.
                     PTXOp::WarpSync => {
                         structural[i] = true;
@@ -199,6 +199,15 @@ impl Kernel {
                     // A shuffle reads two registers and writes one: no shared
                     // state to order against.
                     PTXOp::Shfl { .. } => {}
+                    // The device lowering runs after scheduling: it never
+                    // sees these.
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. }
+                    | PTXOp::StShared { .. } => {
+                        todo!("instruction_schedule: device-lowered PTX is formed after scheduling")
+                    }
                 },
                 // A copy reads its src and writes its dst: it pins like a
                 // load (barriers, asm, loops) and orders like a store.
@@ -300,7 +309,7 @@ impl Kernel {
                 // index it reads.
                 Op::PTX(p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!(),
-                    PTXOp::LdMatrix { src, addr, .. } => {
+                    PTXOp::VLdMatrix { src, addr, .. } => {
                         add_param!(src);
                         add_param!(addr);
                     }
@@ -309,6 +318,13 @@ impl Kernel {
                     PTXOp::Shfl { value, lane, .. } => {
                         add_param!(value);
                         add_param!(lane);
+                    }
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. }
+                    | PTXOp::StShared { .. } => {
+                        todo!("instruction_schedule: device-lowered PTX is formed after scheduling")
                     }
                 },
                 // Graph-only marker, erased at kernelization: never present.
@@ -594,11 +610,18 @@ impl Kernel {
                 // `ldmatrix` reads its storage like a load; the fill that
                 // writes it inside the loop makes it loop-carried.
                 Op::PTX(p) => match p.as_ref() {
-                    PTXOp::LdMatrix { src, .. } => *src,
+                    PTXOp::VLdMatrix { src, .. } => *src,
                     PTXOp::Bytes(_) => todo!(),
                     PTXOp::WarpSync => continue,
                     // A shuffle reads a register, not a storage.
                     PTXOp::Shfl { .. } => continue,
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. }
+                    | PTXOp::StShared { .. } => {
+                        todo!("instruction_schedule: device-lowered PTX is formed after scheduling")
+                    }
                 },
                 _ => continue,
             };

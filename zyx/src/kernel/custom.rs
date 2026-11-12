@@ -1064,7 +1064,7 @@ impl Kernel {
     /// instruction, so it is CUDA-only by construction.
     pub fn ldmatrix(&mut self, frags: u8, src: OpId, addr: impl IntoOp, trans: bool) -> OpId {
         let addr = addr.into_op(self);
-        self.push_back(Op::PTX(Box::new(PTXOp::LdMatrix { frags, src, addr, trans })))
+        self.push_back(Op::PTX(Box::new(PTXOp::VLdMatrix { frags, src, addr, trans })))
     }
 
     /// Hardware tile matmul: `x @ y` over 32x32 tiles, result in a DST

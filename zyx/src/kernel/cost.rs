@@ -137,11 +137,18 @@ impl Kernel {
                 Op::Source(_) | Op::GPU(_) | Op::Spirv(_) => todo!(),
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!(),
-                    PTXOp::LdMatrix { .. } => true,
+                    PTXOp::VLdMatrix { .. } => true,
                     // Effect only.
                     PTXOp::WarpSync => false,
                     // A register move, no memory.
                     PTXOp::Shfl { .. } => false,
+                    // The cost model runs before the device lowering: these
+                    // are never priced.
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. }
+                    | PTXOp::StShared { .. } => todo!("cost: device-lowered PTX is never priced"),
                 },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()
@@ -523,7 +530,7 @@ impl Kernel {
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!(),
                     // One shared-memory instruction per fragment bundle.
-                    PTXOp::LdMatrix { .. } => {
+                    PTXOp::VLdMatrix { .. } => {
                         wi_ops += loop_mult;
                         wi_compute_ops += loop_mult;
                     }
@@ -537,6 +544,11 @@ impl Kernel {
                         wi_ops += loop_mult;
                         wi_compute_ops += loop_mult;
                     }
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. }
+                    | PTXOp::StShared { .. } => todo!("cost: device-lowered PTX is never priced"),
                 },
                 Op::After { .. } | Op::ToDevice { .. } | Op::Contiguous { .. } | Op::Program { .. } | Op::Kernel(_) => {
                     todo!()

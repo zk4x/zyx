@@ -721,21 +721,50 @@ impl Kernel {
                     }
                     // Destination first, source second: the result is the
                     // register group this op fills.
-                    PTXOp::LdMatrix { frags, src, addr, trans } => {
+                    PTXOp::VLdMatrix { frags, src, addr, trans } => {
+                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::F16);
+                        let shp = self.shape_suffix(op_id, &shapes);
                         writeln!(
                             f,
-                            "{indent}r{out_id}{grey}: f16{reset} = {green}ldmatrix{reset} x{frags} trans={trans} src r{}, slot r{}",
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}ldmatrix{reset} x{frags} trans={trans} src r{}, slot r{}",
                             src.0, addr.0
                         )
                         .unwrap();
                     }
+                    PTXOp::LdMatrix { frags, addr, trans } => {
+                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::F16);
+                        let shp = self.shape_suffix(op_id, &shapes);
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}ldmatrix{reset} x{frags} trans={trans} addr r{}",
+                            addr.0
+                        )
+                        .unwrap();
+                    }
+                    PTXOp::CvtaShared { addr } => writeln!(f, "{indent}r{out_id} = cvta.shared r{}", addr.0).unwrap(),
+                    PTXOp::SharedBase { buf } => {
+                        writeln!(f, "{indent}r{out_id} = shared_base r{}", buf.0).unwrap()
+                    }
+                    PTXOp::LdShared { buf, addr } => {
+                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::F16);
+                        let shp = self.shape_suffix(op_id, &shapes);
+                        writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = ld.shared r{} [r{}]", buf.0, addr.0)
+                            .unwrap();
+                    }
+                    PTXOp::StShared { buf, addr, src } => {
+                        writeln!(f, "{indent}st.shared r{} [r{}] = r{}", buf.0, addr.0, src.0).unwrap();
+                    }
                     PTXOp::WarpSync => writeln!(f, "{indent}warpsync").unwrap(),
-                    PTXOp::Shfl { value, lane } => writeln!(
-                        f,
-                        "{indent}r{out_id}{grey}: f16{reset} = {green}shfl{reset} of r{} lane r{}",
-                        value.0, lane.0
-                    )
-                    .unwrap(),
+                    PTXOp::Shfl { value, lane } => {
+                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::F16);
+                        let shp = self.shape_suffix(op_id, &shapes);
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}shfl{reset} of r{} lane r{}",
+                            value.0, lane.0
+                        )
+                        .unwrap();
+                    }
                 },
             }
             op_id = self.ops[op_id].next;

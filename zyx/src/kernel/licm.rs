@@ -74,9 +74,18 @@ impl Kernel {
                 Op::PTX(ref p) => match p.as_ref() {
                     crate::kernel::PTXOp::Bytes(_) => unreachable!(),
                     // Pinned where it is: a sync orders its own loop's body.
-                    crate::kernel::PTXOp::LdMatrix { .. } | crate::kernel::PTXOp::WarpSync => loop_depth,
+                    crate::kernel::PTXOp::VLdMatrix { .. } | crate::kernel::PTXOp::WarpSync => loop_depth,
                     // A register move inside the loop stays there.
                     crate::kernel::PTXOp::Shfl { .. } => loop_depth,
+                    // Device-lowered PTX: a shared access orders against the
+                    // loop like a load/store; the address ops are pinned with
+                    // the access they feed (`loop_invariant_code_motion` never
+                    // hoists a `PTX` op).
+                    crate::kernel::PTXOp::LdMatrix { .. }
+                    | crate::kernel::PTXOp::CvtaShared { .. }
+                    | crate::kernel::PTXOp::SharedBase { .. }
+                    | crate::kernel::PTXOp::LdShared { .. }
+                    | crate::kernel::PTXOp::StShared { .. } => loop_depth,
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => {
@@ -162,9 +171,15 @@ impl Kernel {
                 Op::TT(_) => loop_depth,
                 Op::PTX(p) => match p.as_ref() {
                     PTXOp::Bytes(_) => unreachable!(),
-                    PTXOp::LdMatrix { src, addr, .. } => loop_dep[src].max(loop_dep[addr]),
+                    PTXOp::VLdMatrix { src, addr, .. } => loop_dep[src].max(loop_dep[addr]),
                     PTXOp::WarpSync => loop_depth,
                     PTXOp::Shfl { value, lane } => loop_dep[value].max(loop_dep[lane]),
+                    // Device-lowered PTX is pinned with the loop it feeds.
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. }
+                    | PTXOp::StShared { .. } => loop_depth,
                 },
                 Op::Asm { ops, .. } => {
                     let mut max = 0;

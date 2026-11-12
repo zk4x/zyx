@@ -256,7 +256,7 @@ impl Kernel {
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
                 Op::PTX(ref p) => match p.as_ref() {
-                    PTXOp::LdMatrix { frags, src, addr, trans } => {
+                    PTXOp::VLdMatrix { frags, src, addr, trans } => {
                         let dtype = dtypes[&op_id].clone();
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                         let idx = get_var_addr(*addr, &constants, &indices, &reg_map, loop_id, &var_params)?;
@@ -282,6 +282,27 @@ impl Kernel {
                         _ = writeln!(source, "{indent}asm volatile(\"bar.warp.sync 0xffffffff;\");");
                     }
                     PTXOp::Bytes(_) => todo!("CUDA codegen: assembled PTX payload in kernel IR"),
+                    // The device lowering that forms these is gated on the
+                    // PTX-direct render (`ZYX_PTX`), which discards this
+                    // source: only the register bookkeeping has to stay
+                    // consistent.
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. } => {
+                        assert!(
+                            std::env::var("ZYX_PTX").is_ok(),
+                            "CUDA codegen: device-lowered PTX is only formed for the PTX-direct render"
+                        );
+                        let dtype = dtypes[&op_id].clone();
+                        let _ = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                    }
+                    PTXOp::StShared { .. } => {
+                        assert!(
+                            std::env::var("ZYX_PTX").is_ok(),
+                            "CUDA codegen: device-lowered PTX is only formed for the PTX-direct render"
+                        );
+                    }
                     // One word (two f16 halves) read from another lane of the
                     // warp, every lane naming its own source.
                     PTXOp::Shfl { value, lane } => {

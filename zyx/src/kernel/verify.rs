@@ -133,7 +133,16 @@ impl Kernel {
                 // passes see); assembled payloads never reach this stage.
                 Op::PTX(p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload in kernel IR"),
-                    PTXOp::LdMatrix { .. } | PTXOp::WarpSync | PTXOp::Shfl { .. } => {}
+                    PTXOp::VLdMatrix { .. } | PTXOp::WarpSync | PTXOp::Shfl { .. } => {}
+                    // Device-lowered PTX: its operands are ordinary values and
+                    // its addresses are not element indices, so the generic
+                    // index/shape rules do not apply. Verification is for
+                    // general IR, not for the specialized form.
+                    PTXOp::LdMatrix { .. }
+                    | PTXOp::CvtaShared { .. }
+                    | PTXOp::SharedBase { .. }
+                    | PTXOp::LdShared { .. }
+                    | PTXOp::StShared { .. } => {}
                 },
                     // Graph-only marker, erased at kernelization: never present.
                     Op::Detach { .. } => {
@@ -724,7 +733,7 @@ impl Kernel {
                 // an index and yields `frags` 32-bit fragment registers.
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!(),
-                    PTXOp::LdMatrix { frags, src, addr, .. } => {
+                    PTXOp::VLdMatrix { frags, src, addr, .. } => {
                         if !matches!(self.at(*src), Op::Storage { scope: MemScope::Local, .. }) {
                             println!("ldmatrix={op_id} source is not local storage");
                             self.debug();
@@ -737,6 +746,32 @@ impl Kernel {
                     }
                     // Effect only: no operands to check, no result value.
                     PTXOp::WarpSync => {}
+                    // Device-lowered PTX addresses are byte offsets, not
+                    // element indices: nothing to check against the general
+                    // index rules, but the result dtype each op carries is
+                    // what its users are verified against.
+                    PTXOp::LdMatrix { addr, .. } => {
+                        check(op_id, *addr, &stack);
+                        dtypes.insert(op_id, DType::F16);
+                    }
+                    PTXOp::CvtaShared { addr } => {
+                        check(op_id, *addr, &stack);
+                        dtypes.insert(op_id, DType::U64);
+                    }
+                    PTXOp::SharedBase { buf } => {
+                        check(op_id, *buf, &stack);
+                        dtypes.insert(op_id, DType::U32);
+                    }
+                    PTXOp::LdShared { buf, addr } => {
+                        check(op_id, *buf, &stack);
+                        check(op_id, *addr, &stack);
+                        dtypes.insert(op_id, dtypes[&buf]);
+                    }
+                    PTXOp::StShared { buf, addr, src } => {
+                        check(op_id, *buf, &stack);
+                        check(op_id, *addr, &stack);
+                        check(op_id, *src, &stack);
+                    }
                     // A warp-level move of one 32-bit word: both operands are
                     // values defined before it.
                     PTXOp::Shfl { value, lane } => {

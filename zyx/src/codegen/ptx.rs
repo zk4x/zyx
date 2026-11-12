@@ -359,10 +359,7 @@ impl Compiler {
 
     /// Emit a load from `[ %address ]` into the register(s) at `reg`.
     /// `space` is one of "global", "shared", "local".
-    fn emit_load(&mut self, shape: &[Dim], dtype: DType, reg: u16, space: &str) -> Result<(), BackendError> {
-        // A shared variable's address is a 32-bit offset in the shared
-        // window (`%saddress`); global and local use the generic `%address`.
-        let addr = if space == "shared" { "%saddress" } else { "%address" };
+    fn emit_load(&mut self, shape: &[Dim], dtype: DType, reg: u16, space: &str, addr: &str) -> Result<(), BackendError> {
         match shape {
             [] => {
                 if matches!(dtype, DType::F16 | DType::BF16) {
@@ -424,25 +421,29 @@ impl Compiler {
         Ok(())
     }
 
-    /// Emit a store of the register(s) at `x` to `[ %address ]` in global space.
-    fn emit_store(&mut self, shape: &[Dim], dtype: DType, regs: &[u16]) -> Result<(), BackendError> {
+    /// Emit a store of the register(s) at `x` to `[addr]` in global space.
+    fn emit_store(&mut self, shape: &[Dim], dtype: DType, regs: &[u16], addr: &str) -> Result<(), BackendError> {
         if matches!(dtype, DType::F16 | DType::BF16) && shape.is_empty() {
             let tmp = self.new_reg(DType::U16, Vec::new(), 1);
             _ = writeln!(self.body, "{}mov.b16 %r{tmp}, %r{};", self.indent, regs[0]);
-            _ = writeln!(self.body, "{}st.global.b16 [%address], %r{tmp};", self.indent);
+            _ = writeln!(self.body, "{}st.global.b16 [{addr}], %r{tmp};", self.indent);
             self.release_reg(tmp);
         } else {
-            self.emit_store_space(shape, dtype, regs, "global")?;
+            self.emit_store_space(shape, dtype, regs, "global", addr)?;
         }
         Ok(())
     }
 
     /// Emit a store of the operand's registers (in component order) to
-    /// `[ %address ]`. `space` is one of "global", "shared", "local".
-    fn emit_store_space(&mut self, shape: &[Dim], dtype: DType, regs: &[u16], space: &str) -> Result<(), BackendError> {
-        // A shared variable's address is a 32-bit offset in the shared
-        // window (`%saddress`); global and local use the generic `%address`.
-        let addr = if space == "shared" { "%saddress" } else { "%address" };
+    /// `[addr]`. `space` is one of "global", "shared", "local".
+    fn emit_store_space(
+        &mut self,
+        shape: &[Dim],
+        dtype: DType,
+        regs: &[u16],
+        space: &str,
+        addr: &str,
+    ) -> Result<(), BackendError> {
         let list = |regs: &[u16]| regs.iter().map(|r| format!("%r{r}")).collect::<Vec<_>>().join(", ");
         match shape {
             [] => {
@@ -664,6 +665,11 @@ impl Kernel {
                             let idx = comp.get_var_addr(src_idx);
                             let offset = comp.new_reg(DType::U64, Vec::new(), 1);
                             let reg = comp.new_var(op_id, dtype, access_shape.clone(), rcs[&op_id]);
+                            // One address register per access: a shared
+                            // `%address` scratch makes every load war-write it,
+                            // so the address math of consecutive accesses cannot
+                            // overlap (and ptxas must serialize them).
+                            let address = comp.new_reg(DType::U64, Vec::new(), 1);
                             if IDX_T.bit_size() == 64 {
                                 if offset != idx {
                                     _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
@@ -672,17 +678,20 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", comp.indent);
                             }
                             _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
-                            _ = writeln!(comp.body, "{}add.u64 %address, %p{buf}, %r{offset};", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u64 %r{address}, %p{buf}, %r{offset};", comp.indent);
                             comp.release_reg(offset);
-                            comp.emit_load(&access_shape, dtype, reg, "global")?;
+                            let addr = format!("%r{address}");
+                            comp.emit_load(&access_shape, dtype, reg, "global", &addr)?;
+                            comp.release_reg(address);
                         }
                         MemScope::Local => {
                             let idx = comp.get_var_addr(src_idx);
                             let reg = comp.new_var(op_id, dtype, access_shape.clone(), rcs[&op_id]);
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             // A shared variable's address is a 32-bit offset in
-                            // the shared window.
-                            _ = writeln!(comp.body, "{}mov.u32 %saddress, __ld{buf};", comp.indent);
+                            // the shared window, in a register of its own.
+                            let address = comp.new_reg(DType::U32, Vec::new(), 1);
+                            _ = writeln!(comp.body, "{}mov.u32 %r{address}, __ld{buf};", comp.indent);
                             let t = comp.new_reg(DType::U32, Vec::new(), 1);
                             if IDX_T.bit_size() == 64 {
                                 _ = writeln!(comp.body, "{}cvt.u32.u64 %r{t}, %r{idx};", comp.indent);
@@ -690,9 +699,11 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}mov.b32 %r{t}, %r{idx};", comp.indent);
                             }
                             _ = writeln!(comp.body, "{}shl.b32 %r{t}, %r{t}, {byte_shift};", comp.indent);
-                            _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{t};", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u32 %r{address}, %r{address}, %r{t};", comp.indent);
                             comp.release_reg(t);
-                            comp.emit_load(&access_shape, dtype, reg, "shared")?;
+                            let addr = format!("%r{address}");
+                            comp.emit_load(&access_shape, dtype, reg, "shared", &addr)?;
+                            comp.release_reg(address);
                         }
                         MemScope::Register => {
                             // Static component of a register-scope storage: a
@@ -725,6 +736,11 @@ impl Kernel {
                     match comp.get_scope(self, dst_buf) {
                         MemScope::Circular => unreachable!(),
                         MemScope::Global => {
+                            // One address register per access: a shared
+                            // `%address` scratch makes every store war-write it,
+                            // so consecutive accesses cannot overlap their
+                            // address math and ptxas must serialize them.
+                            let address = comp.new_reg(DType::U64, Vec::new(), 1);
                             if dtype == DType::Bool {
                                 let gstu = comp.new_reg(DType::U32, Vec::new(), 1);
                                 let idx = comp.get_var_addr(dst_idx);
@@ -737,8 +753,8 @@ impl Kernel {
                                 } else {
                                     _ = writeln!(comp.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", comp.indent);
                                 }
-                                _ = writeln!(comp.body, "{}add.u64 %address, %p{dst_buf}, %r{offset};", comp.indent);
-                                _ = writeln!(comp.body, "{}st.global.u8 [%address], %r{gstu};", comp.indent);
+                                _ = writeln!(comp.body, "{}add.u64 %r{address}, %p{dst_buf}, %r{offset};", comp.indent);
+                                _ = writeln!(comp.body, "{}st.global.u8 [%r{address}], %r{gstu};", comp.indent);
                                 comp.release_reg(gstu);
                             } else {
                                 let idx = comp.get_var_addr(dst_idx);
@@ -751,17 +767,20 @@ impl Kernel {
                                     _ = writeln!(comp.body, "{}cvt.u64.u32 %r{offset}, %r{idx};", comp.indent);
                                 }
                                 _ = writeln!(comp.body, "{}shl.b64 %r{offset}, %r{offset}, {byte_shift};", comp.indent);
-                                _ = writeln!(comp.body, "{}add.u64 %address, %p{dst_buf}, %r{offset};", comp.indent);
-                                comp.emit_store(&access_shape, dtype, &regs)?;
+                                _ = writeln!(comp.body, "{}add.u64 %r{address}, %p{dst_buf}, %r{offset};", comp.indent);
+                                let addr = format!("%r{address}");
+                                comp.emit_store(&access_shape, dtype, &regs, &addr)?;
                             }
+                            comp.release_reg(address);
                         }
                         MemScope::Local => {
                             let idx = comp.get_var_addr(dst_idx);
                             let regs = comp.components_of(self, x, &dtypes)?;
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             // A shared variable's address is a 32-bit offset in
-                            // the shared window.
-                            _ = writeln!(comp.body, "{}mov.u32 %saddress, __ld{dst_buf};", comp.indent);
+                            // the shared window, in a register of its own.
+                            let address = comp.new_reg(DType::U32, Vec::new(), 1);
+                            _ = writeln!(comp.body, "{}mov.u32 %r{address}, __ld{dst_buf};", comp.indent);
                             let t = comp.new_reg(DType::U32, Vec::new(), 1);
                             if IDX_T.bit_size() == 64 {
                                 _ = writeln!(comp.body, "{}cvt.u32.u64 %r{t}, %r{idx};", comp.indent);
@@ -769,9 +788,11 @@ impl Kernel {
                                 _ = writeln!(comp.body, "{}mov.b32 %r{t}, %r{idx};", comp.indent);
                             }
                             _ = writeln!(comp.body, "{}shl.b32 %r{t}, %r{t}, {byte_shift};", comp.indent);
-                            _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{t};", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u32 %r{address}, %r{address}, %r{t};", comp.indent);
                             comp.release_reg(t);
-                            comp.emit_store_space(&access_shape, dtype, &regs, "shared")?;
+                            let addr = format!("%r{address}");
+                            comp.emit_store_space(&access_shape, dtype, &regs, "shared", &addr)?;
+                            comp.release_reg(address);
                         }
                         MemScope::Register => {
                             let (at, _) = slot_span(self, dst_idx);
@@ -792,7 +813,15 @@ impl Kernel {
                 }
                 Op::Cast { x, dtype } => {
                     let xdtype = dtypes[&x].0;
-                    debug_assert!(dtypes[&x].1.is_empty(), "PTX: vector cast not implemented");
+                    // A lane here is a kept vector width, not an element-wise
+                    // vector value: `Op::Unroll` renders as zero, so this
+                    // casts the lane-0 base and the access covers the rest
+                    // (same convention as `Binary` below). A real per-element
+                    // cast never reaches codegen: `devectorize` unfolds it.
+                    debug_assert!(
+                        dtypes[&x].1.len() <= 1,
+                        "PTX: element-wise cast of a nested vector is not implemented"
+                    );
                     let x = comp.get_var(x);
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
                     match (dtype, xdtype) {
@@ -918,19 +947,25 @@ impl Kernel {
                     let xs = imm(self, x).unwrap_or_else(|| format!("%r{}", comp.get_var(x)));
                     let ys = imm(self, y).unwrap_or_else(|| format!("%r{}", comp.get_var(y)));
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
-                    let type_ext = if matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight) {
-                        match dtypes[&x].0.bit_size() {
-                            32 => "b32",
-                            64 => "b64",
-                            _ => {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelCompilation,
-                                    context: format!("PTX: unsupported shift bit size {}", dtypes[&x].0.bit_size()).into(),
-                                });
-                            }
-                        }
-                    } else {
-                        dtypes[&x].0.ptx()
+                    let type_ext = match bop {
+                        // Bit-size instructions: PTX has no signed or unsigned
+                        // form for them, and `.s64`/`.u64` are rejected by
+                        // ptxas. Booleans keep the predicate form.
+                        BOp::BitShiftLeft | BOp::BitShiftRight | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::And
+                        | BOp::Or => match dtypes[&x].0 {
+                            DType::Bool => "pred",
+                            dtype => match dtype.bit_size() {
+                                32 => "b32",
+                                64 => "b64",
+                                n => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("PTX: unsupported bitwise bit size {n}").into(),
+                                    });
+                                }
+                            },
+                        },
+                        _ => dtypes[&x].0.ptx(),
                     };
                     _ = writeln!(
                         comp.body,
@@ -1093,12 +1128,17 @@ impl Kernel {
                     PTXOp::Bytes(_) => todo!("PTX: assembled payload in kernel IR"),
                     // `ldmatrix` reads one 8x8 b16 tile per group of eight
                     // lanes into one register per tile, in lane order.
-                    PTXOp::LdMatrix { frags, src, addr, trans } => {
+                    PTXOp::VLdMatrix { frags, src, addr, trans } => {
                         let idx = comp.get_var_addr(*addr);
                         let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(i64::from(*frags) * 2)], rcs[&op_id]);
-                        // A shared variable's address is a 32-bit offset in
-                        // the shared window; the index is in f16 elements.
-                        _ = writeln!(comp.body, "{}mov.u32 %saddress, __ld{src};", comp.indent);
+                        // A shared variable's address is a 32-bit offset in the
+                        // shared window; the index is in f16 elements. One
+                        // register per load: the reference keeps a base per
+                        // tile row and reaches its sub-tiles with immediates, so
+                        // the address math is not a serial chain through one
+                        // scratch register.
+                        let saddr = comp.new_reg(DType::U32, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}mov.u32 %r{saddr}, __ld{src};", comp.indent);
                         let off = comp.new_reg(DType::U32, Vec::new(), 1);
                         if IDX_T.bit_size() == 64 {
                             _ = writeln!(comp.body, "{}cvt.u32.u64 %r{off}, %r{idx};", comp.indent);
@@ -1106,14 +1146,16 @@ impl Kernel {
                             _ = writeln!(comp.body, "{}mov.b32 %r{off}, %r{idx};", comp.indent);
                         }
                         _ = writeln!(comp.body, "{}shl.b32 %r{off}, %r{off}, 1;", comp.indent);
-                        _ = writeln!(comp.body, "{}add.u32 %saddress, %saddress, %r{off};", comp.indent);
+                        _ = writeln!(comp.body, "{}add.u32 %r{saddr}, %r{saddr}, %r{off};", comp.indent);
                         comp.release_reg(off);
                         // The instruction takes the generic address of the
                         // shared slot (`mov.u32` yields the window address; a
                         // 32-bit operand is left for the driver's JIT to
                         // resolve and it does not always convert it).
-                        _ = writeln!(comp.body, "{}cvt.u64.u32 %rd_saddress, %saddress;", comp.indent);
-                        _ = writeln!(comp.body, "{}cvta.shared.u64 %rd_saddress, %rd_saddress;", comp.indent);
+                        let rd = comp.new_reg(DType::U64, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}cvt.u64.u32 %r{rd}, %r{saddr};", comp.indent);
+                        _ = writeln!(comp.body, "{}cvta.shared.u64 %r{rd}, %r{rd};", comp.indent);
+                        comp.release_reg(saddr);
                         let t = comp.new_reg(DType::U32, vec![Dim::from(i64::from(*frags))], u32::from(*frags));
                         let t_suffix = if *trans { ".trans" } else { "" };
                         // `ldmatrix` writes one 32-bit word per 8x8 tile, so
@@ -1124,7 +1166,34 @@ impl Kernel {
                             (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             comp.body,
-                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%rd_saddress];",
+                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%r{rd}];",
+                            comp.indent
+                        );
+                        comp.release_reg(rd);
+                        for i in 0..u16::from(*frags) {
+                            _ = writeln!(
+                                comp.body,
+                                "{}mov.b32 {{%r{}, %r{}}}, %r{};",
+                                comp.indent,
+                                reg + 2 * i,
+                                reg + 2 * i + 1,
+                                t + i
+                            );
+                        }
+                        comp.release_reg(t);
+                    }
+                    // The hardware `ldmatrix` at an address the IR already
+                    // built: no window base, no `<<1`, no offset arithmetic.
+                    PTXOp::LdMatrix { frags, addr, trans } => {
+                        let a = comp.get_var_addr(*addr);
+                        let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(i64::from(*frags) * 2)], rcs[&op_id]);
+                        let t = comp.new_reg(DType::U32, vec![Dim::from(i64::from(*frags))], u32::from(*frags));
+                        let t_suffix = if *trans { ".trans" } else { "" };
+                        let pattern =
+                            (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
+                        _ = writeln!(
+                            comp.body,
+                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%r{a}];",
                             comp.indent
                         );
                         for i in 0..u16::from(*frags) {
@@ -1138,6 +1207,36 @@ impl Kernel {
                             );
                         }
                         comp.release_reg(t);
+                    }
+                    // `cvta.shared.u64 %rd, %rs`.
+                    PTXOp::CvtaShared { addr } => {
+                        let a = comp.get_var_addr(*addr);
+                        let reg = comp.new_var(op_id, DType::U64, Vec::new(), rcs[&op_id]);
+                        _ = writeln!(comp.body, "{}cvta.shared.u64 %r{reg}, %r{a};", comp.indent);
+                    }
+                    // `mov.u32 %r, __ldN`: the storage's window offset.
+                    PTXOp::SharedBase { buf } => {
+                        let reg = comp.new_var(op_id, DType::U32, Vec::new(), rcs[&op_id]);
+                        let b = buf.0;
+                        _ = writeln!(comp.body, "{}mov.u32 %r{reg}, __ld{b};", comp.indent);
+                    }
+                    // `ld.shared` at a byte offset the IR computed.
+                    PTXOp::LdShared { buf, addr } => {
+                        let access_shape = self.shape(op_id);
+                        let dtype = dtypes[buf].0;
+                        let a = comp.get_var_addr(*addr);
+                        let reg = comp.new_var(op_id, dtype, access_shape.clone(), rcs[&op_id]);
+                        let addr = format!("%r{a}");
+                        comp.emit_load(&access_shape, dtype, reg, "shared", &addr)?;
+                    }
+                    // `st.shared` at a byte offset the IR computed.
+                    PTXOp::StShared { addr, src, .. } => {
+                        let access_shape = self.shape(*addr);
+                        let dtype = dtypes[src].0;
+                        let a = comp.get_var_addr(*addr);
+                        let regs = comp.components_of(self, *src, &dtypes)?;
+                        let addr = format!("%r{a}");
+                        comp.emit_store_space(&access_shape, dtype, &regs, "shared", &addr)?;
                     }
                     // Full-mask warp barrier: the lanes of one warp wait for
                     // each other. A per-warp shared tile needs no more.

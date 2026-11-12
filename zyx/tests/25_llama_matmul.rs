@@ -18,21 +18,21 @@
 //! 0.277-0.284 ms, 22.7-23.2 TFLOP/s on this card (336 GB/s peak).
 //!
 //! The selected config is the reference kernel's shape: a 128 x 128 output
-//! tile, eight warps as a 2 x 4 grid (a 64 x 32 warp tile), operands staged
+//! tile, four warps as a 2 x 2 grid (a 64 x 64 warp tile), operands staged
 //! through two block-wide shared buffers of a two-K-step window filled with
 //! 16-byte vector loads and read back with `ldmatrix.x4`. In the tensor
-//! recipe that is tile `(128, 128, 128)`, staged, warp layout `(2, 4, 1)`.
+//! recipe that is tile `(128, 128, 64)`, staged, warp layout `(2, 2, 1)`.
 
-use std::time::Instant;
-
+use zyx::kernel::autotune::BeamSearch;
 use zyx::kernel::{Dev, Kernel, MemScope};
 use zyx::{DType, Tensor, ZyxError};
 
 /// The recipe config of the reference kernel's shape: `(tile * 2 + staged) *
-/// layouts + layout`, i.e. `(4 * 2 + 1) * 13 + 8` — tile index 4 is
-/// `(m lanes 128, n lanes 128, k lanes 128)` (16 `m16n8k8` K steps), staged,
-/// warp layout index 8 is `(2, 4, 1)`.
-const TORCH_TILE_8_WARPS: u64 = 125;
+/// layouts + layout`, i.e. `(5 * 2 + 1) * 13 + 4` — tile index 5 is
+/// `(m lanes 128, n lanes 128, k lanes 64)` (8 `m16n8k8` K steps per K chunk),
+/// staged, warp layout index 4 is `(2, 2, 1)`: four warps as a 2 x 2 grid,
+/// i.e. a 64 x 64 warp tile.
+const TORCH_TILE_4_WARPS: u64 = 147;
 
 #[test]
 fn llama_gate_proj() -> Result<(), ZyxError> {
@@ -85,23 +85,32 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
     // the reference kernel's shape, and it must be one of the options.
     let recipe = k.opt_tensor_recipe();
     assert!(
-        TORCH_TILE_8_WARPS < recipe.nconfigs(),
+        TORCH_TILE_4_WARPS < recipe.nconfigs(),
         "the recipe's config space must contain the cuBLAS shape: {} configs",
         recipe.nconfigs()
     );
-    recipe.apply(&mut k, TORCH_TILE_8_WARPS);
+    recipe.apply(&mut k, TORCH_TILE_4_WARPS);
     k.default_epilogue();
     // The device epilogue (devectorize) runs once, inside `compile`.
     k.verify();
 
     // ---- the operands, and the reference they must reproduce ------------
-    let a = Tensor::rand([M, K], DType::F16)?.to(dev)?;
-    let b = Tensor::rand([N, K], DType::F16)?.to(dev)?;
+    // The operands are built on the host as f16 and copied to the device, so
+    // the values the kernel reads are exactly the values the reference GEMM
+    // multiplies. (`Tensor::cast` cannot be used for this: on a host tensor it
+    // returns a corrupted copy, so a reference built from a cast is ~1/8 of
+    // the true result and the kernel looks wrong when it is not.)
+    let a_vals: Vec<f32> = (0..(M * K) as usize).map(|i| ((i as u64 * 2654435761) % 1000) as f32 / 1000.0 - 0.5).collect();
+    let b_vals: Vec<f32> = (0..(N * K) as usize).map(|i| ((i as u64 * 40503 + 7) % 1000) as f32 / 1000.0 - 0.5).collect();
+    let a_host: Vec<f32> = a_vals.iter().map(|&x| zyx::f16::from_f32(x).to_f32()).collect();
+    let b_host: Vec<f32> = b_vals.iter().map(|&x| zyx::f16::from_f32(x).to_f32()).collect();
+    let a: Tensor =
+        Tensor::from_vec(a_host.iter().map(|&x| zyx::f16::from_f32(x)).collect::<Vec<zyx::f16>>(), [M, K])?.to(dev)?;
+    let b: Tensor =
+        Tensor::from_vec(b_host.iter().map(|&x| zyx::f16::from_f32(x)).collect::<Vec<zyx::f16>>(), [N, K])?.to(dev)?;
     // `sgemm` is row-major `a @ b.T`: A is the m x k `a` (row stride k), B is
     // k x n laid out as the row-major n x k `b` (row stride 1, column stride
     // k). Both sides see the same f16 operands, in f32.
-    let a_host: Vec<f32> = a.clone().cast(DType::F32).try_into().unwrap();
-    let b_host: Vec<f32> = b.clone().cast(DType::F32).try_into().unwrap();
     let mut want = vec![0f32; (M * N) as usize];
     unsafe {
         matrixmultiply::sgemm(
@@ -123,19 +132,18 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
     };
 
     // ---- measure -------------------------------------------------------
-    let compiled = k.compile()?;
-    // Warmup: the first launch pays the module load and fabric init.
-    let _ = compiled.forward(&[&a, &b], vec![[M, N]])?;
-    const REPS: usize = 20;
-    let t0 = Instant::now();
-    let mut last = None;
-    for _ in 0..REPS {
-        last = Some(compiled.forward(&[&a, &b], vec![[M, N]])?);
-    }
-    // One readback drains the stream: it costs the same for every repeat, so
-    // it is timed outside the loop.
-    let out: Vec<f32> = last.unwrap().pop().unwrap().try_into()?;
-    let nanos = t0.elapsed().as_secs_f64() / REPS as f64;
+    // The timing is the search's device-side measurement: one warmup launch
+    // and one timed launch of the lowered kernel (uncontended, bracketed by
+    // timing events), not host wall time around a queue of launches. The
+    // search is what applies the device epilogue, and the kernel it returns is
+    // already lowered — compiling that one again would run the device epilogue
+    // a second time, so the values come from a copy compiled on its own.
+    let scratch = Tensor::zeros([M, N], DType::F32).to(dev)?;
+    let values = k.clone();
+    let (_winner, nanos) = BeamSearch::new().run([k], &[&a, &b, &scratch], &[], |_| {}, |_| 0)?;
+    let compiled = values.compile()?;
+    let out: Vec<f32> = compiled.forward(&[&a, &b], vec![[M, N]])?.pop().unwrap().try_into()?;
+    let nanos = nanos as f64 * 1e-9;
 
     // ---- the kernel must reproduce the reference ------------------------
     // The epilogue rounds the f32 accumulator through f16, so a kernel
@@ -150,8 +158,7 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
             let tol = 1e-3f32.max(2e-3 * want.abs());
             if err > tol {
                 return Err(ZyxError::kernel_error(
-                    format!("gate_proj disagrees with the host GEMM at (m={i}, n={j}): {got} vs {want}, tol {tol}")
-                        .into(),
+                    format!("gate_proj disagrees with the host GEMM at (m={i}, n={j}): {got} vs {want}, tol {tol}").into(),
                 ));
             }
             if err > worst.0 {
@@ -166,10 +173,7 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
     let bytes = ((M * K + N * K + M * N) as f64) * 2.0;
     let tflops = flop / nanos / 1e12;
     let gbs = bytes / nanos / 1e9;
-    println!(
-        "llama gate_proj {M}x{K}x{N}: {:.4} ms, {tflops:.2} TFLOP/s, {gbs:.1} GB/s",
-        nanos * 1e3
-    );
+    println!("llama gate_proj {M}x{K}x{N}: {:.4} ms, {tflops:.2} TFLOP/s, {gbs:.1} GB/s", nanos * 1e3);
     assert!(tflops > 20.0, "gate_proj must beat torch's 21.5 TFLOP/s baseline (20), got {tflops:.2}");
     assert!(gbs > 170.0, "gate_proj must beat torch's 177.4 GB/s baseline (170), got {gbs:.1}");
     Ok(())

@@ -226,6 +226,26 @@ impl Kernel {
             }
         } else {
             self.devectorize()?;
+            // The devectorized IR is what gets coded out, and the index
+            // arithmetic it leaves (the addresses the lane collapse produces,
+            // the staged offsets) is exactly what the standard epilogue folds.
+            // The runtime runs it three times before the lowering, so it runs
+            // three times here too — otherwise those passes never see this IR.
+            for _ in 0..3 {
+                self.default_epilogue();
+            }
+            // The PTX-specific lowering is last: it turns the index arithmetic
+            // into the byte addresses the instructions take, so nothing
+            // element-indexed may follow it. Gated on the PTX-direct render
+            // because the CUDA C++ source does not render those ops.
+            if self.device_info().cc != [0, 0] && std::env::var("ZYX_PTX").is_ok() {
+                self.lower_shared_addr();
+                // The lowered form is decomposed, not optimized: the standard
+                // pipeline now folds the constants into the address, shares
+                // the window base, hoists what is invariant and drops what
+                // the rewrite abandoned.
+                self.default_epilogue();
+            }
         }
         Ok(())
     }

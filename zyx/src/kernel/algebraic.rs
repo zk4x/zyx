@@ -49,9 +49,105 @@ impl Kernel {
         self.simplify_mod_shift_sequences(&bounds);
         self.simplify_mod_div_identity(&bounds);
         self.simplify_demux_roundtrip(&bounds);
+        self.distribute_scaling_constants();
 
         self.dead_code_elimination();
         self.verify();
+    }
+
+    /// Push the constant part of an additive chain out of an exact scaling:
+    /// `(s + c) << k` and `(s + c) * 2^k` become `(s << k) + (c << k)`.
+    ///
+    /// Both scalings are exact (`<<` truncates, `* 2^k` is a shift), so the
+    /// rewrite is value-preserving for any wrap-around, and the constant it
+    /// exposes is a literal at the top of the chain: the backend folds that
+    /// into an instruction's immediate, and two accesses that differ only in
+    /// their offset then share the whole scaled part.
+    fn distribute_scaling_constants(&mut self) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("distribute_scaling_constants");
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            // A narrowing integer cast is exact modulo the wrap, so it
+            // distributes over the sum too: `cast(s + c)` becomes
+            // `cast(s) + cast(c)`. That is what exposes the additive constant
+            // a scaled index carries (the byte address of a shared access is
+            // `cast(element index) << 1`, so without this the constant stays
+            // behind the shift).
+            if let Op::Cast { x, dtype } = self.ops[op_id].op {
+                let xdtype = self.dtype(x);
+                if dtype.is_int() && xdtype.is_int() && dtype.bit_size() <= xdtype.bit_size() {
+                    let mut terms = Vec::new();
+                    let mut konst = 0i64;
+                    if flatten_add(self, x, &mut terms, &mut konst) && konst != 0 && !terms.is_empty() {
+                        if let Some(c) = scaled_constant(konst, 0, dtype) {
+                            let mut sum = terms[0];
+                            for &term in &terms[1..] {
+                                sum = self.insert_before(op_id, Op::Binary { x: sum, y: term, bop: BOp::Add });
+                            }
+                            let narrow = self.insert_before(op_id, Op::Cast { x: sum, dtype });
+                            let c = self.insert_before(op_id, Op::Const(c));
+                            self.ops[op_id].op = Op::Binary { x: narrow, y: c, bop: BOp::Add };
+                        }
+                    }
+                }
+                op_id = next;
+                continue;
+            }
+            let Op::Binary { x, y, bop } = self.ops[op_id].op else {
+                op_id = next;
+                continue;
+            };
+            // The scaling amount: `<< k` always, `* c` only for a power of two.
+            let shift = match bop {
+                BOp::BitShiftLeft => match self.resolve_const(y).and_then(Constant::as_dim) {
+                    Some(k) if (0..63).contains(&k) => k,
+                    _ => {
+                        op_id = next;
+                        continue;
+                    }
+                },
+                BOp::Mul => match self.resolve_const(y).and_then(Constant::as_dim) {
+                    Some(c) if c > 0 && c & (c - 1) == 0 => i64::from(c.trailing_zeros()),
+                    _ => {
+                        op_id = next;
+                        continue;
+                    }
+                },
+                _ => {
+                    op_id = next;
+                    continue;
+                }
+            };
+            if !matches!(self.ops[x].op, Op::Binary { bop: BOp::Add, .. }) {
+                op_id = next;
+                continue;
+            }
+            let mut terms = Vec::new();
+            let mut konst = 0i64;
+            if !flatten_add(self, x, &mut terms, &mut konst) || konst == 0 || terms.is_empty() {
+                op_id = next;
+                continue;
+            }
+            let dtype = self.dtype(terms[0]);
+            let Some(scaled) = scaled_constant(konst, shift, dtype) else {
+                op_id = next;
+                continue;
+            };
+            // Rebuild the variable part (it is what several accesses share),
+            // scale it, and leave the constant as the last addend. The scaling
+            // moves to a new op and this one becomes the final add, so every
+            // user keeps reading the same id.
+            let mut sum = terms[0];
+            for &term in &terms[1..] {
+                sum = self.insert_before(op_id, Op::Binary { x: sum, y: term, bop: BOp::Add });
+            }
+            let scaled_var = self.insert_before(op_id, Op::Binary { x: sum, y, bop });
+            let c = self.insert_before(op_id, Op::Const(scaled));
+            self.ops[op_id].op = Op::Binary { x: scaled_var, y: c, bop: BOp::Add };
+            op_id = next;
+        }
     }
 
     /// Single linear walk applying every per-op simplification check. This fuses
@@ -1119,6 +1215,47 @@ fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<b
                 None
             }
         }
+        _ => None,
+    }
+}
+
+/// Collect the additive terms of an `Add` chain and sum its *literal*
+/// constants. `false` when a literal constant is not a dimension, so the
+/// caller leaves the chain alone.
+///
+/// Only `Op::Const` nodes count: `resolve_const` also evaluates range
+/// extents, and a thread index would then fold to the range's *length* — a
+/// number, but not this thread's value.
+fn flatten_add(kernel: &Kernel, id: OpId, terms: &mut Vec<OpId>, konst: &mut i64) -> bool {
+    if let Op::Binary { x, y, bop: BOp::Add } = kernel.at(id) {
+        let (x, y) = (*x, *y);
+        return flatten_add(kernel, x, terms, konst) && flatten_add(kernel, y, terms, konst);
+    }
+    match kernel.at(id) {
+        Op::Const(c) => match c.as_dim() {
+            Some(dim) => {
+                *konst += dim;
+                true
+            }
+            None => false,
+        },
+        _ => {
+            terms.push(id);
+            true
+        }
+    }
+}
+
+/// `konst << shift` as a constant of `dtype`, or `None` when it does not fit.
+fn scaled_constant(konst: i64, shift: i64, dtype: DType) -> Option<Constant> {
+    let v = konst.checked_shl(u32::try_from(shift).ok()?)?;
+    match dtype {
+        DType::I64 => Some(Constant::idx(v)),
+        DType::U64 => Some(Constant::new(v as u64)),
+        DType::I32 => i32::try_from(v).ok().map(Constant::new),
+        DType::U32 => u32::try_from(v).ok().map(Constant::new),
+        DType::I16 => i16::try_from(v).ok().map(Constant::new),
+        DType::U16 => u16::try_from(v).ok().map(Constant::new),
         _ => None,
     }
 }

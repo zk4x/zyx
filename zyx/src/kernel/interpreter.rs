@@ -368,7 +368,7 @@ impl Kernel {
                 }
             }
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::LdMatrix { frags, src, addr, trans } => {
+                PTXOp::VLdMatrix { frags, src, addr, trans } => {
                     assert!(!*trans, "interpret: transposed ldmatrix");
                     let frags = usize::from(*frags);
                     let dtype = self.mem_dtype(*src);
@@ -389,6 +389,13 @@ impl Kernel {
                         .collect();
                     values.insert(id, per_thread);
                 }
+                // The device lowering runs after every host-facing path: a
+                // device-lowered kernel is compiled, never interpreted.
+                PTXOp::LdMatrix { .. }
+                | PTXOp::CvtaShared { .. }
+                | PTXOp::SharedBase { .. }
+                | PTXOp::LdShared { .. }
+                | PTXOp::StShared { .. } => todo!("interpret: device-lowered PTX is never interpreted"),
                 PTXOp::Shfl { value, lane } => {
                     let per_thread = (0..nthreads)
                         .map(|t| {

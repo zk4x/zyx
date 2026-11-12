@@ -483,7 +483,7 @@ pub enum PTXOp {
     /// from shared memory into the fragment registers, i.e. `frags` 32-bit
     /// words (2 f16 each) per lane. Non-portable by construction: it is a
     /// PTX instruction family, like the tensor-core op it feeds.
-    LdMatrix {
+    VLdMatrix {
         /// Number of 8x8 tiles: 1, 2 or 4 (`.x1`, `.x2`, `.x4`).
         frags: u8,
         /// Shared-memory storage the tile is read from.
@@ -492,6 +492,52 @@ pub enum PTXOp {
         addr: OpId,
         /// Load the transposed element order (`.trans`).
         trans: bool,
+    },
+    /// The hardware instruction, `ldmatrix.sync.aligned.m8n8.x{frags}.b16`:
+    /// one iteration of the loop that `VLdMatrix` describes, with the
+    /// address already a *generic 64-bit address* value in the IR (the
+    /// window base, the `<<1` and every offset are ordinary ops). Emitted by
+    /// the device lowering, never by `tensorize`.
+    LdMatrix {
+        /// Number of 8x8 tiles: 1, 2 or 4 (`.x1`, `.x2`, `.x4`).
+        frags: u8,
+        /// Generic 64-bit address of the tile base (`U64`).
+        addr: OpId,
+        /// Load the transposed element order (`.trans`).
+        trans: bool,
+    },
+    /// `cvta.shared.u64 %rd, %rs`: a shared-window byte offset as a generic
+    /// 64-bit address, because `ldmatrix` takes a generic address. `addr` is
+    /// the `Op::Cast` of the offset to `U64`, so this op is exactly the one
+    /// instruction.
+    CvtaShared {
+        /// Shared-window byte offset, widened to `U64`.
+        addr: OpId,
+    },
+    /// `mov.u32 %r, __ldN`: the shared-window byte offset of storage `buf`.
+    /// One per storage: every access into it is this base plus ordinary
+    /// `Op::Binary` arithmetic.
+    SharedBase {
+        /// The `MemScope::Local` storage.
+        buf: OpId,
+    },
+    /// `ld.shared.<width> [addr]`: a shared load at a shared-window byte
+    /// offset, with the width and dtype of the storage `buf`.
+    LdShared {
+        /// The `MemScope::Local` storage.
+        buf: OpId,
+        /// Shared-window byte offset (`U32`).
+        addr: OpId,
+    },
+    /// `st.shared.<width> [addr], ...`: a shared store at a shared-window
+    /// byte offset, of the value's own dtype and access width.
+    StShared {
+        /// The `MemScope::Local` storage.
+        buf: OpId,
+        /// Shared-window byte offset (`U32`).
+        addr: OpId,
+        /// Stored value.
+        src: OpId,
     },
     /// Warp-level `bar.warp.sync 0xffffffff`: the lanes of the issuing warp
     /// wait for each other. A shared tile private to one warp needs this,
@@ -1754,8 +1800,17 @@ impl Op {
             }
             Op::PTX(p) => match p.as_mut() {
                 PTXOp::Bytes(_) | PTXOp::WarpSync => ParamsMut::Empty,
-                PTXOp::LdMatrix { src, addr, .. } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(addr))),
+                PTXOp::VLdMatrix { src, addr, .. } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(addr))),
                 PTXOp::Shfl { value, lane, .. } => ParamsMut::Two(std::iter::once(value).chain(std::iter::once(lane))),
+                // The hardware form names an address, not a storage; the
+                // shared accesses name the storage and the address.
+                PTXOp::LdMatrix { addr, .. } | PTXOp::CvtaShared { addr } | PTXOp::SharedBase { buf: addr } => {
+                    ParamsMut::One(std::iter::once(addr))
+                }
+                PTXOp::LdShared { buf, addr } => ParamsMut::Two(std::iter::once(buf).chain(std::iter::once(addr))),
+                PTXOp::StShared { buf, addr, src } => {
+                    ParamsMut::Three(std::iter::once(buf).chain(std::iter::once(addr)).chain(std::iter::once(src)))
+                }
             },
             Op::TT(TTOp::EndReader)
             | Op::TT(TTOp::EndCompute)
@@ -1867,8 +1922,13 @@ impl Op {
             }
             Op::PTX(p) => match p.as_ref() {
                 PTXOp::Bytes(_) | PTXOp::WarpSync => None,
-                PTXOp::LdMatrix { src, addr, .. } => [*src, *addr].get(i).copied(),
+                PTXOp::VLdMatrix { src, addr, .. } => [*src, *addr].get(i).copied(),
                 PTXOp::Shfl { value, lane, .. } => [*value, *lane].get(i).copied(),
+                PTXOp::LdMatrix { addr, .. } | PTXOp::CvtaShared { addr } | PTXOp::SharedBase { buf: addr } => {
+                    [*addr].get(i).copied()
+                }
+                PTXOp::LdShared { buf, addr } => [*buf, *addr].get(i).copied(),
+                PTXOp::StShared { buf, addr, src } => [*buf, *addr, *src].get(i).copied(),
             },
             Op::TT(TTOp::EndReader)
             | Op::TT(TTOp::EndCompute)
@@ -2044,7 +2104,7 @@ impl SerBin for PTXOp {
                 0u8.ser_bin(out);
                 ser_slice(bytes, out);
             }
-            PTXOp::LdMatrix { frags, src, addr, trans } => {
+            PTXOp::VLdMatrix { frags, src, addr, trans } => {
                 1u8.ser_bin(out);
                 frags.ser_bin(out);
                 src.ser_bin(out);
@@ -2057,6 +2117,31 @@ impl SerBin for PTXOp {
                 value.ser_bin(out);
                 lane.ser_bin(out);
             }
+            PTXOp::LdMatrix { frags, addr, trans } => {
+                4u8.ser_bin(out);
+                frags.ser_bin(out);
+                addr.ser_bin(out);
+                trans.ser_bin(out);
+            }
+            PTXOp::CvtaShared { addr } => {
+                5u8.ser_bin(out);
+                addr.ser_bin(out);
+            }
+            PTXOp::SharedBase { buf } => {
+                6u8.ser_bin(out);
+                buf.ser_bin(out);
+            }
+            PTXOp::LdShared { buf, addr } => {
+                7u8.ser_bin(out);
+                buf.ser_bin(out);
+                addr.ser_bin(out);
+            }
+            PTXOp::StShared { buf, addr, src } => {
+                8u8.ser_bin(out);
+                buf.ser_bin(out);
+                addr.ser_bin(out);
+                src.ser_bin(out);
+            }
         }
     }
 }
@@ -2066,7 +2151,7 @@ impl DeBin for PTXOp {
         let tag: u8 = DeBin::de_bin(offset, bytes)?;
         let op = match tag {
             0 => PTXOp::Bytes(de_slice(offset, bytes)?),
-            1 => PTXOp::LdMatrix {
+            1 => PTXOp::VLdMatrix {
                 frags: DeBin::de_bin(offset, bytes)?,
                 src: DeBin::de_bin(offset, bytes)?,
                 addr: DeBin::de_bin(offset, bytes)?,
@@ -2076,6 +2161,22 @@ impl DeBin for PTXOp {
             3 => PTXOp::Shfl {
                 value: DeBin::de_bin(offset, bytes)?,
                 lane: DeBin::de_bin(offset, bytes)?,
+            },
+            4 => PTXOp::LdMatrix {
+                frags: DeBin::de_bin(offset, bytes)?,
+                addr: DeBin::de_bin(offset, bytes)?,
+                trans: DeBin::de_bin(offset, bytes)?,
+            },
+            5 => PTXOp::CvtaShared { addr: DeBin::de_bin(offset, bytes)? },
+            6 => PTXOp::SharedBase { buf: DeBin::de_bin(offset, bytes)? },
+            7 => PTXOp::LdShared {
+                buf: DeBin::de_bin(offset, bytes)?,
+                addr: DeBin::de_bin(offset, bytes)?,
+            },
+            8 => PTXOp::StShared {
+                buf: DeBin::de_bin(offset, bytes)?,
+                addr: DeBin::de_bin(offset, bytes)?,
+                src: DeBin::de_bin(offset, bytes)?,
             },
             _ => return Err(bad_tag(tag, *offset)),
         };

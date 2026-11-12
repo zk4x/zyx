@@ -506,7 +506,7 @@ impl Kernel {
     fn is_access(&self, op: OpId) -> bool {
         match self.at(op) {
             Op::Load { .. } | Op::Store { .. } => true,
-            Op::PTX(p) => matches!(p.as_ref(), PTXOp::LdMatrix { .. }),
+            Op::PTX(p) => matches!(p.as_ref(), PTXOp::VLdMatrix { .. }),
             _ => false,
         }
     }
@@ -606,6 +606,28 @@ impl Kernel {
                 break;
             }
         }
+        // And a kept op must read only kept operands: an unfolded operand
+        // hands it element 0, not the vector. Instructions are exempt — the
+        // unroll pass repacks their per-lane operands into a `Stack`.
+        loop {
+            let mut changed = false;
+            for &op in dep.iter() {
+                if !keep[&op] || matches!(self.at(op), Op::Wmma { .. }) {
+                    continue;
+                }
+                let operands_kept = self
+                    .at(op)
+                    .parameters()
+                    .all(|p| p == id || !dep.contains(&p) || keep[&p]);
+                if !operands_kept {
+                    keep.insert(op, false);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
         dep.iter().filter(|op| !keep[*op]).copied().collect()
     }
 
@@ -626,10 +648,18 @@ impl Kernel {
                 if !self.depends_on(*dst_idx, id, &mut Set::default()) {
                     return true;
                 }
-                self.vector_lane(*dst_idx, id) && self.value_elements(*src) == width
+                // The value carries this lane's width, or the whole access'
+                // elements. The first is the single-lane case; the second is a
+                // multi-lane access whose *other* lanes name addresses (a fill's
+                // step lane over a vector width), where the value is one vector
+                // covering the access and the backend splits it per address.
+                // Comparing only against `width` refused every multi-lane
+                // access, which is how a two-lane fill ended up scalarised.
+                self.vector_lane(*dst_idx, id)
+                    && (self.value_elements(*src) == width || self.value_elements(*src) == self.elements(*dst_idx))
             }
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::LdMatrix { addr, .. } => {
+                PTXOp::VLdMatrix { addr, .. } => {
                     !self.depends_on(*addr, id, &mut Set::default()) || self.vector_lane(*addr, id)
                 }
                 _ => false,
@@ -644,7 +674,7 @@ impl Kernel {
     fn value_elements(&self, op: OpId) -> Dim {
         match self.at(op) {
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::LdMatrix { frags, .. } => Dim::from(i64::from(*frags) * 2),
+                PTXOp::VLdMatrix { frags, .. } => Dim::from(i64::from(*frags) * 2),
                 _ => Dim::from(2),
             },
             _ => self.elements(op),

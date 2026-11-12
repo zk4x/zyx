@@ -139,6 +139,7 @@ mod ops;
 mod pad;
 mod pat;
 mod predict_cost;
+mod ptx;
 mod recipe;
 mod split;
 #[cfg(feature = "tenstorrent")]
@@ -515,21 +516,59 @@ impl Kernel {
                 | Op::TT(TTOp::PopFront { .. }) => {}
                 // PTX-level instruction: `ldmatrix` yields a per-lane
                 // fragment vector of `frags` 32-bit words (2 f16 each) and
-                // reads both the staging storage and its index.
+                // reads both the staging storage and its index. One lane of
+                // the address is one `ldmatrix`, so the result carries the
+                // address's lane shape in front of the fragment's own.
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => {}
-                    PTXOp::LdMatrix { frags, src, addr, .. } => {
-                        let n = Dim::from(i64::from(*frags) * 2);
-                        dtypes.insert(op_id, (DType::F16, vec![n]));
+                    PTXOp::VLdMatrix { frags, src, addr, .. } => {
+                        let mut dims = dtypes.get(addr).map(|(_, dims)| dims.clone()).unwrap_or_default();
+                        dims.push(Dim::from(i64::from(*frags) * 2));
+                        dtypes.insert(op_id, (DType::F16, dims));
                         *rcs.entry(*src).or_insert(0) += 1;
                         *rcs.entry(*addr).or_insert(0) += 1;
+                    }
+                    // The hardware form: same fragment shape, an address
+                    // that is already a 64-bit value.
+                    PTXOp::LdMatrix { frags, addr, .. } => {
+                        let mut dims = dtypes.get(addr).map(|(_, dims)| dims.clone()).unwrap_or_default();
+                        dims.push(Dim::from(i64::from(*frags) * 2));
+                        dtypes.insert(op_id, (DType::F16, dims));
+                        *rcs.entry(*addr).or_insert(0) += 1;
+                    }
+                    // `cvta.shared`: a 32-bit window offset as a 64-bit
+                    // generic address; no lanes of its own.
+                    PTXOp::CvtaShared { addr } => {
+                        dtypes.insert(op_id, (DType::U64, dtypes.get(addr).map(|(_, dims)| dims.clone()).unwrap_or_default()));
+                        *rcs.entry(*addr).or_insert(0) += 1;
+                    }
+                    // The window base of a storage: one 32-bit scalar.
+                    PTXOp::SharedBase { buf } => {
+                        dtypes.insert(op_id, (DType::U32, Vec::new()));
+                        *rcs.entry(*buf).or_insert(0) += 1;
+                    }
+                    // A shared access at a byte offset: the storage's dtype
+                    // and the address's lane shape carry the width.
+                    PTXOp::LdShared { buf, addr } => {
+                        let dtype = dtypes[&buf].0;
+                        let dims = dtypes.get(addr).map(|(_, dims)| dims.clone()).unwrap_or_default();
+                        dtypes.insert(op_id, (dtype, dims));
+                        *rcs.entry(*buf).or_insert(0) += 1;
+                        *rcs.entry(*addr).or_insert(0) += 1;
+                    }
+                    PTXOp::StShared { buf, addr, src } => {
+                        *rcs.entry(*buf).or_insert(0) += 1;
+                        *rcs.entry(*addr).or_insert(0) += 1;
+                        *rcs.entry(*src).or_insert(0) += 1;
                     }
                     // Effect only: no result, no operands.
                     PTXOp::WarpSync => {}
                     // A moved word is two f16 halves, like one `ldmatrix`
-                    // fragment.
+                    // fragment: the lanes of the moved value come first.
                     PTXOp::Shfl { value, lane, .. } => {
-                        dtypes.insert(op_id, (DType::F16, vec![Dim::from(2)]));
+                        let mut dims = dtypes.get(value).map(|(_, dims)| dims.clone()).unwrap_or_default();
+                        dims.push(Dim::from(2));
+                        dtypes.insert(op_id, (DType::F16, dims));
                         *rcs.entry(*value).or_insert(0) += 1;
                         *rcs.entry(*lane).or_insert(0) += 1;
                     }
@@ -899,7 +938,11 @@ impl Kernel {
                 Op::Spirv(_) => todo!(),
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload has no dtype"),
-                    PTXOp::LdMatrix { .. } => return DType::F16,
+                    PTXOp::VLdMatrix { .. } | PTXOp::LdMatrix { .. } => return DType::F16,
+                    PTXOp::CvtaShared { .. } => return DType::U64,
+                    PTXOp::SharedBase { .. } => return DType::U32,
+                    PTXOp::LdShared { buf, .. } => op_id = *buf,
+                    PTXOp::StShared { src, .. } => op_id = *src,
                     PTXOp::Shfl { .. } => return DType::F16,
                     PTXOp::WarpSync => todo!("warp sync has no result dtype"),
                 },

@@ -676,9 +676,9 @@ impl Kernel {
                 params.push(op_id);
                 continue;
             }
-            // A warp sync has no result: without a root a dead-value sweep
-            // would delete the barrier and leave the tile unsynchronised.
-            if matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::WarpSync)) {
+            // Ops with no result cannot be reached through a user: a warp sync
+            // would lose its barrier, a device-lowered shared store its write.
+            if matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::WarpSync | PTXOp::StShared { .. })) {
                 params.push(op_id);
                 continue;
             }
@@ -761,7 +761,7 @@ impl Kernel {
                     // reads of the same tile and address are not the same
                     // value once a fill has run between them, so it never
                     // pools. (Remapping its operands still happens below.)
-                    let is_ldmatrix = matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::LdMatrix { .. }));
+                    let is_ldmatrix = matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::VLdMatrix { .. }));
 
                     // For Load ops: remap the base before the
                     // stored-location check (bases dedup and a stale base
