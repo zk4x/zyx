@@ -95,20 +95,8 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
     k.verify();
 
     // ---- the operands, and the reference they must reproduce ------------
-    let probe = std::env::var("PROBE_K").ok().and_then(|v| v.parse::<i64>().ok());
-    let a = match probe {
-        Some(_) => Tensor::from_vec(vec![1.0f32; (M * K) as usize], [M, K])?.cast(DType::F16)?.to(dev)?,
-        None => Tensor::rand([M, K], DType::F16)?.to(dev)?,
-    };
-    let b = match probe {
-        Some(k0) => Tensor::from_vec(
-            (0..N * K).map(|i| if i % K == k0 { 1.0f32 } else { 0.0 }).collect(),
-            [N, K],
-        )?
-        .cast(DType::F16)?
-        .to(dev)?,
-        None => Tensor::rand([N, K], DType::F16)?.to(dev)?,
-    };
+    let a = Tensor::rand([M, K], DType::F16)?.to(dev)?;
+    let b = Tensor::rand([N, K], DType::F16)?.to(dev)?;
     // `sgemm` is row-major `a @ b.T`: A is the m x k `a` (row stride k), B is
     // k x n laid out as the row-major n x k `b` (row stride 1, column stride
     // k). Both sides see the same f16 operands, in f32.

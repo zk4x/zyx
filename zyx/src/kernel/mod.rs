@@ -127,6 +127,7 @@ mod devectorize;
 mod fold_constants;
 mod fold_loops;
 mod fuse;
+mod interpreter;
 mod instr_sched;
 mod licm;
 mod linearize;
