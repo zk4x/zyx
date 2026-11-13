@@ -667,12 +667,18 @@ fn coop_fill_load(
     let swz = put(kernel, Op::Binary { x: kblk, y: seven, bop: BOp::BitAnd });
     let mrow = put(kernel, Op::Binary { x: mrow, y: swz, bop: BOp::BitXor });
     let mrow = put(kernel, Op::Binary { x: mrow, y: three, bop: BOp::BitShiftLeft });
+    // The column's offset inside its eight-half block: the slot is
+    // `... + (k%8)`, and `vector` only covers the vector's own lanes. Without
+    // this term every thread of a row writes the same eight halves, so a tile
+    // holds one vector per row instead of the whole window.
+    let kin = put(kernel, Op::Binary { x: cterm, y: seven, bop: BOp::BitAnd });
     let rblk = put(kernel, Op::Const(Constant::idx(rows / 8)));
     let kblk = put(kernel, Op::Binary { x: kblk, y: rblk, bop: BOp::Mul });
     let blk = put(kernel, Op::Binary { x: kblk, y: mblk, bop: BOp::Add });
     let pack = put(kernel, Op::Const(Constant::idx(64i64)));
     let slot = put(kernel, Op::Binary { x: blk, y: pack, bop: BOp::Mul });
     let slot = put(kernel, Op::Binary { x: slot, y: mrow, bop: BOp::Add });
+    let slot = put(kernel, Op::Binary { x: slot, y: kin, bop: BOp::Add });
     let slot = put(kernel, Op::Binary { x: slot, y: vector, bop: BOp::Add });
     (slot, value)
 }

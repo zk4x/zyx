@@ -164,10 +164,18 @@ impl Kernel {
                     let src = *src;
                     let is_reg = matches!(self.at(dst), Op::Storage { scope: MemScope::Register, .. });
                     // The index's run length *is* the access width, so the value
-                    // covers exactly those slots.
+                    // covers exactly those slots. A broadcast value (one element
+                    // stored into a run of slots) has no per-slot mapping: the
+                    // load side would index a scalar, so it stays in the storage.
                     if let (true, Some((base, len))) = (is_reg, self.slot_run(*dst_idx)) {
-                        for k in 0..len {
-                            origin.insert((dst, base + k), (src, k as usize));
+                        // The mapping is only well defined when the value is
+                        // exactly the run: a broadcast scalar or a wider value
+                        // has no per-slot mapping, and forwarding it would
+                        // index an element the run does not hold.
+                        if self.elements(src) == Dim::from(len) {
+                            for k in 0..len {
+                                origin.insert((dst, base + k), (src, k as usize));
+                            }
                         }
                     }
                 }
@@ -198,8 +206,11 @@ impl Kernel {
                     }
                     let (first, start) = from[0];
                     let contiguous = from.iter().enumerate().all(|(k, &(v, off))| v == first && off == start + k);
+                    let scalar = self.shape(first).iter().product::<i64>() == 1 && from.iter().all(|&(v, _)| v == first);
                     let whole = contiguous && start == 0 && self.shape(first).iter().product::<i64>() == len;
-                    let replacement = if whole {
+                    let replacement = if whole || scalar {
+                        // A broadcast scalar names every slot it was stored in;
+                        // an `Index` would need a vector to index.
                         first
                     } else if len == 1 {
                         self.insert_before(op_id, Op::Index { vec: first, idx: start })
@@ -697,37 +708,26 @@ impl Kernel {
         for &op in dep.iter() {
             keep.insert(op, reaches.contains(&op) && self.lane_access_ok(op, id, width));
         }
-        // A kept op must have only kept consumers: an unfolded consumer reads
-        // one lane of a vector.
+        // The two invariants below are one fixpoint, not two: demoting a kept
+        // op has to demote its producers as well, and a second pass that only
+        // handled consumers would leave `a == b` kept while the `select` that
+        // reads it is unfolded around it — a store then keeps the vector index
+        // of a value that is already per-lane.
+        //
+        // 1. A kept op must have only kept consumers: an unfolded consumer        //    reads one lane of a vector.
+        // 2. And a kept op must read only kept operands: an unfolded operand
+        //    hands it element 0, not the vector. Instructions are exempt — the
+        //    unroll pass repacks their per-lane operands into a `Stack`.
         loop {
             let mut changed = false;
             for &op in dep.iter() {
                 if !keep[&op] {
                     continue;
                 }
-                let survives = consumers
-                    .get(&op)
-                    .is_none_or(|cs| cs.iter().all(|c| *keep.get(c).expect("devectorize: dependent op outside the lane's cone")));
-                if !survives {
-                    keep.insert(op, false);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        // And a kept op must read only kept operands: an unfolded operand
-        // hands it element 0, not the vector. Instructions are exempt — the
-        // unroll pass repacks their per-lane operands into a `Stack`.
-        loop {
-            let mut changed = false;
-            for &op in dep.iter() {
-                if !keep[&op] || matches!(self.at(op), Op::Wmma { .. }) {
-                    continue;
-                }
-                let operands_kept = self.at(op).parameters().all(|p| p == id || !dep.contains(&p) || keep[&p]);
-                if !operands_kept {
+                let survives = consumers.get(&op).is_none_or(|cs| cs.iter().all(|c| keep[&c]));
+                let operands_kept = matches!(self.at(op), Op::Wmma { .. })
+                    || self.at(op).parameters().all(|p| p == id || !dep.contains(&p) || keep[&p]);
+                if !survives || !operands_kept {
                     keep.insert(op, false);
                     changed = true;
                 }
@@ -738,7 +738,6 @@ impl Kernel {
         }
         dep.iter().filter(|op| !keep[*op]).copied().collect()
     }
-
     /// Whether `op` can render as one access of width `width` in lane `id`:
     /// the lane is the innermost contiguous term of the address, and the
     /// value side carries exactly that width (a broadcast scalar or a wider

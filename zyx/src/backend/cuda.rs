@@ -1907,6 +1907,46 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 // never NONE; fp8 has no codegen yet at any compute capability.
                 capability[DType::F8E4M3 as usize] = DTypeCapability::none();
                 capability[DType::F8E5M2 as usize] = DTypeCapability::none();
+                // The PTX-direct renderer emits the device instruction itself,
+                // and PTX has no f64 `lg2`/`ex2`/`sin`/`cos` at any target
+                // (`ex2`/`lg2` are libdevice functions; the approx forms stop
+                // at f32). `exp`/`ln` lower onto `ex2`/`lg2`, so they go with
+                // them. The CUDA C++ renderer calls libdevice and keeps them.
+                if std::env::var("ZYX_PTX").is_ok() {
+                    let missing = DTypeCapability::EXP
+                        | DTypeCapability::EXP2
+                        | DTypeCapability::LN
+                        | DTypeCapability::LOG2
+                        | DTypeCapability::SIN
+                        | DTypeCapability::COS;
+                    capability[DType::F64 as usize] = missing.invert();
+                    // bf16 is its own instruction set, not an emulation:
+                    // `cvt` and `neg`/`abs`/`max` from sm_80, `add`/`sub`/`mul`
+                    // from sm_90 (Ampere has bf16 tensor cores, not scalar
+                    // bf16 add/mul), and no comparison at all. A target
+                    // without them reports the dtype as unsupported, so the
+                    // frontend and the tests skip instead of failing at
+                    // codegen.
+                    let native = if major >= 9 {
+                        DTypeCapability::STORAGE
+                            | DTypeCapability::CAST
+                            | DTypeCapability::NEG
+                            | DTypeCapability::ABS
+                            | DTypeCapability::MAX
+                            | DTypeCapability::ADD
+                            | DTypeCapability::SUB
+                            | DTypeCapability::MUL
+                    } else if major >= 8 {
+                        DTypeCapability::STORAGE
+                            | DTypeCapability::CAST
+                            | DTypeCapability::NEG
+                            | DTypeCapability::ABS
+                            | DTypeCapability::MAX
+                    } else {
+                        DTypeCapability::none()
+                    };
+                    capability[DType::BF16 as usize] = native;
+                }
                 capability
             },
             has_native_exp2: true,

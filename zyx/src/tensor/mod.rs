@@ -1107,7 +1107,11 @@ impl Tensor {
     ///
     /// Returns an allocation or backend initialization error.
     pub fn from_vec<T: Scalar>(data: Vec<T>, shape: impl IntoIterator<Item = impl Into<Tensor>>) -> Result<Tensor, ZyxError> {
-        let dims: Vec<Tensor> = shape.into_iter().map(Into::into).collect();
+        // Shape/dim tensors must be IDX_T (i64), like every other
+        // shape-taking constructor: an `i32` literal dim otherwise reaches
+        // the kernel as an i32 group length and a pass dividing it by an
+        // IDX_T factor builds a mixed-dtype binary.
+        let dims = Self::cast_to_shape(shape);
         let shape = Tensor::stack(&dims)?;
         let id = RT.lock().new_host_tensor(shape.id, data.into_boxed_slice())?;
         Ok(Tensor { id })

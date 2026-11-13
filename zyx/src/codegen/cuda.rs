@@ -152,6 +152,43 @@ impl Kernel {
         // Reject group lengths that are constant and exceed the device grid
         // limits; the same vector becomes the rendered `Grid` below.
         let gws_vec = gws_from_kernel(self, &self.dev_info().max_global_work_dims)?;
+        // The rendered descriptor: params, grid, block, and the renderer's
+        // payload as the fourth op. Both renderers share it.
+        let descriptor = |fourth: Op| -> Result<Kernel, BackendError> {
+            if gws_vec.len() > 3 {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("CUDA render: grid rank {} exceeds 3D", gws_vec.len()).into(),
+                });
+            }
+            let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
+            for (i, g) in gws_vec.iter().enumerate() {
+                gws[i] = g.clone();
+            }
+            let mut params = Vec::new();
+            let mut op_id = self.head;
+            while !op_id.is_null() {
+                if let Op::Param { kind, .. } = self.ops[op_id].op {
+                    params.push(kind);
+                }
+                op_id = self.next_op(op_id);
+            }
+            let mut rendered = Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+            rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
+            rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
+            rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
+            rendered.push_back(fourth);
+            Ok(rendered)
+        };
+        // `ZYX_PTX` is the PTX-direct renderer: the kernel is lowered by
+        // `generate_ptx` alone. The CUDA C++ emission below is a different
+        // renderer with its own restrictions, and those rejections would fail
+        // candidates before the PTX emitter ever saw them, so it must not run
+        // at all — not even to throw the text away.
+        if std::env::var("ZYX_PTX").is_ok() {
+            let (ptx, _) = self.generate_ptx(&name)?;
+            return descriptor(Op::PTX(Box::new(PTXOp::Bytes(ptx.into_boxed_slice()))));
+        }
         use std::fmt::Write;
 
         let mut global_args = String::new();
@@ -411,14 +448,8 @@ impl Kernel {
                         if matches!(self.ops[x].op, Op::Param { kind: ParamKind::Variable, .. }) {
                             _ = writeln!(source, "{indent}r{reg} = p{x};");
                         } else {
-                            let idx = get_var_addr(
-                                lane_base.get(&op_id).copied().unwrap_or(src_idx),
-                                &constants,
-                                &indices,
-                                &reg_map,
-                                loop_id,
-                                &var_params,
-                            )?;
+                            let idx_id = lane_base.get(&op_id).copied().unwrap_or(src_idx);
+                            let idx = get_var_addr(idx_id, &constants, &indices, &reg_map, loop_id, &var_params)?;
                             match access_shape.as_slice() {
                                 [] => _ = writeln!(source, "{indent}r{reg} = p{x}[{idx}];"),
                                 [len] => {
@@ -440,14 +471,8 @@ impl Kernel {
                     // no lane shape of its own.
                     let access_shape = self.shape(dst_idx);
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                    let idx = get_var_addr(
-                        lane_base.get(&op_id).copied().unwrap_or(dst_idx),
-                        &constants,
-                        &indices,
-                        &reg_map,
-                        loop_id,
-                        &var_params,
-                    )?;
+                    let idx_id = lane_base.get(&op_id).copied().unwrap_or(dst_idx);
+                    let idx = get_var_addr(idx_id, &constants, &indices, &reg_map, loop_id, &var_params)?;
                     match access_shape.as_slice() {
                         [] => _ = writeln!(source, "{indent}p{dst_buf}[{idx}] = {x};"),
                         [len] => {
@@ -581,42 +606,64 @@ impl Kernel {
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id].clone();
+                    // A kept lane is an *access width*: its value is the lane-0
+                    // base and the load/store covers the remaining lanes. A
+                    // lane consumed as a value operand has no per-component
+                    // form here (`Unroll` renders as 0, which would write lane
+                    // 0 into every lane), so reject the candidate loudly
+                    // instead of emitting a wrong kernel.
+                    if matches!(self.at(x), Op::Unroll { .. }) || matches!(self.at(y), Op::Unroll { .. }) {
+                        return Err(BackendError {
+                            status: ErrorStatus::KernelCompilation,
+                            context: format!("CUDA codegen: lane op used as a value operand of binary {op_id}").into(),
+                        });
+                    }
+                    // The lane suffix belongs to the operand only when the
+                    // operand renders as a vector register: a scalar operand
+                    // broadcast into the vector, a constant, or an `Unroll`
+                    // lane rendered as 0 has no component to name, and
+                    // `0L.x` is not C.
+                    let (x_vec, y_vec) = (
+                        dtypes[&x].1.len() == 1 && reg_map.contains_key(&x),
+                        dtypes[&y].1.len() == 1 && reg_map.contains_key(&y),
+                    );
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
                     match dtype.1.as_slice() {
                         [len] => {
                             for &c in VEC_COMPONENTS.iter().take(width(len) as usize) {
+                                let x = if x_vec { format!("{x}.{c}") } else { x.clone() };
+                                let y = if y_vec { format!("{y}.{c}") } else { y.clone() };
                                 _ = match bop {
-                                    BOp::Add => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} + {y}.{c};"),
-                                    BOp::Sub => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} - {y}.{c};"),
-                                    BOp::Mul => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} * {y}.{c};"),
-                                    BOp::Div => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} / {y}.{c};"),
-                                    BOp::Pow => writeln!(source, "{indent}r{reg}.{c} = pow((double){x}.{c}, (double){y}.{c});"),
+                                    BOp::Add => writeln!(source, "{indent}r{reg}.{c} = {x} + {y};"),
+                                    BOp::Sub => writeln!(source, "{indent}r{reg}.{c} = {x} - {y};"),
+                                    BOp::Mul => writeln!(source, "{indent}r{reg}.{c} = {x} * {y};"),
+                                    BOp::Div => writeln!(source, "{indent}r{reg}.{c} = {x} / {y};"),
+                                    BOp::Pow => writeln!(source, "{indent}r{reg}.{c} = pow((double){x}, (double){y});"),
                                     BOp::Mod if dtype.0.is_float() => {
-                                        writeln!(source, "{indent}r{reg}.{c} = fmodf({x}.{c}, {y}.{c});")
+                                        writeln!(source, "{indent}r{reg}.{c} = fmodf({x}, {y});")
                                     }
-                                    BOp::Mod => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} % {y}.{c};"),
-                                    BOp::Cmplt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} < {y}.{c});"),
-                                    BOp::Cmpgt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} > {y}.{c});"),
-                                    BOp::Cmpge => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} >= {y}.{c});"),
+                                    BOp::Mod => writeln!(source, "{indent}r{reg}.{c} = {x} % {y};"),
+                                    BOp::Cmplt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x} < {y});"),
+                                    BOp::Cmpgt => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x} > {y});"),
+                                    BOp::Cmpge => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x} >= {y});"),
                                     BOp::Max if dtype.0 == DType::F16 => {
-                                        writeln!(source, "{indent}r{reg}.{c} = (half)fmaxf((float){x}.{c}, (float){y}.{c});")
+                                        writeln!(source, "{indent}r{reg}.{c} = (half)fmaxf((float){x}, (float){y});")
                                     }
-                                    BOp::Max if dtype.0 == DType::BF16 => writeln!(
-                                        source,
-                                        "{indent}r{reg}.{c} = (__nv_bfloat16)fmaxf((float){x}.{c}, (float){y}.{c});"
-                                    ),
-                                    BOp::Max => writeln!(source, "{indent}r{reg}.{c} = max({x}.{c}, {y}.{c});"),
-                                    BOp::Or => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} || {y}.{c};"),
-                                    BOp::And => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} && {y}.{c};"),
-                                    BOp::BitXor => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} ^ {y}.{c};"),
-                                    BOp::BitOr => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} | {y}.{c};"),
-                                    BOp::BitAnd => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} & {y}.{c};"),
-                                    BOp::BitShiftLeft => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} << {y}.{c};"),
-                                    BOp::BitShiftRight => writeln!(source, "{indent}r{reg}.{c} = {x}.{c} >> {y}.{c};"),
-                                    BOp::NotEq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} != {y}.{c});"),
-                                    BOp::Eq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x}.{c} == {y}.{c});"),
+                                    BOp::Max if dtype.0 == DType::BF16 => {
+                                        writeln!(source, "{indent}r{reg}.{c} = (__nv_bfloat16)fmaxf((float){x}, (float){y});")
+                                    }
+                                    BOp::Max => writeln!(source, "{indent}r{reg}.{c} = max({x}, {y});"),
+                                    BOp::Or => writeln!(source, "{indent}r{reg}.{c} = {x} || {y};"),
+                                    BOp::And => writeln!(source, "{indent}r{reg}.{c} = {x} && {y};"),
+                                    BOp::BitXor => writeln!(source, "{indent}r{reg}.{c} = {x} ^ {y};"),
+                                    BOp::BitOr => writeln!(source, "{indent}r{reg}.{c} = {x} | {y};"),
+                                    BOp::BitAnd => writeln!(source, "{indent}r{reg}.{c} = {x} & {y};"),
+                                    BOp::BitShiftLeft => writeln!(source, "{indent}r{reg}.{c} = {x} << {y};"),
+                                    BOp::BitShiftRight => writeln!(source, "{indent}r{reg}.{c} = {x} >> {y};"),
+                                    BOp::NotEq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x} != {y});"),
+                                    BOp::Eq => writeln!(source, "{indent}r{reg}.{c} = (unsigned int)({x} == {y});"),
                                 };
                             }
                         }
@@ -791,41 +838,7 @@ impl Kernel {
 
         let source =
             format!("{pragma}{helper_funcs}extern \"C\"\n__global__ void {name}(\n{global_args}) {{\n{reg_str}{source}}}\n\t\0");
-        // ZYX_PTX: emit PTX assembly directly at render (bypasses NVRTC at
-        // compile); otherwise the CUDA C++ above is the source. The decision
-        // lives here so compile only decodes positions: a `Source` fourth op
-        // means CUDA source, a `PTX` fourth op means assembled bytes.
-        let fourth = if std::env::var("ZYX_PTX").is_ok() {
-            let (ptx, _) = self.generate_ptx(&name)?;
-            Op::PTX(Box::new(PTXOp::Bytes(ptx.into_boxed_slice())))
-        } else {
-            Op::Source(SourceBlock(source.into_boxed_str()))
-        };
-        if gws_vec.len() > 3 {
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: format!("CUDA render: grid rank {} exceeds 3D", gws_vec.len()).into(),
-            });
-        }
-        let mut gws = [GwsDim::Const(1), GwsDim::Const(1), GwsDim::Const(1)];
-        for (i, g) in gws_vec.into_iter().enumerate() {
-            gws[i] = g;
-        }
-        let mut params = Vec::new();
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Param { kind, .. } = self.ops[op_id].op {
-                params.push(kind);
-            }
-            op_id = self.next_op(op_id);
-        }
-        let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
-        rendered.push_back(Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))));
-        rendered.push_back(fourth);
-        Ok(rendered)
+        descriptor(Op::Source(SourceBlock(source.into_boxed_str())))
     }
 }
 

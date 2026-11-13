@@ -645,23 +645,32 @@ impl Kernel {
                 closer_of.insert(opener, closer);
             }
             for (i, &op) in rest.iter().enumerate() {
-                match self.at(op) {
-                    Op::Loop { .. } => open_stack.push(i),
+                // Writes name their buffer directly. The lowered shared store
+                // is the only write form the PTX path leaves: leaving it out
+                // hides the buffer from the pinning below, and its loads then
+                // escape the guard that bounds their index.
+                let buf = match self.at(op) {
+                    Op::Loop { .. } => {
+                        open_stack.push(i);
+                        continue;
+                    }
                     Op::EndLoop => {
                         open_stack.pop();
+                        continue;
                     }
-                    Op::Store { dst, .. } | Op::Copy { dst, .. } | Op::TT(TTOp::Copy { dst, .. }) => {
-                        // Writes name their buffer directly.
-                        let buf = *dst;
-                        for &opener in &open_stack {
-                            let bound = (opener, closer_of[&opener]);
-                            let loops = storage_loops.entry(buf).or_default();
-                            if !loops.contains(&bound) {
-                                loops.push(bound);
-                            }
-                        }
+                    Op::Store { dst, .. } | Op::Copy { dst, .. } | Op::TT(TTOp::Copy { dst, .. }) => *dst,
+                    Op::PTX(p) => match p.as_ref() {
+                        PTXOp::StShared { buf, .. } => *buf,
+                        _ => continue,
+                    },
+                    _ => continue,
+                };
+                for &opener in &open_stack {
+                    let bound = (opener, closer_of[&opener]);
+                    let loops = storage_loops.entry(buf).or_default();
+                    if !loops.contains(&bound) {
+                        loops.push(bound);
                     }
-                    _ => {}
                 }
             }
         }

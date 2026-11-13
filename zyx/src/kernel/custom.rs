@@ -354,18 +354,29 @@ impl Kernel {
 
     /// Create a zero-initialized `MemScope::Register` storage of `len` elements.
     ///
-    /// Returns the storage id; the zero-init is emitted as a loop storing the
-    /// dtype's zero value over the whole storage.
+    /// Returns the storage id. A register storage is a register file, not an
+    /// array: its elements are lanes of this thread, so the zero-init is one
+    /// lane-indexed store that `devectorize` unfolds into one store per slot.
+    /// A loop would leave a runtime index into a register file, which no
+    /// backend can address.
     pub fn zeros(&mut self, dtype: DType, len: impl IntoOp) -> OpId {
         let acc = self.storage(dtype, MemScope::Register, len);
-        let len_c = self.const_idx(match self.ops[acc].op {
+        let len = match self.ops[acc].op {
             Op::Storage { len, .. } => len,
             _ => unreachable!("zeros: storage op expected"),
-        });
+        };
         let zero = self.push_back(Op::Const(dtype.zero_constant()));
-        let l = self.push_back(Op::Loop { len: len_c });
-        self.store(acc, zero, l);
-        self.push_back(Op::EndLoop);
+        // The lane axis is the next free one, so the store covers exactly the
+        // storage's slots.
+        let mut axis = 0u32;
+        for (_, op) in self.iter_unordered() {
+            if let Op::Unroll { axis: a, .. } = op {
+                axis = Ord::max(axis, a + 1);
+            }
+        }
+        let lanes = u16::try_from(len).expect("zeros: register storage wider than an unroll lane");
+        let lane = self.push_back(Op::Unroll { axis, len: lanes });
+        self.store(acc, zero, lane);
         acc
     }
 
