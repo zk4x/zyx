@@ -478,13 +478,15 @@ impl Compiler {
             }
             // A vector of f32 (or any non-f16 element): one `v<n>` store of
             // the operand's registers, in component order — a `Stack` of
-            // accumulator slots is exactly this.
+            // accumulator slots is exactly this. A value with a single
+            // component broadcasts into every lane.
             [n] if dtype != DType::F16 && dtype != DType::BF16 && *n <= 4 => {
                 let v = usize::try_from(*n).expect("vector width");
+                let regs: Vec<u16> = if regs.len() == 1 { vec![regs[0]; v] } else { regs.to_vec() };
                 let (op, list) = if v == 1 {
-                    (format!("st.{}.{}", space, dtype.mem_ptx()), list(regs))
+                    (format!("st.{}.{}", space, dtype.mem_ptx()), list(&regs))
                 } else {
-                    (format!("st.{}.v{v}.{}", space, dtype.mem_ptx()), list(regs))
+                    (format!("st.{}.v{v}.{}", space, dtype.mem_ptx()), list(&regs))
                 };
                 _ = writeln!(self.body, "{}{op} [{addr}], {{{list}}};", self.indent);
             }
@@ -1405,9 +1407,20 @@ impl Kernel {
                     if dims != MMADims::m16n8k8 || layout != MMALayout::row_col || dtype != MMADType::f16_f16_f16_f32 {
                         todo!("PTX: wmma combo dims={dims:?} layout={layout:?} dtype={dtype:?} not implemented");
                     }
-                    let a_comps = comp.components_of(self, a, &dtypes)?;
-                    let b_comps = comp.components_of(self, b, &dtypes)?;
-                    let c_comps = comp.components_of(self, c, &dtypes)?;
+                    // A scalar operand broadcasts into every slot: `a`, `b`
+                    // and `c` are all allowed to be one value, so a
+                    // single-component operand names its register once per slot
+                    // the instruction reads. Any other width is a fragment that
+                    // does not match the instruction.
+                    let fragment = |mut comps: Vec<u16>, slots: usize| -> Vec<u16> {
+                        if comps.len() == 1 {
+                            comps.resize(slots, comps[0]);
+                        }
+                        comps
+                    };
+                    let a_comps = fragment(comp.components_of(self, a, &dtypes)?, 4);
+                    let b_comps = fragment(comp.components_of(self, b, &dtypes)?, 2);
+                    let c_comps = fragment(comp.components_of(self, c, &dtypes)?, 4);
                     debug_assert_eq!(
                         a_comps.len(),
                         4,

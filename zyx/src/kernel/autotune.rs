@@ -103,12 +103,17 @@ impl Kernel {
 
     /// Device specific epilogue
     ///
+    /// Runs exactly once per kernel, on the two paths that hand it to a
+    /// backend: the autotune search (after the winner is picked) and
+    /// [`Kernel::compile`]. Nothing else lowers a kernel; a caller that
+    /// wants the lowered IR gets it by compiling.
+    ///
     /// # Errors
     ///
     /// Fails when a lowering step cannot produce a renderable kernel — today
     /// that is `devectorize` growing the IR past [`crate::kernel::MAX_OPS`],
     /// which is a property of the candidate, not of the device.
-    pub fn device_epilogue(&mut self) -> Result<(), ZyxError> {
+    pub(crate) fn device_epilogue(&mut self) -> Result<(), ZyxError> {
         // `Pow` -> `exp2(y * log2 x)` is a *lowering* decision, so it happens
         // exactly once, here, for every backend: the pairs this creates are
         // what the backend-specific passes below turn into primitives

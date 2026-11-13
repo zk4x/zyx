@@ -638,7 +638,10 @@ impl Kernel {
     fn is_access(&self, op: OpId) -> bool {
         match self.at(op) {
             Op::Load { .. } | Op::Store { .. } => true,
-            Op::PTX(p) => matches!(p.as_ref(), PTXOp::VLdMatrix { .. }),
+            // `ldmatrix` is the same access before and after
+            // `lower_shared_addr`: the vector form names a storage, the
+            // lowered form a byte address.
+            Op::PTX(p) => matches!(p.as_ref(), PTXOp::VLdMatrix { .. } | PTXOp::LdMatrix { .. }),
             _ => false,
         }
     }
@@ -766,7 +769,10 @@ impl Kernel {
                     && (self.value_elements(*src) == width || self.value_elements(*src) == self.elements(*dst_idx))
             }
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::VLdMatrix { addr, .. } => !self.depends_on(*addr, id, &mut Set::default()) || self.vector_lane(*addr, id),
+                // The lowered form carries the same address, in bytes.
+                PTXOp::VLdMatrix { addr, .. } | PTXOp::LdMatrix { addr, .. } => {
+                    !self.depends_on(*addr, id, &mut Set::default()) || self.vector_lane(*addr, id)
+                }
                 _ => false,
             },
             _ => true,
@@ -775,11 +781,11 @@ impl Kernel {
 
     /// Element count of a store's value: an `ldmatrix` result is its
     /// fragment halves (`frags` 32-bit words, two halves each) and has no
-    /// lane shape of its own.
+    /// lane shape of its own. The lowered form is the same fragment.
     fn value_elements(&self, op: OpId) -> Dim {
         match self.at(op) {
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::VLdMatrix { frags, .. } => Dim::from(i64::from(*frags) * 2),
+                PTXOp::VLdMatrix { frags, .. } | PTXOp::LdMatrix { frags, .. } => Dim::from(i64::from(*frags) * 2),
                 _ => Dim::from(2),
             },
             _ => self.elements(op),

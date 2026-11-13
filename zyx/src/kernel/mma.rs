@@ -2806,7 +2806,7 @@ mod tests {
         k.split(m, split::SplitMode::Unroll, 4);
         k.split(n, split::SplitMode::Unroll, 4);
         k.default_epilogue();
-        k.device_epilogue().expect("tensorized kernel devectorizes");
+        k.devectorize().expect("tensorized kernel devectorizes");
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
         assert_eq!(wmmas, 16, "4x4 register block");
@@ -2893,7 +2893,6 @@ mod tests {
 
         // Speed of the tiled match on the prefill projection.
         k.default_epilogue();
-        k.device_epilogue().expect("tiled match devectorizes");
         let compiled = match k.compile() {
             Ok(c) => c,
             Err(e) => {
@@ -3045,7 +3044,6 @@ mod tests {
         assert_eq!(opt.nconfigs(), 23, "the tiled form matches, per warp layout and operand form");
         opt.apply(&mut k, 0);
         k.default_epilogue();
-        k.device_epilogue().expect("tensorized kernel devectorizes");
         k.verify();
 
         // One input pair for both kernels: resolve the device once.
@@ -3093,7 +3091,7 @@ mod tests {
         let sopt = ks.opt_tensorize();
         sopt.apply(&mut ks, plan_config(0, 0, true));
         ks.default_epilogue();
-        ks.device_epilogue().expect("staged tensorized kernel devectorizes");
+        ks.devectorize().expect("staged tensorized kernel devectorizes");
         ks.verify();
         assert!(
             ks.iter_unordered().any(|(_, op)| matches!(op, Op::PTX(_))),
@@ -3121,7 +3119,6 @@ mod tests {
             let wopt = kw.opt_tensorize();
             wopt.apply(&mut kw, plan_config(0, 10, staged));
             kw.default_epilogue();
-            kw.device_epilogue().expect("split-K kernel devectorizes");
             kw.verify();
             let Some(warped) = run(kw, &a, &b) else { return };
             let mut warped_worst = 0.0f32;
@@ -3280,10 +3277,7 @@ mod tests {
         let combine = plan_config(0, 10, true);
         opt.apply(&mut k, combine);
         k.default_epilogue();
-        match k.device_epilogue() {
-            Ok(()) => println!("llama form lowered: {} ops", k.iter_unordered().count()),
-            Err(e) => panic!("llama form lowering failed: {e}"),
-        }
+        k.devectorize().expect("llama form devectorizes");
         k.verify();
         assert!(
             k.iter_unordered().any(|(_, op)| matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::WarpSync))),
