@@ -45,7 +45,7 @@ wins on the fixed placeholder).
 | Variable | Effect |
 |----------|--------|
 | `ZYX_DEV` | Pin one device (`cpu`, `cuda:0`, `vulkan`, `tt`, ...); see [CONFIG.md](CONFIG.md) |
-| `ZYX_PTX` | CUDA codegen emits PTX directly instead of CUDA C + NVRTC |
+| `ZYX_CUDAC` | CUDA codegen emits CUDA C + NVRTC instead of the default direct PTX |
 | `ZYX_BENCH_OUT` | Append one JSON line per measured autotune candidate to this path |
 | `ZYX_BENCH_TAG` | Tag for the benchmark rows (`untagged` by default) |
 | `ZYX_TT_IR` | Dump the Tenstorrent IR before/after `tt_tile`, `tt_reindex`, `tt_dataflow_select` |

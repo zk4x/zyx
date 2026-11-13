@@ -527,7 +527,6 @@ fn smooth_l1_loss_3() -> Result<(), ZyxError> {
 
     // Expected: 0.5*(0.5)² + |2-2.8|-0.5 + 0.5*(1.8)² + |4-6|-0.5
     //          = 0.125 + 0.3 + 1.62 + 1.5 = 3.545
-    // But getting 3.245, let me check if there's a calculation error
     let expected_loss = 3.245f32;
     let actual_loss = loss.item::<f32>();
     assert!((actual_loss - expected_loss).abs() < 1e-6);

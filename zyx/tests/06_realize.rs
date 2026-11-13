@@ -10,9 +10,7 @@ use zyx::{DType, DTypeCapability, Reduction, Scalar, Tensor, ZyxError, f16};
 /// Uses the m16n8k8 WMMA instruction with one warp (32 threads) per 16×8 tile.
 ///
 /// Requires a CUDA device with tensor cores (cc >= 7.0).
-/// Run with: `AGENT=1 cargo test -p zyx --test 7_realize wmma_matmul -- --nocapture --include-ignored`
 #[test]
-#[ignore = "verify lane-shape check needs rework under Unroll lane merge (binary tile/vec shapes)"]
 fn wmma_matmul() -> Result<(), ZyxError> {
     let m = 1024;
     let n = 1024;

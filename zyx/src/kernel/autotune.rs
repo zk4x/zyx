@@ -235,9 +235,9 @@ impl Kernel {
             }
             // The PTX-specific lowering is last: it turns the index arithmetic
             // into the byte addresses the instructions take, so nothing
-            // element-indexed may follow it. Gated on the PTX-direct render
-            // because the CUDA C++ source does not render those ops.
-            if self.device_info().cc != [0, 0] && std::env::var("ZYX_PTX").is_ok() {
+            // element-indexed may follow it. Skipped for the CUDA C++ source,
+            // which does not render those ops.
+            if self.device_info().cc != [0, 0] && std::env::var("ZYX_CUDAC").is_err() {
                 self.lower_shared_addr();
                 // The lowered form is decomposed, not optimized: the standard
                 // pipeline now folds the constants into the address, shares
@@ -787,7 +787,7 @@ fn record_measurement(
     let info = kernel.dev_info();
     // The rendering path is part of the measurement: PTX-direct skips NVRTC and
     // can produce different SASS, so it must not mix with NVRTC rows.
-    let codegen = if std::env::var("ZYX_PTX").is_ok() { "+ptx" } else { "" };
+    let codegen = if std::env::var("ZYX_CUDAC").is_ok() { "" } else { "+ptx" };
     let measurement = Measurement {
         dev: format!("{:?}{codegen}", kernel.dev),
         cc: info.cc,

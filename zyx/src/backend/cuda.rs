@@ -1911,8 +1911,9 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 // and PTX has no f64 `lg2`/`ex2`/`sin`/`cos` at any target
                 // (`ex2`/`lg2` are libdevice functions; the approx forms stop
                 // at f32). `exp`/`ln` lower onto `ex2`/`lg2`, so they go with
-                // them. The CUDA C++ renderer calls libdevice and keeps them.
-                if std::env::var("ZYX_PTX").is_ok() {
+                // them. The CUDA C++ renderer (`ZYX_CUDAC`) calls libdevice and
+                // keeps them.
+                if std::env::var("ZYX_CUDAC").is_err() {
                     let missing = DTypeCapability::EXP
                         | DTypeCapability::EXP2
                         | DTypeCapability::LN
@@ -2079,8 +2080,8 @@ impl CUDADevice {
         };
         let lws: [u32; 3] = *lws;
         let mut name = format!("k_{}", lws.iter().map(ToString::to_string).collect::<Vec<_>>().join("_"),);
-        // PTX-direct descriptor (ZYX_PTX render): assembled bytes ride
-        // the descriptor and skip NVRTC entirely.
+        // PTX-direct descriptor: assembled bytes ride the descriptor and skip
+        // NVRTC entirely.
         if let Op::PTX(ptx) = fourth {
             let PTXOp::Bytes(bytes) = ptx.as_ref() else {
                 unreachable!("rendered PTX payload is never an ldmatrix instruction");

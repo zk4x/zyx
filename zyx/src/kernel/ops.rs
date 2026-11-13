@@ -436,7 +436,7 @@ pub enum Op {
     /// keeps its 24-byte budget (mirrors `Op::GPU`).
     Spirv(Box<SpirvOp>),
     /// PTX payload for CUDA: assembled PTX bytes emitted directly at
-    /// render (under `ZYX_PTX`), bypassing NVRTC at compile. Pure value:
+    /// render (the default path), bypassing NVRTC at compile. Pure value:
     /// equal contents compare equal so CSE shares them. Void leaf, no
     /// operands. Boxed so `Op` keeps its 24-byte budget (mirrors
     /// `Op::Spirv`).

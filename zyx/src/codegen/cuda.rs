@@ -125,9 +125,9 @@ fn mma_helper(dims: MMADims, layout: MMALayout, dtype: MMADType) -> String {
 
 impl Kernel {
     /// CUDA render: lower to a descriptor-only kernel — head order `Params`,
-    /// `Grid`, `LocalWorkSize`, and either CUDA C++ source (`Source`) or
-    /// assembled PTX (`PTX`, with `ZYX_PTX` set). The source emits once here;
-    /// backend `compile` only decodes positions and drives NVRTC.
+    /// `Grid`, `LocalWorkSize`, and either assembled PTX (`PTX`, the default)
+    /// or CUDA C++ source (`Source`, with `ZYX_CUDAC` set). The source emits
+    /// once here; backend `compile` only decodes positions and drives NVRTC.
     pub(crate) fn render_cuda(&self) -> Result<Kernel, BackendError> {
         let mut lws = [1u32; 3];
         let mut op_id = self.head;
@@ -180,12 +180,12 @@ impl Kernel {
             rendered.push_back(fourth);
             Ok(rendered)
         };
-        // `ZYX_PTX` is the PTX-direct renderer: the kernel is lowered by
+        // The PTX-direct renderer is the default: the kernel is lowered by
         // `generate_ptx` alone. The CUDA C++ emission below is a different
-        // renderer with its own restrictions, and those rejections would fail
-        // candidates before the PTX emitter ever saw them, so it must not run
-        // at all — not even to throw the text away.
-        if std::env::var("ZYX_PTX").is_ok() {
+        // renderer with its own restrictions (`ZYX_CUDAC`), and those
+        // rejections would fail candidates before the PTX emitter ever saw
+        // them, so it must not run at all — not even to throw the text away.
+        if std::env::var("ZYX_CUDAC").is_err() {
             let (ptx, _) = self.generate_ptx(&name)?;
             return descriptor(Op::PTX(Box::new(PTXOp::Bytes(ptx.into_boxed_slice()))));
         }
@@ -317,13 +317,14 @@ impl Kernel {
                         _ = writeln!(source, "{indent}asm volatile(\"bar.warp.sync 0xffffffff;\");");
                     }
                     PTXOp::Bytes(_) => todo!("CUDA codegen: assembled PTX payload in kernel IR"),
-                    // The device lowering that forms these is gated on the
-                    // PTX-direct render (`ZYX_PTX`), which discards this
-                    // source: only the register bookkeeping has to stay
+                    // The device lowering that forms these runs only on the
+                    // default PTX render, which discards this source: reaching
+                    // here means `ZYX_CUDAC` asked for a lowered kernel, which
+                    // is a bug. Only the register bookkeeping has to stay
                     // consistent.
                     PTXOp::LdMatrix { .. } | PTXOp::CvtaShared { .. } | PTXOp::SharedBase { .. } | PTXOp::LdShared { .. } => {
                         assert!(
-                            std::env::var("ZYX_PTX").is_ok(),
+                            std::env::var("ZYX_CUDAC").is_err(),
                             "CUDA codegen: device-lowered PTX is only formed for the PTX-direct render"
                         );
                         let dtype = dtypes[&op_id].clone();
@@ -331,7 +332,7 @@ impl Kernel {
                     }
                     PTXOp::StShared { .. } => {
                         assert!(
-                            std::env::var("ZYX_PTX").is_ok(),
+                            std::env::var("ZYX_CUDAC").is_err(),
                             "CUDA codegen: device-lowered PTX is only formed for the PTX-direct render"
                         );
                     }

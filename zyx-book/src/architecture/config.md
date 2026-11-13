@@ -116,7 +116,7 @@ ZYX_DEBUG=256 cargo run   # NoSearch: compile a cleaned seed once
 |----------|--------|
 | `AGENT=1` | Colorless debug output (also auto-detected when stdout is not a terminal) |
 | `ZYX_DRY_RUN=1` | Skip device launches; timings are a fixed 1 s placeholder and output buffers are uninitialized — never read them |
-| `ZYX_PTX` | CUDA codegen emits PTX directly instead of CUDA C + NVRTC |
+| `ZYX_CUDAC` | CUDA codegen emits CUDA C + NVRTC instead of the default direct PTX |
 | `ZYX_BENCH_OUT` | Append one JSON line per measured autotune candidate to this path |
 | `ZYX_BENCH_TAG` | Tag for the benchmark rows (`untagged` by default) |
 | `ZYX_TT_IR` | Dump the Tenstorrent IR before/after `tt_tile`, `tt_reindex`, `tt_dataflow_select` |

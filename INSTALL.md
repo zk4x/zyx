@@ -34,7 +34,7 @@ tools listed below.
 | Backend | Needs | Debian/Ubuntu | Notes |
 |---------|-------|---------------|-------|
 | C | a C compiler: `clang-11`, `clang`, `gcc`, or `cc` (first found) | `sudo apt install clang` or `sudo apt install build-essential` | always available if one exists |
-| CUDA | NVIDIA driver (`libcuda.so.1`) and NVRTC (`libnvrtc.so`) | driver from NVIDIA; `sudo apt install nvidia-cuda-toolkit` (or NVIDIA's toolkit) | `ZYX_PTX=1` emits PTX directly and skips NVRTC; cuDNN is optional (`"cuda": { "cudnn": true }`) |
+| CUDA | NVIDIA driver (`libcuda.so.1`); NVRTC only for `ZYX_CUDAC` | driver from NVIDIA; `sudo apt install nvidia-cuda-toolkit` (or NVIDIA's toolkit) | PTX is emitted directly and compiled by the driver JIT by default; `ZYX_CUDAC=1` switches to CUDA C + NVRTC; cuDNN is optional (`"cuda": { "cudnn": true }`) |
 | OpenCL | ICD loader (`libOpenCL.so`) plus a vendor ICD | `sudo apt install ocl-icd-libopencl1`; CPU-only: `sudo apt install pocl-opencl-icd` | |
 | Vulkan | `libvulkan.so.1` plus a Vulkan driver | `sudo apt install libvulkan1 mesa-vulkan-drivers vulkan-tools` | |
 | WGPU | cargo feature `wgpu` plus a wgpu backend | build with `--features wgpu` | uses Vulkan/Metal/DX12/GLES; large optional dependency tree |

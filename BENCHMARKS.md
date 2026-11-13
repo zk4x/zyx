@@ -127,7 +127,7 @@ the `BEAM=0` default: at `BEAM=0` the same script reports 3.7942 ms prefill
 | `down_proj` | [128x8192]x[8192x3072] | zyx | 0.6243 | 10.32 | 85 |
 
 The `gate_proj`/`up_proj` zyx rows are the tensorized 128x128 staged wmma
-kernel (`zyx/tests/25_llama_matmul.rs`, `ZYX_PTX=1`) rather than the earlier
+kernel (`zyx/tests/25_llama_matmul.rs`) rather than the earlier
 20-launch bench above: 0.2990 ms at boost clocks (SM 1845-1875 MHz), the same
 clock state as torch's warm 0.2927 ms / 22.01 TFLOP/s row. Repeat hot runs of
 the same kernel measured 20.46-21.55 TFLOP/s; a single launch on an idle

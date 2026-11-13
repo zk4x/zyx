@@ -22,7 +22,21 @@ fn llama_embedding() -> Result<(), ZyxError> {
 
     // Same test on any backend: `ZYX_DEV=cuda:0` is the reference run, and the
     // default is the card.
-    let dev: Dev = std::env::var("ZYX_DEV").ok().and_then(|s| s.parse().ok()).unwrap_or(Dev::TT(0));
+    // `ZYX_DEV=cuda:0` is the reference run. The default is the card, and
+    // without the tenstorrent feature or a device there is nothing to run:
+    // skip instead of failing.
+    let dev: Dev = match std::env::var("ZYX_DEV").ok().and_then(|s| s.parse().ok()) {
+        Some(dev) => dev,
+        None => {
+            let Ok(tt) = "tt:0".parse::<Dev>() else {
+                return Ok(());
+            };
+            if !Dev::all().contains(&tt) {
+                return Ok(());
+            }
+            tt
+        }
+    };
 
     let weight = Tensor::rand([VOCAB, HIDDEN], DType::F32)?;
     let expected: Vec<f32> = weight.narrow(0, i64::from(TOKEN), 1i64)?.reshape([HIDDEN])?.try_into()?;
@@ -53,7 +67,21 @@ fn embedding_gather_small() -> Result<(), ZyxError> {
     const HIDDEN: i64 = 512;
     const ROWS: i64 = 12;
 
-    let dev: Dev = std::env::var("ZYX_DEV").ok().and_then(|s| s.parse().ok()).unwrap_or(Dev::TT(0));
+    // `ZYX_DEV=cuda:0` is the reference run. The default is the card, and
+    // without the tenstorrent feature or a device there is nothing to run:
+    // skip instead of failing.
+    let dev: Dev = match std::env::var("ZYX_DEV").ok().and_then(|s| s.parse().ok()) {
+        Some(dev) => dev,
+        None => {
+            let Ok(tt) = "tt:0".parse::<Dev>() else {
+                return Ok(());
+            };
+            if !Dev::all().contains(&tt) {
+                return Ok(());
+            }
+            tt
+        }
+    };
     let weight = Tensor::rand([VOCAB, HIDDEN], DType::F32)?;
     let tokens: Vec<u32> = (0..ROWS).map(|r| ((r * 37 + 7) % VOCAB) as u32).collect();
     let mut expected: Vec<f32> = Vec::new();
