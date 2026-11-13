@@ -596,6 +596,20 @@ impl Kernel {
                         slice.insert(op_id);
                     }
                 }
+                // A device-lowered shared write (or warp sync) is an escaping
+                // effect like a store: the block's other threads read the
+                // shared storage, which is defined outside the loop, so the
+                // enclosing loop is live even when its only result is that
+                // write. Without this a reduce tree whose per-level stores are
+                // `StShared` looks like a dead loop and is deleted whole.
+                Op::PTX(p) if matches!(p.as_ref(), PTXOp::StShared { .. } | PTXOp::WarpSync) => {
+                    for delete_flag in delete_stack.iter_mut() {
+                        *delete_flag = false;
+                    }
+                    for slice in &mut ops_stack {
+                        slice.insert(op_id);
+                    }
+                }
                 Op::Copy { dst, .. } => {
                     // A copy to an outside buffer is an escaping effect like
                     // a store: the dst base names the buffer directly.

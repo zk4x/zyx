@@ -9,7 +9,6 @@ use crate::{
     dtype::Constant,
     error::{BackendError, ErrorStatus},
     kernel::{BOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, UOp},
-    scalar::bf16,
     shape::Dim,
 };
 use std::fmt::Write;
@@ -68,14 +67,10 @@ impl Constant {
             if s.contains('.') { s.to_string() } else { format!("{s}.0") }
         }
         match self {
-            Self::BF16(x) => {
-                let val = f32::from(bf16::from_le_bytes(*x));
-                if val.is_finite() {
-                    format!("{}f", val)
-                } else {
-                    format!("0f{:08X}", val.to_bits())
-                }
-            }
+            // bf16 lives in a b16 register and every use is a raw bit pattern
+            // (`ld/st.b16`, the f32 pack around arithmetic), so the immediate
+            // is the 16-bit encoding, exactly like f16.
+            Self::BF16(x) => format!("0x{:04X}", u16::from_le_bytes(*x)),
             Self::F16(x) => format!("0x{:04X}", u16::from_le_bytes(*x)),
             Self::F32(x) => {
                 let val = f32::from_le_bytes(*x);
@@ -409,7 +404,24 @@ impl Compiler {
                 self.release_reg(t);
             }
             [_] => {
-                todo!("PTX: vector load of {shape:?} {dtype:?} not implemented")
+                // PTX vectors hold at most four 32-bit elements, and the
+                // register file has no address: a wider (or odd) access is a
+                // run of scalar loads at ascending byte offsets. A one-element
+                // value broadcasts.
+                let n = usize::try_from(shape[0]).expect("PTX: vector width");
+                let elem = usize::try_from(dtype.bit_size() / 8).expect("PTX: element bytes");
+                for i in 0..n {
+                    let off = i * elem;
+                    let a = if off == 0 { addr.to_string() } else { format!("{addr}+{off}") };
+                    if matches!(dtype, DType::F16 | DType::BF16) {
+                        let tmp = self.new_reg(DType::U16, Vec::new(), 1);
+                        _ = writeln!(self.body, "{}ld.{}.b16 %r{tmp}, [{a}];", self.indent, space);
+                        _ = writeln!(self.body, "{}mov.b16 %r{}, %r{tmp};", self.indent, reg + i as u16);
+                        self.release_reg(tmp);
+                    } else {
+                        _ = writeln!(self.body, "{}ld.{}.{} %r{}, [{a}];", self.indent, space, dtype.mem_ptx(), reg + i as u16);
+                    }
+                }
             }
             [_, _] => todo!("PTX: tile load not implemented"),
             _ => todo!("PTX: rank-3+ load not implemented"),
@@ -483,7 +495,25 @@ impl Compiler {
                 self.release_reg(t);
             }
             [_] => {
-                todo!("PTX: vector store of {shape:?} {dtype:?} not implemented")
+                // PTX vectors hold at most four 32-bit elements, and the
+                // register file has no address: a wider (or odd) access is a
+                // run of scalar stores at ascending byte offsets. A value with
+                // a single component broadcasts into every lane.
+                let n = usize::try_from(shape[0]).expect("PTX: vector width");
+                let elem = usize::try_from(dtype.bit_size() / 8).expect("PTX: element bytes");
+                for i in 0..n {
+                    let off = i * elem;
+                    let a = if off == 0 { addr.to_string() } else { format!("{addr}+{off}") };
+                    let r = if regs.len() == 1 { regs[0] } else { regs[i] };
+                    if matches!(dtype, DType::F16 | DType::BF16) {
+                        let tmp = self.new_reg(DType::U16, Vec::new(), 1);
+                        _ = writeln!(self.body, "{}mov.b16 %r{tmp}, %r{r};", self.indent);
+                        _ = writeln!(self.body, "{}st.{}.b16 [{a}], %r{tmp};", self.indent, space);
+                        self.release_reg(tmp);
+                    } else {
+                        _ = writeln!(self.body, "{}st.{}.{} [{a}], %r{r};", self.indent, space, dtype.mem_ptx());
+                    }
+                }
             }
             [_, _] => todo!("PTX: tile store not implemented"),
             _ => todo!("PTX: rank-3+ store not implemented"),
@@ -640,12 +670,27 @@ impl Kernel {
                 }
                 Op::Const(ref constant) => {
                     let reg = comp.new_var(op_id, constant.dtype(), Vec::new(), u32::MAX);
-                    let ptx_dtype = if constant.dtype() == DType::F16 || constant.dtype() == DType::BF16 {
-                        "b16"
+                    if constant.dtype() == DType::U8 || constant.dtype() == DType::I8 {
+                        // No `mov.u8`: materialize the byte through a 16-bit
+                        // register and narrow, which keeps the register a
+                        // byte wide for the `ld/st.u8` it feeds.
+                        let (t, outcvt) = if constant.dtype() == DType::I8 {
+                            (DType::I16, "cvt.s8.s16")
+                        } else {
+                            (DType::U16, "cvt.u8.u16")
+                        };
+                        let tmp = comp.new_reg(t, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}mov.{} %r{tmp}, {};", comp.indent, t.ptx(), constant.ptx());
+                        _ = writeln!(comp.body, "{}{outcvt} %r{reg}, %r{tmp};", comp.indent);
+                        comp.release_reg(tmp);
                     } else {
-                        constant.dtype().ptx()
-                    };
-                    _ = writeln!(comp.body, "{}mov.{ptx_dtype} %r{reg}, {};", comp.indent, constant.ptx());
+                        let ptx_dtype = if constant.dtype() == DType::F16 || constant.dtype() == DType::BF16 {
+                            "b16"
+                        } else {
+                            constant.dtype().ptx()
+                        };
+                        _ = writeln!(comp.body, "{}mov.{ptx_dtype} %r{reg}, {};", comp.indent, constant.ptx());
+                    }
                 }
                 Op::Load { src: buf, src_idx } => {
                     let access_shape = self.shape(op_id);
@@ -827,12 +872,67 @@ impl Kernel {
                     debug_assert!(dtypes[&x].1.len() <= 1, "PTX: element-wise cast of a nested vector is not implemented");
                     let x = comp.get_var(x);
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
+                    // sm_75 has no bf16 type at all (`.bf16` needs sm_80), so
+                    // every bf16 conversion goes through f32: bf16 in is the
+                    // top half of the f32 with the same bits, f32 out rounds
+                    // to the top half (nearest-even) by hand.
+                    if (dtype == DType::BF16 || xdtype == DType::BF16) && dtype != xdtype {
+                        let f = comp.new_reg(DType::F32, Vec::new(), 1);
+                        let z = comp.new_reg(DType::U16, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}mov.u16 %r{z}, 0;", comp.indent);
+                        match xdtype {
+                            DType::BF16 => _ = writeln!(comp.body, "{}mov.b32 %r{f}, {{%r{z}, %r{x}}};", comp.indent),
+                            DType::F16 => _ = writeln!(comp.body, "{}cvt.f32.f16 %r{f}, %r{x};", comp.indent),
+                            DType::F32 => _ = writeln!(comp.body, "{}mov.f32 %r{f}, %r{x};", comp.indent),
+                            DType::Bool => _ = writeln!(comp.body, "{}selp.f32 %r{f}, 1.0, 0.0, %r{x};", comp.indent),
+                            _ => {
+                                _ = writeln!(
+                                    comp.body,
+                                    "{}cvt.rn.f32.{} %r{f}, %r{x};",
+                                    comp.indent,
+                                    xdtype.ptx()
+                                )
+                            }
+                        }
+                        match dtype {
+                            DType::F32 => _ = writeln!(comp.body, "{}mov.f32 %r{reg}, %r{f};", comp.indent),
+                            DType::F16 => _ = writeln!(comp.body, "{}cvt.rn.f16.f32 %r{reg}, %r{f};", comp.indent),
+                            DType::BF16 => {
+                                let u = comp.new_reg(DType::U32, Vec::new(), 1);
+                                let t = comp.new_reg(DType::U32, Vec::new(), 1);
+                                _ = writeln!(comp.body, "{}mov.b32 %r{u}, %r{f};", comp.indent);
+                                _ = writeln!(comp.body, "{}shr.b32 %r{t}, %r{u}, 16;", comp.indent);
+                                _ = writeln!(comp.body, "{}and.b32 %r{t}, %r{t}, 1;", comp.indent);
+                                _ = writeln!(comp.body, "{}add.u32 %r{u}, %r{u}, 0x7FFF;", comp.indent);
+                                _ = writeln!(comp.body, "{}add.u32 %r{u}, %r{u}, %r{t};", comp.indent);
+                                _ = writeln!(comp.body, "{}shr.b32 %r{u}, %r{u}, 16;", comp.indent);
+                                _ = writeln!(comp.body, "{}cvt.u16.u32 %r{reg}, %r{u};", comp.indent);
+                                comp.release_reg(u);
+                                comp.release_reg(t);
+                            }
+                            _ => {
+                                _ = writeln!(
+                                    comp.body,
+                                    "{}cvt.rni.{}.f32 %r{reg}, %r{f};",
+                                    comp.indent,
+                                    dtype.ptx()
+                                )
+                            }
+                        }
+                        comp.release_reg(f);
+                        comp.release_reg(z);
+                        op_id = self.next_op(op_id);
+                        continue;
+                    }
                     match (dtype, xdtype) {
                         (DType::Bool, _) => {
+                            // bf16 has no `setp`: nonzero bits are a nonzero
+                            // value (NaN included), which is what C yields.
+                            let t = if xdtype == DType::BF16 { "u16" } else { xdtype.ptx() };
                             if dtype.is_float() {
-                                _ = writeln!(comp.body, "{}setp.ne.{} %r{reg}, %r{x}, 0.0;", comp.indent, xdtype.ptx());
+                                _ = writeln!(comp.body, "{}setp.ne.{} %r{reg}, %r{x}, 0.0;", comp.indent, t);
                             } else {
-                                _ = writeln!(comp.body, "{}setp.ne.{} %r{reg}, %r{x}, 0;", comp.indent, xdtype.ptx());
+                                _ = writeln!(comp.body, "{}setp.ne.{} %r{reg}, %r{x}, 0;", comp.indent, t);
                             }
                         }
                         (_, DType::Bool) => {
@@ -851,7 +951,7 @@ impl Kernel {
                         }
                         _ if dtype == xdtype => {
                             if reg != x {
-                                _ = writeln!(comp.body, "{}mov.{} %r{reg}, %r{x};", comp.indent, dtype.ptx());
+                                _ = writeln!(comp.body, "{}mov.{} %r{reg}, %r{x};", comp.indent, dtype.reg_ptx());
                             }
                         }
                         (_, _) if xdtype.is_float() && dtype.is_float() && dtype.bit_size() > xdtype.bit_size() => {
@@ -873,14 +973,85 @@ impl Kernel {
                 }
                 Op::Bitcast { x, dtype } => {
                     // Equal bit widths (asserted upstream): a raw bit move.
+                    let xdtype = dtypes[&x].0;
                     let x = comp.get_var(x);
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
-                    _ = writeln!(comp.body, "{}mov.b{} %r{reg}, %r{x};", comp.indent, dtype.bit_size());
+                    if (dtype == DType::U8 || dtype == DType::I8) && (xdtype == DType::U8 || xdtype == DType::I8) {
+                        // `mov.b8` does not exist; widen through s32 and take
+                        // the low byte back, which preserves the two's-
+                        // complement bits.
+                        let t = comp.new_reg(DType::I32, Vec::new(), 1);
+                        let incvt = if xdtype == DType::I8 { "cvt.s32.s8" } else { "cvt.s32.u8" };
+                        let outcvt = if dtype == DType::I8 { "cvt.s8.s32" } else { "cvt.u8.s32" };
+                        _ = writeln!(comp.body, "{}{incvt} %r{t}, %r{x};", comp.indent);
+                        _ = writeln!(comp.body, "{}{outcvt} %r{reg}, %r{t};", comp.indent);
+                        comp.release_reg(t);
+                    } else {
+                        _ = writeln!(comp.body, "{}mov.b{} %r{reg}, %r{x};", comp.indent, dtype.bit_size());
+                    }
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x].0;
                     let x = comp.get_var(x);
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
+                    // sm_75 has no f16 `sqrt`/`rsqrt`/`lg2`/`rcp`/`sin`/`cos`,
+                    // and no bf16 instruction at all except `ld`/`st`/`cvt`:
+                    // those run in f32 and the result narrows back.
+                    let widen = match uop {
+                        UOp::Not | UOp::BitNot => false,
+                        _ if dtype == DType::BF16 => true,
+                        UOp::Log2 | UOp::Sqrt | UOp::Rsqrt | UOp::Reciprocal | UOp::Sin | UOp::Cos
+                            if dtype == DType::F16 =>
+                        {
+                            true
+                        }
+                        _ => false,
+                    };
+                    if widen {
+                        let f = comp.new_reg(DType::F32, Vec::new(), 1);
+                        if dtype == DType::F16 {
+                            _ = writeln!(comp.body, "{}cvt.f32.f16 %r{f}, %r{x};", comp.indent);
+                        } else {
+                            // bf16 is the top half of the f32 with the same
+                            // bits: pack it into a zero low half.
+                            let z = comp.new_reg(DType::U16, Vec::new(), 1);
+                            _ = writeln!(comp.body, "{}mov.u16 %r{z}, 0;", comp.indent);
+                            _ = writeln!(comp.body, "{}mov.b32 %r{f}, {{%r{z}, %r{x}}};", comp.indent);
+                            comp.release_reg(z);
+                        }
+                        match uop {
+                            UOp::Floor => _ = writeln!(comp.body, "{}cvt.rmi.f32.f32 %r{f}, %r{f};", comp.indent),
+                            UOp::Trunc => _ = writeln!(comp.body, "{}cvt.rzi.f32.f32 %r{f}, %r{f};", comp.indent),
+                            _ => {
+                                _ = writeln!(
+                                    comp.body,
+                                    "{}{}.f32 %r{f}, %r{f};",
+                                    comp.indent,
+                                    comp.uop_to_ptx(uop, DType::F32)?
+                                )
+                            }
+                        }
+                        if dtype == DType::F16 {
+                            _ = writeln!(comp.body, "{}cvt.rn.f16.f32 %r{reg}, %r{f};", comp.indent);
+                        } else {
+                            // `cvt.bf16.f32` needs sm_80; round the top half to
+                            // nearest-even: bits + 0x7FFF + lsb, then shift.
+                            let u = comp.new_reg(DType::U32, Vec::new(), 1);
+                            let t = comp.new_reg(DType::U32, Vec::new(), 1);
+                            _ = writeln!(comp.body, "{}mov.b32 %r{u}, %r{f};", comp.indent);
+                            _ = writeln!(comp.body, "{}shr.b32 %r{t}, %r{u}, 16;", comp.indent);
+                            _ = writeln!(comp.body, "{}and.b32 %r{t}, %r{t}, 1;", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u32 %r{u}, %r{u}, 0x7FFF;", comp.indent);
+                            _ = writeln!(comp.body, "{}add.u32 %r{u}, %r{u}, %r{t};", comp.indent);
+                            _ = writeln!(comp.body, "{}shr.b32 %r{u}, %r{u}, 16;", comp.indent);
+                            _ = writeln!(comp.body, "{}cvt.u16.u32 %r{reg}, %r{u};", comp.indent);
+                            comp.release_reg(u);
+                            comp.release_reg(t);
+                        }
+                        comp.release_reg(f);
+                        op_id = self.next_op(op_id);
+                        continue;
+                    }
                     match uop {
                         UOp::Floor => _ = writeln!(comp.body, "{}cvt.rmi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
                         UOp::Trunc => _ = writeln!(comp.body, "{}cvt.rzi.{t}.{t} %r{reg}, %r{x};", comp.indent, t = dtype.ptx()),
@@ -895,8 +1066,8 @@ impl Kernel {
                             let (t, one, zero) = match dtype {
                                 DType::F32 => ("f32", "0f3F800000", "0f00000000"),
                                 DType::F64 => ("f64", "0d3FF0000000000000", "0d0000000000000000"),
-                                DType::F16 => ("b16", "0x3C00", "0x0"),
-                                DType::BF16 => ("b16", "0x3F80", "0x0"),
+                                DType::F16 => ("u16", "0x3C00", "0x0"),
+                                DType::BF16 => ("u16", "0x3F80", "0x0"),
                                 DType::U32 | DType::I32 => ("b32", "1", "0"),
                                 _ => {
                                     return Err(BackendError {
@@ -916,6 +1087,7 @@ impl Kernel {
                             // wrong op.
                             let t = match dtype {
                                 DType::U32 | DType::I32 => "b32",
+                                DType::U16 | DType::I16 | DType::F16 | DType::BF16 => "b16",
                                 _ => {
                                     return Err(BackendError {
                                         status: ErrorStatus::KernelCompilation,
@@ -943,13 +1115,176 @@ impl Kernel {
                     // shift and a mask only when it sees the value, and a
                     // register divisor makes it call the 64-bit integer
                     // division helper instead (which spills the kernel).
+                    // f16/bf16 immediates are not accepted by `setp` below
+                    // sm_80, so those stay in the register the `Const` op owns.
                     let imm = |kernel: &Kernel, o: OpId| match kernel.ops[o].op {
-                        Op::Const(ref c) => Some(c.ptx()),
+                        Op::Const(ref c) if !matches!(c.dtype(), DType::F16 | DType::BF16) => Some(c.ptx()),
                         _ => None,
                     };
                     let xs = imm(self, x).unwrap_or_else(|| format!("%r{}", comp.get_var(x)));
                     let ys = imm(self, y).unwrap_or_else(|| format!("%r{}", comp.get_var(y)));
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
+                    // `setp` has no predicate form: compare the two predicates
+                    // as 0/1 words and write the predicate. `and`/`or` do have
+                    // one, so only the comparisons take this path.
+                    let predicate_compare = matches!(bop, BOp::Eq | BOp::NotEq | BOp::Cmplt | BOp::Cmpgt | BOp::Cmpge);
+                    if bop.returns_bool() && dtypes[&x].0 == DType::Bool && predicate_compare {
+                        // `setp` has no predicate form: compare the two
+                        // predicates as 0/1 words and write the predicate.
+                        let t1 = comp.new_reg(DType::U32, Vec::new(), 1);
+                        let t2 = comp.new_reg(DType::U32, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}selp.u32 %r{t1}, 1, 0, {xs};", comp.indent);
+                        _ = writeln!(comp.body, "{}selp.u32 %r{t2}, 1, 0, {ys};", comp.indent);
+                        _ = writeln!(comp.body, "{}{}.u32 %r{reg}, %r{t1}, %r{t2};", comp.indent, comp.bop_to_ptx(bop, dtype));
+                        comp.release_reg(t1);
+                        comp.release_reg(t2);
+                        op_id = self.next_op(op_id);
+                        continue;
+                    }
+                    let xdtype = dtypes[&x].0;
+                    let bitwise = matches!(
+                        bop,
+                        BOp::BitShiftLeft | BOp::BitShiftRight | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::And | BOp::Or
+                    );
+                    // PTX has no 8-bit `mov`, logic, arithmetic or shift
+                    // (only `ld/st/cvt` take `.u8`), and its `shl/shr` stop at
+                    // `.b32`: those run in 32 bits, truncated back afterwards.
+                    // The value itself stays a byte/half in its own register so
+                    // `ld/st.u8` remains a byte access.
+                    let shift = matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight);
+                    let byte = xdtype == DType::U8 || xdtype == DType::I8;
+                    let shift16 = shift && (xdtype == DType::U16 || xdtype == DType::I16);
+                    if byte || shift16 {
+                        let signed = xdtype == DType::I8 || xdtype == DType::I16;
+                        let wide = if signed { DType::I32 } else { DType::U32 };
+                        let (cvt_in, cvt_out) = if xdtype == DType::I8 {
+                            ("cvt.s32.s8", "cvt.s8.s32")
+                        } else if xdtype == DType::U8 {
+                            ("cvt.u32.u8", "cvt.u8.u32")
+                        } else if xdtype == DType::I16 {
+                            ("cvt.s32.s16", "cvt.s16.s32")
+                        } else {
+                            ("cvt.u32.u16", "cvt.u16.u32")
+                        };
+                        let ta = comp.new_reg(wide, Vec::new(), 1);
+                        if let Some(lit) = imm(self, x) {
+                            _ = writeln!(comp.body, "{}mov.{} %r{ta}, {lit};", comp.indent, wide.ptx());
+                        } else {
+                            _ = writeln!(comp.body, "{}{cvt_in} %r{ta}, {xs};", comp.indent);
+                        }
+                        // The shift amount has its own dtype (often a u16
+                        // constant), so it widens by what it is, not by what
+                        // the left operand is.
+                        let yt = dtypes[&y].0;
+                        let ycvt = match yt {
+                            DType::U8 => "cvt.u32.u8",
+                            DType::I8 => "cvt.s32.s8",
+                            DType::U16 => "cvt.u32.u16",
+                            DType::I16 => "cvt.s32.s16",
+                            DType::U64 => "cvt.u32.u64",
+                            DType::I64 => "cvt.s32.s64",
+                            _ => "",
+                        };
+                        let tb = comp.new_reg(wide, Vec::new(), 1);
+                        if let Some(lit) = imm(self, y) {
+                            _ = writeln!(comp.body, "{}mov.{} %r{tb}, {lit};", comp.indent, wide.ptx());
+                        } else if ycvt.is_empty() {
+                            _ = writeln!(comp.body, "{}mov.b32 %r{tb}, {ys};", comp.indent);
+                        } else {
+                            _ = writeln!(comp.body, "{}{ycvt} %r{tb}, {ys};", comp.indent);
+                        }
+                        let suffix = match bop {
+                            // A signed right shift is arithmetic.
+                            BOp::BitShiftRight if signed => "s32",
+                            _ if bitwise => "b32",
+                            _ => wide.ptx(),
+                        };
+                        if bop.returns_bool() {
+                            _ = writeln!(
+                                comp.body,
+                                "{}{}.{suffix} %r{reg}, %r{ta}, %r{tb};",
+                                comp.indent,
+                                comp.bop_to_ptx(bop, wide)
+                            );
+                        } else {
+                            let f = comp.new_reg(wide, Vec::new(), 1);
+                            _ = writeln!(
+                                comp.body,
+                                "{}{}.{suffix} %r{f}, %r{ta}, %r{tb};",
+                                comp.indent,
+                                comp.bop_to_ptx(bop, wide)
+                            );
+                            _ = writeln!(comp.body, "{}{cvt_out} %r{reg}, %r{f};", comp.indent);
+                            comp.release_reg(f);
+                        }
+                        comp.release_reg(ta);
+                        comp.release_reg(tb);
+                        op_id = self.next_op(op_id);
+                        continue;
+                    }
+                    // sm_75 has no f16 `div`/`max` and no bf16 arithmetic or
+                    // comparison at all: those run in f32 and narrow back.
+                    let widen = !bitwise
+                        && (xdtype == DType::BF16 || (xdtype == DType::F16 && matches!(bop, BOp::Div | BOp::Max)));
+                    if widen {
+                        let z = comp.new_reg(DType::U16, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}mov.u16 %r{z}, 0;", comp.indent);
+                        let fa = comp.new_reg(DType::F32, Vec::new(), 1);
+                        let fb = comp.new_reg(DType::F32, Vec::new(), 1);
+                        for (dst, s, o) in [(fa, &xs, x), (fb, &ys, y)] {
+                            if let Some(lit) = imm(self, o) {
+                                let t = comp.new_reg(DType::U16, Vec::new(), 1);
+                                _ = writeln!(comp.body, "{}mov.u16 %r{t}, {lit};", comp.indent);
+                                if xdtype == DType::F16 {
+                                    _ = writeln!(comp.body, "{}cvt.f32.f16 %r{dst}, %r{t};", comp.indent);
+                                } else {
+                                    _ = writeln!(comp.body, "{}mov.b32 %r{dst}, {{%r{z}, %r{t}}};", comp.indent);
+                                }
+                                comp.release_reg(t);
+                            } else if xdtype == DType::F16 {
+                                _ = writeln!(comp.body, "{}cvt.f32.f16 %r{dst}, {s};", comp.indent);
+                            } else {
+                                _ = writeln!(comp.body, "{}mov.b32 %r{dst}, {{%r{z}, {s}}};", comp.indent);
+                            }
+                        }
+                        comp.release_reg(z);
+                        if bop.returns_bool() {
+                            _ = writeln!(
+                                comp.body,
+                                "{}{}.f32 %r{reg}, %r{fa}, %r{fb};",
+                                comp.indent,
+                                comp.bop_to_ptx(bop, DType::F32)
+                            );
+                        } else {
+                            let f = comp.new_reg(DType::F32, Vec::new(), 1);
+                            _ = writeln!(
+                                comp.body,
+                                "{}{}.f32 %r{f}, %r{fa}, %r{fb};",
+                                comp.indent,
+                                comp.bop_to_ptx(bop, DType::F32)
+                            );
+                            if xdtype == DType::F16 {
+                                _ = writeln!(comp.body, "{}cvt.rn.f16.f32 %r{reg}, %r{f};", comp.indent);
+                            } else {
+                                let u = comp.new_reg(DType::U32, Vec::new(), 1);
+                                let t = comp.new_reg(DType::U32, Vec::new(), 1);
+                                _ = writeln!(comp.body, "{}mov.b32 %r{u}, %r{f};", comp.indent);
+                                _ = writeln!(comp.body, "{}shr.b32 %r{t}, %r{u}, 16;", comp.indent);
+                                _ = writeln!(comp.body, "{}and.b32 %r{t}, %r{t}, 1;", comp.indent);
+                                _ = writeln!(comp.body, "{}add.u32 %r{u}, %r{u}, 0x7FFF;", comp.indent);
+                                _ = writeln!(comp.body, "{}add.u32 %r{u}, %r{u}, %r{t};", comp.indent);
+                                _ = writeln!(comp.body, "{}shr.b32 %r{u}, %r{u}, 16;", comp.indent);
+                                _ = writeln!(comp.body, "{}cvt.u16.u32 %r{reg}, %r{u};", comp.indent);
+                                comp.release_reg(u);
+                                comp.release_reg(t);
+                            }
+                            comp.release_reg(f);
+                        }
+                        comp.release_reg(fa);
+                        comp.release_reg(fb);
+                        op_id = self.next_op(op_id);
+                        continue;
+                    }
                     let type_ext = match bop {
                         // Bit-size instructions: PTX has no signed or unsigned
                         // form for them, and `.s64`/`.u64` are rejected by
@@ -958,6 +1293,7 @@ impl Kernel {
                             match dtypes[&x].0 {
                                 DType::Bool => "pred",
                                 dtype => match dtype.bit_size() {
+                                    16 => "b16",
                                     32 => "b32",
                                     64 => "b64",
                                     n => {
@@ -984,9 +1320,28 @@ impl Kernel {
                     let t = comp.get_var(if_true);
                     let f = comp.get_var(if_false);
                     let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
-                    let mt = dtype.reg_ptx();
-                    _ = writeln!(comp.body, "{}@%r{cond} mov.{mt} %r{reg}, %r{t};", comp.indent);
-                    _ = writeln!(comp.body, "{}@!%r{cond} mov.{mt} %r{reg}, %r{f};", comp.indent);
+                    if dtype == DType::U8 || dtype == DType::I8 {
+                        // No `mov.u8`: pick in 32 bits and truncate back.
+                        let (wide, incvt, outcvt) = if dtype == DType::I8 {
+                            (DType::I32, "cvt.s32.s8", "cvt.s8.s32")
+                        } else {
+                            (DType::U32, "cvt.u32.u8", "cvt.u8.u32")
+                        };
+                        let wt = comp.new_reg(wide, Vec::new(), 1);
+                        let wf = comp.new_reg(wide, Vec::new(), 1);
+                        let w = comp.new_reg(wide, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}{incvt} %r{wt}, %r{t};", comp.indent);
+                        _ = writeln!(comp.body, "{}{incvt} %r{wf}, %r{f};", comp.indent);
+                        _ = writeln!(comp.body, "{}selp.{} %r{w}, %r{wt}, %r{wf}, %r{cond};", comp.indent, wide.ptx());
+                        _ = writeln!(comp.body, "{}{outcvt} %r{reg}, %r{w};", comp.indent);
+                        comp.release_reg(wt);
+                        comp.release_reg(wf);
+                        comp.release_reg(w);
+                    } else {
+                        let mt = dtype.reg_ptx();
+                        _ = writeln!(comp.body, "{}@%r{cond} mov.{mt} %r{reg}, %r{t};", comp.indent);
+                        _ = writeln!(comp.body, "{}@!%r{cond} mov.{mt} %r{reg}, %r{f};", comp.indent);
+                    }
                 }
                 Op::Loop { len } => {
                     comp.loop_level += 1;

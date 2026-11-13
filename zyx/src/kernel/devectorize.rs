@@ -485,15 +485,27 @@ impl Kernel {
                     // instruction instead (one output tile per lane), so that
                     // case falls through and duplicates, each clone carrying
                     // its own fragment.
+                    //
+                    // The C operand is a fragment in every case: either its
+                    // lanes *are* its slots (then they pack into one operand),
+                    // or it already holds a whole fragment (a chained
+                    // instruction's result, or the fragment after its tile axis
+                    // was unrolled). Only a C that spans several instructions —
+                    // one output tile per lane — means the lane selects
+                    // instructions and the instruction duplicates.
                     if let Op::Wmma { dims, layout, dtype, c, a, b } = *op {
                         let conditional = |p: OpId| p == unroll_id || remaps.contains_key(&p);
                         let len_dim: Dim = i64::try_from(len).expect("devectorize: unroll length exceeds Dim");
                         let one_fragment = |k: &Self, p: OpId| {
                             k.wmma_operand_slots(walk_id, p).is_some_and(|slots| len_dim * k.elements(p) == slots)
                         };
-                        let slots_packed =
-                            (!conditional(a) || one_fragment(self, a)) && (!conditional(b) || one_fragment(self, b));
-                        if !conditional(c) && slots_packed && (conditional(a) || conditional(b)) {
+                        let c_slots = self.wmma_operand_slots(walk_id, c);
+                        let c_pack = conditional(c) && c_slots.is_some_and(|s| len_dim * self.elements(c) == s);
+                        let c_whole = c_slots.is_some_and(|s| self.elements(c) == s);
+                        let slots_packed = (!conditional(a) || one_fragment(self, a))
+                            && (!conditional(b) || one_fragment(self, b))
+                            && (!conditional(c) || c_pack || c_whole);
+                        if slots_packed && (c_pack || conditional(a) || conditional(b) || (conditional(c) && c_whole)) {
                             let pack = |k: &mut Self, operand: OpId| {
                                 let mut ops = Vec::with_capacity(len as usize);
                                 ops.push(operand);
@@ -505,6 +517,7 @@ impl Kernel {
                             };
                             let a = if conditional(a) { pack(self, a) } else { a };
                             let b = if conditional(b) { pack(self, b) } else { b };
+                            let c = if c_pack { pack(self, c) } else { c };
                             self.ops[walk_id].op = Op::Wmma { dims, layout, dtype, c, a, b };
                             walk_id = next;
                             continue;

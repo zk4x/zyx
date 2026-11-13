@@ -116,15 +116,23 @@ the `BEAM=0` default: at `BEAM=0` the same script reports 3.7942 ms prefill
 | `gate_proj` | [128x3072]x[3072x8192] | llama.cpp | 0.3185 | 20.23 | 167 |
 | `gate_proj` | [128x3072]x[3072x8192] | torch | 0.2927 | 22.01 | 182 |
 | `gate_proj` | [128x3072]x[3072x8192] | tinygrad | 0.5385 | 11.96 | 99 |
-| `gate_proj` | [128x3072]x[3072x8192] | zyx | 0.6439 | 10.01 | 83 |
+| `gate_proj` | [128x3072]x[3072x8192] | zyx | 0.2990 | 21.55 | 178 |
 | `up_proj` | [128x3072]x[3072x8192] | llama.cpp | 0.3163 | 20.37 | 168 |
 | `up_proj` | [128x3072]x[3072x8192] | torch | 0.2936 | 21.94 | 181 |
 | `up_proj` | [128x3072]x[3072x8192] | tinygrad | 0.5365 | 12.01 | 99 |
-| `up_proj` | [128x3072]x[3072x8192] | zyx | 0.6439 | 10.01 | 83 |
+| `up_proj` | [128x3072]x[3072x8192] | zyx | 0.2990 | 21.55 | 178 |
 | `down_proj` | [128x8192]x[8192x3072] | llama.cpp | 0.2407 | 26.77 | 221 |
 | `down_proj` | [128x8192]x[8192x3072] | torch | 0.3083 | 20.90 | 173 |
 | `down_proj` | [128x8192]x[8192x3072] | tinygrad | 0.5749 | 11.21 | 93 |
 | `down_proj` | [128x8192]x[8192x3072] | zyx | 0.6243 | 10.32 | 85 |
+
+The `gate_proj`/`up_proj` zyx rows are the tensorized 128x128 staged wmma
+kernel (`zyx/tests/25_llama_matmul.rs`, `ZYX_PTX=1`) rather than the earlier
+20-launch bench above: 0.2990 ms at boost clocks (SM 1845-1875 MHz), the same
+clock state as torch's warm 0.2927 ms / 22.01 TFLOP/s row. Repeat hot runs of
+the same kernel measured 20.46-21.55 TFLOP/s; a single launch on an idle
+device (SM 1470 MHz) is 0.356 ms / 18.08 TFLOP/s, which is the cold number and
+not the one compared here.
 
 ### Decode, per projection
 

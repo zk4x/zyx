@@ -2591,6 +2591,11 @@ impl Kernel {
                 Op::Load { .. } => None,
                 // The unroll value op is the lane id vector — runtime data.
                 Op::Unroll { .. } => None,
+                // A reduction is computed at launch, not folded into a length.
+                Op::Reduce { .. } => None,
+                // A PTX instruction (an `ldmatrix`, a lowered shared access) is
+                // runtime data: only its operands can be lengths.
+                Op::PTX(_) => None,
                 ref op => todo!("{op:?}"),
             };
             values.insert(id, v);
