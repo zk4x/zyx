@@ -333,8 +333,8 @@ impl Optimization for Tensorize {
                 let (bsl, bv) = coop_fill_load(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, threads);
                 coop_fill_store(k, OpId::NULL, b_tile, OpId::NULL, bsl, bv);
                 k.push_back(Op::Barrier);
-                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, fm, 0, Dim::from(0), OpId::NULL, OpId::NULL);
-                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, fn_, 0, Dim::from(0), OpId::NULL, OpId::NULL);
+                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, fm, 0, fk / 8, OpId::NULL, OpId::NULL);
+                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, fn_, 0, fk / 8, OpId::NULL, OpId::NULL);
                 (a, b)
             } else {
                 let mut a_elems = Vec::with_capacity(v.a.slots.len());
@@ -784,6 +784,13 @@ fn coop_ldmatrix(
     } else {
         put(kernel, Op::Binary { x: addr, y: slot_base, bop: BOp::Add })
     };
+    // A K offset in halves is `k_offset / 8` k-blocks, each one 64-half block
+    // per eight tile rows: the k-block-major pack strides them by
+    // `tile_rows / 8 * 64`. It is folded in before the swizzle: the row an
+    // element lives in is chosen by the k-block of *this* unit, so the key has
+    // to see the sub-tile's offset, not just the tile's base.
+    let off = put(kernel, Op::Const(Constant::idx(k_offset * (tile_rows / 8 * 8))));
+    let addr = put(kernel, Op::Binary { x: addr, y: off, bop: BOp::Add });
     // Row swizzle, the read half. The fill XORs the row field with the k-block
     // it wrote, so the read must address the row the element actually lives in:
     // XOR the same field (8 halves per row, bits 3..5 of the element index) with
@@ -806,11 +813,6 @@ fn coop_ldmatrix(
     let key = put(kernel, Op::Binary { x: key, y: kmask, bop: BOp::BitAnd });
     let swz = put(kernel, Op::Binary { x: key, y: eight, bop: BOp::Mul });
     let addr = put(kernel, Op::Binary { x: addr, y: swz, bop: BOp::BitXor });
-    // A K offset in halves is `k_offset / 8` k-blocks, each one 64-half block
-    // per eight tile rows: the k-block-major pack strides them by
-    // `tile_rows / 8 * 64`.
-    let off = put(kernel, Op::Const(Constant::idx(k_offset * (tile_rows / 8 * 8))));
-    let addr = put(kernel, Op::Binary { x: addr, y: off, bop: BOp::Add });
     put(kernel, Op::PTX(Box::new(PTXOp::VLdMatrix { frags, src: tile, addr, trans: false })))
 }
 
@@ -1128,13 +1130,13 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let mut tk = 0;
                 while tk < kt {
                     if tk + 1 < kt {
-                        let value = coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk * 2, fm, tk as Dim * fk, Dim::from(0), sb, OpId::NULL);
+                        let value = coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk * 2, fm, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
                         a_frags[tm][tk] = slice(kernel, t.update, value, false, a_slots);
                         a_frags[tm][tk + 1] = slice(kernel, t.update, value, true, a_slots);
                         tk += 2;
                     } else {
                         a_frags[tm][tk] =
-                            coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk, fm, tk as Dim * fk, Dim::from(0), sb, OpId::NULL);
+                            coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk, fm, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
                         tk += 1;
                     }
                 }
@@ -1166,7 +1168,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 while tk < kt {
                     if tk + 1 < kt {
                         let value =
-                            coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk * 2, fn_, tk as Dim * fk, Dim::from(0), sb, OpId::NULL);
+                            coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk * 2, fn_, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
                         for (step, frag) in [
                             (tk, slice(kernel, t.update, value, false, b_slots)),
                             (tk + 1, slice(kernel, t.update, value, true, b_slots)),
@@ -1187,7 +1189,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                         }
                         tk += 2;
                     } else {
-                        let frag = coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk, fn_, tk as Dim * fk, Dim::from(0), sb, OpId::NULL);
+                        let frag = coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk, fn_, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
                         for tm in 0..mt {
                             acc[tm] = kernel.insert_before(
                                 t.update,
@@ -3419,76 +3421,6 @@ mod tests {
             println!("--- after staging ---");
             k.debug();
         }
-    }
-
-    /// The fragment-slot pattern, matched against a tensorized kernel's A
-    /// slots. Bindings: `l` lane range, `mb` tile row base (`m*16`), `kb`
-    /// k base (`k*8`), `K` the row stride, `s` the slot offset.
-    #[test]
-    #[ignore = "the epilogue-simplified slot index is context-dependent; the structural FragMap matcher replaces this"]
-    fn mma_fragment_slot_pattern_matches() {
-        use crate::kernel::pat::Pat;
-
-        const M: i64 = 16;
-        const N: i64 = 8;
-        const K: i64 = 64;
-
-        let mut k = Kernel::new(Dev::Auto);
-        k.dev_info = Some(Arc::new(cuda()));
-        let a = k.param(DType::F16);
-        let b = k.param(DType::F16);
-        let c = k.param_mut(DType::F32);
-        let m = k.group_range(0, M);
-        let n = k.group_range(1, N);
-        let acc = k.storage(DType::F32, MemScope::Register, 1);
-        let zero = k.const_val(0.0f32);
-        k.store(acc, zero, 0i64);
-        k.loop_over(K, |k, lv| {
-            let a_idx = k.mad(m, K, lv);
-            let a_load = k.load(a, a_idx);
-            let b_idx = k.mad(n, K, lv);
-            let b_load = k.load(b, b_idx);
-            let prod = k.mul(a_load, b_load);
-            let prod = k.cast(prod, DType::F32);
-            let prev = k.load(acc, 0i64);
-            let sum = k.add(prod, prev);
-            k.store(acc, sum, 0i64);
-        });
-        let res = k.load(acc, 0i64);
-        let c_idx = k.mad(m, N, n);
-        k.store(c, res, c_idx);
-        k.linearize();
-        k.opt_tensorize().apply(&mut k, 0);
-        k.default_epilogue();
-        k.verify();
-        println!("--- after epilogue ---");
-        k.debug();
-
-        // `index = (mb + lane/4 % 8) * K + (kb + lane%4 * 2 + s)`
-        let l = Pat::bind('l');
-        let row = (l.clone() / 4) % 8;
-        let col = (l.clone() % 4) * 2;
-        let idx = (Pat::bind('m') + row) * Pat::bind_const('K') + (Pat::bind('k') + col + Pat::bind_const('s'));
-        let slot = Pat::load(Pat::bind('a'), idx);
-
-        let wmma = k
-            .iter_unordered()
-            .find_map(|(id, op)| matches!(op, Op::Wmma { .. }).then_some(id))
-            .expect("tensorize emitted a wmma");
-        let Op::Wmma { a: a_frag, .. } = *k.at(wmma) else {
-            unreachable!()
-        };
-        let Op::Stack { ref ops } = *k.at(a_frag) else {
-            panic!("A operand is not a stack")
-        };
-        let mut matched = 0;
-        for &slot_op in ops.iter() {
-            if let Some(b) = k.match_pat(slot_op, &slot) {
-                matched += 1;
-                println!("slot {slot_op}: s={} K={}", b.int('s'), b.int('K'));
-            }
-        }
-        assert_eq!(matched, ops.len(), "every A slot must match the fragment pattern");
     }
 
     /// Staging on a tensorized kernel: the MMA staging pass must stage both

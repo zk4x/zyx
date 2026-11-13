@@ -596,42 +596,58 @@ impl Kernel {
         self.shape(op).iter().product()
     }
 
-    /// The lane appears as an additive term with coefficient one in `idx`:
-    /// the innermost contiguous element of the access.
+    /// The lane's coefficient in the *whole* index is one: the innermost
+    /// contiguous element of the access.
+    ///
+    /// The coefficient, not the presence of the lane in some subterm, is what
+    /// decides contiguity. `(2 * block + lane) * 76 + col` contains
+    /// `Add(2 * block, lane)`, but the lane strides by 76 there: an eight-wide
+    /// access would walk 76 elements per lane and read past the row.
     fn unit_lane_term(&self, idx: OpId, id: OpId) -> bool {
-        if idx == id {
-            // The lane is the whole index (base zero folded away).
-            return true;
-        }
-        let mut stack = vec![idx];
+        // `(node, weight)`: the constant factor on the path from `idx` to
+        // `node`. Sums add the weights, differences subtract, and a product by
+        // a constant scales; anything else that carries the lane has no
+        // constant coefficient and refuses the vector.
+        let mut coeff: Dim = 0;
+        let mut stack = vec![(idx, 1i64)];
         let mut seen = Set::default();
-        while let Some(x) = stack.pop() {
-            if !seen.insert(x) {
+        while let Some((x, w)) = stack.pop() {
+            if x == id {
+                coeff += w;
                 continue;
+            }
+            if !self.depends_on(x, id, &mut Set::default()) {
+                continue;
+            }
+            // A lane-dependent node reached twice has no single coefficient
+            // unless the paths are summed, and this walk does not track that.
+            if !seen.insert(x) {
+                return false;
             }
             match *self.at(x) {
                 Op::Binary { x: a, y: b, bop: BOp::Add } => {
-                    if b == id && !self.depends_on(a, id, &mut Set::default()) {
-                        return true;
-                    }
-                    if a == id && !self.depends_on(b, id, &mut Set::default()) {
-                        return true;
-                    }
-                    stack.push(a);
-                    stack.push(b);
+                    stack.push((a, w));
+                    stack.push((b, w));
+                }
+                Op::Binary { x: a, y: b, bop: BOp::Sub } => {
+                    stack.push((a, w));
+                    stack.push((b, -w));
                 }
                 Op::Binary { x: a, y: b, bop: BOp::Mul } => {
-                    let one = |k: &Kernel, v: OpId| k.resolve_const(v).and_then(Constant::as_dim) == Some(1);
-                    if (a == id && one(self, b)) || (b == id && one(self, a)) {
-                        return true;
+                    let const_of = |v: OpId| self.resolve_const(v).and_then(Constant::as_dim);
+                    match (const_of(a), const_of(b)) {
+                        (Some(c), _) => stack.push((b, w * c)),
+                        (None, Some(c)) => stack.push((a, w * c)),
+                        // A runtime factor makes the stride unknown.
+                        (None, None) => return false,
                     }
-                    stack.push(a);
-                    stack.push(b);
                 }
-                _ => {}
+                // A division, a mask or any other op that carries the lane:
+                // the coefficient is not a constant.
+                _ => return false,
             }
         }
-        false
+        coeff == 1
     }
 
     /// `id` names a load, store or `ldmatrix` (with an address operand).

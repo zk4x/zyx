@@ -775,7 +775,11 @@ impl Kernel {
                     // reads of the same tile and address are not the same
                     // value once a fill has run between them, so it never
                     // pools. (Remapping its operands still happens below.)
-                    let is_ldmatrix = matches!(op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::VLdMatrix { .. }));
+                    // The lowered form is the same read, so it is covered too.
+                    let is_ldmatrix = matches!(
+                        op,
+                        Op::PTX(p) if matches!(p.as_ref(), PTXOp::VLdMatrix { .. } | PTXOp::LdMatrix { .. })
+                    );
 
                     // For Load ops: remap the base before the
                     // stored-location check (bases dedup and a stale base
