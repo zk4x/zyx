@@ -105,10 +105,12 @@ impl Kernel {
                 if !self.is_sym_multiple(len_id, factor_dim) {
                     return OpId::NULL;
                 }
-                let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
-                    return OpId::NULL;
-                };
-                let group_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                // The quotient stays symbolic when the length is: dividing a
+                // provably divisible expression by a constant is exact, and
+                // constant folding collapses the `Div` when the length is a
+                // constant after all.
+                let f_const = self.insert_const_idx_before(axis_id, factor_dim);
+                let group_len = self.insert_before(axis_id, Op::Binary { x: len_id, y: f_const, bop: BOp::Div });
                 // Index composition for exactly two parts: group * factor + local.
                 let zero = self.insert_before(axis_id, Op::Const(Constant::idx(0)));
                 let scale = self.insert_before(axis_id, Op::Const(Constant::idx(factor_dim)));
@@ -130,13 +132,11 @@ impl Kernel {
                 if !self.is_sym_multiple(len_id, factor_dim) {
                     return OpId::NULL;
                 }
-                let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
-                    return OpId::NULL;
-                };
                 // Same composition as the Local arm, but the secondary
                 // part stays a group range: splitting a group into two
                 // nested groups (outer and inner), no lanes involved.
-                let group_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                let f_const = self.insert_const_idx_before(axis_id, factor_dim);
+                let group_len = self.insert_before(axis_id, Op::Binary { x: len_id, y: f_const, bop: BOp::Div });
                 let zero = self.insert_before(axis_id, Op::Const(Constant::idx(0)));
                 let scale = self.insert_before(axis_id, Op::Const(Constant::idx(factor_dim)));
                 let group_id = self.insert_before(axis_id, Op::Range { axis, kind: RangeKind::Group(group_len) });
@@ -166,7 +166,6 @@ impl Kernel {
                         // (dst is an SSA value) and shared-memory effects a
                         // lane axis cannot slot refuse the split silently,
                         // mirroring `coarsen`'s refusal contract.
-                        let len = self.resolve_const(len_id).and_then(Constant::as_dim).unwrap();
                         let factor = Dim::from(factor);
 
                         let mut varies: Set<OpId> = Set::default();
@@ -239,37 +238,49 @@ impl Kernel {
                         // lanes]; the composed index rides the inline affine
                         // composition and its
                         // consumers become lane-dependent through the shape
-                        // algebra.
-                        let group_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                        // algebra. The quotient is the symbolic `Div` when the
+                        // length is symbolic.
+                        let f_const = self.insert_const_idx_before(axis_id, factor_dim);
+                        let group_len = self.insert_before(axis_id, Op::Binary { x: len_id, y: f_const, bop: BOp::Div });
                         let mut splits = vec![
                             Op::Range { axis: group_axis, kind: RangeKind::Group(group_len) },
                             Op::Unroll { axis, len: lanes },
                         ];
-                        let mut strides = Vec::new();
-                        let mut st = 1;
+                        // Each part's stride is the product of the lengths
+                        // inside it. A symbolic length has no value to
+                        // multiply, so its stride is unknown; the composition
+                        // needs a stride only for the parts it keeps, which are
+                        // the constant ones (the unroll lanes). Check before
+                        // mutating so a refused split leaves the kernel
+                        // untouched.
+                        let mut strides: Vec<Option<Dim>> = Vec::new();
+                        let mut st: Option<Dim> = Some(1);
                         for op in splits.iter().rev() {
                             strides.push(st);
-                            match op {
-                                Op::Loop { len, .. } => {
-                                    st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap()
+                            let len = match op {
+                                Op::Loop { len, .. } => self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim),
+                                Op::Range { kind: RangeKind::Group(len), .. } => {
+                                    self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim)
                                 }
-                                Op::Range { kind, .. } => match kind {
-                                    RangeKind::Group(len) => {
-                                        st *= self.resolve_const(*len).and_then(crate::dtype::Constant::as_dim).unwrap()
-                                    }
-                                    RangeKind::Local(len) => st *= i64::from(*len),
-                                },
-                                Op::Unroll { len, .. } => st *= Dim::from(*len),
+                                Op::Range { kind: RangeKind::Local(len), .. } => Some(i64::from(*len)),
+                                Op::Unroll { len, .. } => Some(Dim::from(*len)),
                                 _ => unreachable!("split can be only index or loop"),
-                            }
+                            };
+                            st = st.zip(len).map(|(s, l)| s * l);
                         }
                         strides.reverse();
                         strides.pop();
                         let last_op = splits.pop().unwrap();
+                        if strides.iter().any(Option::is_none) {
+                            return OpId::NULL;
+                        }
 
                         let mut split_ids: Vec<OpId> = Vec::new();
                         let mut acc = self.insert_before(axis_id, Op::Const(Constant::idx(0)));
                         for (&st, op) in strides.iter().zip(splits) {
+                            let Some(st) = st else {
+                                return OpId::NULL;
+                            };
                             let x = self.insert_before(axis_id, Op::Const(Constant::idx(st)));
                             let y = self.insert_before(axis_id, op);
                             let xy = self.insert_before(axis_id, Op::Binary { x, y, bop: BOp::Mul });
@@ -406,9 +417,6 @@ impl Kernel {
                         if factor_dim < 2 || !self.is_sym_multiple(len_id, factor_dim) {
                             return OpId::NULL;
                         }
-                        let Some(len) = self.resolve_const(len_id).and_then(Constant::as_dim) else {
-                            return OpId::NULL;
-                        };
 
                         // Unrolling vectorizes the whole body — including
                         // scalar conditionals over this axis. A bool-len
@@ -632,13 +640,24 @@ impl Kernel {
                         let lane_axis = u32::try_from(next_lane_axis).expect("unroll lane axis overflows u32");
 
                         // Lane composition: bare lanes when the factor
-                        // covers the loop, else outer * factor + lane.
-                        let unroll_id = if len == factor_dim {
+                        // covers the loop, else outer * factor + lane. A
+                        // symbolic length is never assumed to equal the
+                        // factor, so it takes the strip-mined form.
+                        let len = self.resolve_const(len_id).and_then(Constant::as_dim);
+                        let unroll_id = if len == Some(factor_dim) {
                             self.ops[axis_id].op = Op::Unroll { axis: lane_axis, len: factor };
                             self.remove_op(endloop_id);
                             axis_id
                         } else {
-                            let new_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                            let new_len = match self.resolve_const(len_id).and_then(Constant::as_dim) {
+                                // A known length keeps its folded quotient; a
+                                // symbolic one carries the exact `Div`.
+                                Some(l) => self.insert_const_idx_before(axis_id, l / factor_dim),
+                                None => {
+                                    let f_const = self.insert_const_idx_before(axis_id, factor_dim);
+                                    self.insert_before(axis_id, Op::Binary { x: len_id, y: f_const, bop: BOp::Div })
+                                }
+                            };
                             let outer_id = self.insert_before(axis_id, Op::Loop { len: new_len });
                             let stride = self.insert_before(axis_id, Op::Const(Constant::idx(factor_dim)));
                             let scaled = self.insert_before(axis_id, Op::Binary { x: outer_id, y: stride, bop: BOp::Mul });
@@ -673,10 +692,8 @@ impl Kernel {
                 if !self.is_sym_multiple(outer_len_id, factor_dim) {
                     return OpId::NULL;
                 }
-                let Some(len) = self.resolve_const(outer_len_id).and_then(Constant::as_dim) else {
-                    return OpId::NULL;
-                };
-                let outer_len = self.insert_const_idx_before(axis_id, len / factor_dim);
+                let f_const = self.insert_const_idx_before(axis_id, factor_dim);
+                let outer_len = self.insert_before(axis_id, Op::Binary { x: outer_len_id, y: f_const, bop: BOp::Div });
                 let outer = if is_loop {
                     Op::Loop { len: outer_len }
                 } else {
@@ -777,17 +794,21 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Range { axis, kind: RangeKind::Group(len) } => {
-                    let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
-                        op_id = self.next_op(op_id);
-                        continue;
-                    };
+                    // Divisibility is decided symbolically: a range whose
+                    // length is a symbolic expression (a `Param` times a
+                    // constant, an index sum) is split when it is provably a
+                    // multiple of the factor, never because it happened to
+                    // resolve. Bounds that need the actual value (the
+                    // remaining trip count) hold only for a resolved length;
+                    // an unresolved one is not assumed small.
+                    let len_value = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim);
                     // Global -> local: hardware-aligned factors, bounded by the
                     // free local thread budget and the per-axis local limit.
                     if !bool_loop && !shared && !local_axis_sizes.contains_key(&axis) {
                         let max_per_axis = dev_info.max_local_work_dims[axis as usize];
                         let mut l_factors: Vec<u32> = if tt { vec![32] } else { vec![64, 32, 16, 8, 4, 2] };
                         l_factors.retain(|&f| {
-                            len % Dim::from(f) == 0
+                            self.is_sym_multiple(len, Dim::from(f))
                                 && f <= remaining_threads
                                 && f <= max_per_axis
                                 && u64::from(f) * op_len <= 10_000
@@ -802,8 +823,9 @@ impl Kernel {
                     // lane axis and barriers pin ordering around them.
                     if !tile_access && !barrier {
                         for &f in group_unroll {
-                            if len % Dim::try_from(f).expect("lane factor overflows i64") == 0
-                                && len / Dim::try_from(f).expect("lane factor overflows i64") > 0
+                            let f_dim = Dim::try_from(f).expect("lane factor overflows i64");
+                            if self.is_sym_multiple(len, f_dim)
+                                && len_value.is_none_or(|l| l / f_dim > 0)
                                 && f * op_len <= 10_000
                             {
                                 configs.push((op_id, SplitMode::Unroll, f as u16));
@@ -816,16 +838,13 @@ impl Kernel {
                         op_id = self.next_op(op_id);
                         continue;
                     }
-                    let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) else {
-                        op_id = self.next_op(op_id);
-                        continue;
-                    };
-                    if len < 2 {
+                    let len_value = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim);
+                    if len_value.is_some_and(|l| l < 2) {
                         op_id = self.next_op(op_id);
                         continue;
                     }
                     for &f in loop_factors {
-                        if len % f as Dim != 0 {
+                        if !self.is_sym_multiple(len, Dim::try_from(f).expect("loop factor overflows i64")) {
                             continue;
                         }
                         if f * op_len <= 10_000 {
@@ -834,9 +853,9 @@ impl Kernel {
                     }
                     // Plain nested loops (the deleted `SplitLoop`): large
                     // loops strip-mine without lanes or reduces.
-                    if len >= 16 {
+                    if len_value.is_none_or(|l| l >= 16) {
                         for &f in loop_factors {
-                            if len % f as Dim == 0 {
+                            if self.is_sym_multiple(len, Dim::try_from(f).expect("loop factor overflows i64")) {
                                 configs.push((op_id, SplitMode::Loop, f as u16));
                             }
                         }

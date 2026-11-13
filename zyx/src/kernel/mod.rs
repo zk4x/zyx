@@ -2601,12 +2601,13 @@ impl Kernel {
     /// True iff the dim expression at `id` is provably a multiple of
     /// `divisor`, without resolving it to a constant.
     ///
-    /// Divisibility over the const-expr ops: `Const(c)` checks the value;
-    /// `Cast` preserves integer values; `Mul` holds when either side is a
-    /// multiple; `Add`/`Sub` hold when both sides are. Everything else
-    /// (params, loads, divisions, bitcasts, unknown ops) is unprovable
-    /// and returns false — the caller pads as usual. Iterative, never
-    /// panics.
+    /// Every node carries the largest factor it is known to be a multiple of
+    /// (`known`), bottom-up: `Const(c)` contributes `|c|`; `Cast` preserves it;
+    /// `Mul` multiplies the two sides'; `Add`/`Sub` keep the gcd (a sum of two
+    /// multiples of `k` is a multiple of `k`); `Div` by a constant `c` divides
+    /// it, which is what keeps a symbolic length's quotient usable after a
+    /// split. Everything else (params, loads, bitcasts, unknown ops) is
+    /// unprovable and contributes 1. Iterative, never panics.
     pub(crate) fn is_sym_multiple(&self, id: OpId, divisor: Dim) -> bool {
         debug_assert!(divisor > 0, "is_sym_multiple: divisor {divisor} <= 0");
         if divisor <= 0 {
@@ -2644,21 +2645,40 @@ impl Kernel {
         if !stack.is_empty() {
             panic!("is_sym_multiple did not finish in 250000 steps");
         }
-        let mut multiple: Map<OpId, bool> = Map::default();
+        let mut known: Map<OpId, Dim> = Map::default();
         for &nid in &order {
-            let m = match self.at(nid) {
-                Op::Const(c) => c.as_dim().map(|v| v % divisor == 0).unwrap_or(false),
-                Op::Cast { x, .. } => multiple.get(x).copied().unwrap_or(false),
-                Op::Binary { x, y, bop } => match bop {
-                    BOp::Mul => multiple.get(x).copied().unwrap_or(false) || multiple.get(y).copied().unwrap_or(false),
-                    BOp::Add | BOp::Sub => multiple.get(x).copied().unwrap_or(false) && multiple.get(y).copied().unwrap_or(false),
-                    _ => false,
-                },
-                _ => false,
+            let k = match self.at(nid) {
+                Op::Const(c) => c.as_dim().map(|v| v.abs()).unwrap_or(1),
+                Op::Cast { x, .. } => known.get(x).copied().unwrap_or(1),
+                Op::Binary { x, y, bop } => {
+                    let kx = known.get(x).copied().unwrap_or(1);
+                    let ky = known.get(y).copied().unwrap_or(1);
+                    match bop {
+                        BOp::Mul => kx.saturating_mul(ky),
+                        BOp::Add | BOp::Sub => {
+                            let (mut a, mut b) = (kx, ky);
+                            while b != 0 {
+                                let r = a % b;
+                                a = b;
+                                b = r;
+                            }
+                            a
+                        }
+                        // `x / c` is a multiple of `k / c` when the constant
+                        // `c` divides the factor `x` is a multiple of, which
+                        // is exactly the split's own quotient.
+                        BOp::Div => match self.resolve_const(*y).and_then(crate::dtype::Constant::as_dim) {
+                            Some(c) if c > 0 && kx % c == 0 => kx / c,
+                            _ => 1,
+                        },
+                        _ => 1,
+                    }
+                }
+                _ => 1,
             };
-            multiple.insert(nid, m);
+            known.insert(nid, k.max(1));
         }
-        multiple.get(&id).copied().unwrap_or(false)
+        known.get(&id).copied().unwrap_or(1) % divisor == 0
     }
 
     /// Remap slab indices from x to y

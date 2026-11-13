@@ -16,12 +16,12 @@
 //! (a lane range must have a load that ignores it). Nothing is probed on a
 //! copy: a probe would collapse the space the search exists to explore.
 //!
-//! - the lane recipe: split a group range into local lanes, then stage;
 //! - register tiling (the coarsen era's `opt_register_blocking`): unroll the
 //!   reduce loop into accumulators, then each output range into a
 //!   per-thread tile;
-//! - tile and stage: lanes on one output range, a per-thread tile on both,
-//!   then stage the operand the lanes share.
+//! - tile and stage: lanes on one output range, a per-thread tile on both
+//!   (or 1, i.e. no tile: lanes and staging on their own), then stage the
+//!   operand the lanes share.
 //!
 //! Recipes only fire from a plain kernel: lanes, barriers, reduces, local
 //! memory or a fused matmul mean another pass already ran and the sequence's
@@ -29,9 +29,6 @@
 
 use super::{Kernel, MemScope, Op, OpId, ParamKind, RangeKind, autotune::Optimization, split::SplitMode};
 use crate::shape::Dim;
-
-/// Local factors a lane recipe tries, largest first.
-const LANE_FACTORS: &[u16] = &[32, 16, 8, 4];
 
 impl Kernel {
     /// A recipe's sequence is known-good only from a plain kernel: lanes,
@@ -74,292 +71,6 @@ impl Kernel {
             }
             _ => false,
         })
-    }
-}
-
-/// One recipe: split a group range into local lanes, then stage the loads the
-/// lanes expose. `configs` holds the `(group range, lane factor)` pairs.
-#[derive(Debug)]
-pub struct Recipe {
-    configs: Vec<(OpId, u16)>,
-}
-
-impl Optimization for Recipe {
-    fn nconfigs(&self) -> u64 {
-        self.configs.len() as u64
-    }
-
-    fn apply(&self, kernel: &mut Kernel, config: u64) {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("lane recipe apply");
-        let Some(&(range, factor)) = self.configs.get(config as usize) else {
-            return;
-        };
-        if kernel.split(range, SplitMode::Local, factor).is_null() {
-            return;
-        }
-        // Planned on the post-split state: the recipe owns both steps, so the
-        // split's fresh ids never leave this call. The strip factor is the
-        // staging optimization's own config space, not a recipe constant.
-        let staging = kernel.opt_local_staging();
-        if staging.nconfigs() > 0 {
-            staging.apply(kernel, 0);
-        }
-        kernel.verify();
-    }
-}
-
-use super::mma::WARP_LAYOUTS;
-
-/// The tensor-core matmul recipe: split the two output ranges and the K loop
-/// into lanes (the tile grid), then tensorize.
-///
-/// A recipe is a fixed order of ordinary optimizations, so its config space is
-/// the product of theirs: one tile grid per config, one staging form per
-/// config (`opt_tensorize` without staging, `opt_tensorize_staged` with it),
-/// one warp layout per config.
-#[derive(Debug)]
-pub struct TensorRecipe {
-    /// `(m range, n range, k loop, m lanes, n lanes, k lanes)` per config.
-    configs: Vec<(OpId, OpId, OpId, u16, u16, u16)>,
-}
-
-impl Optimization for TensorRecipe {
-    fn nconfigs(&self) -> u64 {
-        // One config per tile grid, staging form and warp layout.
-        2 * WARP_LAYOUTS.len() as u64 * self.configs.len() as u64
-    }
-
-    fn apply(&self, kernel: &mut Kernel, config: u64) {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("tensor_recipe apply");
-        let layouts = WARP_LAYOUTS.len() as u64;
-        let layout = WARP_LAYOUTS[(config % layouts) as usize];
-        let staged = (config / layouts) % 2 == 1;
-        // A register (unstage) block sums a K split through `mt * nt * slots`
-        // registers per warp, which is an IR and register blowout: only the
-        // staged form offers a split-K config.
-        if !staged && layout.2 > 1 {
-            return;
-        }
-        let Some(&(m, n, k, m_lanes, n_lanes, k_lanes)) = self.configs.get((config / layouts / 2) as usize) else {
-            return;
-        };
-        // Build the tiled kernel on a copy: a config whose tile no
-        // `opt_tensorize` region can absorb is not a tensor recipe at
-        // all, and the raw tiled form devectorizes the lanes^3 product into
-        // tens of thousands of scalar ops (43 applied ops lowered to 35,363
-        // for a 512x1024x4096 matmul; a 64x64x64 one was refused outright at
-        // 835,974). A config that does not tensorize is dropped rather than
-        // left in the search space as a huge scalar kernel.
-        let mut tiled = kernel.clone();
-        if tiled.split(m, SplitMode::Unroll, m_lanes).is_null()
-            || tiled.split(n, SplitMode::Unroll, n_lanes).is_null()
-            || tiled.split(k, SplitMode::Unroll, k_lanes).is_null()
-        {
-            return;
-        }
-        let tensor = if staged {
-            tiled.opt_tensorize_staged()
-        } else {
-            tiled.opt_tensorize()
-        };
-        if tensor.nconfigs() == 0 {
-            return;
-        }
-        // One tensorization config per region at the chosen layout, so every
-        // region is emitted exactly once.
-        for region in 0..(tensor.nconfigs() / layouts) {
-            tensor.apply(&mut tiled, config % layouts + layouts * region);
-        }
-        // A config whose emitted body crosses the render limit is not a
-        // kernel: drop it rather than install a state no backend accepts.
-        if tiled.ops.len().0 > crate::kernel::MAX_OPS {
-            return;
-        }
-        tiled.verify();
-        *kernel = tiled;
-    }
-}
-
-impl Kernel {
-    /// Make the tensor recipe: one config per `(m lanes, n lanes, k lanes)`
-    /// tile grid the device's instructions allow. Never mutates.
-    pub fn opt_tensor_recipe(&self) -> Box<dyn Optimization> {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("opt_tensor_recipe");
-        /// Lane multipliers on the instruction tile.
-        const MULT: &[u16] = &[32, 16, 8, 4, 2, 1];
-        /// The tile grids one config may emit: the staged form's body is one
-        /// loop over its fragments, the unstage form's is the grid itself
-        /// (bounded where it is emitted).
-        const MAX_TILES_STAGED: Dim = 2048;
-
-        let mut configs = Vec::new();
-        let info = self.device_info();
-        if !info.tensor_cores || info.mma_variants.is_empty() || !self.plain_state() {
-            return Box::new(TensorRecipe { configs });
-        }
-
-        // The two output ranges, the contraction loop, and the dtypes the
-        // instruction must match: operand element dtypes and the
-        // accumulator's. A variant whose dtypes differ from these can never
-        // be absorbed by `opt_tensorize`, so the lane splits it asks
-        // for would only devectorize into a scalar body (an i64 matmul given
-        // an f16 tile recipe renders tens of thousands of ops).
-        let elem_dtype = |k: &Kernel, o: OpId| -> Option<crate::DType> {
-            match k.at(o) {
-                Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
-                Op::Load { src, .. } => match k.at(*src) {
-                    Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-        let mut ranges: Vec<(OpId, u32, Dim)> = Vec::new();
-        let mut loop_id = OpId::NULL;
-        let mut loop_len: Dim = 0;
-        let mut operand_dtypes: Option<(crate::DType, crate::DType)> = None;
-        let mut acc_dtype: Option<crate::DType> = None;
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            match self.ops[op_id].op {
-                Op::Range { axis, kind: RangeKind::Group(len) } => {
-                    if let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                        ranges.push((op_id, axis, len));
-                    }
-                }
-                Op::Loop { len } if loop_id.is_null() => {
-                    loop_id = op_id;
-                    loop_len = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).unwrap_or(0);
-                }
-                Op::Binary { bop: super::BOp::Mul, x, y } if operand_dtypes.is_none() => {
-                    operand_dtypes = elem_dtype(self, x).zip(elem_dtype(self, y));
-                }
-                Op::Storage { scope: MemScope::Register, dtype, .. } => acc_dtype = Some(dtype),
-                _ => {}
-            }
-            op_id = self.next_op(op_id);
-        }
-        if ranges.len() != 2 || loop_id.is_null() || loop_len <= 0 {
-            return Box::new(TensorRecipe { configs });
-        }
-        let (Some((x_dtype, y_dtype)), Some(acc_dtype)) = (operand_dtypes, acc_dtype) else {
-            return Box::new(TensorRecipe { configs });
-        };
-        ranges.sort_by_key(|&(_, axis, _)| axis);
-        let ((m_range, _, m), (n_range, _, n)) = (ranges[0], ranges[1]);
-
-        for variant in &info.mma_variants {
-            // Same dtype gate `opt_tensorize` applies when it matches a
-            // region, minus which operand is A: the orientation is decided by
-            // the accumulator's view, not by the multiply order.
-            let dtypes_match = (variant.a_dtype == x_dtype && variant.b_dtype == y_dtype
-                || variant.a_dtype == y_dtype && variant.b_dtype == x_dtype)
-                && variant.c_dtype == acc_dtype;
-            if !dtypes_match {
-                continue;
-            }
-            let (fm, fn_, fk) = {
-                let (fm, fn_, fk) = variant.dims.decompose_mnk();
-                (fm as Dim, fn_ as Dim, fk as Dim)
-            };
-            for &mm in MULT {
-                let m_lanes = fm * Dim::from(mm);
-                if m % m_lanes != 0 {
-                    continue;
-                }
-                for &nn in MULT {
-                    let n_lanes = fn_ * Dim::from(nn);
-                    if n % n_lanes != 0 {
-                        continue;
-                    }
-                    for &kk in MULT {
-                        let k_lanes = fk * Dim::from(kk);
-                        if loop_len % k_lanes != 0 {
-                            continue;
-                        }
-                        let tiles = (m_lanes / fm) * (n_lanes / fn_) * (k_lanes / fk);
-                        if tiles > MAX_TILES_STAGED {
-                            continue;
-                        }
-                        // No IR-growth bound here: this recipe tensorizes with
-                        // staging, whose body is one loop over fragments
-                        // whatever the tile count. A config that does not
-                        // tensorize is dropped by `apply`, and a lowering that
-                        // explodes is rejected at measurement.
-                        let (Ok(m_lanes), Ok(n_lanes), Ok(k_lanes)) =
-                            (u16::try_from(m_lanes), u16::try_from(n_lanes), u16::try_from(k_lanes))
-                        else {
-                            continue;
-                        };
-                        if std::env::var_os("ZYX_RECIPE").is_some() {
-                            eprintln!(
-                                "recipe t={} m_lanes={m_lanes} n_lanes={n_lanes} k_lanes={k_lanes} tiles={tiles}",
-                                configs.len()
-                            );
-                        }
-                        configs.push((m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes));
-                    }
-                }
-            }
-        }
-
-        Box::new(TensorRecipe { configs })
-    }
-}
-
-impl Kernel {
-    /// Make the lane recipe: one config per (group range, lane factor) —
-    /// the search ranks the space, the recipe does not pick a winner.
-    ///
-    /// Gates are structural only: divisibility, the device's thread budget,
-    /// the IR growth bound, and that some load ignores the range (otherwise
-    /// there is nothing for staging to deduplicate across the new lanes).
-    /// Never mutates.
-    pub fn opt_recipe(&self) -> Box<dyn Optimization> {
-        #[cfg(feature = "time")]
-        let _timer = crate::Timer::new("opt_recipe");
-        let mut configs: Vec<(OpId, u16)> = Vec::new();
-
-        // A recipe is a known-good sequence *from a plain kernel*: lanes,
-        // barriers, reduces and local memory mean another pass already ran,
-        // and the sequence's assumptions no longer hold.
-        if !self.plain_state() {
-            return Box::new(Recipe { configs });
-        }
-
-        let info = self.device_info();
-        if info.local_mem_size <= 0 || info.max_local_threads == 0 {
-            return Box::new(Recipe { configs });
-        }
-        let used = self.threads_in_use();
-        let ops_len = self.ops.len().0 as Dim;
-
-        let mut op_id = self.head;
-        while !op_id.is_null() {
-            if let Op::Range { axis, kind: RangeKind::Group(len) } = self.ops[op_id].op
-                && let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim)
-                && self.load_invariant_over(op_id)
-            {
-                let max_per_axis = info.max_local_work_dims.get(axis as usize).copied().unwrap_or(0);
-                for &factor in LANE_FACTORS {
-                    let factor_dim = Dim::from(factor);
-                    if len % factor_dim != 0
-                        || u32::from(factor) > max_per_axis
-                        || used.saturating_mul(u32::from(factor)) > info.max_local_threads
-                        || factor_dim * ops_len > 10_000
-                    {
-                        continue;
-                    }
-                    configs.push((op_id, factor));
-                }
-            }
-            op_id = self.next_op(op_id);
-        }
-
-        Box::new(Recipe { configs })
     }
 }
 
@@ -415,7 +126,7 @@ impl Kernel {
         let mut configs: Vec<Vec<(OpId, u16)>> = Vec::new();
         let ops_len = self.ops.len().0 as Dim;
 
-        // Known-good only from a plain kernel: see `opt_recipe`.
+        // Known-good only from a plain kernel: see `plain_state`.
         if !self.plain_state() {
             return Box::new(RegisterTiling { configs });
         }
@@ -423,22 +134,25 @@ impl Kernel {
         // Tenstorrent has no SIMT registers to tile: its lanes are whole
         // 32-wide tiles, so a 2/4/8/16 split is not a shape its tiling can
         // lower (it leaves a laned group index whose rank no longer matches
-        // the index it joins). Same device gate as `opt_recipe` and
-        // `opt_tile_and_stage`.
+        // the index it joins). Same device gate as `opt_tile_and_stage`.
         let info = self.device_info();
         if info.tenstorrent || info.local_mem_size <= 0 {
             return Box::new(RegisterTiling { configs });
         }
 
-        // A site is a factor candidate when it divides, leaves at least 4
-        // iterations, and the largest factor alone stays inside the bound.
-        let factors = |len: Dim| -> Vec<u16> {
+        // A site is a factor candidate when the length is provably a multiple
+        // of it (symbolically), it leaves at least 4 iterations, and the
+        // largest factor alone stays inside the bound. The trip-count bound
+        // needs a value, so it holds only for a resolved length.
+        let factors = |len: OpId| -> Vec<u16> {
             FACTORS
                 .iter()
                 .copied()
                 .filter(|&f| {
-                    let f = Dim::from(f);
-                    len % f == 0 && len / f >= 4 && f * ops_len <= MAX_OPS
+                    let f_dim = Dim::from(f);
+                    self.is_sym_multiple(len, f_dim)
+                        && self.resolve_const(len).and_then(crate::dtype::Constant::as_dim).is_none_or(|l| l / f_dim >= 4)
+                        && f_dim * ops_len <= MAX_OPS
                 })
                 .map(|f| u16::try_from(f).expect("register tiling: factor overflows u16"))
                 .collect()
@@ -450,9 +164,7 @@ impl Kernel {
         while !op_id.is_null() {
             match self.ops[op_id].op {
                 Op::Loop { len } => {
-                    if self.dtype(len) != crate::DType::Bool
-                        && let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim)
-                    {
+                    if self.dtype(len) != crate::DType::Bool {
                         let candidates = factors(len);
                         if !candidates.is_empty() {
                             reduce.push((op_id, candidates));
@@ -460,11 +172,9 @@ impl Kernel {
                     }
                 }
                 Op::Range { kind: RangeKind::Group(len), .. } => {
-                    if let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
-                        let candidates = factors(len);
-                        if !candidates.is_empty() {
-                            global.push((op_id, candidates));
-                        }
+                    let candidates = factors(len);
+                    if !candidates.is_empty() {
+                        global.push((op_id, candidates));
                     }
                 }
                 _ => {}
@@ -554,6 +264,10 @@ impl Kernel {
 /// per-thread register tile on both output ranges, then the operand those
 /// lanes share is staged.
 ///
+/// A per-thread tile of 1 leaves the plain lane-and-stage move — lanes on one
+/// range, the shared operand staged, nothing unrolled — as one config of this
+/// space, so there is no separate lane recipe to reach it.
+///
 /// The order is the only one that works: staging needs lanes to exist (its
 /// whole job is deduplicating across them), and the barriers it inserts make a
 /// later range unroll unsound.
@@ -563,13 +277,13 @@ pub struct TileAndStage {
 }
 
 /// One tile-and-stage config: lanes on one output range (threads) and an
-/// unroll on each output range (the per-thread register tile).
+/// unroll on each output range (the per-thread register tile). A tile of 1 is
+/// no unroll at all.
 #[derive(Debug, Clone, Copy)]
 struct TileStage {
     /// Range split into lanes.
     lane: OpId,
     lane_axis: u32,
-    lane_len: Dim,
     lanes: u16,
     /// Per-thread outputs along the lane range and along the other one.
     tile_lane: u16,
@@ -594,25 +308,23 @@ impl Optimization for TileAndStage {
             return;
         }
         // The lane split wrapped the range as `outer * lanes + lid`: the
-        // unroll cuts that outer range, which is the only group range of this
-        // length left on the axis.
-        let outer_len = p.lane_len / Dim::from(p.lanes);
-        let outer = kernel.iter_unordered().find_map(|(id, op)| match *op {
-            Op::Range { axis, kind: RangeKind::Group(len) }
-                if axis == p.lane_axis
-                    && kernel.resolve_const(len).and_then(crate::dtype::Constant::as_dim) == Some(outer_len) =>
-            {
-                Some(id)
+        // unroll cuts that outer range, which is the only group range left on
+        // that axis. A tile of 1 cuts nothing.
+        if p.tile_lane > 1 {
+            let outer = kernel.iter_unordered().find_map(|(id, op)| match *op {
+                Op::Range { axis, kind: RangeKind::Group(_) } if axis == p.lane_axis => Some(id),
+                _ => None,
+            });
+            let Some(outer) = outer else {
+                kernel.verify();
+                return;
+            };
+            if kernel.split(outer, SplitMode::Unroll, p.tile_lane).is_null() {
+                kernel.verify();
+                return;
             }
-            _ => None,
-        });
-        let Some(outer) = outer else {
-            kernel.verify();
-            return;
-        };
-        if kernel.split(outer, SplitMode::Unroll, p.tile_lane).is_null()
-            || kernel.split(p.other, SplitMode::Unroll, p.tile_other).is_null()
-        {
+        }
+        if p.tile_other > 1 && kernel.split(p.other, SplitMode::Unroll, p.tile_other).is_null() {
             kernel.verify();
             return;
         }
@@ -627,7 +339,8 @@ impl Optimization for TileAndStage {
 impl Kernel {
     /// Make the tile-and-stage recipe: one config per (lane range, lane factor,
     /// per-thread tile on each range). The space is the search's to rank — the
-    /// recipe picks nothing.
+    /// recipe picks nothing. A per-thread tile of 1 is the lane-and-stage move
+    /// on its own.
     ///
     /// Gates are structural: divisibility, the thread budget, the IR growth
     /// bound, and that some load ignores the lane range (staging's dedup
@@ -637,8 +350,9 @@ impl Kernel {
         let _timer = crate::Timer::new("opt_tile_and_stage");
         /// Threads along the lane range.
         const LANES: &[u16] = &[32, 16, 8, 4];
-        /// Per-thread outputs along each range.
-        const TILES: &[u16] = &[8, 4, 2];
+        /// Per-thread outputs along each range, largest first. The 1 is the
+        /// plain lane-and-stage move: lanes and staging, no register tile.
+        const TILES: &[u16] = &[8, 4, 2, 1];
 
         let mut configs: Vec<TileStage> = Vec::new();
 
@@ -660,11 +374,12 @@ impl Kernel {
             .product();
 
         // The two output ranges; one per axis is the shape this recipe models.
-        let mut groups: Vec<(OpId, u32, Dim)> = Vec::new();
+        // Their lengths stay symbolic: every gate below is a divisibility
+        // question, answered by `is_sym_multiple`.
+        let mut groups: Vec<(OpId, u32, OpId)> = Vec::new();
         let mut op_id = self.head;
         while !op_id.is_null() {
             if let Op::Range { axis, kind: RangeKind::Group(len) } = self.ops[op_id].op
-                && let Some(len) = self.resolve_const(len).and_then(crate::dtype::Constant::as_dim)
                 && !groups.iter().any(|g| g.1 == axis)
             {
                 groups.push((op_id, axis, len));
@@ -685,7 +400,7 @@ impl Kernel {
             }
             let max_per_axis = info.max_local_work_dims.get(lane_axis as usize).copied().unwrap_or(0);
             for &lanes in LANES {
-                if lane_len % Dim::from(lanes) != 0
+                if !self.is_sym_multiple(lane_len, Dim::from(lanes))
                     || u32::from(lanes) > max_per_axis
                     || used.saturating_mul(u32::from(lanes)) > info.max_local_threads
                 {
@@ -693,17 +408,17 @@ impl Kernel {
                 }
                 for &tile_lane in TILES {
                     let block = Dim::from(lanes) * Dim::from(tile_lane);
-                    if lane_len % block != 0 {
+                    if !self.is_sym_multiple(lane_len, block) {
                         continue;
                     }
                     for &tile_other in TILES {
-                        if other_len % Dim::from(tile_other) != 0 {
+                        if !self.is_sym_multiple(other_len, Dim::from(tile_other)) {
                             continue;
                         }
                         if block * Dim::from(tile_other) * ops_len * existing_lanes > 10_000 {
                             continue;
                         }
-                        configs.push(TileStage { lane, lane_axis, lane_len, lanes, tile_lane, tile_other, other });
+                        configs.push(TileStage { lane, lane_axis, lanes, tile_lane, tile_other, other });
                     }
                 }
             }
@@ -749,8 +464,9 @@ mod tests {
     }
 
     /// A scalar matmul: the M operand ignores the N range, so splitting N into
-    /// lanes exposes it for staging. Both group ranges offer the recipe; the
-    /// applied one ends with the N-range lanes and a staged tile.
+    /// lanes exposes it for staging. The folded tile-and-stage space holds the
+    /// lane-and-stage move — no register tile, just lanes plus the staged
+    /// tile — once per (group range, lane factor).
     #[test]
     fn lanes_then_stage() {
         const M: Dim = 32;
@@ -781,29 +497,35 @@ mod tests {
         let c_idx = k.mad(m, N, n);
         k.store(c, r, c_idx);
 
-        let opt = k.opt_recipe();
+        let opt = k.opt_tile_and_stage();
         // Both ranges expose the other operand (M split exposes B, N split
-        // exposes A), four lane factors each fit a 32-wide range.
-        assert_eq!(opt.nconfigs(), 8, "one recipe per (group range, lane factor)");
-        // Configs 0..4 are the M range, 4..8 the N range.
-        opt.apply(&mut k, 4);
-        k.verify();
-
-        let locals: Vec<Dim> = k
-            .iter_unordered()
-            .filter_map(|(_, op)| match op {
-                Op::Storage { scope: MemScope::Local, len, .. } => Some(*len),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(locals, vec![32], "the staged tile after the lane split");
-        assert!(
-            k.iter_unordered().any(|(_, op)| matches!(op, Op::Range { kind: RangeKind::Local(_), .. })),
-            "the recipe split a range into lanes"
-        );
+        // exposes A). Every config must leave valid IR, and the lane-and-stage
+        // move — lanes plus a staged tile, nothing unrolled — appears once per
+        // (group range, lane factor): four factors fit a 32-wide range, and
+        // both ranges offer them.
+        assert!(opt.nconfigs() >= 8, "the folded space holds every lane-and-stage config");
+        let mut lane_only = 0;
+        for config in 0..opt.nconfigs() {
+            let mut c = k.clone();
+            opt.apply(&mut c, config);
+            c.verify();
+            let locals: Vec<Dim> = c
+                .iter_unordered()
+                .filter_map(|(_, op)| match op {
+                    Op::Storage { scope: MemScope::Local, len, .. } => Some(*len),
+                    _ => None,
+                })
+                .collect();
+            let unrolled = c.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. }));
+            let laned = c.iter_unordered().any(|(_, op)| matches!(op, Op::Range { kind: RangeKind::Local(_), .. }));
+            if !unrolled && laned && locals == [Dim::from(32)] {
+                lane_only += 1;
+            }
+        }
+        assert_eq!(lane_only, 8, "one lane-and-stage config per (group range, lane factor)");
     }
 
-    /// No shared memory, no lane recipe: there is nothing to stage into.
+    /// No shared memory, no lane-and-stage: there is nothing to stage into.
     #[test]
     fn no_recipe_without_local_memory() {
         let mut k = Kernel::new(Dev::Auto);
@@ -831,7 +553,7 @@ mod tests {
         let c_idx = k.mad(m, 32i64, n);
         k.store(c, r, c_idx);
 
-        assert_eq!(k.opt_recipe().nconfigs(), 0);
+        assert_eq!(k.opt_tile_and_stage().nconfigs(), 0);
     }
 
     /// Register tiling: the reduce loop becomes register accumulators, the

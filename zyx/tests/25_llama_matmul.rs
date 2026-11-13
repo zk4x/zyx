@@ -27,11 +27,14 @@ use zyx::kernel::autotune::BeamSearch;
 use zyx::kernel::{Dev, Kernel, MemScope};
 use zyx::{DType, Tensor, ZyxError};
 
-/// The recipe config of the reference kernel's shape: `(tile * 2 + staged) *
-/// layouts + layout`, i.e. `(5 * 2 + 1) * 13 + 4` — tile index 5 is
-/// `(m lanes 128, n lanes 128, k lanes 64)` (8 `m16n8k8` K steps per K chunk),
-/// staged, warp layout index 4 is `(2, 2, 1)`: four warps as a 2 x 2 grid,
-/// i.e. a 64 x 64 warp tile.
+/// The config of the reference kernel's shape in the tensorization space:
+/// `6 * 23 + 8 + 1` — the space lists the kernel's own region first, so the
+/// sixth matched shape is tile index 5, `(m lanes 128, n lanes 128, k lanes 64)`
+/// (8 `m16n8k8` K steps per K chunk), staged, warp layout index 4 is
+/// `(2, 2, 1)`: four warps as a 2 x 2 grid, i.e. a 64 x 64 warp tile. A shape
+/// has 23 configs (ten single-warp-axis layouts with an unstage and a staged
+/// form, three split-K layouts staged only), and layout 4's staged form is the
+/// ninth of those.
 const TORCH_TILE_4_WARPS: u64 = 147;
 
 #[test]
@@ -79,14 +82,14 @@ fn llama_gate_proj() -> Result<(), ZyxError> {
     k.verify();
 
     // ---- the selected optimization -------------------------------------
-    // The tensor recipe is the fixed order split-M, split-N, split-K,
-    // tensorize. Its config space is the product of the steps' config spaces:
-    // the tile grid, the staging form, and the warp layout. This config is
-    // the reference kernel's shape, and it must be one of the options.
-    let recipe = k.opt_tensor_recipe();
+    // The tensorization space is the whole thing in one pass: every tile grid
+    // the device's instructions allow, each at every warp layout and in both
+    // operand forms. This config is the reference kernel's shape, and it must
+    // be one of the options.
+    let recipe = k.opt_tensorize();
     assert!(
         TORCH_TILE_4_WARPS < recipe.nconfigs(),
-        "the recipe's config space must contain the cuBLAS shape: {} configs",
+        "the tensorization space must contain the cuBLAS shape: {} configs",
         recipe.nconfigs()
     );
     recipe.apply(&mut k, TORCH_TILE_4_WARPS);
