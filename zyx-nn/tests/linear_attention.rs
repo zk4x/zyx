@@ -15,7 +15,7 @@ fn silu(x: &Tensor) -> Tensor {
 
 fn l2norm(x: &Tensor) -> Result<Tensor, ZyxError> {
     let eps = 1e-6f32;
-    let var = (x.clone() * x.clone()).mean_keepdim([-1])?;
+    let var = (x.clone() * x.clone()).sum_keepdim([-1])?;
     Ok(x * (var + Tensor::from(eps)).rsqrt())
 }
 
@@ -145,9 +145,16 @@ fn linear_attention() -> Result<(), ZyxError> {
 
     let gdiff = g4.unsqueeze(4)? - g4.unsqueeze(3)?;
     let decay = (gdiff * &tril_f).exp() * &tril_f;
-    let mut attn = k5.matmul(k5.transpose(3, 4)?)?;
-    attn = &attn * &decay;
+    let mut attn = -(kb5.matmul(k5.transpose(3, 4)?)? * &decay);
     attn = triu_incl.select(Tensor::zeros_like(&attn), &attn)?;
+    // `(I - A)^-1` by forward substitution, one row at a time:
+    // `attn[i, :i] += attn[i, :i] @ attn[:i, :i]`.
+    for i in 1..ch {
+        let row = attn.narrow(3, i, 1i64)?.narrow(4, 0i64, i)?;
+        let sub = attn.narrow(3, 0i64, i)?.narrow(4, 0i64, i)?;
+        let update = &row + row.matmul(&sub)?;
+        attn.narrow(3, i, 1i64)?.narrow(4, 0i64, i)?.assign(&update)?;
+    }
 
     let eye = Tensor::eye(ch, DType::F32);
     let attn = attn + eye;

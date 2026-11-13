@@ -771,7 +771,7 @@ impl Kernel {
     ///
     /// The matcher is structural: it binds the operand stack, checks that
     /// every slot is a load of the same global buffer, and derives the slot
-    /// positions from the device variant's [`crate::backend::FragMap`] rather
+    /// positions from the device variant's `crate::backend::FragMap` rather
     /// than from the (epilogue-simplified) index arithmetic.
     pub fn opt_mma_staging(&self) -> Box<dyn Optimization> {
         let info = self.device_info();

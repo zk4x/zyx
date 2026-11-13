@@ -1130,7 +1130,19 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let mut tk = 0;
                 while tk < kt {
                     if tk + 1 < kt {
-                        let value = coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk * 2, fm, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
+                        let value = coop_ldmatrix(
+                            kernel,
+                            t.update,
+                            lane,
+                            a_tile,
+                            fm,
+                            fk * 2,
+                            fm,
+                            tk as Dim * fk,
+                            chunk / 8,
+                            sb,
+                            OpId::NULL,
+                        );
                         a_frags[tm][tk] = slice(kernel, t.update, value, false, a_slots);
                         a_frags[tm][tk + 1] = slice(kernel, t.update, value, true, a_slots);
                         tk += 2;
@@ -1167,8 +1179,19 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let mut tk = 0;
                 while tk < kt {
                     if tk + 1 < kt {
-                        let value =
-                            coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk * 2, fn_, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
+                        let value = coop_ldmatrix(
+                            kernel,
+                            t.update,
+                            lane,
+                            b_tile,
+                            fn_,
+                            fk * 2,
+                            fn_,
+                            tk as Dim * fk,
+                            chunk / 8,
+                            sb,
+                            OpId::NULL,
+                        );
                         for (step, frag) in [
                             (tk, slice(kernel, t.update, value, false, b_slots)),
                             (tk + 1, slice(kernel, t.update, value, true, b_slots)),
@@ -1189,7 +1212,19 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                         }
                         tk += 2;
                     } else {
-                        let frag = coop_ldmatrix(kernel, t.update, lane, b_tile, fn_, fk, fn_, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
+                        let frag = coop_ldmatrix(
+                            kernel,
+                            t.update,
+                            lane,
+                            b_tile,
+                            fn_,
+                            fk,
+                            fn_,
+                            tk as Dim * fk,
+                            chunk / 8,
+                            sb,
+                            OpId::NULL,
+                        );
                         for tm in 0..mt {
                             acc[tm] = kernel.insert_before(
                                 t.update,
@@ -2536,11 +2571,9 @@ impl Kernel {
                                 if tiles > MAX_TILES {
                                     continue;
                                 }
-                                let (Ok(m_lanes), Ok(n_lanes), Ok(k_lanes)) = (
-                                    u16::try_from(m_lanes),
-                                    u16::try_from(n_lanes),
-                                    u16::try_from(k_lanes),
-                                ) else {
+                                let (Ok(m_lanes), Ok(n_lanes), Ok(k_lanes)) =
+                                    (u16::try_from(m_lanes), u16::try_from(n_lanes), u16::try_from(k_lanes))
+                                else {
                                     continue;
                                 };
                                 for &layout in &layouts {
@@ -2551,17 +2584,7 @@ impl Kernel {
                                         plans.push(Plan {
                                             region: None,
                                             tiled: None,
-                                            grid: Some((
-                                                m_range,
-                                                n_range,
-                                                loop_id,
-                                                m_lanes,
-                                                n_lanes,
-                                                k_lanes,
-                                                fm,
-                                                fn_,
-                                                fk,
-                                            )),
+                                            grid: Some((m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_, fk)),
                                             layout,
                                             staged,
                                         });

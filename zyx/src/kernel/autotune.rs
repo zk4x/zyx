@@ -76,7 +76,7 @@ impl Kernel {
     /// length-1 loops, constant folding, LICM, algebraic simplification, CSE,
     /// instruction scheduling, DCE, ...). It is device-independent: nothing
     /// here converts a transcendental, and `Pow` is left alone (see
-    /// [`Kernel::device_epilogue`]). Users can provide their own epilogue.
+    /// `Kernel::device_epilogue`). Users can provide their own epilogue.
     pub fn default_epilogue(&mut self) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("default_epilogue");
@@ -738,7 +738,7 @@ pub struct Measurement {
     /// The grid the launch used: one extent per gws axis, padded with `1`.
     ///
     /// Not derivable from the IR: group lengths bottom out in
-    /// `Op::Param { kind: Variable }` leaves ([`crate::backend::gws_from_kernel`]),
+    /// `Op::Param { kind: Variable }` leaves (`crate::backend::gws_from_kernel`),
     /// so the extents only exist once the launch args fill them in — which is
     /// why they are recorded per launch. `None` when the launch failed.
     pub grid: Option<[Dim; 3]>,

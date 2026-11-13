@@ -173,14 +173,14 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// let mut kernel = Kernel::new(Dev::Auto);
 /// let n = 256;
 /// let shape = kernel.add_shape(&[n]);
-/// let len = kernel.const_idx(n);
 /// let inp = kernel.param(DType::F32);
+/// let out = kernel.param_mut(DType::F32);
+/// let len = kernel.const_idx(n);
 /// let gidx = kernel.group_range(0, len);
 /// let loaded = kernel.load(inp, gidx);
 /// let s = kernel.sin(loaded);
 /// let c = kernel.cos(loaded);
 /// let result = kernel.add(s, c);
-/// let out = kernel.param_mut(DType::F32);
 /// kernel.store(out, result, gidx);
 /// ```
 ///

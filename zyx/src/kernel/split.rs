@@ -824,9 +824,7 @@ impl Kernel {
                     if !tile_access && !barrier {
                         for &f in group_unroll {
                             let f_dim = Dim::try_from(f).expect("lane factor overflows i64");
-                            if self.is_sym_multiple(len, f_dim)
-                                && len_value.is_none_or(|l| l / f_dim > 0)
-                                && f * op_len <= 10_000
+                            if self.is_sym_multiple(len, f_dim) && len_value.is_none_or(|l| l / f_dim > 0) && f * op_len <= 10_000
                             {
                                 configs.push((op_id, SplitMode::Unroll, f as u16));
                             }

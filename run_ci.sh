@@ -2,21 +2,25 @@
 # Local check gate. Run from anywhere; it cd's into each crate.
 #
 #   ./run_ci.sh
+#   ZYX_DEV=cuda ./run_ci.sh
 #
 # Covers unit and integration tests, doctests, private-item rustdoc, formatting,
 # the examples, the Python bindings (when a torch-enabled interpreter is
 # available), and the book's code examples. It needs the prerequisites in
 # INSTALL.md (a C compiler is enough; no GPU required).
+#
+# The test runs use `ZYX_DEV` when it is set and `cpu` otherwise.
 set -e
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+dev=${ZYX_DEV:-cpu}
 
 echo "ci: zyx tests"
-(cd "$repo/zyx" && ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist)
+(cd "$repo/zyx" && ZYX_DEV="$dev" cargo test --lib --tests -- --skip mnist)
 
 for crate in zyx-nn zyx-optim zyx-derive; do
     echo "ci: $crate tests"
-    (cd "$repo/$crate" && ZYX_DEV=cpu cargo test --lib --tests)
+    (cd "$repo/$crate" && ZYX_DEV="$dev" cargo test --lib --tests)
 done
 
 for crate in zyx zyx-nn zyx-optim zyx-derive; do
