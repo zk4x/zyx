@@ -95,9 +95,6 @@ impl Kernel {
         self.simplify_accumulating_loop();
         self.swap_commutative();
         self.common_subexpression_elimination();
-        // Instruction scheduling costs ~454 µs/call and its ordering is not
-        // needed: commented out of the epilogue on the user's call.
-        // self.instruction_schedule();
         self.dead_code_elimination();
     }
 
@@ -283,9 +280,6 @@ impl Kernel {
     ) -> Result<(DeviceProgramId, u64), BackendError> {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("device compile");
-        // Temporary: the search path did not honor the IR debug bit, and the
-        // failing candidate can only be identified from its IR. Removed after
-        // the illegal-address diagnosis.
         if debug.ir() {
             self.debug();
         }
@@ -539,10 +533,9 @@ impl BeamSearch {
             visited.insert(base.get_hash());
             let mut items: Vec<OptSeq> = vec![OptSeq { opts: Vec::new(), cost: cost(&base) }];
 
-            // Temporary: `ZYX_SEQ="opt:cfg,opt:cfg"` measures exactly that
-            // sequence and skips the search, so a single failing candidate can
-            // be reproduced in seconds instead of minutes. Removed once the
-            // illegal-address bug is closed.
+            // `ZYX_SEQ="opt:cfg,opt:cfg"` measures exactly that sequence and
+            // skips the search, so a single failing candidate is reproduced in
+            // seconds instead of minutes.
             let forced: Option<Vec<(usize, u64)>> = std::env::var("ZYX_SEQ").ok().map(|spec| {
                 spec.split(',')
                     .filter(|pair| !pair.is_empty())
@@ -671,7 +664,7 @@ impl BeamSearch {
                     }
                     dims
                 };
-                // Temporary: dump the lowered IR of one named candidate.
+                // Dump the lowered IR of one named candidate.
                 if std::env::var("ZYX_DUMP_SEQ").ok().is_some_and(|spec| {
                     spec.split(',')
                         .filter(|pair| !pair.is_empty())
@@ -695,9 +688,6 @@ impl BeamSearch {
                             }
                         }
                         Err(e) => {
-                            // Temporary: name the failing candidate so it can
-                            // be matched to its `bench.db` row. Removed after
-                            // the diagnosis.
                             eprintln!("autotune: candidate seq={:?} failed: {e:?}", opt_seq.opts);
                             record_measurement(&candidate, opt_seq, seed_id, self.n_launches, None, None, "failed");
                             last_error = Some(e.into());

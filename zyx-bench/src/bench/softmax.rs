@@ -6,8 +6,8 @@
 use zyx::{DType, Tensor, ZyxError};
 
 pub fn bench() -> Result<(), ZyxError> {
-    // Temporary: `ZYX_SHAPE="8x512x2048:2"` runs one shape only, so a single
-    // failing sequence can be reproduced without the other nine.
+    // `ZYX_SHAPE="8x512x2048:2"` runs one shape only, so a single failing
+    // sequence is reproduced without the other nine.
     let only = std::env::var("ZYX_SHAPE").ok();
     for &(dims, axes) in &[
         (&[4096i64][..], &[0i32][..]),

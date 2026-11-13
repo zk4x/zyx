@@ -596,6 +596,51 @@ impl Kernel {
             }
         }
 
+        // A group range is a parallel axis: nothing in the graph depends on
+        // it, so the sort is free to hoist a per-group storage declaration or
+        // its zeroing above it. A renderer that serializes the axis (the C
+        // backend emits it as a loop) then runs that state setup once for the
+        // whole grid instead of once per group. The axes may sit anywhere
+        // during the passes; emission order is what the renderers see, so fix
+        // each axis in place with every later op after it. This is not a
+        // scope: hoisting toward the axis remains allowed for the ops that
+        // already preceded it.
+        //
+        // The ranges' own length computations are exempt. A length may be
+        // placed after its range by an earlier pass, and pinning it after the
+        // range as well would close `range -> len -> range` into a cycle; the
+        // cone is downward-closed along the operand edges, so exempting all
+        // of it is exactly the set of ops a later op can reach the range
+        // through.
+        let range_positions: Vec<usize> = (0..n).filter(|&i| matches!(self.at(rest[i]), Op::Range { .. })).collect();
+        let mut range_cone = vec![false; n];
+        {
+            let mut stack: Vec<usize> = range_positions.clone();
+            while let Some(i) = stack.pop() {
+                if range_cone[i] {
+                    continue;
+                }
+                range_cone[i] = true;
+                for p in self.at(rest[i]).parameters() {
+                    if !p.is_null() {
+                        let j = idx[p.0 as usize];
+                        if j != usize::MAX {
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+        }
+        for &i in &range_positions {
+            for j in (i + 1)..n {
+                if range_cone[j] {
+                    continue;
+                }
+                edges.push((i, j));
+                in_degree[j] += 1;
+            }
+        }
+
         // Stores never leave the loops/ifs that contain them and never cross
         // barriers: keep every store ordered with every structural op.
         for i in 0..n {

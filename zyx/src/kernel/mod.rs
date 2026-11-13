@@ -196,11 +196,11 @@ pub(crate) const IDX_T: DType = DType::I64;
 /// let n = 4;
 /// let shape = kernel.add_shape(&[n]);
 /// let inp = kernel.param(DType::F32);
+/// let out = kernel.param_mut(DType::F32);
 /// let len = kernel.const_idx(n);
 /// let gidx = kernel.group_range(0, len);
 /// let loaded = kernel.load(inp, gidx);
 /// let result = kernel.mad(loaded, loaded, loaded); // x*x + x
-/// let out = kernel.param_mut(DType::F32);
 /// kernel.store(out, result, gidx);
 ///
 /// let compiled = kernel.compile()?;

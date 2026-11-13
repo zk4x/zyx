@@ -313,7 +313,7 @@ impl Kernel {
         }
         let mut groups = self.find_nested_loop_groups();
         // Group-range pairs fuse grid axes into one flat axis with
-        // div/mod index recovery (user spec): propose them only when
+        // div/mod index recovery: propose them only when
         // the kernel holds more than 2 group ranges (excess to reduce
         // toward the grid); 1-2 groups are the legal tiled end-state.
         // Loop chains and Local pairs keep today's behavior.

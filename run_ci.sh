@@ -12,21 +12,21 @@ set -e
 repo=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 echo "ci: zyx tests"
-(cd "$repo/zyx" && AGENT=1 ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist)
+(cd "$repo/zyx" && ZYX_DEV=cpu cargo test --lib --tests -- --skip mnist)
 
 for crate in zyx-nn zyx-optim zyx-derive; do
     echo "ci: $crate tests"
-    (cd "$repo/$crate" && AGENT=1 ZYX_DEV=cpu cargo test --lib --tests)
+    (cd "$repo/$crate" && ZYX_DEV=cpu cargo test --lib --tests)
 done
 
 for crate in zyx zyx-nn zyx-optim zyx-derive; do
     echo "ci: $crate doctests"
-    (cd "$repo/$crate" && AGENT=1 cargo test --doc)
+    (cd "$repo/$crate" && cargo test --doc)
 done
 
 for crate in zyx zyx-nn zyx-optim zyx-derive; do
     echo "ci: $crate docs (private items)"
-    (cd "$repo/$crate" && AGENT=1 cargo doc --no-deps --document-private-items)
+    (cd "$repo/$crate" && cargo doc --no-deps --document-private-items)
 done
 
 echo "ci: formatting"

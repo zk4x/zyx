@@ -1,61 +1,47 @@
-- [ ] llama end-to-end (the bench/table work; release + HN are not tracked here)
-  1. [x] `lm_head` `CUDA_ERROR_ILLEGAL_ADDRESS` **and the n=1000 hang** (both part of this item, per the user). **Illegal address: cause found and fixed — the pad, not the tensorizer.** After the tensor recipe lane-splits the reduce, the input load's index carries a shape (vector access); `pad_to` extends a range's length and guards loads with a `Select` on the whole index, which it can only do for scalar accesses, so it *skipped* the guard for that vector load. The padded-but-unguarded lane groups then computed `16*gr0*524288` (up to 260,509,695) in a 33,554,432-element buffer → `KernelSync: CUDA_ERROR_ILLEGAL_ADDRESS`, which poisons the context (every later candidate fails, including `[]`). Fix (`6552f5e2`): `pad_to` pre-scans and refuses to pad an axis whose dependent loads are vector accesses. The dense-operand/dot-product gates tried in `833917c8` were wrong and are reverted. Reproducer: `ZYX_SEQ="0:23,8:40,4:2" ZYX_SHAPE="64x128x4096:2" zyx-bench zyx softmax` — red before, green after. **Root cause fixed in `pad_to` itself** (2026-11-08): the guard was skipped only because the index is lane-shaped (`shape()` non-empty from an `Unroll`), yet the condition names the padded axis, which is scalar, and `Select` broadcasts a scalar condition over a shaped value. The load is now guarded like any other and the blanket refusal is gone (it had disabled padding for every lane-split kernel). Evidence: IR of the same candidate with and without the pad config has the identical index (`r41 = 16*group`, `r27 = r41*524288`), differing only in the group extent (4 → 32) and the load bound (26,152,959 → 260,509,695); reproduction `ZYX_SEQ="0:23,8:40,4:2" ZYX_SHAPE="64x128x4096:2" zyx-bench zyx softmax` is exit 0 (was `KernelSync: CUDA_ERROR_ILLEGAL_ADDRESS`), `zyx mma_nt` unchanged (491.8 / 471.0 / 509.9 / 521.2 GFLOP/s), and `softmax_1` + `softmax_2` tests pass. **Hang**: `zyx large_matmul` at 900 s is a slow f32 sweep (5–22 s per candidate across 89 shapes), not a hang. Done when the full-model bench runs clean at 1000 launches — `llama prefill_gemm` 4,032 measured + 51 rejected candidates, exit 0; `llama decode_gemm` 453 measured, 0 failed, exit 0.
-  2. [x] `llama e2e`: real `Llama-3.2-3B-Instruct-f16.gguf` via `Llama::from_gguf` (GGUF metadata, no config.json/serde), prompt `[128000,791,6864,315,9822,374]`, greedy, exactly 5 ids compared to llama.cpp `[12366,13,578,6864,315]`; on-demand only (not CI) until fast. **Red today**: produces `[12366,13,220,679,21]` (`" Paris. 2016"`). Logits say why: at step 0 (a plain 6-token prefill, no cache reuse) zyx is `12366=14.44` vs llama.cpp `17.52` and the top-5 *sets* differ, so the kv-cache path is innocent. llama.cpp keeps the residual stream and RMSNorm in f32 and converts only `mul_mat` operands to f16; zyx runs the whole stream in f16 for 28 layers. Decision (user, 2026-11-08): **match llama.cpp** — an f32 residual stream with f16 matmul operands, the same split llama.cpp uses, so the 5-token oracle can match. **Done 2026-11-11**: the f32-residual/f16-matmul split landed in `89dd925a`; `zyx-bench llama e2e` prints `5/5 tokens match llama.cpp: [12366, 13, 578, 6864, 315]`, step 0 top-5 `12366=17.515625 7559=15.085938 …` (llama.cpp `12366=17.52`).
-  3. [x] run provenance — `n_launches` + code commit per measurement. Verified: a `llama rmsnorm` run appends rows reading `('[64,3072,1]', 20, 'd6e54646+dirty')` — grid per launch, budget from `BeamSearch::n_launches`, commit from `git rev-parse --short=8 HEAD` at run time (`unknown` without git, `+dirty` when the tree has uncommitted changes, since the commit alone would then name code that did not run). Existing rows keep `NULL`.
-  4. [x] remove the `viz` feature leak (server on 4242 from `examples/llama`'s features; `viz` is now commented out of `zyx`'s defaults and every server path is gated). Verified: `zyx-bench --list` prints 23 benches and `--list | head` exits 0 (SIGPIPE handled).
-  5. [ ] staged `ldmatrix` pass + recipe configs: padded per-warp K tile, `ldmatrix` into fragments, repoint the wmma operands; staged vs register as competing configs, measured on all 7 prefill shapes.
-  6. [x] competitor scripts: tinygrad on all 7 shapes (`examples/llama/gemm_tinygrad.py`), torch/cuBLAS (`gemm_torch.py`), llama.cpp **f16** per-GEMM at the same shapes (`ggml_gemm.cpp`, one `ggml_mul_mat` graph per projection; 12.9–26.9 TFLOP/s at SEQ=128 vs torch 14.9–24.1 and tinygrad 5.8–8.7, aggregate ~20.3 TFLOP/s for ggml).
-  7. [x] `BENCHMARKS.md` GEMM table — **the deliverable**: zyx prefill **and decode** speed of llama-3.2-3B next to torch/cuBLAS, tinygrad and llama.cpp (f16), per projection plus a phase total, with pinned versions/commit/quant and one command per row group to reproduce. The three competitor scripts now emit both phases and a phase total (`examples/llama/gemm_{torch,tinygrad}.py`, `ggml_gemm.cpp`), mirroring `zyx-bench llama prefill_gemm` / `decode_gemm` (decode includes `lm_head`). **Landed** (commit `f1cf8105`): torch, tinygrad and llama.cpp, per projection and phase totals, both phases. **Closed 2026-11-08**: the earlier zyx numbers were invalid — they took `ZYX_SEQ` probe rows as the search winner, and the cost model was trained on post-`device_epilogue` features while the search ranks pre-`device_epilogue` candidates, so a cold budget-20 search picked 8–16 ms kernels for `q`/`o`, `k`/`v` and `down`. Fixed at `d13947a4`: measurements record the candidate before lowering (`schema=2`, IR and features both pre-lowering), `regression.py` trains only on those rows, and `d13947a4` reran both phases on a clean tree — prefill **2.7529 ms / 9.36 TFLOP/s / 78 GB/s** (q/o 0.2668, k/v 0.1536, gate/up 0.6439, down 0.6243 ms), decode **3.2628 ms / 0.30 TFLOP/s / 303 GB/s** (q/o 0.0656, k/v 0.0252, gate/up 0.1687, down 0.1698, lm_head 2.5740 ms), all from `bench.db` rows with `code_version='d13947a4'`, `schema=2`, `n_launches=20`. Reproduce: `zyx-bench llama prefill_gemm` / `decode_gemm` at that commit. Against tinygrad: 1.09× on prefill, level on decode; against llama.cpp and torch: 2.24×/2.11× on prefill, level on decode.
-  8. [x] populate `bench.db` with more launches (user order). Ran `zyx-bench llama prefill_gemm` then `llama decode_gemm` at `n_launches=1000` (config edited to 1000, restored to 20 afterwards), CUDA pinned, `ZYX_QUIET_INPUT_COPIES=1`. Wall time 2313 s for both, both exit 0. Evidence (`n_launches=1000 AND status='measured'`): prefill 4 distinct seeds — `67196f56…` 1452 rows / best 0.260 ms, `7cf2fa86…` 1108 / 0.125, `88f8b8de…` 847 / 0.647, `d9c6161f…` 676 / 0.623; decode 5 seeds — 87/87/87/87/105 rows, bests 0.066/0.025/0.168/0.169/2.573 ms; every new row carries `code_version` (`439e00f5+dirty`; the 344 earlier `q_proj` rows keep `d6e54646+dirty`). All 7 prefill projections appear in the run log, so the 4 seeds are the 4 distinct shapes (`q`=`o`, `k`=`v`, `gate`=`up` share kernels), not missing shapes. `bench.db` total 19,715 rows.
-  9. [x] retrain the cost model on the enlarged DB (user order: "update the cost model so that it actually picks that 10 tflop kernel"). `zyx-bench reindex` refreshed 7784 kernels (20 min), then `python3.12 regression.py` rewrote `zyx/src/kernel/predict_cost.rs` — **after fixing the trainer**, which could not regenerate the shipped model at all: it emitted `use super::cost::Cost; impl Cost { … }` (no such type) with Huber + 15 SFS features on a rank target. Restored the documented recipe (Ridge α=1.0 on log-time, all 158 features, free `predict_time_us` returning `exp(pred)` µs); trained on 18,509 rows, Top10-in-top20 **0.811** over 221 groups (mean R² is meaningless for a cross-shape absolute-time fit). Done when, after the retrain, `n_launches=20` `llama prefill_gemm` picks `q_proj` within ~15% of that 0.2667 ms (≥7.7 TFLOP/s), measured and recorded here; a failed ranking is reported, not papered over. **Measured 2026-11-08: NOT met — 0.31552 ms = 7.66 TFLOP/s on the winner `[[8,6],[0,6],[0,13],[0,1]]` (grid `[1,48,1]`), i.e. 2.9% over the 0.3067 ms bar and 0.5% under the 7.7 TF bar.** It is 2.33× better than the pre-retrain `q_proj` pick (0.736 ms) but 18.3% off the 1000-budget ceiling (0.260 ms). Phase total at budget 20: `q` 0.316 / `k` 0.150 / `v` 0.150 / `o` 0.316 / `gate` 0.737 / `up` 0.737 / `down` 0.717 ms = **3.121 ms, 8.26 TFLOP/s** (tinygrad 3.7942 / 6.79, so 1.22×; llama.cpp 1.2288 / 20.97, so 0.39×). `zyx mma_nt` unchanged (475–521 GFLOP/s), so the cross-family ranking did not regress. Also observed: for `q_proj` only 6 candidates were launched of 552 items (the rest lower to already-launched hashes), so at this budget the search no longer explores freely — the cost model, not the budget, decides. Open decision: accept 7.66 TF, or keep tuning the model (alpha/features/target). **Accepted by the user 2026-11-08** ("not such a horrible miss"), so this item is closed at 7.66 TFLOP/s.
-  10. [ ] autotuner speed (user order: "our autotuner was slow to pick the 20 kernels to run... ~40 s, that's unacceptable"). Measured with `--features zyx/time` over a budget-20 `llama prefill_gemm`: `default_epilogue` 77.7 ms/call (3,123 calls, 242.8 s), inside it `constant folding` 14.0 ms/call (12,593 calls), `fold_accs` 14.2, `algebraic_simplification` 10.1, `simplify_fused` 8.2; the optimization applies themselves are 4–128 µs. So the cost is the epilogue re-run per candidate, not the search or the GPU: ~34 s of a 41 s shape is host passes, against the 30 µs/invocation budget in AGENTS. Done when every pass in `default_optimizations` — each `MakeOpt` and its `apply`, timed individually, not
-`default_epilogue` as a whole and not the list summed — stays under **30 µs per invocation** at the op counts a
-budget-20 prefill run reaches, with single-digit seconds of search per shape and the same winners as today (a
-faster search that changes the ranking is not the fix). Item corrected by the user 2026-11-08: the earlier
-wording put the 30 µs on `default_epilogue`, which is the wrong unit — the epilogue is a pipeline of passes, and
-the budget is per pass inside the optimization list.
-  11. [x] `llama swiglu` prefill: `zyx-bench llama swiglu` at `[1x128x3072]` hangs. With the cumulative lane bounds
-  in `c112fc1e`, the search now finishes in ~100–155 ms and the top candidates lower to ~1,070 ops (was a 92k-op
-  tensor-recipe config, then an 11k-op staging config), but candidate `[(10,10),(6,0)]` (tile-and-stage + local
-  staging) does not return from its launch before the 10 s cap. `ZYX_DRY_RUN=1 ZYX_SEQ=10:10,6:0` compiles it in
-  seconds (grid `[4,2048,1]`, `group_range 0..=3`, `local_range 0..=3`, `group_range 0..=2047`), and the first three
-  measured candidates return in ~400 ms each, so it is a runtime hang in that staged configuration (shared-memory
-  fill / barrier ordering or a bad loop length), not the size filters. Done when the bench completes both sizes
-  inside the 10 s cap with every measured candidate returning. **Verified 2026-11-11: no longer reproduces.** The
-  bench completes both sizes (`[1x1x3072]`, `[1x128x3072]`, `done len=393216`) in 6.70 s wall, and the
-  once-hanging candidate forced with `ZYX_SEQ="10:10,6:0"` completes in 6.40 s; five repeated forced runs exit 0
-  under the 10 s cap. Note: the done-condition already passed before any work, so this tick records the observed
-  behaviour, not a fix.
+- [ ] llama end-to-end (bench/table; release + HN untracked)
+  - [x] lm_head illegal address: pad skipped vector-load guard
+  - [x] lm_head n=1000 hang: slow sweep, not a hang
+  - [x] llama e2e: 5/5 tokens match llama.cpp
+  - [x] llama e2e: f32 residual, f16 matmul operands
+  - [x] run provenance: n_launches + code commit
+  - [x] remove viz feature leak (server on 4242)
+  - [ ] staged ldmatrix pass + recipe configs
+  - [x] competitor scripts: tinygrad, torch, llama.cpp
+  - [x] BENCHMARKS.md GEMM table, both phases
+  - [x] populate bench.db with 1000 launches
+  - [x] retrain cost model (7.66 TFLOP/s accepted)
+  - [ ] autotuner speed: every pass under 30 µs
+  - [x] llama swiglu prefill hang: no longer reproduces
 
-- [x] `05_misc` codegen size: the suite went 160 s -> **14.55 s, 88 passed**, because two tests owned 147 s of it (86 tests finished in 12.75 s; `matmul_disk` and `matmul_f16_large` each exceeded the 10 s cap alone, with 73.3% / 93.3% of their samples inside `libnvrtc` on a single giant unrolled kernel of 22,004 / 45,061 emitted lines).
-  1. [x] `matmul_disk` under 10 s again (historically it was not slow; `timeout 10` on the test exits 0). Shape is x[256,512] i64 by y[512,368] i64. **Cause: the tensor recipe had no dtype gate.** `opt_tensor_recipe` checked only that the device offers some `mma` variant, so an i64 matmul was handed the m16n8k8 f16 lane recipe (seq `[(8,14)]`); no `mma` can absorb i64, and `device_epilogue` devectorized the 64x8x16 tile into 22,513 scalar ops (22,004 emitted lines) — 9 s of NVRTC inside one launch. Fix: the recipe now derives the operand and accumulator dtypes from the kernel (load source, register storage) and keeps only variants whose `a_dtype`/`b_dtype`/`c_dtype` match, the same gate `opt_tensorize_tiled` applies when it matches a region. **Evidence: `matmul_disk` 0.33 s (was >10 s, killed at the cap), exit 0; applied ops 108 / lowered ops 108 (was 22,513), grid [256,368,1], winner `[(2,6)]`, search 120 items / 1 ms (was 503 / 68 ms); `cargo test --release --lib` 124 passed; `matmul_f16`, `matmul_f16_nt`, `matmul_1`, `matmul_2`, `batched_matmul`, `dot6`, `layer_norm` unchanged (0.26–3.6 s each).** Side effect surfaced, reported not fixed: with the recipe no longer winning for f32, `bench_mm1` (f32 1024^3) picks `[(0,11),(1,0),(0,1),(0,6),(6,0)]` and reports `Wrong matmul`; the bad step isolates to `opt_local_staging` config 0 (`ZYX_SEQ="0:11,1:0,0:1,0:6,6:0"` fails, dropping `0:6` passes), i.e. a pre-existing `local_staging` bug the recipe used to hide.
-  2. [x] `opt_local_staging` wrong result (unmasked by item 1; user order: fix it next). f32 1024³ `bench_mm1` returned `Wrong matmul` for `ZYX_SEQ="0:11,1:0,0:1,0:6,6:0"`. **Cause: the fill decoded its flat index with the padded slot stride.** `Axis::compact` is the *padded* slot stride (`stride = len*stride + BANK_PAD`), but the fill's coordinate decode divided `flat` by it (`coord = flat / compact % len`). With `BANK_PAD = 1` the slot layout has gaps, so `encode(decode(flat)) != flat` and the fill wrote an element into a slot belonging to a different coordinate. Evidence: setting `BANK_PAD = 0` made the failing sequence pass (isolating padding as the trigger). Fix: decode with the *dense* cumulative strides (the logical tile that `flat` enumerates), leaving `compact` for the slot layout only; coverage still holds because `tile_len >= prod(len)`, and the loop's tail beyond `prod(len)` re-fills a slot with its own element (idempotent). **Evidence: the forced sequence now passes (0.53 s) and the free search passes (0.45 s); `cargo test --release --lib` 124 passed; `05_misc --skip matmul_f16_large` 87 passed in 12.64 s (bench_mm1 included); `zyx mma_nt` 453–534 GFLOP/s over three runs, i.e. unchanged within noise.**
-  3. [x] `matmul_f16_large` under 10 s, same evidence as item 1 (512x4096 by 4096x1024 f16 -> f32). **Cause: `TensorRecipe::apply` applied the lane splits even when `opt_tensorize_tiled` matched no region.** The raw tiled form is not a tensor kernel, so `devectorize` expanded the lanes³ product into scalars: a 64x64x64 matmul (`8:0`) emitted a 262,144-element product, refused at 835,974 ops; the large shape's winner (`8:2`) applied 4410 / lowered 5017, 45,061 emitted lines, ~9 s of NVRTC. Fix: build the tiled kernel on a copy and commit only if tensorization produced a config; otherwise drop the config. **Evidence: `matmul_f16_large` 1.96 s, exit 0, winner `[(9,24),(0,16),(0,0),(6,1)]`, applied 85 / lowered 140; `05_misc` 88 passed in 14.55 s; `cargo test --release --lib` 124 passed; `zyx mma_nt` 465–521 GFLOP/s unchanged; forced `matmul_f16 8:0` passes instead of hitting the devectorize ceiling.**
-  4. [x] mma fragments are destroyed by `devectorize` whenever a lane bundle can't stay a vector (user order: "The op stack is the right approach, not gating"). **Cause: `devectorize_unroll_one` cloned the `wmma` once per lane**, handing each clone a single element where the instruction reads the packed slots: the generated CUDA went from `r33 = *reinterpret_cast<const half2*>(&p111[r32]); wmma(...,&r33,...)` to two `wmma(...,&r24,...)` / `wmma(...,&r26,...)` calls over separate `half` scalars (`r25` is a `long`), i.e. garbage instead of a fragment — wrong for every block, not just the padded ones. Triggers: the pad guard on a vector operand (`8:2,4:0`), and a split *after* the tensor recipe. Fix in `devectorize_unroll_one`: when the lane set makes up exactly one fragment (`len x elements(operand) == the instruction's slot count`) and the accumulator is not lane-shaped, pack the per-lane values into the `Op::Stack` the tensorizer already emits and keep one instruction; a lane-shaped accumulator still duplicates (one output tile per lane, each clone carrying its own fragment). `pad.rs` stays untouched — no gating was needed. **Evidence: forced `matmul_f16_large 8:2,4:0` and `8:2,4:1` now pass with pad applied (applied 4410 / lowered 4457, grid [8,16,1]; before: max |err| 6.0), `8:2` and `4:0,8:2` unchanged; `cargo test --release --lib` 124 passed including `split_duplicates_the_wmma` (32 mma from the 4x8 split, so duplication is preserved) and `matches_llama_prefill_seed_ir`; `05_misc` 88 passed in 14.44 s; `zyx mma_nt` 455–522 GFLOP/s unchanged; the pad reproducer `ZYX_SEQ="0:23,8:40,4:2" ZYX_SHAPE="64x128x4096:2" zyx-bench zyx softmax` exits 0 with 38 applied / 38 lowered ops, grid [64,128,1].**
+- [x] 05_misc codegen size: 160 s -> 14.55 s, 88 passed
+  - [x] matmul_disk under 10 s: tensor recipe lacked dtype gate
+  - [x] opt_local_staging wrong result: padded slot stride decode
+  - [x] matmul_f16_large under 10 s: recipe without tiled match
+  - [x] mma fragments: stack lanes into one fragment
 
 - [ ] backend
   - [x] c (clang)
     - [x] optional openmp
   - [x] cuda
     - [x] fix async memcopy
-    - [x] tensor cores (`opt_tensorize` MakeOpt; CUDA m16n8k8 f16→f32/f16 variants; other dtype variants open)
-    - [ ] fix load calculation (no CUDA-specific accounting: the cost model is generic in kernel/cost.rs; `compute` is still a TODO estimate)
-    - [x] fix event memory leaks, all events must be properly destroyed
-    - [x] channel for context, because cuda context is thread local
-    - [x] rewrite PTX compiler to have proper register manager that handles constants and everything
+    - [x] tensor cores (m16n8k8 f16; other variants open)
+    - [ ] fix load calculation (generic cost model only)
+    - [x] fix event memory leaks
+    - [x] thread-local CUDA context channel
+    - [x] PTX compiler proper register manager
   - [ ] hip
   - [x] opencl
-    - [ ] fix load calculation (generic cost model only; same codegen tile / rank-3 load todo arms as CUDA)
+    - [ ] fix load calculation (generic cost model only)
   - [ ] vulkan
     - [x] initialization
     - [x] memory management
     - [x] spirv compiler (to spirv binary)
-      - [ ] replace opcodes and other things with enums instead of constants (`OpCode` enum landed in codegen/spirv.rs; storage classes, builtins, exec modes and GLSL ext-instruction ids are still numeric)
+      - [ ] replace numeric storage classes/builtins with enums
     - [x] kernel launch
   - [x] wgpu
-    - [ ] fix load calculation, probably using Atomic usize (`free_bytes` is a plain `Dim` initialised to a hardcoded 1 GB)
-    - [x] wgsl compiler (superseded the spirv path; the backend submits `ShaderSource::Wgsl`, `Op::Spirv` is rejected)
-    - [ ] launch path: `PlanPartition::WGPU` + uniform params buffer (`backend/mod.rs` still `todo!("schedule launch run for wgpu")`; only autotune `launch_timed` can launch today)
+    - [ ] fix load calculation (free_bytes hardcoded 1 GB)
+    - [x] wgsl compiler (supersedes spirv path)
+    - [ ] launch path: PlanPartition::WGPU + uniform buffer
   - [ ] tenstorrent
     - [x] memory pool, allocation, movement
     - [x] cpp runtime
@@ -63,50 +49,53 @@ the budget is per pass inside the optimization list.
     - [x] reduce tile (Op::ReduceTile + emitting pass)
     - [x] matmul tile (matmul_tile builder, exercised by tt_gemm)
     - [x] transpose tile (transpose_tile builder)
-    - [ ] core-to-core memory copy (NoC unicast/multicast between Tensix cores; needed for cooperative kernels: multicast-A scaling, cross-core reductions, halo exchange)
+    - [ ] core-to-core memory copy (NoC unicast/multicast)
+
 - [ ] runtime
   - [x] fix event handling
   - [x] node deallocation after realization
-  - [x] staging buffers fully removed — all pool_to_pool copies go directly into the destination buffer (file mapping read straight into dst, device DMA into dst host buffer, `Pool::Host` as the only staging pool); supersedes "clean up completed transfer events to free host staging buffers early" (transfer events were also removed — worker owns foreign-buffer lifetime)
-  - [x] when promoting to graph, promote the whole kernel without materializing
-  - [x] add contiguous op - it calls add_store and forces kernel fusion split, in egraph this works the same
-  - [ ] custom kernels: zyx-IR kernels + inline asm are public and tested (`kernel/custom.rs` `source`/`asm`, 08_graph `custom_kernel_*`); a source-only foreign C/CUDA/SPIR-V kernel is still unreachable (`push_back` is `pub(crate)`)
-  - [ ] user-supplied passes in the autotune: `BeamSearch::run` takes `&[MakeOpt]`, but realize hardcodes `Kernel::default_optimizations()`
-  - [ ] kernel cache on disk (user order, needed for the release / hardware corpus, not for development). Today the cache is in-process only — `Runtime` holds `kernel_map: Map<Kernel, KernelId>`, `programs: Map<KernelId, DeviceProgramId>` and `timings: Map<ProgramId, u64>` (`runtime.rs:433-435`), all dropped with the process. `autotune.save_to_disk` is still in `~/.config/zyx/config.json` but nothing in the crate reads it (`grep -rn save_to_disk` → no hits), so the setting is inert and the persistence it used to drive is gone. Restore it: the top kernels (the winner per tuned seed — IR, measured nanos, device) written under the config cache dir (`$XDG_CONFIG_HOME/zyx/cache/`, the same warm cache the docs already assume) and loaded at startup so a repeat run skips the search it has already paid for. Open design before implementing: what is persisted (winner only, or the whole candidate set), the cache key, and the invalidation rule (device, `code_version`, budget). Done when a cold process reuses them: the same kernel hash wins as in the run that wrote the cache, the search is not re-executed (wall time ≈ launch time), and an entry from another device or `code_version` is rejected instead of reused — evidenced by the printed winner hash and nanos in `bench.db` for both runs.
+  - [x] staging buffers fully removed (direct pool-to-pool)
+  - [x] whole-kernel graph promotion without materializing
+  - [x] contiguous op (forces fusion split)
+  - [ ] custom kernels: source-only foreign kernel unreachable
+  - [ ] user-supplied passes in autotune
+  - [ ] kernel cache on disk (release/hardware corpus)
+
 - [ ] graph
   - [x] autograd
     - [x] fix t6 test
-    - [x] proper backprop, since now we don't quite need to calculate requires_grad_nodes, those are now in gradient_tape
+    - [x] proper backprop via gradient_tape
     - [x] fix realize function with gradient tape
   - [x] all dim reduce
-  - [x] cache Map<(Kernel, Optimizations), Program> instead of Map<IRKernel, Program>
+  - [x] cache Map<(Kernel, Optimizations), Program>
   - [x] improve reshape node
     - [x] merges, splits, reshapes of non reduce axes
     - [x] inserting new loops to the end of the kernel
   - [x] improve expand node (should almost never store)
   - [x] improve permute node (should never store)
   - [x] improve pad node (should almost never store)
-  - [x] pad could also work even with kernels that store stuff, just pad the store view
+  - [x] pad kernels that store: pad the store view
   - [x] cost model needs to account for
     - [x] tensor reuse (known thanks to reference counts)
     - [x] shared memory pressure (loads + stores)
     - [x] register memory pressure (spill)
     - [x] global memory pressure (loads + stores)
   - [x] fix is expandable conditions
-  - [ ] binary op improved fusion (with dependent loads and stores)/ full fusion — dependent load/store fusion landed in the kernelizer; full fusion does not (a store still opens a fresh load kernel, multi-consumer classes duplicate)
-  - [ ] tenstorrent tilization pass inside egraph as a variant (timing decides; settle boundary placement vs opaque custom kernels) — `tt_tile` exists as a device-epilogue lowering, not an egraph/timing variant
-  - [ ] improve heuristics for cost based duplication and splitting for both movement and reduce ops separately in the egraph — still structural predicates only (outputs>1 / contains_stores / preceded_by_reduce); no cost model is consulted
-  - [ ] tests for fusion, test will create it's own graph and check how the fused kernel looks
-    - [ ] softmax fusion test (eventually should be single kernel) — UNCHECKED: no test in zyx/tests asserts fused kernel count/shape
+  - [ ] full binary op fusion (multi-consumer classes duplicate)
+  - [ ] tenstorrent tilization as egraph variant
+  - [ ] cost-based duplication/splitting heuristics (not structural)
+  - [ ] tests for fusion, checking the fused kernel shape
+    - [ ] softmax fusion test (should be single kernel)
     - [ ] just asserts that various graphs fuse into single kernel
   - [x] scheduling to multiple devices
   - [x] automatic dropping of unneeded tensors
-  - [x] deduplicate tensor loads (same-buffer/same-index CSE with WAR invalidation in kernel/fold_constants.rs; intra-kernel only, no cross-kernel sharing)
+  - [x] deduplicate tensor loads (same buffer/index)
   - [ ] automatic sharding across devices
   - [x] add assign node to the graph
   - [x] add contiguous node to the graph
-  - [ ] add user ability to add pattern matching of custom kernels to egraph
-  - [x] static graphs (FrozenTape) - unfortunately necessary for very high performance networks to achieve hundreds of millions of tensor ops/second - just add replay method for tape
+  - [ ] user pattern matching of custom kernels in egraph
+  - [x] static graphs (FrozenTape replay)
+
 - [ ] kernel
   - [x] default optimizations
   - [x] indexing for padded views
@@ -137,18 +126,19 @@ the budget is per pass inside the optimization list.
       - [x] of loads
       - [x] of ops
   - [x] register tiling (needs improvement)
-  - [x] variable op for dynamic constants (that is scalars that should be kernel args, not baked)
-  - [x] fully symbolic shapes (ExprId/shape_id, dim tensors, resolve_symbolic; only serialize-by-value remains, tracked separately)
-  - [x] local memory tiling for matmul like kernels (`opt_local_staging` stages the lane-invariant operand; the matmul recipe combines lanes + per-thread tile + staging; both-operand staging open)
-  - [x] wmma optimization pass (automatic tensorization: `opt_tensorize` MakeOpt, timing decides, device-gated on `tensor_cores` + `mma_variants`; CUDA m16n8k8 done, TT `matmul_tile` builder still `todo!()`)
-  - [ ] tiling optimization passes for tenstorrent (epilogue passes: tiling + reader/writer section generation; `tt_tile` + `tt_dataflow_select` live in the device epilogue)
+  - [x] variable op for dynamic constants
+  - [x] fully symbolic shapes (serialize-by-value separate)
+  - [x] local memory tiling for matmul kernels
+  - [x] wmma optimization pass (automatic tensorization)
+  - [ ] tiling optimization passes for tenstorrent
     - [x] elementwise
     - [x] reduce (Add/Max only)
       - [x] scalar
       - [x] row
       - [x] col
     - [x] matmul (single-tile)
-    - [ ] transpose (no `TtEmit::Transpose`, `DmReadTransposed` never constructed, `transpose_tile` is `todo!()`)
+    - [ ] transpose (no Transpose emit)
+
 - [ ] tensor
   - [x] gather
   - [x] scatter
@@ -178,20 +168,21 @@ the budget is per pass inside the optimization list.
   - [ ] sort
 
 - [ ] dtype
-  - [x] quantized dtypes (full QDType enum Q4_0..IQ4_XS with GGUF codes; 16_quantization green)
-  - [x] make binary if one side is scalar do autopromotion to the dtype of the dtype of the non-scalar tensor (rank-0 operand cast to the other operand's dtype, tensor/mod.rs:3751; only rank-0 counts as scalar)
+  - [x] quantized dtypes (Q4_0..IQ4_XS, GGUF codes)
+  - [x] scalar binary ops autopromote to non-scalar dtype
   - [x] optional implicit dtype casts
+
 - [x] index select, gather, remove last loop
-- [ ] better spreading of kernel variants in autotune across threads (instead of batched, where one thread can have complex kernel, blocking other threads with simpler kernels)
-- [ ] improved memory mapper with graph-level decision making — PARTIAL: one command queue per graph with graph-wide last-use deaths; buffer reuse planning is per backend (OpenCL/Vulkan `AllocPlan::Reuse`, CUDA best-fit, C on the fly), no cross-device/cross-pool mapper
-- [x] tensor layout (RowMajor, TileMajor for Tenstorrent, Sharded for multi-device) — OBSOLETE, will not implement: layout lives structurally in movement ops (tilize/untilize chains), no per-tensor layout tags, no layout_map, no native_layout
+- [ ] spread autotune variants across threads (not batched)
+- [ ] improved memory mapper (graph-level decisions, partial)
+- [x] tensor layout (obsolete: lives in movement ops)
       - Runtime stores layout per-tensor in `layout_map`
-      - Scheduler converts layout during pool migration when `src_layout != dst_layout`
+      - Scheduler converts layout during pool migration
       - Backends declare native layout via `DeviceInfo::native_layout`
-      - Conversion utility: row-major ↔ tile-major byte rearrangement
+      - Conversion utility: row-major ↔ tile-major
 - [x] tensor cores
-    - [x] tensor core ops (`Op::Wmma` + `opt_tensorize`; m16n8k8 helpers in codegen/cuda.rs and codegen/ptx.rs)
-  - [x] local memory tiling (automatic shared memory tiling: `opt_local_staging` stages into local memory as a MakeOpt, gated on `DeviceInfo::local_mem_size`/`max_local_threads`; recipe combines it with lanes + per-thread tile)
+    - [x] tensor core ops (`Op::Wmma` + `opt_tensorize`)
+  - [x] local memory tiling (automatic shared memory staging)
     - [x] merge all mul + add into mad instructions
   - [ ] local memory tiling
     - [x] local tiling for accumulators in large reduces
@@ -199,9 +190,9 @@ the budget is per pass inside the optimization list.
   - [ ] multi step reduce (with multiple accumulators)
   - [ ] streaming dual reduce ops (e.g. streaming softmax)
   - [x] optimizer with search
-  
+
 - [ ] testing
-  - [x] fuzzy tester — DELETED as obsolete in 7842e9f6; no property/fuzz harness remains (the unary/movement/binary sub-items died with the crate)
+  - [x] fuzzy tester (deleted as obsolete)
   - [x] pad_2
   - [x] reshape_permute_1
   - [x] rope_1
@@ -233,52 +224,52 @@ the budget is per pass inside the optimization list.
   - [x] mnist
   - [x] RNN
   - [ ] resnet
-  - [x] llama (examples/llama: GGUF load, sampling loop, tests under examples/llama/tests)
-    - [ ] optimize speed of llama 3b example (after tensorize + smem tiling land; profile first: matmul vs bandwidth vs fusion bound)
-  - [x] phi LLM (examples/phi: safetensors load, generation, MMLU eval)
-  - [ ] tenstorrent 300 tflop gemm — example + MT/NT/subblock autotune landed (examples/tt_gemm); target unmet: README reports ~2.4–3.1 TFLOP/s, multicast/L1 sharing missing, `KT_TILES` is a fixed const
+  - [x] llama (GGUF load, sampling loop, tests)
+    - [ ] optimize speed of llama 3b example
+  - [x] phi LLM (safetensors, generation, MMLU eval)
+  - [ ] tenstorrent 300 tflop gemm (2.4–3.1 TFLOP/s now)
 
-- [x] device/pool global handles (device-layer rewrite, RT/slab/TensorId/tape unchanged) — DONE (commits `1c9ef7bb` separate pool locks, `362f344f` device API refactor, `3343d4ea` backend rewrite)
-  - [x] add Copy `Pool` enum (Host, Disk(u16), Cuda(u16), TT(u16), ...) as the only way to access memory pools
-  - [x] add Copy `Dev` enum as the only way to access devices, with `Dev::pool() -> Pool`
-  - [x] wrap each concrete pool (HostMemoryPool, DiskMemoryPool, ...) in its own global `Arc<Mutex<>>`, one per ordinal (per-GPU separate globals), in per-variant `OnceLock` tables preserving arbitrary device counts
-  - [x] lazy init on `Pool::alloc` / `Dev::compile` (no uninit access path, just initialize); `Dev::launch` and `Pool::copy`/`free` assume already-initialized devices
-  - [x] device API (alloc, free, copy, compile, launch) as the only global lock takers; per-op tensor path touches no globals
-  - [x] `pool_to_pool(dst, src)` lock order: dst then src; host pool lock is outermost — never held while blocking on a device worker
-  - [x] change `BufferId` to hold `pool: Pool` + buffer id, stays `Copy`; `buffer_map` unchanged
-  - [x] remove `MemoryPool` and `Device` dispatch enums, call concrete pool/device methods directly on resolved globals
-  - [x] land always-compiled backends first, feature-gated (wgpu, tenstorrent) after
-- [x] symbolic dims — SUPERSEDED by a different design (`db19ea1e` hashconsed symbolic): instead of thread-local `Sym` slots, a runtime-owned **append-only `ExprTable`** interns every symbolic expression into a canonical `ExprId` (structural hashconsing, stable forever); `TensorData::Symbolic { expr, rc }` carries rc and holds no edges, so retain/release touch only the tensor's own rc
-  - [x] hashconsed interning of symbolic expressions (Const/Variable/Cast/Unary/Binary/Stack2–5) in an append-only slab
-  - [x] `Symbolic` tensors hold no edges — lifecycle is trivial
-  - [ ] serialize symbolic expressions by value, never by id (disk backend, AOT, py bindings)
-- [x] TensorData rewrite for hashconsed symbolics — DONE, with one deviation: shapes reference interned `shape_id: ExprId` (consts interned in the ExprTable rather than inline per-dim slots); compute tensors live on the (process-global, not yet per-thread) slab with u32 ids and iterative rc (exact reclamation)
-- [ ] graph ownership via Rc (kills ambient RT for graph paths) — NOT started; graphs still live in the RT slab, referenced by `graph_id`, and the tape resolves through ambient RT
-  - [ ] `TensorData::Graph(Rc<RefCell<Graph>>)` so `x + y` on two graph tensors resolves the shared graph from the operands (`Rc::ptr_eq`, else error)
-  - [ ] mixed eager/graph binary ops promote the eager operand into the graph found on the other operand
-  - [ ] `gradient` hangs off the graph itself (it already lives in class space); tape becomes a thin borrow of the graph from a tensor
-  - [ ] one-directional Rc rule: graph never owns `Graph`-variant tensors back (leaves stored as non-graph variants only)
-  - [ ] `RefCell` borrow discipline: realize is the only mutation while pushes are outstanding; debug_assert the contract
-  - [ ] decide Drop-driven kernel materialization lock order, or keep explicit teardown like the current death path
-- [ ] tape: registered-state realize with verification (self-registration + checked explicitness)
-  - [ ] `Tape::with_outputs(&net, &optim)` as the (only) way to construct a tape; modules and optimizers self-register their persistent tensors with the tape at construction/`update`
-  - [ ] `tape.output(&loss)` materializes and returns an output — grads themselves are NEVER realized (they are graph intermediates consumed by `update` in-graph; strictly lazier than jax `value_and_grad`)
-  - [ ] `realize(...)` verification, asymmetric: every internally-registered tensor must be covered by the user-passed set (missing → loud error naming the owner, e.g. "momentum state for param X unrealized"); passed-but-unregistered args are fine (the registered set is a floor, not an equality)
-  - [ ] registrations are weak: they die with the tensor's rc via the existing death paths (no stale entries, no artificial lifetime extension)
-  - [ ] registration ties to the `update` call, not to `gradient` — forward+backward-only flows (gradient accumulation, eval-with-grad) register nothing and never trip the check
-  - [ ] jax/torch comparison: neither enforces this (jax drops opt_state silently; torch moves the ritual to optimizer construction and silently skips `grad: None` params) — zyx gets both self-registration (can't forget) and verification (convention becomes a checked invariant)
+- [x] device/pool global handles (device-layer rewrite)
+  - [x] Copy Pool enum (Host, Disk, Cuda, TT, ...)
+  - [x] Copy Dev enum, `Dev::pool() -> Pool`
+  - [x] per-ordinal Arc<Mutex> pool globals
+  - [x] lazy init on alloc/compile
+  - [x] device API is the only global lock taker
+  - [x] pool_to_pool lock order: dst, then src
+  - [x] BufferId holds pool + id, stays Copy
+  - [x] drop dispatch enums, call concrete methods
+  - [x] always-compiled backends first, feature-gated after
+- [x] symbolic dims (hashconsed ExprTable)
+  - [x] hashcons expressions in append-only slab
+  - [x] Symbolic tensors hold no edges
+  - [ ] serialize symbolic expressions by value
+- [x] TensorData rewrite for hashconsed symbolics
+- [ ] graph ownership via Rc (not started)
+  - [ ] TensorData::Graph(Rc<RefCell<Graph>>) per operand
+  - [ ] mixed eager/graph ops promote the eager operand
+  - [ ] gradient hangs off the graph itself
+  - [ ] graph never owns Graph tensors back
+  - [ ] RefCell: realize is the only mutation
+  - [ ] decide Drop-driven materialization lock order
+- [ ] tape: registered-state realize with verification
+  - [ ] Tape::with_outputs; modules self-register state
+  - [ ] tape.output materializes; grads never realized
+  - [ ] realize verification: registered set is a floor
+  - [ ] registrations are weak (die with rc)
+  - [ ] registration ties to update, not gradient
+  - [ ] jax/torch lack this; zyx checks it
 - [ ] user-facing API polish (zyx-nn / examples)
-  - [ ] unify shape-argument types across nn constructors (`i64` in Linear vs `impl IntoIterator<Item = impl Into<Tensor>>` in LayerNorm vs array literals in reshape)
-  - [ ] training-step ergonomics ride on the registered-state tape above (no more `net.iter().chain(optim.iter()).chain([&loss])` ritual)
+  - [ ] unify shape-argument types across nn constructors
+  - [ ] training-step ergonomics via registered-state tape
 - [ ] per-thread runtimes (later, after device layer)
-  - [ ] per-thread Runtime (slab + kernels + rng/config as thread-locals), no cross-thread tensors
-  - [ ] shared layer is only backends/devices/kernel cache behind `Arc<Mutex<>>`
-- [ ] python bindings — PARTIAL: `argwhere` absent in Rust and Python, no public tilize/untilize binding
+  - [ ] per-thread Runtime (thread-locals, no cross-thread tensors)
+  - [ ] shared: backends/devices/cache behind Arc<Mutex>
+- [ ] python bindings (partial: argwhere, tilize missing)
   - [x] basic tensor creation (randn, zeros, ones, from numpy)
-  - [x] elementwise ops: abs, cos, cosh, exp, floor, ln, log2, relu, rsqrt, sigmoid, sin, sinh, sqrt, tan, tanh, leaky_relu, celu, elu, softplus, exp2, mish, quick_gelu, selu, hard_sigmoid, swish, cmplt, cmpgt, maximum, minimum, clamp
-  - [x] elementwise ops: bitnot, ceil, erf, frac, isnan, isinf, isclose, log10, rad2deg, deg2rad, round, sign, square, trunc, logical_and, logical_or
-  - [x] reduction ops: sum, mean, var, std, min, max, prod (with dim, keepdim, dtype, unbiased)
-  - [x] shape ops: reshape, transpose, permute, squeeze, unsqueeze, flatten, expand, t
+  - [x] elementwise ops (trig, exp, relu, activations)
+  - [x] elementwise ops (bitnot, isnan, rounding, logic)
+  - [x] reductions: sum, mean, var, std, min, max, prod
+  - [x] shape ops: reshape, transpose, permute, squeeze, expand
   - [x] linear algebra: matmul, dot
   - [x] nn ops: softmax, log_softmax, cross_entropy, conv2d
   - [x] indexing: slice, index_select, gather, scatter

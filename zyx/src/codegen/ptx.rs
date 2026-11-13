@@ -802,14 +802,15 @@ impl Kernel {
                             let reg = comp.new_var(op_id, dtype, access_shape.clone(), rcs[&op_id]);
                             let len = u16::try_from(Compiler::slot_len(&access_shape)).expect("slot count");
                             for i in 0..len {
-                                _ = writeln!(
-                                    comp.body,
-                                    "{}mov.b{} %r{}, %r{};",
-                                    comp.indent,
-                                    dtype.bit_size(),
-                                    reg + i as u16,
-                                    base + at + i as u16
-                                );
+                                let dst = reg + i as u16;
+                                let src = base + at + i as u16;
+                                // A predicate register moves as `mov.pred`:
+                                // `mov.b8` is not an instruction ptxas takes.
+                                if dtype == DType::Bool {
+                                    _ = writeln!(comp.body, "{}mov.pred %r{dst}, %r{src};", comp.indent);
+                                } else {
+                                    _ = writeln!(comp.body, "{}mov.b{} %r{dst}, %r{src};", comp.indent, dtype.bit_size());
+                                }
                             }
                         }
                     }
@@ -888,13 +889,14 @@ impl Kernel {
                             let regs = comp.components_of(self, x, &dtypes)?;
                             let base = comp.var_map[&dst_buf];
                             for (i, &r) in regs.iter().enumerate() {
-                                _ = writeln!(
-                                    comp.body,
-                                    "{}mov.b{} %r{}, %r{r};",
-                                    comp.indent,
-                                    dtype.bit_size(),
-                                    base + at + i as u16
-                                );
+                                let dst = base + at + i as u16;
+                                // A predicate register moves as `mov.pred`:
+                                // `mov.b8` is not an instruction ptxas takes.
+                                if dtype == DType::Bool {
+                                    _ = writeln!(comp.body, "{}mov.pred %r{dst}, %r{r};", comp.indent);
+                                } else {
+                                    _ = writeln!(comp.body, "{}mov.b{} %r{dst}, %r{r};", comp.indent, dtype.bit_size());
+                                }
                             }
                         }
                     }

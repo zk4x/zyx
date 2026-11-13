@@ -111,11 +111,11 @@ impl Kernel {
     /// let mut kernel = Kernel::new(Dev::Auto);
     /// let n = 4;
     /// let inp = kernel.param(DType::F32);
+    /// let out = kernel.param_mut(DType::F32);
     /// let len = kernel.const_idx(n);
     /// let gidx = kernel.group_range(0, len);
     /// let loaded = kernel.load(inp, gidx);
     /// let doubled = kernel.add(loaded, loaded);
-    /// let out = kernel.param_mut(DType::F32);
     /// kernel.store(out, doubled, gidx);
     ///
     /// let compiled = kernel.compile()?;

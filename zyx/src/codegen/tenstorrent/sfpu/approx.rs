@@ -99,8 +99,7 @@ pub const TWINS: [(u32, u32); 6] = [
 
 impl MathMode {
     /// The mode `TT_MATH` names: `precise` (also unset) or `approx`. Anything
-    /// else is refused, naming the variable, rather than silently running the
-    /// mode the user did not ask for.
+    /// else is refused, naming the variable.
     pub fn parse(value: Option<&str>) -> Result<MathMode, String> {
         match value {
             None | Some("") | Some("precise") => Ok(MathMode::Precise),
