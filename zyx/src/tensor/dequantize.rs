@@ -399,7 +399,7 @@ fn decode_grid(hex: &str, bits_per_elem: u32, map: &[f32], rows: usize, cols: us
 /// Builds a `[rows, cols]` F32 lookup table from a packed hex grid.
 fn grid_tensor(hex: &str, bits_per_elem: u32, map: &[f32], rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
     let vals = decode_grid(hex, bits_per_elem, map, rows as usize, cols as usize)?;
-    Tensor::from_vec(vals, [rows, cols])
+    Tensor::from(vals).reshape([rows, cols])
 }
 
 /// A byte column of `blocks` as a `[num_blocks, len]` U8 view.
@@ -473,7 +473,7 @@ fn lut_row(table: &Tensor, idx: &Tensor, cols: i64) -> Result<Tensor, ZyxError> 
 
 /// Expands a `[num_blocks, 1]` U8 into 8 F32 sign lanes (`+1`/`-1`).
 fn sign_bits(byte: &Tensor) -> Result<Tensor, ZyxError> {
-    let shifts = Tensor::from_vec(vec![0u8, 1, 2, 3, 4, 5, 6, 7], [8i64])?;
+    let shifts = Tensor::arange(0u8, 8u8, 1u8)?;
     let bits = ((byte >> shifts) & 1u8).cast(DType::F32);
     Ok(Tensor::from(1f32) - bits * 2f32)
 }
@@ -482,13 +482,13 @@ impl Tensor {
     /// Dequantizes GGUF super-blocks to a flat dense float tensor with plain
     /// tensor ops. `self` must be the raw `[num_blocks, block_bytes]` U8
     /// tensor from [`Tensor::load_gguf`]; output is `[num_blocks * elems_per_block]`
-    /// in `dtype` (typically F32). All 20 [`QDType`] variants are supported.
+    /// in `dtype` (typically F32). All 24 [`QDType`] variants are supported.
     ///
     /// # Example
     ///
     /// ```rust no_run
     /// use zyx::{DType, QDType, Tensor};
-    /// let blocks = Tensor::from_vec(vec![1u8; 36], [2i64, 18i64])?;
+    /// let blocks = Tensor::from(vec![1u8; 36]).reshape([2i64, 18i64])?;
     /// let x = blocks.dequantize(QDType::Q4_0, DType::F32)?;
     /// # Ok::<(), zyx::ZyxError>(())
     /// ```
@@ -531,6 +531,10 @@ impl Tensor {
             QDType::IQ1_M => deq_iq1_m(self)?,
             QDType::IQ4_NL => deq_iq4_nl(self)?,
             QDType::IQ4_XS => deq_iq4_xs(self)?,
+            QDType::TQ1_0 => deq_tq1_0(self)?,
+            QDType::TQ2_0 => deq_tq2_0(self)?,
+            QDType::PQ2_0 => deq_pq2_0(self)?,
+            QDType::PTQ1_0 => deq_ptq1_0(self)?,
         };
         let n = out.numel();
         out.cast(dtype).reshape([n])
@@ -563,7 +567,7 @@ fn deq_q5_0(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let qs = col(blocks, 6, 16)?;
     let (lo, hi) = nibbles(&qs)?;
     let ql = Tensor::cat([&lo, &hi], 1)?;
-    let shifts = Tensor::from_vec((0u32..32).collect(), [32i64])?;
+    let shifts = Tensor::arange(0u32, 32u32, 1u32)?;
     let bits = ((qh >> shifts) & 1u32).cast(DType::U8);
     let q = (ql | (bits << 4u8)).cast(DType::F32) - 16f32;
     Ok(q * d)
@@ -577,7 +581,7 @@ fn deq_q5_1(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let qs = col(blocks, 8, 16)?;
     let (lo, hi) = nibbles(&qs)?;
     let ql = Tensor::cat([&lo, &hi], 1)?;
-    let shifts = Tensor::from_vec((0u32..32).collect(), [32i64])?;
+    let shifts = Tensor::arange(0u32, 32u32, 1u32)?;
     let bits = ((qh >> shifts) & 1u32).cast(DType::U8);
     let q = (ql | (bits << 4u8)).cast(DType::F32);
     Ok(q * d + m)
@@ -736,7 +740,7 @@ fn deq_q8_k(blocks: &Tensor) -> Result<Tensor, ZyxError> {
 fn deq_iq2_xxs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let d = f16le(blocks, 0)?;
     let grid = grid_tensor(IQ2_XXS_HEX, 2, &[8., 25., 43.], 256, 8)?;
-    let ksigns = Tensor::from_vec(hex_bytes(KSIGNS_HEX)?, [128i64])?;
+    let ksigns = Tensor::from(hex_bytes(KSIGNS_HEX)?);
     let mut parts = Vec::with_capacity(8);
     for p in 0..8i64 {
         let u_lo = u32_of(&col(blocks, 2 + 8 * p, 4)?)?;
@@ -762,7 +766,7 @@ fn deq_iq2_xxs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
 fn deq_iq2_xs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let d = f16le(blocks, 0)?;
     let grid = grid_tensor(IQ2_XS_HEX, 2, &[8., 25., 43.], 512, 8)?;
-    let ksigns = Tensor::from_vec(hex_bytes(KSIGNS_HEX)?, [128i64])?;
+    let ksigns = Tensor::from(hex_bytes(KSIGNS_HEX)?);
     let (slo, shi) = nibbles(&col(blocks, 66, 8)?)?;
     let mut sc_parts = Vec::with_capacity(16);
     for i in 0..8i64 {
@@ -822,7 +826,7 @@ fn deq_iq3_xxs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let d = f16le(blocks, 0)?;
     let qs = col(blocks, 2, 64)?;
     let grid = grid_tensor(IQ3_XXS_HEX, 3, &[4., 12., 20., 28., 36., 44., 52., 62.], 256, 4)?;
-    let ksigns = Tensor::from_vec(hex_bytes(KSIGNS_HEX)?, [128i64])?;
+    let ksigns = Tensor::from(hex_bytes(KSIGNS_HEX)?);
     let mut parts = Vec::with_capacity(8);
     for g in 0..8i64 {
         let u = u32le(blocks, 66 + 4 * g)?;
@@ -945,7 +949,7 @@ fn deq_iq4_nl(blocks: &Tensor) -> Result<Tensor, ZyxError> {
     let qs = col(blocks, 2, 16)?;
     let (lo, hi) = nibbles(&qs)?;
     let idx = Tensor::cat([&lo, &hi], 1)?;
-    let kv = Tensor::from_vec(KVALUES_IQ4NL.to_vec(), [16i64])?;
+    let kv = Tensor::from(KVALUES_IQ4NL);
     Ok(lut(&kv, &idx)? * d)
 }
 
@@ -964,10 +968,10 @@ fn deq_iq4_xs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
         sl8p.push((byte >> 4u8) & 15u8);
     }
     let sl8 = Tensor::cat(sl8p.iter(), 1)?;
-    let shifts = Tensor::from_vec(vec![0u16, 2, 4, 6, 8, 10, 12, 14], [8i64])?;
+    let shifts = Tensor::arange(0u16, 16u16, 2u16)?;
     let sh8 = ((sh >> shifts) & 3u16).cast(DType::U8);
     let dl = d * ((sl8 | (sh8 << 4u8)).bitcast(DType::I8)?.cast(DType::F32) - 32f32);
-    let kv = Tensor::from_vec(KVALUES_IQ4NL.to_vec(), [16i64])?;
+    let kv = Tensor::from(KVALUES_IQ4NL);
     let mut parts = Vec::with_capacity(8);
     for g in 0..8i64 {
         let (lo, hi) = nibbles(&col(&qs, g * 16, 16)?)?;
@@ -975,4 +979,81 @@ fn deq_iq4_xs(blocks: &Tensor) -> Result<Tensor, ZyxError> {
         parts.push(lut(&kv, &idx)? * dl.narrow(1, g, 1i64)?);
     }
     Tensor::cat(parts.iter(), 1)
+}
+
+/// `block_tq1_0`: F16 scale, 48 trit bytes (5 base-3 trits each) and 4
+/// high-trit bytes (4 trits each). Values `(trit - 1) * d`.
+fn deq_tq1_0(blocks: &Tensor) -> Result<Tensor, ZyxError> {
+    let d = f16le(blocks, 52)?;
+    let qs = col(blocks, 0, 48)?;
+    let qh = col(blocks, 48, 4)?;
+    let mut parts = Vec::with_capacity(14);
+    for (start, len) in [(0i64, 32i64), (32, 16)] {
+        let chunk = qs.narrow(1, start, len)?;
+        for pow in [1u16, 3, 9, 27, 81] {
+            parts.push(trit_plane(&chunk, pow)?);
+        }
+    }
+    for pow in [1u16, 3, 9, 27] {
+        parts.push(trit_plane(&qh, pow)?);
+    }
+    let vals = Tensor::cat(parts.iter(), 1)?;
+    Ok(vals * d)
+}
+
+/// `block_tq2_0`: F16 scale, 64 bytes of 2-bit codes, values `(q - 1) * d`.
+fn deq_tq2_0(blocks: &Tensor) -> Result<Tensor, ZyxError> {
+    let d = f16le(blocks, 0)?;
+    let qs = col(blocks, 2, 64)?;
+    let mut parts = Vec::with_capacity(8);
+    for chunk in 0..2i64 {
+        let bytes = qs.narrow(1, chunk * 32, 32i64)?;
+        for shift in [0u8, 2, 4, 6] {
+            parts.push(((bytes.clone() >> shift) & 3u8).cast(DType::F32) - 1f32);
+        }
+    }
+    let vals = Tensor::cat(parts.iter(), 1)?;
+    Ok(vals * d)
+}
+
+/// `block_pq2_0`: F16 scale, 32 bytes of 2-bit codes, values `(q - 1) * d`.
+///
+/// Prism 2-bit at group 128: one scale per 128 weights, four codes per byte in
+/// element order (bits 0-1, 2-3, 4-5, 6-7).
+fn deq_pq2_0(blocks: &Tensor) -> Result<Tensor, ZyxError> {
+    let d = f16le(blocks, 0)?;
+    let qs = col(blocks, 2, 32)?;
+    let lanes: Vec<Tensor> = [0u8, 2, 4, 6]
+        .into_iter()
+        .map(|shift| Ok(((qs.clone() >> shift) & 3u8).reshape([-1i64, 32, 1])?))
+        .collect::<Result<_, ZyxError>>()?;
+    let vals = Tensor::cat(lanes.iter(), 2)?.reshape([-1i64, 128])?.cast(DType::F32) - 1f32;
+    Ok(vals * d)
+}
+
+/// `block_ptq1_0`: Prism ternary at group 128 — F16 scale, 24 trit bytes and
+/// 2 high-trit bytes, the same base-3 packing as [`QDType::TQ1_0`].
+fn deq_ptq1_0(blocks: &Tensor) -> Result<Tensor, ZyxError> {
+    let d = f16le(blocks, 26)?;
+    let qs = col(blocks, 0, 24)?;
+    let qh = col(blocks, 24, 2)?;
+    let mut parts = Vec::with_capacity(14);
+    for (start, len) in [(0i64, 16i64), (16, 8)] {
+        let chunk = qs.narrow(1, start, len)?;
+        for pow in [1u16, 3, 9, 27, 81] {
+            parts.push(trit_plane(&chunk, pow)?);
+        }
+    }
+    for pow in [1u16, 3, 9, 27] {
+        parts.push(trit_plane(&qh, pow)?);
+    }
+    let vals = Tensor::cat(parts.iter(), 1)?;
+    Ok(vals * d)
+}
+
+/// One base-3 trit plane of packed `bytes`: `byte * 3^n mod 256`, then
+/// `(x * 3) >> 8` is the n-th trit, mapped from `{0, 1, 2}` to `{-1, 0, 1}`.
+fn trit_plane(bytes: &Tensor, pow3: u16) -> Result<Tensor, ZyxError> {
+    let wrapped = (bytes.cast(DType::U16) * pow3) & 0xFFu16;
+    Ok(((wrapped * 3u16) >> 8u16).cast(DType::F32) - 1f32)
 }

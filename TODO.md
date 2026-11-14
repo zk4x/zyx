@@ -25,14 +25,14 @@
   - [x] cuda
     - [x] fix async memcopy
     - [x] tensor cores (m16n8k8 f16; other variants open)
-    - [ ] fix load calculation (generic cost model only)
+    - [ ] fix load calculation (probably with atomics)
     - [x] fix event memory leaks
     - [x] thread-local CUDA context channel
     - [x] PTX compiler proper register manager
   - [ ] hip
   - [x] opencl
-    - [ ] fix load calculation (generic cost model only)
-  - [ ] vulkan
+    - [ ] fix load calculation (probably with atomics)
+  - [x] vulkan
     - [x] initialization
     - [x] memory management
     - [x] spirv compiler (to spirv binary)

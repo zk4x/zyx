@@ -18,6 +18,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 use zyx::{DType, Dev, FrozenTape, GGUFMetadataValue, Module, Tape, Tensor, ZyxError};
+use zyx_derive::Module;
 use zyx_nn::{DecoderBlock, Embedding, GqaAttention, Linear, RMSNorm, RopeConfig, RopeScaling as NnRopeScaling, SwiGlu};
 
 /// Llama-3.1 style RoPE frequency scaling.
@@ -269,6 +270,7 @@ fn compute_device() -> Dev {
 }
 
 /// A llama decoder stack with a preallocated kv-cache.
+#[derive(Module)]
 pub struct Llama {
     embedding: Embedding,
     layers: Vec<DecoderBlock>,
@@ -279,6 +281,7 @@ pub struct Llama {
     /// Tracing re-kernelizes hundreds of kernels per call, which dominated the
     /// end-to-end time (~2 s per step against ~32 ms of GPU work at decode).
     /// The token buffer and the two position variables are rebound per replay.
+    #[no_param]
     plans: std::collections::HashMap<i64, FrozenPlan>,
 }
 
@@ -309,13 +312,6 @@ impl Llama {
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let mut layer_vb = vb_layers.remove_prefix(&i.to_string());
-            // zyx-nn names an RMSNorm scale `scale`; checkpoints call it
-            // `weight`. Rename here so `set_params` does the rest.
-            for name in ["input_layernorm", "post_attention_layernorm"] {
-                if let Some(t) = layer_vb.remove(&format!("{name}.weight")) {
-                    layer_vb.insert(format!("{name}.scale"), t);
-                }
-            }
             let self_attn = GqaAttention::new(
                 cfg.hidden_size as i64,
                 cfg.num_attention_heads as i64,
@@ -330,15 +326,15 @@ impl Llama {
             layer.set_params(&mut layer_vb);
             // llama.cpp runs the norms on the f32 residual stream whatever the
             // matmul dtype is; the GGUF already stores the norm weights f32.
-            layer.input_layernorm.scale = layer.input_layernorm.scale.cast(DType::F32);
-            layer.post_attention_layernorm.scale =
-                layer.post_attention_layernorm.scale.cast(DType::F32);
+            layer.input_layernorm.weight = layer.input_layernorm.weight.cast(DType::F32);
+            layer.post_attention_layernorm.weight =
+                layer.post_attention_layernorm.weight.cast(DType::F32);
             layers.push(layer);
         }
 
         let mut norm = RMSNorm::new(cfg.hidden_size as i64, dtype);
         norm.eps = cfg.rms_norm_eps;
-        norm.scale = vb.take("model.norm.weight").cast(DType::F32);
+        norm.weight = vb.take("model.norm.weight").cast(DType::F32);
         Self {
             embedding,
             layers,
@@ -435,17 +431,9 @@ impl Llama {
             return out.into_iter().next().unwrap();
         }
 
-        let tape = Tape::empty();
-        tape.add(&self.embedding.weight).unwrap();
         // One pass over the module tree covers every parameter and buffer,
         // including the kv-caches the attention block owns.
-        for layer in &self.layers {
-            for (_, t) in layer.iter_tensors() {
-                tape.add(t).unwrap();
-            }
-        }
-        tape.add(&self.norm.scale).unwrap();
-        tape.add(&self.lm_head.weight).unwrap();
+        let tape = Tape::new(&*self).unwrap();
         // The token buffer is a declared input: replay rebinds it, which is
         // what makes a step repeatable without retracing.
         tape.add(input_ids).unwrap();

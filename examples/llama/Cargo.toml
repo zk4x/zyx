@@ -7,6 +7,7 @@ license = "LGPL-3.0-only"
 [dependencies]
 zyx = { path = "../../zyx" }
 zyx-nn = { path = "../../zyx-nn" }
+zyx-derive = { path = "../../zyx-derive" }
 zyx-optim = { path = "../../zyx-optim" }
 serde = { version = "*", features = ["derive"] }
 tokenizers = "*"

@@ -124,7 +124,7 @@ fn full_prefill() -> Result<(), ZyxError> {
     let mask_t = Tensor::from(mask).reshape([seq_len_i, seq_len_i]).unwrap();
     let scale_t = Tensor::from(1.0f32 / (hd as f32).sqrt());
     for (an, qw, kw, vw, ow, pn, gw, uw, dw, ck, cv) in &layers {
-        let inorm = RMSNorm { scale: an.clone().cast(DType::F16), eps };
+        let inorm = RMSNorm { weight: an.clone().cast(DType::F16), eps };
         let h = inorm.forward(&xs).unwrap();
         let [b3, seq3, _e3] = h.dims::<3>().unwrap();
         let q = Linear { weight: qw.clone(), bias: None }.forward(&h).unwrap();
@@ -202,7 +202,7 @@ fn full_prefill() -> Result<(), ZyxError> {
         let ctx = ctx.reshape([b3.clone(), seq3.clone(), d.into()]).unwrap();
         let attn_out = Linear { weight: ow.clone(), bias: None }.forward(ctx).unwrap();
         let xs_res = attn_out.clone() + xs.clone();
-        let post = RMSNorm { scale: pn.clone().cast(DType::F16), eps };
+        let post = RMSNorm { weight: pn.clone().cast(DType::F16), eps };
         let h2 = post.forward(&xs_res).unwrap();
         let gate = Linear { weight: gw.clone(), bias: None }.forward(&h2).unwrap().swish();
         let up = Linear { weight: uw.clone(), bias: None }.forward(&h2).unwrap();
@@ -210,7 +210,7 @@ fn full_prefill() -> Result<(), ZyxError> {
         xs = down + xs_res;
     }
 
-    let final_norm = RMSNorm { scale: out_norm_w.cast(DType::F16), eps }.forward(&xs).unwrap();
+    let final_norm = RMSNorm { weight: out_norm_w.cast(DType::F16), eps }.forward(&xs).unwrap();
     let last = final_norm.clone().narrow(1, seqlen - 1i64, 1i64).unwrap();
     // Tied head in F32, same as torch (`last.float() @ table.float().t()`).
     let logits = last.cast(DType::F32).matmul(embed.cast(DType::F32).t()).unwrap();

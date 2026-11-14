@@ -5,7 +5,7 @@
 //! pipeline on 4 super-blocks. Each part tested alone with exact asserts,
 //! then the whole thing byte-exact. Runs on C; that is expected.
 
-use zyx::{DType, QDType, Tensor, ZyxError};
+use zyx::{f16, DType, QDType, Tensor, ZyxError};
 
 /// One quantized reference case: dtype, raw block bytes, and the
 /// `(index, expected)` spot checks.
@@ -878,6 +878,120 @@ fn dequantize_6bit() -> Result<(), ZyxError> {
                 assert!((g - e).abs() <= tol, "{q} idx {i}: got {g}, expected {e}");
             }
         }
+    }
+    Ok(())
+}
+
+/// Host reference dequantizers for the ternary / 2-bit families, written
+/// straight from `ggml-quants.c`. Returns the dense values in element order.
+fn ref_pq2_0(blocks: &[u8], nb: usize) -> Vec<f32> {
+    let mut out = Vec::new();
+    for b in 0..nb {
+        let base = b * 34;
+        let d = f16::from_bits(u16::from_le_bytes([blocks[base], blocks[base + 1]])).to_f32();
+        for j in 0..128 {
+            let q = (blocks[base + 2 + j / 4] >> (2 * (j % 4))) & 3;
+            out.push((f32::from(q) - 1.0) * d);
+        }
+    }
+    out
+}
+
+fn ref_tq2_0(blocks: &[u8]) -> Vec<f32> {
+    let d = f16::from_bits(u16::from_le_bytes([blocks[0], blocks[1]])).to_f32();
+    let qs = &blocks[2..66];
+    let mut out = Vec::new();
+    for j in (0..64).step_by(32) {
+        for l in 0..4 {
+            for m in 0..32 {
+                let q = (qs[j + m] >> (2 * l)) & 3;
+                out.push((f32::from(q) - 1.0) * d);
+            }
+        }
+    }
+    out
+}
+
+/// Base-3 trit extraction: `byte * 3^n mod 256`, then `(x * 3) >> 8`.
+fn ref_trit(bytes: &[u8], pow3: &[u32], d: f32, out: &mut Vec<f32>) {
+    for &pow in pow3.iter() {
+        for &byte in bytes {
+            let wrapped = (u32::from(byte) * pow) as u8;
+            let xi = ((u16::from(wrapped) * 3) >> 8) as f32;
+            out.push((xi - 1.0) * d);
+        }
+    }
+}
+
+fn ref_tq1_0(blocks: &[u8]) -> Vec<f32> {
+    let d = f16::from_bits(u16::from_le_bytes([blocks[52], blocks[53]])).to_f32();
+    let pow3 = [1, 3, 9, 27, 81];
+    let mut out = Vec::new();
+    ref_trit(&blocks[0..32], &pow3, d, &mut out);
+    ref_trit(&blocks[32..48], &pow3, d, &mut out);
+    ref_trit(&blocks[48..52], &[1, 3, 9, 27], d, &mut out);
+    out
+}
+
+fn ref_ptq1_0(blocks: &[u8]) -> Vec<f32> {
+    let d = f16::from_bits(u16::from_le_bytes([blocks[26], blocks[27]])).to_f32();
+    let pow3 = [1, 3, 9, 27, 81];
+    let mut out = Vec::new();
+    ref_trit(&blocks[0..16], &pow3, d, &mut out);
+    ref_trit(&blocks[16..24], &pow3, d, &mut out);
+    ref_trit(&blocks[24..26], &[1, 3, 9, 27], d, &mut out);
+    out
+}
+
+#[test]
+fn dequantize_ternary_and_2bit() -> Result<(), ZyxError> {
+    // Deterministic pseudo-random block bytes for every family.
+    let fill = |seed: u32, len: usize| -> Vec<u8> {
+        (0..len).map(|i| ((i as u32 * 37 + seed * 101 + 11) % 251) as u8).collect()
+    };
+    // A finite f16 scale in the last two bytes of each block.
+    let with_scale = |mut b: Vec<u8>, at: usize| -> Vec<u8> {
+        b[at] = 0x00; // 0x3c00 = 1.0 in f16
+        b[at + 1] = 0x3c;
+        b
+    };
+
+    let cases: Vec<(QDType, Vec<u8>, Vec<f32>)> = vec![
+        {
+            let b0 = with_scale(fill(0, 34), 0);
+            let b1 = with_scale(fill(1, 34), 0);
+            let bytes = [b0, b1].concat();
+            let want = ref_pq2_0(&bytes, 2);
+            (QDType::PQ2_0, bytes, want)
+        },
+        {
+            let bytes = with_scale(fill(2, 66), 0);
+            let want = ref_tq2_0(&bytes);
+            (QDType::TQ2_0, bytes.clone(), want)
+        },
+        {
+            let bytes = with_scale(fill(3, 54), 52);
+            let want = ref_tq1_0(&bytes);
+            (QDType::TQ1_0, bytes.clone(), want)
+        },
+        {
+            let bytes = with_scale(fill(4, 28), 26);
+            let want = ref_ptq1_0(&bytes);
+            (QDType::PTQ1_0, bytes.clone(), want)
+        },
+    ];
+
+    for (q, bytes, want) in cases {
+        let nb = bytes.len() as i64 / q.block_bytes();
+        let t = Tensor::from(bytes).reshape([nb, q.block_bytes()])?;
+        let got = t.dequantize(q, DType::F32)?.to_vec::<f32>()?;
+        assert_eq!(got.len(), want.len(), "{q}: length");
+        assert_eq!(got.len(), (nb * q.elems_per_block()) as usize, "{q}: block length");
+        for (i, (g, e)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g, e, "{q} idx {i}");
+        }
+        // The GGUF codes round-trip through `from_code`.
+        assert_eq!(QDType::from_code(q.gguf_code()), Some(q), "{q}: code {}", q.gguf_code());
     }
     Ok(())
 }

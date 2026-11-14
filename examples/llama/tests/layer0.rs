@@ -86,8 +86,8 @@ fn layer0() -> Result<(), ZyxError> {
     let sin = freqs.sin().cast(DType::F16);
 
     // Modules, same construction as the example (norm scales cast to F16).
-    let inorm = RMSNorm { scale: an_w.cast(DType::F16), eps };
-    let post_norm = RMSNorm { scale: pn_w.cast(DType::F16), eps };
+    let inorm = RMSNorm { weight: an_w.cast(DType::F16), eps };
+    let post_norm = RMSNorm { weight: pn_w.cast(DType::F16), eps };
     let q_proj = Linear { weight: qw, bias: None };
     let k_proj = Linear { weight: kw, bias: None };
     let v_proj = Linear { weight: vw, bias: None };
@@ -101,8 +101,8 @@ fn layer0() -> Result<(), ZyxError> {
     // Graph on one tape, mirroring the example forward.
     let tape = Tape::empty();
     tape.add(&embed).unwrap();
-    tape.add(&inorm.scale).unwrap();
-    tape.add(&post_norm.scale).unwrap();
+    tape.add(&inorm.weight).unwrap();
+    tape.add(&post_norm.weight).unwrap();
     tape.add(&q_proj.weight).unwrap();
     tape.add(&k_proj.weight).unwrap();
     tape.add(&v_proj.weight).unwrap();
@@ -296,7 +296,7 @@ fn layer0() -> Result<(), ZyxError> {
     {
         let emb: Vec<f32> = xs0.clone().cast(DType::F32).try_into().unwrap();
         let got: Vec<f32> = h.clone().cast(DType::F32).try_into().unwrap();
-        let sc: Vec<f32> = inorm.scale.clone().cast(DType::F32).try_into().unwrap();
+        let sc: Vec<f32> = inorm.weight.clone().cast(DType::F32).try_into().unwrap();
         let hh = hidden as usize;
         let mut maxd = 0f32;
         for r in 0..seqlen as usize {

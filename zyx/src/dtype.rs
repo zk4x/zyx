@@ -969,6 +969,14 @@ pub enum QDType {
     IQ4_NL,
     /// Non-linear 4-bit, 256 elements in 136 bytes (`block_iq4_xs`).
     IQ4_XS,
+    /// Ternary, 256 elements in 54 bytes (`block_tq1_0`), 1.6875 bpw.
+    TQ1_0,
+    /// Ternary, 256 elements in 66 bytes (`block_tq2_0`), 2.0625 bpw.
+    TQ2_0,
+    /// 2-bit, 128 elements in 34 bytes (`block_pq2_0`), 2.125 bpw.
+    PQ2_0,
+    /// Ternary, 128 elements in 28 bytes (`block_ptq1_0`), 1.75 bpw.
+    PTQ1_0,
 }
 
 impl QDType {
@@ -997,6 +1005,10 @@ impl QDType {
             Self::IQ2_S => 22,
             Self::IQ4_XS => 23,
             Self::IQ1_M => 29,
+            Self::TQ1_0 => 34,
+            Self::TQ2_0 => 35,
+            Self::PQ2_0 => 142,
+            Self::PTQ1_0 => 143,
         }
     }
 
@@ -1019,6 +1031,8 @@ impl QDType {
             | Self::IQ1_S
             | Self::IQ1_M
             | Self::IQ4_XS => 256,
+            Self::TQ1_0 | Self::TQ2_0 => 256,
+            Self::PQ2_0 | Self::PTQ1_0 => 128,
         }
     }
 
@@ -1047,6 +1061,10 @@ impl QDType {
             Self::IQ1_M => 56,
             Self::IQ4_NL => 18,
             Self::IQ4_XS => 136,
+            Self::TQ1_0 => 54,
+            Self::TQ2_0 => 66,
+            Self::PQ2_0 => 34,
+            Self::PTQ1_0 => 28,
         }
     }
 
@@ -1076,6 +1094,10 @@ impl QDType {
             22 => Some(Self::IQ2_S),
             23 => Some(Self::IQ4_XS),
             29 => Some(Self::IQ1_M),
+            34 => Some(Self::TQ1_0),
+            35 => Some(Self::TQ2_0),
+            142 => Some(Self::PQ2_0),
+            143 => Some(Self::PTQ1_0),
             _ => None,
         }
     }
@@ -1105,6 +1127,10 @@ impl Display for QDType {
             Self::IQ1_M => "iq1_m",
             Self::IQ4_NL => "iq4_nl",
             Self::IQ4_XS => "iq4_xs",
+            Self::TQ1_0 => "tq1_0",
+            Self::TQ2_0 => "tq2_0",
+            Self::PQ2_0 => "pq2_0",
+            Self::PTQ1_0 => "ptq1_0",
         })
     }
 }

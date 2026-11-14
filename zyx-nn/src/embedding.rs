@@ -17,6 +17,7 @@ pub struct Embedding {
     /// Weight
     pub weight: Tensor,
     /// Arange
+    #[no_param]
     pub arange: Tensor,
 }
 

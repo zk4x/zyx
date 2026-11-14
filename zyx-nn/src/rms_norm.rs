@@ -8,8 +8,8 @@ use zyx_derive::Module;
 #[derive(Debug, Module)]
 #[cfg_attr(feature = "py", pyo3::pyclass)]
 pub struct RMSNorm {
-    /// weight, scale
-    pub scale: Tensor,
+    /// weight
+    pub weight: Tensor,
     /// small value to avoid division by zero
     pub eps: f64,
 }
@@ -18,7 +18,7 @@ impl RMSNorm {
     /// Initialize RMSNorm layer
     pub fn new(dim: i64, dtype: DType) -> RMSNorm {
         RMSNorm {
-            scale: Tensor::ones([dim], dtype),
+            weight: Tensor::ones([dim], dtype),
             eps: 1e-6,
         }
     }
@@ -29,6 +29,6 @@ impl RMSNorm {
         let dtype = x.dtype();
         let x_normed =
             &x * ((&x * &x).mean_keepdim([-1])? + Tensor::from(self.eps).cast(dtype)).rsqrt();
-        Ok(x_normed * &self.scale)
+        Ok(x_normed * &self.weight)
     }
 }

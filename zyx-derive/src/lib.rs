@@ -51,9 +51,14 @@ use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
 /// This allows saving, loading, backpropagation and updating your modules.
 ///
 /// Recognised field attributes:
-/// - `#[no_param]` — marks a `Tensor` / `Option<Tensor>` field as a
-///   non-trainable hyperparameter (or state buffer). The parameter iteration
-///   skips it.
+/// - `#[no_param]` — marks a field as a non-trainable hyperparameter (or
+///   state buffer). The parameter iteration skips it entirely.
+///
+/// Field types:
+/// - `Tensor` / `Option<Tensor>` — pushed as a parameter.
+/// - `Vec<T>` where `T: Module` (and `T` is not `Tensor`) — walked element by
+///   element, labelled `field.{index}`. A `Vec<T>` field of a type that is
+///   neither `Tensor` nor `Module` is a compile error, never a silent skip.
 #[proc_macro_derive(Module, attributes(no_param))]
 pub fn module_derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -109,6 +114,17 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
                         res.push((#field_name_str.to_string(), tensor));
                     }
                 }
+            } else if let Some(elem) = vec_elem_type(field_ty) {
+                field_iterators = quote! {
+                    #field_iterators
+                    for (index, elem) in self.#field_name.iter().enumerate() {
+                        __MarkerStructRef::<&#elem>::__iterate_by_ref(
+                            __MarkerStructRef(elem),
+                            &mut res,
+                            &format!("{}.{}", #field_name_str, index),
+                        );
+                    }
+                }
             } else {
                 field_iterators = quote! {
                     #field_iterators
@@ -161,6 +177,17 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
                     #mut_field_iterators
                     if let Some(tensor) = &mut self.#field_name {
                         res.push((#field_name_str.to_string(), tensor));
+                    }
+                }
+            } else if let Some(elem) = vec_elem_type(field_ty) {
+                mut_field_iterators = quote! {
+                    #mut_field_iterators
+                    for (index, elem) in self.#field_name.iter_mut().enumerate() {
+                        __MarkerStructRef::<&mut #elem>::__iterate_by_ref(
+                            __MarkerStructRef(elem),
+                            &mut res,
+                            &format!("{}.{}", #field_name_str, index),
+                        );
                     }
                 }
             } else {
@@ -229,6 +256,13 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
                     #field_iterators
                     res.push(&self.#field_name);
                 }
+            } else if vec_elem_type(field_ty).is_some() {
+                field_iterators = quote! {
+                    #field_iterators
+                    for elem in self.#field_name.iter() {
+                        res.extend(::core::iter::IntoIterator::into_iter(elem));
+                    }
+                }
             } else {
                 field_iterators = quote! {
                     #field_iterators
@@ -287,6 +321,13 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
                     #field_iterators
                     res.push(&mut self.#field_name);
                 }
+            } else if vec_elem_type(field_ty).is_some() {
+                field_iterators = quote! {
+                    #field_iterators
+                    for elem in self.#field_name.iter_mut() {
+                        res.extend(::core::iter::IntoIterator::into_iter(elem));
+                    }
+                }
             } else {
                 field_iterators = quote! {
                     #field_iterators
@@ -311,6 +352,26 @@ fn derive_module(input: &DeriveInput) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+/// Returns the element type when `ty` is `Vec<Elem>` with `Elem` a module
+/// (anything but `Tensor`, which has its own `Module` impl on `Vec<Tensor>`).
+fn vec_elem_type(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(type_path) = ty else { return None };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Vec" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else { return None };
+    let mut types = args.args.iter().filter_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    let elem = types.next()?;
+    if types.next().is_some() || quote! { #elem }.to_string() == "Tensor" {
+        return None;
+    }
+    Some(elem)
 }
 
 /// Returns true if any of the field's attributes is `#[no_param]`, which marks a
