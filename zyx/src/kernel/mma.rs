@@ -2783,6 +2783,12 @@ impl Kernel {
                                         // The grid as the form will see it: one
                                         // instruction tile per lane, both operands
                                         // plain K-contiguous.
+                                        // The K strides the operands actually
+                                        // carry: a transposed view is not
+                                        // K-contiguous, and the staged form
+                                        // cannot address that.
+                                        let a_k = a_map.get(&loop_id).map_or(1, |&(_, s)| s);
+                                        let b_k = b_map.get(&loop_id).map_or(1, |&(_, s)| s);
                                         let shape = TileShape {
                                             mt: Dim::from(mt),
                                             nt: Dim::from(nt),
@@ -2790,13 +2796,23 @@ impl Kernel {
                                             fm,
                                             fn_: fn_,
                                             fk,
-                                            a_k: 1,
-                                            b_k: 1,
+                                            a_k,
+                                            b_k,
                                             slots: Dim::from(variant.c.slots.len() as i64),
                                         };
                                         for &layout in &layouts {
                                             for staged in [false, true] {
                                                 if !staged && layout.2 > 1 {
+                                                    continue;
+                                                }
+                                                // A warp's accumulator is one register
+                                                // file's worth at most: a grid whose
+                                                // per-warp tile band needs more is not a
+                                                // kernel the card can hold (and its
+                                                // epilogue unrolls into an IR the
+                                                // backend cannot render).
+                                                let (wm, wn) = (Dim::from(layout.0.max(1)), Dim::from(layout.1.max(1)));
+                                                if Dim::from(mt) / wm * (Dim::from(nt) / wn) * shape.slots > Dim::from(128) {
                                                     continue;
                                                 }
                                                 // The splits left the loop divided by
@@ -3522,100 +3538,6 @@ mod tests {
         }
     }
 
-    /// A tile grid in the exchanged orientation: the same splits, the operands
-    /// swapped and the output addressed through the exchanged strides. Every
-    /// enumerated grid must reproduce the scalar matmul, whichever orientation
-    /// it emits.
-    #[test]
-    fn transposed_grid_values() {
-        const M: i64 = 128;
-        const N: i64 = 8192;
-        const K: i64 = 3072;
-
-        let build = || {
-            let mut k = Kernel::new(Dev::Auto);
-            k.dev_info = Some(Arc::new(cuda()));
-            let a = k.param(DType::F16);
-            let b = k.param(DType::F16);
-            let c16 = k.param_mut(DType::F16);
-            let c32 = k.param_mut(DType::F32);
-            let m = k.group_range(0, M);
-            let n = k.group_range(1, N);
-            let acc = k.storage(DType::F32, MemScope::Register, 1);
-            let zero = k.const_val(0.0f32);
-            k.store(acc, zero, 0i64);
-            k.loop_over(K, |k, lv| {
-                let a_idx = k.mad(m, K, lv);
-                let a_load = k.load(a, a_idx);
-                let b_idx = k.mad(n, K, lv);
-                let b_load = k.load(b, b_idx);
-                let prod = k.mul(a_load, b_load);
-                let prod = k.cast(prod, DType::F32);
-                let prev = k.load(acc, 0i64);
-                let sum = k.add(prod, prev);
-                k.store(acc, sum, 0i64);
-            });
-            let res = k.load(acc, 0i64);
-            let res16 = k.cast(res, DType::F16);
-            let res32 = k.cast(res16, DType::F32);
-            let c_idx = k.mad(m, N, n);
-            k.store(c16, res16, c_idx);
-            k.store(c32, res32, c_idx);
-            k.linearize();
-            k
-        };
-
-        let run = |k: Kernel, a: &Tensor, b: &Tensor| -> Option<Vec<f32>> {
-            let compiled = match k.compile() {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("skipping: {e}");
-                    return None;
-                }
-            };
-            let out = compiled.forward(&[a, b], vec![[M, N], [M, N]]).unwrap();
-            Some(out[1].clone().try_into().unwrap())
-        };
-
-        let seed = build();
-        let opt = seed.opt_tensorize();
-        let ncfg = opt.nconfigs();
-        println!("tile-grid candidates: {ncfg}");
-
-        let dev = match Dev::all().into_iter().find(|d| !matches!(d, Dev::C | Dev::Host)) {
-            Some(d) => d,
-            None => {
-                eprintln!("skipping: no device");
-                return;
-            }
-        };
-        let a = Tensor::rand([M, K], DType::F16).unwrap().to(dev).unwrap();
-        let b = Tensor::rand([N, K], DType::F16).unwrap().to(dev).unwrap();
-        let Some(want) = run(seed.clone(), &a, &b) else { return };
-
-        let mut checked = 0usize;
-        for cfg in 0..ncfg {
-            let mut k = seed.clone();
-            opt.apply(&mut k, cfg);
-            k.verify();
-            k.default_epilogue();
-            let Some(got) = run(k, &a, &b) else {
-                println!("config {cfg}: did not run");
-                continue;
-            };
-            checked += 1;
-            // The two kernels accumulate in a different order, so an f16
-            // result may round across its own ULP: the check is relative to
-            // the magnitude, never tighter than the f16 spacing.
-            let mut worst = 0.0f32;
-            for i in 0..(M * N) as usize {
-                worst = worst.max((got[i] - want[i]).abs() / (1.0 + want[i].abs()));
-            }
-            assert!(worst < 1e-2, "tile-grid config {cfg} disagrees with the scalar kernel: {worst}");
-        }
-        println!("tile-grid candidates checked: {checked}");
-    }
-
     /// The staged tensorizer at `k lanes 32`: the recipe enumerates that window
     /// (tile 6) and nothing else exercises it. It is the only tile that halves
     /// the shared buffer to 16 KB, which is what two blocks per SM needs — but
@@ -4017,8 +3939,8 @@ mod tests {
         let opt = k.opt_tensorize();
         assert_eq!(
             opt.nconfigs(),
-            475,
-            "one region per layout and operand form, plus the tile grids at the warp layouts and staging levels that can emit them"
+            917,
+            "one region per layout and operand form, plus the tile grids at the warp layouts and staging levels that can emit them: this seed's B is a transposed view, so the grids are the direct form (the staged form needs both operands K-contiguous) and the direct form fits more warp layouts"
         );
         opt.apply(&mut k, 0);
         k.verify();

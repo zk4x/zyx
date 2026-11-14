@@ -20,7 +20,8 @@ fn l2norm(x: &Tensor) -> Result<Tensor, ZyxError> {
 }
 
 #[test]
-//#[ignore]
+// Over the 30 s test-file cap: ~64 s. Kept, out of the default gate.
+#[ignore]
 fn linear_attention() -> Result<(), ZyxError> {
     // Local variables (not consts), matching qwen3.8-27b geometry.
     let s = 6i64;

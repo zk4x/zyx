@@ -10,17 +10,46 @@
 # INSTALL.md (a C compiler is enough; no GPU required).
 #
 # The test runs use `ZYX_DEV` when it is set and `cpu` otherwise.
+#
+# Every test binary — the lib and each integration test file — runs in its own
+# process under a wall-clock cap (`TEST_CAP`, 30 s): a file that runs longer is
+# a failed gate, not a slow one. Compilation is not capped; the targets are
+# built once up front.
 set -e
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 dev=${ZYX_DEV:-cpu}
+cap=${TEST_CAP:-30}
 
-echo "ci: zyx tests"
-(cd "$repo/zyx" && ZYX_DEV="$dev" cargo test --lib --tests -- --skip mnist)
+# Run one crate's lib tests and every integration test file, each on its own.
+run_tests() {
+    crate=$1
+    dir=$repo/$crate
+    (cd "$dir" && cargo test --lib --tests --no-run --quiet)
+    names="lib"
+    if [ -d "$dir/tests" ]; then
+        names="$names $(cd "$dir" && ls tests/*.rs 2>/dev/null | sed 's#tests/##; s#\.rs$##')"
+    fi
+    for name in $names; do
+        if [ "$name" = lib ]; then
+            sel="--lib"
+        else
+            sel="--test $name"
+        fi
+        start=$(date +%s)
+        if (cd "$dir" && ZYX_DEV="$dev" timeout -k 5 "$cap" cargo test $sel --quiet -- --skip mnist); then
+            echo "ci: $crate $name: ok ($(( $(date +%s) - start ))s)"
+        else
+            rc=$?
+            echo "ci: $crate $name: FAILED rc=$rc ($(( $(date +%s) - start ))s)"
+            return 1
+        fi
+    done
+}
 
+run_tests zyx
 for crate in zyx-nn zyx-optim zyx-derive; do
-    echo "ci: $crate tests"
-    (cd "$repo/$crate" && ZYX_DEV="$dev" cargo test --lib --tests)
+    run_tests "$crate"
 done
 
 for crate in zyx zyx-nn zyx-optim zyx-derive; do

@@ -672,18 +672,6 @@ impl BeamSearch {
                         continue;
                     }
                 };
-                // Dump the lowered IR of one named candidate.
-                if std::env::var("ZYX_DUMP_SEQ").ok().is_some_and(|spec| {
-                    spec.split(',')
-                        .filter(|pair| !pair.is_empty())
-                        .map(|pair| {
-                            let (opt, config) = pair.split_once(':').expect("ZYX_DUMP_SEQ entries are `opt:config`");
-                            (opt.parse().expect("ZYX_DUMP_SEQ opt id"), config.parse().expect("ZYX_DUMP_SEQ config id"))
-                        })
-                        .eq(opt_seq.opts.iter().copied())
-                }) {
-                    kernel.debug();
-                }
                 if launched.insert(kernel.get_hash()) {
                     match kernel.launch_with_timings(args, dev, debug) {
                         Ok((program_id, time)) => {

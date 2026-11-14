@@ -92,7 +92,9 @@ impl Kernel {
                     unreachable!()
                 }
                 Op::TT(_) => loop_depth,
-                Op::Asm { .. } | Op::Index { .. } | Op::Wmma { .. } | Op::Stack { .. } => loop_depth,
+                Op::Asm { .. } | Op::Index { .. } | Op::Stack { .. } => loop_depth,
+                // A pure value like any other: its depth is its operands'.
+                Op::Wmma { a, b, c, .. } => loop_dep[&a].max(loop_dep[&b]).max(loop_dep[&c]),
                 Op::Loop { .. } => {
                     loop_depth += 1;
                     loop_depth
@@ -215,8 +217,9 @@ impl Kernel {
                 | Op::Const(_)
                 | Op::Unroll { .. }
                 | Op::Param { .. }
-                | Op::Storage { .. }
-                | Op::Wmma { .. } => loop_depth,
+                | Op::Storage { .. } => loop_depth,
+                // A pure value like any other: its depth is its operands'.
+                Op::Wmma { a, b, c, .. } => loop_dep[a].max(loop_dep[b]).max(loop_dep[c]),
             };
             loop_dep.insert(op_id, depth);
             op_id = self.next_op(op_id);

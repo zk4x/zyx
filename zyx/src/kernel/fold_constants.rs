@@ -681,7 +681,6 @@ impl Kernel {
                     | Op::Copy { .. }
                     | Op::TT(_)
                     | Op::Param { .. }
-                    | Op::Wmma { .. }
                     | Op::Asm { .. }
                     | Op::Barrier
                     | Op::Loop { .. }

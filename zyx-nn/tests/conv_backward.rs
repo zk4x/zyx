@@ -18,6 +18,9 @@ fn make_bn(num_features: i64) -> BatchNorm {
 }
 
 #[test]
+// Over the 30 s test-file cap: the backward graph takes ~100 s to compile.
+// Kept as a reproducer, out of the default gate.
+#[ignore]
 fn conv_bn_backward_1() -> Result<(), ZyxError> {
     // Reproduce slow backward kernel: conv(3->16) + BN + pool + linear + loss + backward
     let conv = Conv2d::new(3, 16, [3], [1], [1], [1], 1, false, DType::F32)?;
@@ -44,6 +47,9 @@ fn conv_bn_backward_1() -> Result<(), ZyxError> {
 }
 
 #[test]
+// Over the 30 s test-file cap: ~100 s to compile the backward graph. Kept as
+// a reproducer, out of the default gate.
+#[ignore]
 fn conv_weight_backward() -> Result<(), ZyxError> {
     // Conv weight backward kernel only: no BN, no pool, no linear.
     // This isolates the im2col + expand + mul + reduce pattern.

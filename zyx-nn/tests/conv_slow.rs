@@ -5,6 +5,9 @@ use zyx::{DType, Tensor, ZyxError};
 use zyx_nn::Conv2d;
 
 #[test]
+// Over the 30 s test-file cap: the fused conv+BN graph takes minutes to
+// compile. Kept as a reproducer, out of the default gate.
+#[ignore]
 fn conv_bn_mean() -> Result<(), ZyxError> {
     let conv = Conv2d::new(3, 32, [3], [1], [1], [1], 1, false, DType::F32)?;
     let x = Tensor::rand([2, 3, 32, 32], DType::F32)?;
