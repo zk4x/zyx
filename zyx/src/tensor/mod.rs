@@ -3485,7 +3485,11 @@ impl Tensor {
         let dfactors = d.apply_winograd_matrix(&winograd_bt, dims)?.contiguous()?.reshape(dshape)?;
 
         // matmul; sum across cin: (HWI, bs, groups, rcout, tyx); then HWI -> HWO: (HWO, bs, groups, rcout, tyx)
-        let mut ret = (gfactors * dfactors).sum_dtype([-1 - dims as Axis], self.dtype())?;
+        // tinygrad passes `dtype=None` here (`_conv2d_winograd`), so `sum`
+        // accumulates in `sum_acc_dtype` (f32 for f16/bf16) and rounds once
+        // back to the element dtype. Naming the element dtype instead would
+        // accumulate every term in f16.
+        let mut ret = (gfactors * dfactors).sum([-1 - dims as Axis])?;
         ret = ret.apply_winograd_matrix(&winograd_at, dims)?;
 
         // interleave tyx and HWO: (bs, groups, rcout, oy, HO, ox, WO)

@@ -77,9 +77,17 @@ for example in tiny-net tiny-net2 readme-test rnn; do
 done
 
 if python3 -c 'import torch, pytest' >/dev/null 2>&1; then
-    if [ -n "${VIRTUAL_ENV:-}" ] && command -v maturin >/dev/null 2>&1; then
+    # The tests exercise the installed extension, so it must be the one built
+    # from this tree: a stale wheel turns a Rust change into a Python failure
+    # (or worse, a pass). `maturin build` + install works with or without a
+    # virtualenv; `maturin develop` does not, so it is never used.
+    if command -v maturin >/dev/null 2>&1; then
         echo "ci: zyx-py build"
-        (cd "$repo/zyx-py" && maturin develop --release)
+        (cd "$repo/zyx-py" && maturin build --release --quiet)
+        wheel=$(ls -t "$repo"/zyx-py/target/wheels/zyx_py-*.whl | head -1)
+        python3 -m pip install --force-reinstall --no-deps --quiet "$wheel"
+    else
+        echo "ci: zyx-py build skipped (no maturin): the installed extension is not this tree"
     fi
     echo "ci: zyx-py python tests"
     (cd "$repo/zyx-py" && python3 -m pytest tests)
