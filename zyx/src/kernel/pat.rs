@@ -4,7 +4,7 @@
 use crate::{
     DType,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, UOp},
+    kernel::{BOp, Kernel, MemScope, Op, OpId, RangeKind, UOp},
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::Dim,
 };
@@ -200,8 +200,41 @@ pub enum Pat {
     DimEq(Dim),
     /// Matches a group index definition (`Op::Range`).
     Range,
+    /// Matches a group index (`RangeKind::Group`) and binds its length op
+    /// (`'\0'` = unbound). Read it with [`Bindings::op`].
+    RangeGroup {
+        /// Binder name for the length op.
+        len: char,
+    },
+    /// Matches a local index (`RangeKind::Local`) and binds its length value
+    /// as an integer (`'\0'` = unbound).
+    RangeLocal {
+        /// Binder name for the length value.
+        len: char,
+    },
     /// Matches a loop index definition (`Op::Loop`).
     Loop,
+    /// Matches a loop index and binds its length op (`'\0'` = unbound).
+    LoopLen {
+        /// Binder name for the length op.
+        len: char,
+    },
+    /// Matches an unroll lane vector (`Op::Unroll`), binding the lane axis
+    /// and lane count as integers (`'\0'` = unbound).
+    Unroll {
+        /// Binder name for the lane axis.
+        axis: char,
+        /// Binder name for the lane count.
+        len: char,
+    },
+    /// Matches a storage (`Op::Storage`) in exactly this memory scope, with
+    /// the element dtype matched exactly or bound.
+    Storage {
+        /// Required memory scope.
+        scope: MemScope,
+        /// Element dtype, exact or bound.
+        dtype: PMatch<DType>,
+    },
     /// Value equality between two [`VExpr`]s (bound dims, constants, shifts).
     /// Evaluated after the structural match; overflow evaluates to no-match.
     /// Compose trailing in `all()`, after the binders: `all([pat, Pat::eq('d', VExpr::shl(1, 'k'))])`.
@@ -377,7 +410,7 @@ pub enum Pat {
 /// distinct const ops.
 #[derive(Clone, Debug, Default)]
 pub struct Bindings {
-    ops: [(char, OpId, Binding); 5],
+    ops: [(char, OpId, Binding); 8],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -881,6 +914,32 @@ impl Pat {
         Pat::reduce(x, BOp::Add)
     }
 
+    /// Matches an unroll lane vector (`Op::Unroll`), binding the lane axis
+    /// and lane count as integers (`'\0'` = unbound).
+    pub fn unroll(axis: char, len: char) -> Pat {
+        Pat::Unroll { axis, len }
+    }
+
+    /// Matches a storage (`Op::Storage`) in `scope`, dtype exact or bound.
+    pub fn storage(scope: MemScope, dtype: impl Into<PMatch<DType>>) -> Pat {
+        Pat::Storage { scope, dtype: dtype.into() }
+    }
+
+    /// Matches a group index and binds its length op (`'\0'` = unbound).
+    pub fn range_group(len: char) -> Pat {
+        Pat::RangeGroup { len }
+    }
+
+    /// Matches a local index and binds its length value (`'\0'` = unbound).
+    pub fn range_local(len: char) -> Pat {
+        Pat::RangeLocal { len }
+    }
+
+    /// Matches a loop index and binds its length op (`'\0'` = unbound).
+    pub fn loop_len(len: char) -> Pat {
+        Pat::LoopLen { len }
+    }
+
     /// Asserts the matched value's shape: one entry per axis —
     /// `Dim` literals (`32.into()`, `-1` = don't care), `Bind`
     /// value binders for named equality, or `bind('m').dim_eq(32)`
@@ -1232,6 +1291,46 @@ impl Kernel {
             Pat::DimEq(n) => matches!(self.at(id), Op::Const(c) if c.as_dim() == Some(*n)),
             Pat::Range => matches!(self.at(id), Op::Range { .. }),
             Pat::Loop => matches!(self.at(id), Op::Loop { .. }),
+            Pat::RangeGroup { len } => match self.at(id) {
+                Op::Range { kind: RangeKind::Group(len_id), .. } => {
+                    *len == '\0' || bindings.try_insert(*len, *len_id, Binding::Op)
+                }
+                _ => false,
+            },
+            Pat::RangeLocal { len } => match self.at(id) {
+                Op::Range { kind: RangeKind::Local(n), .. } => {
+                    *len == '\0' || bindings.try_insert(*len, id, Binding::Int(i64::from(*n)))
+                }
+                _ => false,
+            },
+            Pat::LoopLen { len } => match self.at(id) {
+                Op::Loop { len: len_id } => *len == '\0' || bindings.try_insert(*len, *len_id, Binding::Op),
+                _ => false,
+            },
+            Pat::Unroll { axis, len } => match self.at(id) {
+                Op::Unroll { axis: a, len: l } => {
+                    let snap = bindings.clone();
+                    let ok = (*axis == '\0' || bindings.try_insert(*axis, id, Binding::Int(i64::from(*a))))
+                        && (*len == '\0' || bindings.try_insert(*len, id, Binding::Int(i64::from(*l))));
+                    if !ok {
+                        *bindings = snap;
+                    }
+                    ok
+                }
+                _ => false,
+            },
+            Pat::Storage { scope, dtype } => match self.at(id) {
+                Op::Storage { dtype: d, scope: s, .. } => {
+                    if s != scope {
+                        return false;
+                    }
+                    match dtype {
+                        PMatch::Exact(e) => *d == *e,
+                        PMatch::Bind(name) => bindings.try_insert(*name, id, Binding::Dtype(*d)),
+                    }
+                }
+                _ => false,
+            },
             Pat::Eq { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x == y),
             Pat::Ne { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x != y),
             Pat::Lt { a, b } => matches!((a.eval(bindings), b.eval(bindings)), (Some(x), Some(y)) if x < y),

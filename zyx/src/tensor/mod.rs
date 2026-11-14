@@ -3301,21 +3301,25 @@ impl Tensor {
         dilation: impl IntoIterator<Item = impl Into<Tensor>>,
         padding: impl IntoIterator<Item = impl Into<Tensor>>,
     ) -> Result<Tensor, ZyxError> {
-        fn resolve_pool_pads(padding: &[Dim], dims: usize) -> Vec<i64> {
+        fn resolve_pool_pads(padding: &[Dim], dims: usize) -> Result<Vec<i64>, ZyxError> {
+            // tinygrad `_resolve_pool_pads`: a scalar padding (a single-element sequence here)
+            // is uniform, a 2*dims sequence is used as given, and a dims sequence is
+            // duplicated per element and reversed.
             if padding.len() == 1 {
-                vec![padding[0]; 2 * dims]
-            } else if padding.len() == 2 * dims {
-                padding.to_vec()
-            } else {
-                let mut npadding: Vec<i64> = Vec::new();
-                for _ in 0..2 {
-                    for &p in padding {
-                        npadding.push(p);
-                    }
-                }
-                npadding.reverse();
-                npadding
+                return Ok(vec![padding[0]; 2 * dims]);
             }
+            if padding.len() != dims && padding.len() != 2 * dims {
+                return Err(ZyxError::shape_error(
+                    format!("Padding must be a single value or a sequence of length {dims} or {}, but got {padding:?} with dims {dims}.", 2 * dims)
+                        .into(),
+                ));
+            }
+            if padding.len() == 2 * dims {
+                return Ok(padding.to_vec());
+            }
+            let mut npadding: Vec<i64> = padding.iter().flat_map(|&p| [p, p]).collect();
+            npadding.reverse();
+            Ok(npadding)
         }
 
         let [bs, cin_] = self.resolve_shape()[..2] else {
@@ -3343,7 +3347,7 @@ impl Tensor {
         }*/
 
         let padding_dim: Vec<Dim> = padding.into_iter().map(|s| s.into().item::<i64>()).collect();
-        let padding_: Vec<i64> = resolve_pool_pads(&padding_dim, hw.len());
+        let padding_: Vec<i64> = resolve_pool_pads(&padding_dim, hw.len())?;
 
         if (groups as Dim * cin != cin_) || (self.rank() as usize != wsh.len()) {
             return Err(ZyxError::shape_error(
@@ -3357,12 +3361,16 @@ impl Tensor {
             ));
         }
 
+        // winograd conv 3 kernel f(4x4,3x3) see: http://arxiv.org/abs/1509.09308
+        if !hw.is_empty() && hw.iter().all(|&k| k == 3) && stride.iter().all(|&s| s == 1) && dilation.iter().all(|&d| d == 1) {
+            return self.conv_winograd(weight, bias, groups, &padding_);
+        }
+
         let x = self.rpad_zeros(padding_.chunks(2).map(|x| (x[0], x[1]))).unwrap().pool(hw.clone(), stride, dilation).unwrap();
         let rcout = cout / groups as Dim;
         let xsh = x.resolve_shape();
         let oyx = &xsh[2..xsh.len() - hw.len()];
 
-        // for now without winograd
         let shape: Vec<Dim> = [bs, groups as Dim, cin, 1].iter().chain(oyx).chain(&hw).copied().collect();
         let x = x.reshape(shape).unwrap();
         let shape: Vec<Dim> = [bs, groups as Dim, cin, rcout].iter().chain(oyx).chain(&hw).copied().collect();
@@ -3393,6 +3401,147 @@ impl Tensor {
             ret = ret + bias.reshape(shape).unwrap();
         }
 
+        Ok(ret)
+    }
+
+    /// Winograd F(4x4,3x3) convolution, applied along every spatial axis.
+    /// Ported from tinygrad's `_conv2d_winograd` (`tinygrad/mixin/op.py`).
+    ///
+    /// `padding_` is the flattened per-axis padding from `resolve_pool_pads`,
+    /// in the last-axis-first order the direct path feeds to [`Tensor::rpad_zeros`].
+    fn conv_winograd(&self, weight: &Tensor, bias: Option<&Tensor>, groups: u64, padding_: &[i64]) -> Result<Tensor, ZyxError> {
+        let wsh = weight.resolve_shape();
+        let [cout, cin] = wsh[..2] else {
+            return Err(ZyxError::shape_error(format!("conv requires weight rank >= 2, but rank = {}", weight.rank()).into()));
+        };
+        let hw = &wsh[2..];
+        let dims = hw.len();
+        let [bs, _cin_] = self.resolve_shape()[..2] else {
+            return Err(ZyxError::shape_error(format!("conv requires self rank >= 2, but rank = {}", self.rank()).into()));
+        };
+        let rcout = cout / groups as Dim;
+        let spatial: Vec<Dim> = self.resolve_shape()[2..].to_vec();
+
+        // F(4x4,3x3) winograd tiles: 6x6 input tile, 4x4 output tile
+        let (hwi, hwo) = (6i64, 4i64);
+        let winograd_g: Vec<Vec<f32>> = vec![
+            vec![1. / 4., 0., 0.],
+            vec![-1. / 6., -1. / 6., -1. / 6.],
+            vec![-1. / 6., 1. / 6., -1. / 6.],
+            vec![1. / 24., 1. / 12., 1. / 6.],
+            vec![1. / 24., -1. / 12., 1. / 6.],
+            vec![0., 0., 1.],
+        ];
+        let winograd_bt: Vec<Vec<f32>> = vec![
+            vec![4., 0., -5., 0., 1., 0.],
+            vec![0., -4., -4., 1., 1., 0.],
+            vec![0., 4., -4., -1., 1., 0.],
+            vec![0., -2., -1., 2., 1., 0.],
+            vec![0., 2., -1., -2., 1., 0.],
+            vec![0., 4., 0., -5., 0., 1.],
+        ];
+        let winograd_at: Vec<Vec<f32>> = vec![
+            vec![1., 1., 1., 1., 1., 0.],
+            vec![0., 1., -1., 2., -2., 0.],
+            vec![0., 1., 1., 4., 4., 0.],
+            vec![0., 1., -1., 8., -8., 1.],
+        ];
+
+        // output spatial dims at stride 1
+        let oyx: Vec<Dim> = {
+            let padded = self.rpad_zeros(padding_.chunks(2).map(|p| (p[0], p[1])))?;
+            let pooled = padded.pool(hw.to_vec(), vec![1i64; dims], vec![1i64; dims])?;
+            let sh = pooled.resolve_shape();
+            sh[2..sh.len() - dims].to_vec()
+        };
+
+        // round the (last-axis-first) padding up to whole 4x4 output tiles
+        let pads: Vec<(i64, i64)> = padding_
+            .chunks(2)
+            .rev()
+            .zip(spatial.iter())
+            .map(|(p, &s)| (p[0], p[1] + (-(s + p[0] + p[1] - 2)).rem_euclid(hwo)))
+            .collect();
+        let mut d = self.rpad_zeros(pads.iter().rev().copied())?;
+        d = d.pool(vec![hwi; dims], vec![hwo; dims], vec![1i64; dims])?;
+        // move the tiled spatial axes to the front: (HWI, bs, cin, tyx)
+        let rank = d.rank() as usize;
+        let axes: Vec<Axis> = (rank - dims..rank).chain(0..rank - dims).map(|a| a as Axis).collect();
+        d = d.permute(axes)?;
+        let tyx: Vec<Dim> = d.resolve_shape()[rank - dims..].to_vec();
+
+        // move the kernel axes to the front: (HW, cout, cin)
+        let wrank = weight.rank() as usize;
+        let g = weight.permute((wrank - dims..wrank).chain(0..wrank - dims).map(|a| a as Axis))?;
+
+        // 6x6 winograd tiles: GgGt, BtdB. contiguous so the transforms are materialized once
+        let mut gshape: Vec<Dim> = vec![hwi; dims];
+        gshape.extend([1, groups as Dim, rcout, cin]);
+        gshape.extend(repeat_n(1i64, dims));
+        let gfactors = g.apply_winograd_matrix(&winograd_g, dims)?.contiguous()?.reshape(gshape)?;
+        let mut dshape: Vec<Dim> = vec![hwi; dims];
+        dshape.extend([bs, groups as Dim, 1, cin]);
+        dshape.extend(tyx.iter().copied());
+        let dfactors = d.apply_winograd_matrix(&winograd_bt, dims)?.contiguous()?.reshape(dshape)?;
+
+        // matmul; sum across cin: (HWI, bs, groups, rcout, tyx); then HWI -> HWO: (HWO, bs, groups, rcout, tyx)
+        let mut ret = (gfactors * dfactors).sum_dtype([-1 - dims as Axis], self.dtype())?;
+        ret = ret.apply_winograd_matrix(&winograd_at, dims)?;
+
+        // interleave tyx and HWO: (bs, groups, rcout, oy, HO, ox, WO)
+        let rank = ret.rank() as usize;
+        let mut axes: Vec<Axis> = (dims..rank - dims).map(|a| a as Axis).collect();
+        for i in 0..dims {
+            axes.push((rank - dims + i) as Axis);
+            axes.push(i as Axis);
+        }
+        // merge groups and rcout, tyx and HWO: (bs, cout, *yx), shrink to final
+        let mut shape: Vec<Dim> = vec![bs, cout];
+        shape.extend(tyx.iter().map(|t| t * hwo));
+        let ret = ret.permute(axes)?.reshape(shape)?;
+        let ret = ret.shrink(
+            ret.resolve_shape()
+                .iter()
+                .enumerate()
+                .map(|(i, &d)| if i < 2 { (0, d) } else { (0, oyx[i - 2]) })
+                .collect::<Vec<_>>(),
+        )?;
+
+        let ret = match bias {
+            Some(bias) => {
+                let shape: Vec<Dim> = once(1).chain([cout]).chain(repeat_n(1, dims)).collect();
+                ret + bias.reshape(shape)?
+            }
+            None => ret,
+        };
+        ret.contiguous()
+    }
+
+    /// Apply the separable winograd matrix `mat` along each of the first
+    /// `dims` axes: the transform is `kron(mat, ..., mat) @ self`. Column `k`
+    /// of `mat` is a stacked-const vector that folds into the arithmetic, so
+    /// no constant is materialized.
+    fn apply_winograd_matrix(&self, mat: &[Vec<f32>], dims: usize) -> Result<Tensor, ZyxError> {
+        let dtype = self.dtype();
+        let mut ret = self.clone();
+        for dim in 0..dims {
+            ret = ret.transpose(0, dim as Axis)?;
+            let n_out = mat.len();
+            let n_in = mat.first().map_or(0, Vec::len);
+            let mut acc: Option<Tensor> = None;
+            for k in 0..n_in {
+                let mut shape: Vec<Dim> = vec![n_out as Dim];
+                shape.extend(repeat_n(1i64, ret.rank() as usize - 1));
+                let c = Tensor::from_vec(mat.iter().map(|row| row[k]).collect::<Vec<f32>>(), shape)?.cast(dtype);
+                let term = &c * ret.slice(k as i64)?;
+                acc = Some(match acc {
+                    None => term,
+                    Some(a) => a + term,
+                });
+            }
+            ret = acc.ok_or_else(|| ZyxError::shape_error("sum over empty winograd matrix".into()))?;
+            ret = ret.transpose(0, dim as Axis)?;
+        }
         Ok(ret)
     }
 

@@ -160,6 +160,255 @@ pub enum GGUFMetadataValue {
     Array(Box<[GGUFMetadataValue]>),
 }
 
+impl GGUFMetadataValue {
+    /// The value as a signed 64-bit integer, or `None` for floats, strings,
+    /// bools, arrays, and `Uint64` values that do not fit `i64`.
+    #[must_use]
+    pub fn as_int(&self) -> Option<i64> {
+        match *self {
+            Self::Uint8(v) => Some(i64::from(v)),
+            Self::Int8(v) => Some(i64::from(v)),
+            Self::Uint16(v) => Some(i64::from(v)),
+            Self::Int16(v) => Some(i64::from(v)),
+            Self::Uint32(v) => Some(i64::from(v)),
+            Self::Int32(v) => Some(i64::from(v)),
+            Self::Uint64(v) => i64::try_from(v).ok(),
+            Self::Int64(v) => Some(v),
+            Self::Float32(_) | Self::Float64(_) | Self::Bool(_) | Self::String(_) | Self::Array(_) => None,
+        }
+    }
+
+    /// The value as a 64-bit float. Integers are converted; strings, bools
+    /// and arrays are `None`.
+    #[must_use]
+    pub fn as_float(&self) -> Option<f64> {
+        match *self {
+            Self::Uint8(v) => Some(f64::from(v)),
+            Self::Int8(v) => Some(f64::from(v)),
+            Self::Uint16(v) => Some(f64::from(v)),
+            Self::Int16(v) => Some(f64::from(v)),
+            Self::Uint32(v) => Some(f64::from(v)),
+            Self::Int32(v) => Some(f64::from(v)),
+            Self::Uint64(v) => Some(v as f64),
+            Self::Int64(v) => Some(v as f64),
+            Self::Float32(v) => Some(f64::from(v)),
+            Self::Float64(v) => Some(v),
+            Self::Bool(_) | Self::String(_) | Self::Array(_) => None,
+        }
+    }
+
+    /// The boolean value, or `None` for any other variant.
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match *self {
+            Self::Bool(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The string value, or `None` for any other variant.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::String(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The array elements, or `None` for any other variant.
+    #[must_use]
+    pub fn as_array(&self) -> Option<&[GGUFMetadataValue]> {
+        match self {
+            Self::Array(v) => Some(v),
+            _ => None,
+        }
+    }
+}
+
+/// GGUF metadata as a key/value map with typed accessors.
+///
+/// [`Tensor::load_gguf`](crate::Tensor::load_gguf) returns this instead of a
+/// bare `HashMap`, so a model reads its hyperparameters without carrying its
+/// own `gguf_int`/`gguf_float` helpers:
+///
+/// ```rust no_run
+/// # use zyx::{Tensor, ZyxError};
+/// # fn main() -> Result<(), ZyxError> {
+/// let (meta, _tensors) = Tensor::load_gguf("model.gguf")?;
+/// let hidden = meta.int("qwen35.embedding_length")?;
+/// let theta = meta.float("qwen35.rope.freq_base")?;
+/// let layers = meta.opt_int("qwen35.nextn_predict_layers")?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct GGUFMetadata {
+    values: HashMap<String, GGUFMetadataValue>,
+}
+
+impl GGUFMetadata {
+    /// Wraps a parsed metadata map.
+    #[must_use]
+    pub fn new(values: HashMap<String, GGUFMetadataValue>) -> Self {
+        Self { values }
+    }
+
+    /// The raw value for `key`, or `None` when the key is absent.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&GGUFMetadataValue> {
+        self.values.get(key)
+    }
+
+    /// `true` when the checkpoint carries `key`.
+    #[must_use]
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.values.contains_key(key)
+    }
+
+    /// Iterates over every key/value pair.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &GGUFMetadataValue)> {
+        self.values.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Number of metadata entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    /// `true` when the checkpoint carries no metadata.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// A required entry.
+    fn value(&self, key: &str) -> Result<&GGUFMetadataValue, ZyxError> {
+        self.values.get(key).ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata is missing `{key}`").into()))
+    }
+
+    /// A required integer. A uniform array returns its shared value; a mixed
+    /// per-layer array is an error.
+    pub fn int(&self, key: &str) -> Result<i64, ZyxError> {
+        match self.value(key)? {
+            GGUFMetadataValue::Array(items) => {
+                let Some(first) = items.first() else {
+                    return Err(ZyxError::parse_error(format!("GGUF metadata `{key}` is an empty array").into()));
+                };
+                let value = first
+                    .as_int()
+                    .ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` is not an integer").into()))?;
+                for item in items.iter() {
+                    if item.as_int() != Some(value) {
+                        return Err(ZyxError::parse_error(
+                            format!("GGUF metadata `{key}` has per-layer values; this model needs one value").into(),
+                        ));
+                    }
+                }
+                Ok(value)
+            }
+            value => {
+                value.as_int().ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` is not an integer").into()))
+            }
+        }
+    }
+
+    /// An optional integer; `None` when the key is absent.
+    pub fn opt_int(&self, key: &str) -> Result<Option<i64>, ZyxError> {
+        if self.contains_key(key) {
+            self.int(key).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// A required non-negative integer as `usize`.
+    pub fn usize(&self, key: &str) -> Result<usize, ZyxError> {
+        usize::try_from(self.int(key)?).map_err(|_| ZyxError::parse_error(format!("GGUF metadata `{key}` is negative").into()))
+    }
+
+    /// An optional non-negative integer as `usize`.
+    pub fn opt_usize(&self, key: &str) -> Result<Option<usize>, ZyxError> {
+        self.opt_int(key)?
+            .map(|v| usize::try_from(v).map_err(|_| ZyxError::parse_error(format!("GGUF metadata `{key}` is negative").into())))
+            .transpose()
+    }
+
+    /// A required floating-point number. Integers convert exactly when they
+    /// fit the `f64` mantissa.
+    pub fn float(&self, key: &str) -> Result<f64, ZyxError> {
+        self.value(key)?.as_float().ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` is not numeric").into()))
+    }
+
+    /// An optional floating-point number.
+    pub fn opt_float(&self, key: &str) -> Result<Option<f64>, ZyxError> {
+        if self.contains_key(key) {
+            self.float(key).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// A required boolean.
+    pub fn bool(&self, key: &str) -> Result<bool, ZyxError> {
+        self.value(key)?
+            .as_bool()
+            .ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` is not a boolean").into()))
+    }
+
+    /// An optional boolean.
+    pub fn opt_bool(&self, key: &str) -> Result<Option<bool>, ZyxError> {
+        if self.contains_key(key) {
+            self.bool(key).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// A required string.
+    pub fn str(&self, key: &str) -> Result<&str, ZyxError> {
+        self.value(key)?.as_str().ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` is not a string").into()))
+    }
+
+    /// An optional string.
+    pub fn opt_str(&self, key: &str) -> Result<Option<&str>, ZyxError> {
+        if self.contains_key(key) {
+            self.str(key).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// A required integer array.
+    pub fn ints(&self, key: &str) -> Result<Vec<i64>, ZyxError> {
+        let items = self
+            .value(key)?
+            .as_array()
+            .ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` is not an array").into()))?;
+        items
+            .iter()
+            .map(|item| {
+                item.as_int()
+                    .ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` has a non-integer element").into()))
+            })
+            .collect()
+    }
+
+    /// A required string array.
+    pub fn strings(&self, key: &str) -> Result<Vec<&str>, ZyxError> {
+        let items = self
+            .value(key)?
+            .as_array()
+            .ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` is not an array").into()))?;
+        items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .ok_or_else(|| ZyxError::parse_error(format!("GGUF metadata `{key}` has a non-string element").into()))
+            })
+            .collect()
+    }
+}
+
 impl<S: std::hash::BuildHasher + Default> Module for HashMap<String, Tensor, S> {
     fn iter(&self) -> impl Iterator<Item = &Tensor> {
         self.values()
@@ -246,7 +495,7 @@ impl Tensor {
     /// read failure
     #[allow(clippy::missing_panics_doc)]
     #[allow(clippy::type_complexity)]
-    pub fn load_gguf(path: impl AsRef<Path>) -> Result<(HashMap<String, GGUFMetadataValue>, HashMap<String, Tensor>), ZyxError> {
+    pub fn load_gguf(path: impl AsRef<Path>) -> Result<(GGUFMetadata, HashMap<String, Tensor>), ZyxError> {
         use std::io::Read;
         let mut f = std::fs::File::open(&path)?;
         let mut magic = [0; 4];
@@ -495,6 +744,12 @@ impl Tensor {
                 26 => (DType::I32, shape),
                 27 => (DType::I64, shape),
                 28 => (DType::F64, shape),
+                30 => (DType::BF16, shape),
+                142 => {
+                    let numel: Dim = shape.iter().product();
+                    debug_assert!(numel % 128 == 0, "PQ2_0 tensor {tensor_name} has {numel} elements, not a multiple of 128");
+                    (DType::U8, vec![numel / 128, 34])
+                }
                 12 => {
                     let numel: Dim = shape.iter().product();
                     debug_assert!(numel % 256 == 0, "Q4_K tensor {tensor_name} has {numel} elements, not a multiple of 256");
@@ -660,7 +915,7 @@ impl Tensor {
             }
             tensors.insert(name, Tensor::from_path(shape, dtype, &path, (data_start as u64) + offset)?);
         }
-        Ok((metadata, tensors))
+        Ok((GGUFMetadata::new(metadata), tensors))
     }
 
     /// Load a single `.npy` array from path.

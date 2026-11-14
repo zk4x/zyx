@@ -5,7 +5,7 @@
 //! pipeline on 4 super-blocks. Each part tested alone with exact asserts,
 //! then the whole thing byte-exact. Runs on C; that is expected.
 
-use zyx::{f16, DType, QDType, Tensor, ZyxError};
+use zyx::{DType, QDType, Tensor, ZyxError, f16};
 
 /// One quantized reference case: dtype, raw block bytes, and the
 /// `(index, expected)` spot checks.
@@ -946,9 +946,7 @@ fn ref_ptq1_0(blocks: &[u8]) -> Vec<f32> {
 #[test]
 fn dequantize_ternary_and_2bit() -> Result<(), ZyxError> {
     // Deterministic pseudo-random block bytes for every family.
-    let fill = |seed: u32, len: usize| -> Vec<u8> {
-        (0..len).map(|i| ((i as u32 * 37 + seed * 101 + 11) % 251) as u8).collect()
-    };
+    let fill = |seed: u32, len: usize| -> Vec<u8> { (0..len).map(|i| ((i as u32 * 37 + seed * 101 + 11) % 251) as u8).collect() };
     // A finite f16 scale in the last two bytes of each block.
     let with_scale = |mut b: Vec<u8>, at: usize| -> Vec<u8> {
         b[at] = 0x00; // 0x3c00 = 1.0 in f16

@@ -33,7 +33,7 @@
 
 use crate::{
     DType, Map, Set,
-    backend::{FragAxis, FragMap, MMAVariant},
+    backend::{DeviceInfo, FragAxis, FragMap, MMAVariant},
     dtype::Constant,
     kernel::{BOp, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, autotune::Optimization, split::SplitMode},
     shape::Dim,
@@ -117,6 +117,10 @@ struct Tiled {
     /// The update store the reduce feeds.
     update: OpId,
     epilogue: Vec<Epi>,
+    /// The operand roles are the transpose of the matched product order:
+    /// `a_src` is the second operand and `b_src` the first, so `mt` counts
+    /// tiles along the second operand's rows.
+    mirrored: bool,
 }
 
 /// Warp layouts a tensorized block may use, as `(m, n, k)` warps over the
@@ -149,9 +153,10 @@ struct Plan {
     /// A shape whose lanes a split already built, into [`Tensorize::tiled`].
     tiled: Option<usize>,
     /// A tile grid this plan builds itself: the two output ranges, the K loop,
-    /// the lane factors to split them by, and the instruction tile those
-    /// factors are multiples of.
-    grid: Option<(OpId, OpId, OpId, u16, u16, u16, Dim, Dim, Dim)>,
+    /// the lane factors to split them by, the instruction tile those factors
+    /// are multiples of, and whether the plan wants the transposed tile
+    /// extents (its m lanes are the emitted form's n).
+    grid: Option<(OpId, OpId, OpId, u16, u16, u16, Dim, Dim, Dim, bool)>,
     layout: (u16, u16, u16),
     /// Stage the operands through shared memory (`ldmatrix`) instead of
     /// reading their fragments from global memory.
@@ -177,25 +182,42 @@ impl Optimization for Tensorize {
         let Some(plan) = self.plans.get(config as usize) else {
             return;
         };
-        if let Some((m, n, k, m_lanes, n_lanes, k_lanes, fm, fn_, fk)) = plan.grid {
+        if let Some((m, n, k, m_lanes, n_lanes, k_lanes, fm, fn_, fk, transposed)) = plan.grid {
             // The grid is this plan's own state: the predicates proved every
-            // factor divides, so the splits apply. No clone, no probe.
-            kernel.split(m, SplitMode::Unroll, m_lanes);
-            kernel.split(n, SplitMode::Unroll, n_lanes);
-            kernel.split(k, SplitMode::Unroll, k_lanes);
-            // The tiled form is derived from the kernel as it now stands —
-            // its range groups and its loop — and the grid says which tile
-            // extents it must have.
-            let want = (Dim::from(m_lanes) / fm, Dim::from(n_lanes) / fn_, Dim::from(k_lanes) / fk);
-            let (_, forms) = kernel.tensor_forms();
-            let mut emitted = 0usize;
-            for t in &forms {
-                if (t.mt, t.nt, t.kt) == want {
-                    tile_to_wmma(kernel, t, plan.staged, plan.layout);
-                    emitted += 1;
-                }
+            // factor divides and every split applies, so the splits apply. No
+            // clone, no probe. A split that still refuses (the render ceiling
+            // counts the IR the earlier splits grew) returns NULL without
+            // touching the kernel; the candidate is then the valid
+            // partially-split kernel, not a tiling this plan promised.
+            if kernel.split(m, SplitMode::Unroll, m_lanes).is_null()
+                || kernel.split(n, SplitMode::Unroll, n_lanes).is_null()
+                || kernel.split(k, SplitMode::Unroll, k_lanes).is_null()
+            {
+                return;
             }
-            assert!(emitted > 0, "the enumerated tile grid must be derivable from its own splits");
+            // The tile grid this plan asked for, in the orientation it named:
+            // a transposed plan's m lanes are the form's n lanes.
+            let want = if transposed {
+                (Dim::from(n_lanes) / fm, Dim::from(m_lanes) / fn_, Dim::from(k_lanes) / fk)
+            } else {
+                (Dim::from(m_lanes) / fm, Dim::from(n_lanes) / fn_, Dim::from(k_lanes) / fk)
+            };
+            let (_, forms) = kernel.tensor_forms();
+            // The form those extents name. The matcher labels the extents by
+            // the *product's* operand order, so for a seed whose product is
+            // written `b * a` the plan's m axis is the form's n: the extents
+            // alone find it, whichever operand roles the form was built with.
+            let matches: Vec<&Tiled> = forms.iter().filter(|t| (t.mt, t.nt, t.kt) == want).collect();
+            let chosen = match matches.len() {
+                0 => panic!(
+                    "the enumerated tile grid must be derivable from its own splits: cfg={config} lanes {m_lanes}x{n_lanes}x{k_lanes} tile {fm:?}x{fn_:?}x{fk:?} transposed={transposed} want={want:?}"
+                ),
+                // Equal lane lengths give both operand forms the same extents:
+                // the plan's orientation picks which one this config is.
+                1 => matches[0],
+                _ => *matches.iter().find(|t| t.mirrored == transposed).unwrap_or(&matches[0]),
+            };
+            tile_to_wmma(kernel, chosen, plan.staged, plan.layout);
             kernel.verify();
             return;
         }
@@ -804,11 +826,12 @@ fn coop_ldmatrix(
     let kbh = put(kernel, Op::Const(Constant::idx(tile_rows / 8 * 64)));
     let key = put(kernel, Op::Binary { x: addr, y: kbh, bop: BOp::Div });
     // The key must be the k-block *inside the operand's tile*, the way the fill
-    // writes it: the absolute address also carries the tile's base, so masking
-    // by the tile's own k-block count is what keeps the read key equal to the
-    // store key (`kt = 8` only agreed by coincidence, because a 16 KB tile is a
-    // whole multiple of eight k-blocks and a 8 KB one is not).
-    let nkb = put(kernel, Op::Const(Constant::idx(kblocks.max(1))));
+    // writes it: the absolute address also carries the tile's base, so the key
+    // is folded to the same width as the store's. The fill XORs the low *three*
+    // bits of the k-block into the row field (bits 3..5 of the element index);
+    // a tile with more than eight k-blocks therefore has to fold the read key
+    // the same way, or the XOR reaches bit 6 and names the wrong k-block.
+    let nkb = put(kernel, Op::Const(Constant::idx(kblocks.clamp(1, 8))));
     let kmask = put(kernel, Op::Binary { x: nkb, y: one, bop: BOp::Sub });
     let key = put(kernel, Op::Binary { x: key, y: kmask, bop: BOp::BitAnd });
     let swz = put(kernel, Op::Binary { x: key, y: eight, bop: BOp::Mul });
@@ -840,6 +863,133 @@ fn acc_frag_index(
     kernel.insert_before(at, Op::Binary { x: base, y: lanes, bop: BOp::Add })
 }
 
+/// A tile shape as one plan asks the tensor core for it: a grid of
+/// `mt x nt x kt` instructions, the instruction's own `m x n x k` extent, and
+/// the K step each operand's view already covers (`a_k`/`b_k` are 1 for a plain
+/// K-contiguous operand).
+#[derive(Clone, Copy)]
+pub(crate) struct TileShape {
+    mt: Dim,
+    nt: Dim,
+    kt: Dim,
+    fm: Dim,
+    fn_: Dim,
+    fk: Dim,
+    a_k: Dim,
+    b_k: Dim,
+    slots: Dim,
+}
+
+/// The form a [`TileShape`] takes at one warp layout and staging request: how
+/// many warps own which band of the tile grid, the register block one warp
+/// owns, and whether the operands go through shared memory. `None` when the
+/// request cannot be emitted as one kernel.
+#[derive(Clone, Copy)]
+struct TileFit {
+    mt_w: Dim,
+    nt_w: Dim,
+    warps: u32,
+    combine: bool,
+    staged: bool,
+    chunk: Dim,
+    interleave: bool,
+}
+
+/// Whether a tile shape can be emitted at this warp layout, or `None` if it
+/// cannot: a warp grid that does not divide the tile grid, a K split that does
+/// not divide the loop, a combine epilogue that cannot store warp-wide, a
+/// staged form whose tile or combine buffer does not fit shared memory, or an
+/// unstage register block larger than the register file. The enumeration only
+/// offers shapes this accepts, and [`tile_to_wmma`] panics on anything else,
+/// so a requested form is always the emitted form — never a fallback, never a
+/// skip.
+fn tile_fit(
+    shape: &TileShape,
+    staged: bool,
+    layout: (u16, u16, u16),
+    info: &DeviceInfo,
+    k_divides: impl Fn(u16) -> bool,
+) -> Option<TileFit> {
+    let TileShape { mt, nt, kt, fm, fn_, fk, a_k, b_k, slots } = *shape;
+    let warp = u32::from(info.warp_size);
+    let chunk = kt * fk;
+    // The block-wide form stages a window of two K steps (one `ldmatrix` per
+    // row group covering both) in two buffers, so the output tile is not
+    // limited by the whole K chunk living in shared memory.
+    // The staged window: the two K steps one `ldmatrix` covers, in two
+    // buffers. A wider window costs shared memory and measured slower.
+    let window_width = if kt % 2 == 0 { fk * 2 } else { fk };
+    // The block's warp layout: `m` warps over the output rows and `n` over the
+    // output columns (a warp grid — every warp owns its sub-tile, so nothing
+    // is summed across warps), or `k` warps over the contraction (the partial
+    // accumulators are summed through shared memory). One axis at a time.
+    let (wm, wn, wk) = layout;
+    let cols = nt * fn_;
+    let rows = if fn_ > fm { fn_ } else { fm };
+    let staged_form = staged && a_k == 1 && b_k == 1;
+    // The staged form holds one warp-private tile plus, for a K split, the
+    // combine buffer `[output column][warp * rows + row]`, which needs the
+    // block's output rows (`nt * fn_`) to be whole warp-wide stores.
+    let combine = wk > 1;
+    if combine && cols % Dim::from(warp) != 0 {
+        return None;
+    }
+    let staged_bytes = |nw: Dim| {
+        // The block-wide form holds two stages of a two-K-step window; a
+        // split-K warp holds its own tile and merges through the combine
+        // buffer.
+        let tile = if combine {
+            nw * rows * chunk * 2
+        } else {
+            (mt * fm + nt * fn_) * chunk * 2
+        };
+        if combine { tile + mt * fm * (nw * cols + 4) * 4 } else { tile }
+    };
+    // A warp grid must divide the tile grid, and a K-split warp count must
+    // divide the loop. The loop length is a symbolic expression: its
+    // divisibility is decided on the expression, and only the K-split warp
+    // count needs a value at all.
+    if (wk > 1 && !k_divides(wk)) || (wm > 1 && mt % Dim::from(wm) != 0) || (wn > 1 && nt % Dim::from(wn) != 0) {
+        return None;
+    }
+    // The tiles one warp owns: a warp grid hands each warp a contiguous band
+    // of the block's tile grid.
+    let mt_w = mt / Dim::from(if wm > 1 { wm } else { 1 });
+    let nt_w = nt / Dim::from(if wn > 1 { wn } else { 1 });
+    let warps = u32::from(wm) * u32::from(wn) * u32::from(wk);
+    let nw = Dim::from(warps);
+    // A block-wide fill also needs the tile to hold at least one vector per
+    // thread and to divide evenly among them; the staged form's `ldmatrix`
+    // group is one lane over both operands and every K pair, which needs the
+    // operands' loads to share shape and stride: equal tile rows and half as
+    // many m tiles per warp as n tiles. A split-K warp owns a private tile and
+    // never forms the block-wide group.
+    let threads = Dim::from(warp);
+    let vecs = |rows: Dim| rows * (window_width / Dim::from(2));
+    let all = nw * threads;
+    let fill_fits =
+        combine || (vecs(mt * fm) >= all && vecs(mt * fm) % all == 0) && (vecs(nt * fn_) >= all && vecs(nt * fn_) % all == 0);
+    let lane_group = combine || (mt * fm == nt * fn_ && mt_w * Dim::from(2) == nt_w);
+    let staged = staged_form && lane_group && fill_fits && staged_bytes(nw) <= info.local_mem_size;
+    // The requested form must be the emitted form: a staged request that the
+    // gates above turn into the direct form is a different kernel, not this
+    // plan's.
+    if staged != staged_form {
+        return None;
+    }
+    // A thread's accumulators must fit the register file, and the unstage form
+    // emits one body per tile grid entry: a grid too wide for the registers or
+    // the IR is not a kernel.
+    if !staged && (mt_w * nt_w * slots > Dim::from(128) || mt * nt * kt > Dim::from(256)) {
+        return None;
+    }
+    // The staged form slices K round-robin: warp `y` takes chunks `y`,
+    // `y + n`, ... of one tile step each, so the warps' loads of a row stay
+    // in one window of it. A contiguous slice otherwise.
+    let interleave = staged_form && combine;
+    Some(TileFit { mt_w, nt_w, warps, combine, staged, chunk, interleave })
+}
+
 /// Emit a matched tiled region as wmma instructions, in place: the
 /// accumulator storage keeps its identity, its accesses are rewritten in
 /// fragment order, and the split's reduce/update and the output stores are
@@ -850,75 +1000,25 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
         let (m, n, k) = v.dims.decompose_mnk();
         (m as Dim, n as Dim, k as Dim)
     };
-    let warp = u32::from(kernel.device_info().warp_size);
+    let info = kernel.device_info();
+    let warp = u32::from(info.warp_size);
     let Op::Loop { len: loop_len_id } = *kernel.at(t.loop_id) else {
         unreachable!("tiled tensorize: the K loop is not a loop")
     };
-    let chunk = t.kt * fk;
-    // The block-wide form stages a window of two K steps (one `ldmatrix` per
-    // row group covering both) in two buffers, so the output tile is not
-    // limited by the whole K chunk living in shared memory.
-    // The staged window: the two K steps one `ldmatrix` covers, in two
-    // buffers. A wider window costs shared memory and measured slower.
-    let window_width = if t.kt % 2 == 0 { fk * 2 } else { fk };
-    // The block's warp layout: `m` warps over the output rows and `n` over the
-    // output columns (a warp grid — every warp owns its sub-tile, so nothing
-    // is summed across warps), or `k` warps over the contraction (the partial
-    // accumulators are summed through shared memory). One axis at a time.
+    let shape = TileShape { mt: t.mt, nt: t.nt, kt: t.kt, fm, fn_: fn_, fk, a_k: t.a_k, b_k: t.b_k, slots: t.slots };
+    let Some(fit) = tile_fit(&shape, staged, layout, &info, |wk| kernel.is_sym_multiple(loop_len_id, Dim::from(wk))) else {
+        panic!(
+            "tile_to_wmma: no form for tile {:?}x{:?}x{:?} (instruction {fm:?}x{fn_:?}x{fk:?}, K step {:?}x{:?}) at layout {layout:?} staged={staged}: the enumeration must not offer it",
+            t.mt, t.nt, t.kt, t.a_k, t.b_k
+        );
+    };
     let (wm, wn, wk) = layout;
-    let cols = t.nt * fn_;
-    let rows = if fn_ > fm { fn_ } else { fm };
-    let staged_form = staged && t.a_k == 1 && t.b_k == 1;
-    // The staged form holds one warp-private tile plus, for a K split, the
-    // combine buffer `[output column][warp * rows + row]`, which needs the
-    // block's output rows (`t.nt * fn_`) to be whole warp-wide stores.
-    let combine = wk > 1;
-    if combine && cols % Dim::from(warp) != 0 {
-        // The combine epilogue stores one warp of rows per column.
-        return;
-    }
-    let staged_bytes = |nw: Dim| {
-        // The block-wide form holds two stages of a two-K-step window; a
-        // split-K warp holds its own tile and merges through the combine
-        // buffer.
-        let tile = if combine {
-            nw * rows * chunk * 2
-        } else {
-            (t.mt * fm + t.nt * fn_) * chunk * 2
-        };
-        if combine {
-            tile + t.mt * fm * (nw * cols + 4) * 4
-        } else {
-            tile
-        }
-    };
-    // A layout whose K slice does not fit the loop, or whose warp grid does
-    // not split the tile grid evenly, falls back to the single-warp form. The
-    // loop length is a symbolic expression: its divisibility is decided on the
-    // expression, and only the K-split warp count needs a value at all.
-    let (wm, wn, wk) = if (wk > 1 && !kernel.is_sym_multiple(loop_len_id, Dim::from(wk)))
-        || (wm > 1 && t.mt % Dim::from(wm) != 0)
-        || (wn > 1 && t.nt % Dim::from(wn) != 0)
-    {
-        (1, 1, 1)
-    } else {
-        (wm, wn, wk)
-    };
-    // The tiles one warp owns: a warp grid hands each warp a contiguous band
-    // of the block's tile grid.
-    let mt_w = t.mt / Dim::from(if wm > 1 { wm } else { 1 });
-    let nt_w = t.nt / Dim::from(if wn > 1 { wn } else { 1 });
-    let warps = u32::from(wm) * u32::from(wn) * u32::from(wk);
-    let combine = wk > 1;
+    let TileFit { mt_w, nt_w, warps, combine, staged, chunk, interleave } = fit;
     let mut warp_var = OpId::NULL;
     let mut warp_off_a = OpId::NULL;
     let mut warp_off_b = OpId::NULL;
     let mut warp_off_m = OpId::NULL;
     let mut warp_off_n = OpId::NULL;
-    // The staged form slices K round-robin: warp `y` takes chunks `y`,
-    // `y + n`, ... of one tile step each, so the warps' loads of a row stay
-    // in one window of it. A contiguous slice otherwise.
-    let interleave = staged_form && combine;
     if warps > 1 {
         warp_var = kernel.insert_before(t.loop_id, Op::Range { axis: 1, kind: RangeKind::Local(warps) });
     }
@@ -1001,21 +1101,8 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
     };
     let lane = kernel.insert_before(t.loop_id, Op::Range { axis: 0, kind: RangeKind::Local(warp) });
     let nw = Dim::from(warps);
-    // Shared memory the tile and the combine buffer need, in bytes; fall back
-    // to the direct form otherwise. A block-wide fill also needs the tile to
-    // hold at least one vector per thread and to divide evenly among them.
+    // The threads one block-wide fill covers: every thread of the block.
     let threads = Dim::from(warp);
-    let vecs = |rows: Dim| rows * (window_width / Dim::from(2));
-    let all = nw * threads;
-    let fill_fits = combine
-        || (vecs(t.mt * fm) >= all && vecs(t.mt * fm) % all == 0) && (vecs(t.nt * fn_) >= all && vecs(t.nt * fn_) % all == 0);
-    // The staged form's `ldmatrix` group is one lane over both operands and
-    // every K pair, which needs the operands' loads to share shape and stride:
-    // equal tile rows and half as many m tiles per warp as n tiles. Otherwise
-    // the config runs the per-tile form.
-    // A split-K warp owns a private tile and never forms the block-wide group.
-    let lane_group = combine || (t.mt * fm == t.nt * fn_ && mt_w * Dim::from(2) == nt_w);
-    let staged = staged_form && lane_group && fill_fits && staged_bytes(nw) <= kernel.device_info().local_mem_size;
 
     // The accumulator holds one register per (tile, slot): `m_len * n_len`
     // scalar elements would be 32x what the instruction layout needs.
@@ -1023,12 +1110,6 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
     // accumulator only holds that band: the whole grid's `mt * nt * slots`
     // would be eight times the registers a warp uses.
     let len = mt_w * nt_w * t.slots;
-    // A thread's accumulators must fit the register file, and the unstage
-    // form emits one body per tile grid entry: a grid too wide for the
-    // registers or the IR is not a kernel.
-    if !staged && (len > Dim::from(128) || t.mt * t.nt * t.kt > Dim::from(256)) {
-        return;
-    }
     if let Op::Storage { len: l, .. } = &mut kernel.ops[t.acc].op {
         *l = len;
     }
@@ -1346,7 +1427,13 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
             // (`operand * pairs + pair`), each `mt * width` halves, indexed by
             // its tile lane so one `wmma` + one accumulator store cover the
             // whole tile grid.
-            let steps_here = 2;
+            //
+            // A pair then holds `steps_here` K steps: one per step the window
+            // staged, divided over its pairs. A one-step window (`kt < 2`) has
+            // a single unpaired `ldmatrix` per pair, so only `sl = 0` exists —
+            // reading a second step addresses one tile run past the section.
+            let npairs = (win_steps / 2).max(1);
+            let steps_here = win_steps / npairs;
             // The body is the K loop's own: the chunk in shared memory is
             // consumed by the instructions, then overwritten by the chunk the
             // body loaded at its top.
@@ -1410,7 +1497,6 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 // every `ldmatrix` then carries its sub-tile as an immediate
                 // (`+0x1000`, `+0x4000`, ...), as the reference's unrolled body
                 // does. Everything else is a lane.
-                let npairs = (win_steps / 2).max(1);
                 let eight = Dim::from(8i64);
                 // One `ldmatrix` for both operands and every K pair: the lane is
                 // `operand * npairs + pair`, B sits one A-section later in the
@@ -1429,8 +1515,11 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     kernel.insert_before(end, Op::Unroll { axis: 3, len: u16::try_from(nlanes).expect("operand-pair lane") });
                 let tlane = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(mt).expect("tile count") });
                 // The lane's slot: its pair section, its tile, and the warp's own
-                // band (A's rows for A's lanes, B's for B's).
-                let ps = kernel.insert_const_idx_before(end, Dim::from(2 * fk) * a_rows);
+                // band (A's rows for A's lanes, B's for B's). A section is the
+                // K steps its pair covers — two per `ldmatrix`, or the window's
+                // single step when it has no pair to share.
+                let pair_k = i64::try_from(steps_here).expect("K steps per pair") * fk;
+                let ps = kernel.insert_const_idx_before(end, pair_k * a_rows);
                 let mut sb = kernel.insert_before(end, Op::Binary { x: obl, y: ps, bop: BOp::Mul });
                 let ts = kernel.insert_const_idx_before(end, fm * eight);
                 let toff = kernel.insert_before(end, Op::Binary { x: tlane, y: ts, bop: BOp::Mul });
@@ -2406,40 +2495,83 @@ impl Kernel {
                         let (fm, fn_, fk) = variant.dims.decompose_mnk();
                         (fm as Dim, fn_ as Dim, fk as Dim)
                     };
-                    if m_len % fm != 0 || n_len % fn_ != 0 || k_len % fk != 0 {
+                    if k_len % fk != 0 {
                         continue;
                     }
-                    let (mt, nt, kt) = (m_len / fm, n_len / fn_, k_len / fk);
                     // A wider K step unrolls the loop body instead of adding
                     // iterations, so the ceiling is the emitted body: the
                     // staged form's is one loop over its fragments whatever
                     // the tile grid, the unstage form's is the grid itself
                     // (bounded where that body is emitted).
-                    if mt.saturating_mul(nt).saturating_mul(kt) > 2048 {
-                        continue;
+                    let kt = k_len / fk;
+                    // The direct tiling: A is the matched product's first
+                    // operand, so its lanes must be whole `fm` tiles.
+                    if m_len % fm == 0 && n_len % fn_ == 0 {
+                        let (mt, nt) = (m_len / fm, n_len / fn_);
+                        if mt.saturating_mul(nt).saturating_mul(kt) <= 2048 {
+                            tiled.push(Tiled {
+                                variant: variant.clone(),
+                                acc,
+                                a_src,
+                                b_src,
+                                a_fixed: a_fixed.clone(),
+                                a_offset,
+                                a_m: a_map[&m_var].1,
+                                a_k: a_map[&k_var].1,
+                                b_fixed: b_fixed.clone(),
+                                b_offset,
+                                b_n: b_map[&n_var].1,
+                                b_k: b_map[&k_var].1,
+                                mt,
+                                nt,
+                                kt,
+                                slots: Dim::from(variant.c.slots.len() as i64),
+                                init,
+                                loop_id,
+                                update,
+                                epilogue: epilogue.clone(),
+                                mirrored: false,
+                            });
+                        }
                     }
-                    tiled.push(Tiled {
-                        variant: variant.clone(),
-                        acc,
-                        a_src,
-                        b_src,
-                        a_fixed: a_fixed.clone(),
-                        a_offset,
-                        a_m: a_map[&m_var].1,
-                        a_k: a_map[&k_var].1,
-                        b_fixed: b_fixed.clone(),
-                        b_offset,
-                        b_n: b_map[&n_var].1,
-                        b_k: b_map[&k_var].1,
-                        mt,
-                        nt,
-                        kt,
-                        slots: Dim::from(variant.c.slots.len() as i64),
-                        init,
-                        loop_id,
-                        update,
-                        epilogue: epilogue.clone(),
-                    });
+                    // The same reduce with the operand roles exchanged: A gets
+                    // the second operand's tile and B the first, and the m/n
+                    // tile extents and output strides swap with them. The
+                    // extents are recomputed from the exchanged lane lengths
+                    // (A's tile is `fm` wide, B's `fn_`). Both orientations are
+                    // valid kernels (the output index is addressed by the
+                    // lanes' own strides), and the search enumerates both, so
+                    // the form is emitted for each. Equal operand dtypes are
+                    // what the instruction requires of either role, and each
+                    // side must be a whole number of instructions.
+                    if variant.a_dtype == variant.b_dtype && n_len % fm == 0 && m_len % fn_ == 0 {
+                        let (mt, nt) = (n_len / fm, m_len / fn_);
+                        if mt.saturating_mul(nt).saturating_mul(kt) <= 2048 {
+                            tiled.push(Tiled {
+                                variant: variant.clone(),
+                                acc,
+                                a_src: b_src,
+                                b_src: a_src,
+                                a_fixed: b_fixed.clone(),
+                                a_offset: b_offset,
+                                a_m: b_map[&n_var].1,
+                                a_k: b_map[&k_var].1,
+                                b_fixed: a_fixed.clone(),
+                                b_offset: a_offset,
+                                b_n: a_map[&m_var].1,
+                                b_k: a_map[&k_var].1,
+                                mt,
+                                nt,
+                                kt,
+                                slots: Dim::from(variant.c.slots.len() as i64),
+                                init,
+                                loop_id,
+                                update,
+                                epilogue: epilogue.iter().map(|e| Epi { m: e.n, n: e.m, ..e.clone() }).collect(),
+                                mirrored: true,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -2462,9 +2594,28 @@ impl Kernel {
             } else {
                 (None, Some(i - regions.len()))
             };
+            // A pre-split form is offered only at the warp layouts and staging
+            // levels that can emit it: the form is applied as-is, so a request
+            // it cannot honour is a panic, not a config.
+            let shape = tiled_idx.map(|idx| {
+                let t = &tiled[idx];
+                let (fm, fn_, fk) = {
+                    let (m, n, k) = t.variant.dims.decompose_mnk();
+                    (m as Dim, n as Dim, k as Dim)
+                };
+                let Op::Loop { len: loop_len } = *self.at(t.loop_id) else {
+                    unreachable!("tiled tensorize: the K loop is not a loop")
+                };
+                (TileShape { mt: t.mt, nt: t.nt, kt: t.kt, fm, fn_: fn_, fk, a_k: t.a_k, b_k: t.b_k, slots: t.slots }, loop_len)
+            });
             for &layout in &layouts {
                 for staged in [false, true] {
                     if !staged && layout.2 > 1 {
+                        continue;
+                    }
+                    if let Some((shape, loop_len)) = &shape
+                        && tile_fit(shape, staged, layout, &info, |wk| self.is_sym_multiple(*loop_len, Dim::from(wk))).is_none()
+                    {
                         continue;
                     }
                     plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged });
@@ -2511,6 +2662,9 @@ impl Kernel {
             let mut loop_id = OpId::NULL;
             let mut loop_len = OpId::NULL;
             let mut operand_dtypes: Option<(crate::DType, crate::DType)> = None;
+            // The two views the contraction multiplies, when they are loads:
+            // their affine maps are what say which output axis each carries.
+            let mut product_indices: Option<(OpId, OpId)> = None;
             let mut acc_dtype: Option<crate::DType> = None;
             let mut op_id = self.head;
             while !op_id.is_null() {
@@ -2526,68 +2680,148 @@ impl Kernel {
                     }
                     Op::Binary { bop: BOp::Mul, x, y } if operand_dtypes.is_none() => {
                         operand_dtypes = elem_dtype(self, x).zip(elem_dtype(self, y));
+                        if let (Op::Load { src_idx: xi, .. }, Op::Load { src_idx: yi, .. }) = (self.at(x), self.at(y)) {
+                            product_indices = Some((*xi, *yi));
+                        }
                     }
                     Op::Storage { scope: MemScope::Register, dtype, .. } => acc_dtype = Some(dtype),
                     _ => {}
                 }
                 op_id = self.next_op(op_id);
             }
-            if ranges.len() == 2
+            if !ranges.is_empty()
                 && !loop_id.is_null()
                 && !loop_len.is_null()
-                && let (Some((x_dtype, y_dtype)), Some(acc_dtype)) = (operand_dtypes, acc_dtype)
+                && let (Some((x_dtype, y_dtype)), Some(acc_dtype), Some((a_idx, b_idx))) =
+                    (operand_dtypes, acc_dtype, product_indices)
+                && let (Some(a_map), Some(b_map)) = (self.get_strides(a_idx), self.get_strides(b_idx))
             {
-                ranges.sort_by_key(|&(_, axis, _)| axis);
-                let ((m_range, _, m), (n_range, _, n)) = (ranges[0], ranges[1]);
-                for variant in &info.mma_variants {
-                    // The orientation is decided by the accumulator's view, not
-                    // by the multiply order, so either operand may be A.
-                    let dtypes_match = (variant.a_dtype == x_dtype && variant.b_dtype == y_dtype
-                        || variant.a_dtype == y_dtype && variant.b_dtype == x_dtype)
-                        && variant.c_dtype == acc_dtype;
-                    if !dtypes_match {
-                        continue;
+                // The two axes the instruction tiles are the ones each operand
+                // carries and the other does not. Every other output axis — a
+                // batch, a head — is in both views (or in neither), so it is a
+                // fixed index term, not a tile axis: the block runs once per
+                // instance of it. A contraction whose two operands split the
+                // output axes unevenly (a direct convolution carries several)
+                // has no single tile pair here and is left alone.
+                let mut a_only = None;
+                let mut b_only = None;
+                let mut ambiguous = false;
+                for &(range, _, _) in &ranges {
+                    match (a_map.contains_key(&range), b_map.contains_key(&range)) {
+                        (true, false) => ambiguous |= a_only.replace(range).is_some(),
+                        (false, true) => ambiguous |= b_only.replace(range).is_some(),
+                        _ => {}
                     }
-                    let (fm, fn_, fk) = {
-                        let (fm, fn_, fk) = variant.dims.decompose_mnk();
-                        (fm as Dim, fn_ as Dim, fk as Dim)
-                    };
-                    for &mm in MULT {
-                        let m_lanes = fm * Dim::from(mm);
-                        if !self.is_sym_multiple(m, m_lanes) {
+                }
+                if let (Some(m_range), Some(n_range), false) = (a_only, b_only, ambiguous) {
+                    let extent = |range: OpId| ranges.iter().find(|r| r.0 == range).map(|r| r.2).unwrap_or(OpId::NULL);
+                    let (m, n) = (extent(m_range), extent(n_range));
+                    for variant in &info.mma_variants {
+                        // The orientation is decided by the accumulator's view, not
+                        // by the multiply order, so either operand may be A.
+                        let dtypes_match = (variant.a_dtype == x_dtype && variant.b_dtype == y_dtype
+                            || variant.a_dtype == y_dtype && variant.b_dtype == x_dtype)
+                            && variant.c_dtype == acc_dtype;
+                        if !dtypes_match {
                             continue;
                         }
-                        for &nn in MULT {
-                            let n_lanes = fn_ * Dim::from(nn);
-                            if !self.is_sym_multiple(n, n_lanes) {
+                        let (fm64, fn64, fk64) = variant.dims.decompose_mnk();
+                        let (fm_u, fn_u, fk_u) = (fm64 as u16, fn64 as u16, fk64 as u16);
+                        let (fm, fn_, fk) = (Dim::from(fm_u), Dim::from(fn_u), Dim::from(fk_u));
+                        let lane = |base: u16, mult: u16| base.saturating_mul(mult);
+                        // The three splits this plan applies, filtered once per
+                        // factor through split's own refusal contract: a plan whose
+                        // split would be refused is not enumerated. The checks are
+                        // per axis and independent of the other two, so one probe
+                        // per (axis, factor) serves every combination.
+                        let m_ok: Vec<bool> =
+                            MULT.iter().map(|&mm| self.can_split(m_range, SplitMode::Unroll, lane(fm_u, mm))).collect();
+                        let n_ok: Vec<bool> =
+                            MULT.iter().map(|&nn| self.can_split(n_range, SplitMode::Unroll, lane(fn_u, nn))).collect();
+                        let k_ok: Vec<bool> =
+                            MULT.iter().map(|&kk| self.can_split(loop_id, SplitMode::Unroll, lane(fk_u, kk))).collect();
+                        for (mi, &mm) in MULT.iter().enumerate() {
+                            let m_lanes = lane(fm_u, mm);
+                            if !m_ok[mi] || !self.is_sym_multiple(m, Dim::from(m_lanes)) {
                                 continue;
                             }
-                            for &kk in MULT {
-                                let k_lanes = fk * Dim::from(kk);
-                                if !self.is_sym_multiple(loop_len, k_lanes) {
+                            for (ni, &nn) in MULT.iter().enumerate() {
+                                let n_lanes = lane(fn_u, nn);
+                                if !n_ok[ni] || !self.is_sym_multiple(n, Dim::from(n_lanes)) {
                                     continue;
                                 }
-                                let tiles = (m_lanes / fm) * (n_lanes / fn_) * (k_lanes / fk);
-                                if tiles > MAX_TILES {
-                                    continue;
-                                }
-                                let (Ok(m_lanes), Ok(n_lanes), Ok(k_lanes)) =
-                                    (u16::try_from(m_lanes), u16::try_from(n_lanes), u16::try_from(k_lanes))
-                                else {
-                                    continue;
-                                };
-                                for &layout in &layouts {
-                                    for staged in [false, true] {
-                                        if !staged && layout.2 > 1 {
+                                for (ki, &kk) in MULT.iter().enumerate() {
+                                    let k_lanes = lane(fk_u, kk);
+                                    if !k_ok[ki] || !self.is_sym_multiple(loop_len, Dim::from(k_lanes)) {
+                                        continue;
+                                    }
+                                    // A split that covers the whole K loop rewrites
+                                    // the loop node into bare lanes: the reduce is
+                                    // then no longer inside a loop, and the tiled
+                                    // matcher emits its instructions in that loop,
+                                    // so the plan has no form at all. Not a plan.
+                                    if self.resolve_const(loop_len).and_then(Constant::as_dim) == Some(Dim::from(k_lanes)) {
+                                        continue;
+                                    }
+                                    let kt = u32::from(k_lanes / fk_u);
+                                    // Both operand orientations: the direct tiling
+                                    // and its transpose. Each is enumerated only
+                                    // when its own tile extents are whole
+                                    // instructions.
+                                    for transposed in [false, true] {
+                                        let (mt, nt) = if transposed {
+                                            if n_lanes % fm_u != 0 || m_lanes % fn_u != 0 {
+                                                continue;
+                                            }
+                                            (u32::from(n_lanes / fm_u), u32::from(m_lanes / fn_u))
+                                        } else {
+                                            (u32::from(m_lanes / fm_u), u32::from(n_lanes / fn_u))
+                                        };
+                                        if Dim::from(i64::from(mt) * i64::from(nt) * i64::from(kt)) > MAX_TILES {
                                             continue;
                                         }
-                                        plans.push(Plan {
-                                            region: None,
-                                            tiled: None,
-                                            grid: Some((m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_, fk)),
-                                            layout,
-                                            staged,
-                                        });
+                                        // The grid as the form will see it: one
+                                        // instruction tile per lane, both operands
+                                        // plain K-contiguous.
+                                        let shape = TileShape {
+                                            mt: Dim::from(mt),
+                                            nt: Dim::from(nt),
+                                            kt: Dim::from(kt),
+                                            fm,
+                                            fn_: fn_,
+                                            fk,
+                                            a_k: 1,
+                                            b_k: 1,
+                                            slots: Dim::from(variant.c.slots.len() as i64),
+                                        };
+                                        for &layout in &layouts {
+                                            for staged in [false, true] {
+                                                if !staged && layout.2 > 1 {
+                                                    continue;
+                                                }
+                                                // The splits left the loop divided by
+                                                // `k_lanes`: a K-split warp count
+                                                // divides it when it divides the
+                                                // whole loop together with them.
+                                                if tile_fit(&shape, staged, layout, &info, |wk| {
+                                                    self.is_sym_multiple(loop_len, Dim::from(k_lanes.saturating_mul(wk)))
+                                                })
+                                                .is_none()
+                                                {
+                                                    continue;
+                                                }
+                                                plans.push(Plan {
+                                                    region: None,
+                                                    tiled: None,
+                                                    grid: Some((
+                                                        m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_, fk,
+                                                        transposed,
+                                                    )),
+                                                    layout,
+                                                    staged,
+                                                });
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -2665,17 +2899,31 @@ mod tests {
         }
     }
 
+    /// The tensorization space as the enumeration built it — the same one
+    /// `opt_tensorize` boxes — so a test can name a config by its plan.
+    fn tensorize_space(k: &Kernel) -> Tensorize {
+        k.tensorize_impl(WARP_LAYOUTS.to_vec())
+    }
+
     /// The config of the merged tensorization space for one shape (`0` for the
-    /// first matched region or tile grid) at `layout`, in the staged or the
-    /// unstage form. Plans are enumerated shape × layout × [unstage, staged],
-    /// and a K-split layout is offered staged only, so it has one config.
-    fn plan_config(shape: usize, layout: usize, staged: bool) -> u64 {
-        let offered = |l: (u16, u16, u16)| if l.2 > 1 { 1 } else { 2 };
-        let per_shape: usize = WARP_LAYOUTS.iter().map(|&l| offered(l)).sum();
-        let before: usize = WARP_LAYOUTS[..layout].iter().map(|&l| offered(l)).sum();
-        assert!(WARP_LAYOUTS[layout].2 == 1 || staged, "a K-split layout has no unstage form");
-        let staged_offset = usize::from(staged) * usize::from(offered(WARP_LAYOUTS[layout]) == 2);
-        (shape * per_shape + before + staged_offset) as u64
+    /// first matched region or pre-split tile grid) at `layout`, in the staged
+    /// or the unstage form. The space offers exactly the forms each shape can
+    /// be emitted in, so the config is found, never computed: a shape that
+    /// cannot honour a layout has no such config.
+    fn plan_config(space: &Tensorize, shape: usize, layout: (u16, u16, u16), staged: bool) -> u64 {
+        let regions = space.regions.len();
+        space
+            .plans
+            .iter()
+            .position(|p| {
+                let s = match (p.region, p.tiled) {
+                    (Some(r), _) => r,
+                    (None, Some(t)) => regions + t,
+                    _ => return false,
+                };
+                s == shape && p.layout == layout && p.staged == staged
+            })
+            .unwrap_or_else(|| panic!("the space offers shape {shape} at layout {layout:?} staged={staged}")) as u64
     }
 
     /// The scalar form (`acc = a[m,k]*b[k,n] + acc` in a K loop, then store)
@@ -2712,7 +2960,11 @@ mod tests {
         k.store(c, res, c_idx);
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 46, "one region and one tile grid, per layout and operand form");
+        assert_eq!(
+            opt.nconfigs(),
+            23,
+            "one region, per layout and operand form: K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in"
+        );
         opt.apply(&mut k, 0);
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
@@ -2756,11 +3008,113 @@ mod tests {
         k.store(c, res, c_idx);
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 46, "one NT region and one tile grid, per layout and operand form");
+        assert_eq!(
+            opt.nconfigs(),
+            23,
+            "one NT region, per layout and operand form: K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in"
+        );
         opt.apply(&mut k, 0);
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
         assert_eq!(wmmas, 1, "one wmma update");
+    }
+
+    /// A batched matmul `[b, m, k] x [b, n, k]`: the batch axis is in every
+    /// view, so it is not a tile axis — the two that are (m carried by A only,
+    /// n by B only) come from the views, not from the axis order, and the batch
+    /// stays a fixed index term the block runs once per.
+    #[test]
+    fn batched_matmul_tensorizes() {
+        const B: i64 = 2;
+        const M: i64 = 32;
+        const N: i64 = 64;
+        const K: i64 = 32;
+
+        let build = || {
+            let mut k = Kernel::new(Dev::Auto);
+            k.dev_info = Some(Arc::new(cuda()));
+            let a = k.param(DType::F16);
+            let b = k.param(DType::F16);
+            let c = k.param_mut(DType::F32);
+            let batch = k.group_range(0, B);
+            let m = k.group_range(1, M);
+            let n = k.group_range(2, N);
+            let acc = k.storage(DType::F32, MemScope::Register, 1);
+            let zero = k.const_val(0.0f32);
+            k.store(acc, zero, 0i64);
+            k.loop_over(K, |k, lv| {
+                let am = k.mad(m, K, lv);
+                let a_idx = k.mad(batch, M * K, am);
+                let a_load = k.load(a, a_idx);
+                let bn = k.mad(n, K, lv);
+                let b_idx = k.mad(batch, N * K, bn);
+                let b_load = k.load(b, b_idx);
+                let prod = k.mul(a_load, b_load);
+                let prod = k.cast(prod, DType::F32);
+                let prev = k.load(acc, 0i64);
+                let sum = k.add(prod, prev);
+                k.store(acc, sum, 0i64);
+            });
+            let res = k.load(acc, 0i64);
+            let mn = k.mad(m, N, n);
+            let c_idx = k.mad(batch, M * N, mn);
+            k.store(c, res, c_idx);
+            k.linearize();
+            k
+        };
+
+        let seed = build();
+        let opt = seed.opt_tensorize();
+        assert!(opt.nconfigs() > 0, "a batched matmul is a contraction like any other");
+        // The batch axis is never a tile axis: applying a config splits m, n
+        // and the contraction loop, and the batch group range stays as it is.
+        // The smallest candidate is the one every other config only adds tiles
+        // to, so it is the one a test can hold to a compile and a value check.
+        let mut tensorized: Option<Kernel> = None;
+        let mut best_n = usize::MAX;
+        for cfg in 0..opt.nconfigs() {
+            let mut probe = seed.clone();
+            opt.apply(&mut probe, cfg);
+            if probe.iter_unordered().any(|(_, op)| matches!(op, Op::Wmma { .. })) {
+                let count = usize::from(probe.ops.len());
+                if count < best_n {
+                    best_n = count;
+                    tensorized = Some(probe);
+                }
+            }
+        }
+        let Some(kernel) = tensorized else {
+            panic!("no config of the batched matmul emits an instruction");
+        };
+        kernel.verify();
+
+        let dev = match Dev::all().into_iter().find(|d| !matches!(d, Dev::C | Dev::Host)) {
+            Some(d) => d,
+            None => {
+                eprintln!("skipping the value check: no device");
+                return;
+            }
+        };
+        let a = Tensor::rand([B, M, K], DType::F16).unwrap().to(dev).unwrap();
+        let b = Tensor::rand([B, N, K], DType::F16).unwrap().to(dev).unwrap();
+        let run = |k: Kernel| -> Option<Vec<f32>> {
+            let compiled = k.compile().ok()?;
+            let out = compiled.forward(&[&a, &b], vec![[B, M, N]]).ok()?;
+            Some(out[0].clone().try_into().unwrap())
+        };
+        let Some(want) = run(seed.clone()) else {
+            eprintln!("skipping the value check: the scalar kernel did not compile");
+            return;
+        };
+        let Some(got) = run(kernel) else {
+            panic!("the tensorized batched matmul did not compile");
+        };
+        let mut worst = 0.0f32;
+        for i in 0..(B * M * N) as usize {
+            worst = worst.max((got[i] - want[i]).abs() / (1.0 + want[i].abs()));
+        }
+        println!("batched matmul vs scalar: max relative |err| = {worst}");
+        assert!(worst < 1e-2, "the tensorized batched matmul disagrees with the scalar kernel: {worst}");
     }
 
     /// The exact seed IR a llama prefill projection linearizes to, transcribed
@@ -2907,7 +3261,11 @@ mod tests {
         k.verify();
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 23, "the tiled form matches one region, per warp layout and operand form");
+        assert_eq!(
+            opt.nconfigs(),
+            15,
+            "both operand orientations of the tiled form, at the warp layouts and staging levels that can emit them"
+        );
         opt.apply(&mut k, 0);
         k.verify();
         let wmmas = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Wmma { .. })).count();
@@ -3066,7 +3424,7 @@ mod tests {
         k.verify();
         let scalar = k.clone();
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 23, "the tiled form matches, per warp layout and operand form");
+        assert_eq!(opt.nconfigs(), 16, "the tiled form matches, at the warp layouts and staging levels that can emit it");
         opt.apply(&mut k, 0);
         k.default_epilogue();
         k.verify();
@@ -3113,8 +3471,9 @@ mod tests {
         assert!(!ks.split(ns, split::SplitMode::Unroll, 32).is_null(), "staged n split");
         assert!(!ks.split(kls, split::SplitMode::Unroll, 16).is_null(), "staged k split");
         ks.verify();
-        let sopt = ks.opt_tensorize();
-        sopt.apply(&mut ks, plan_config(0, 0, true));
+        let sopt = tensorize_space(&ks);
+        let cfg = plan_config(&sopt, 0, WARP_LAYOUTS[0], true);
+        sopt.apply(&mut ks, cfg);
         ks.default_epilogue();
         ks.devectorize().expect("staged tensorized kernel devectorizes");
         ks.verify();
@@ -3137,12 +3496,20 @@ mod tests {
         // per-warp fragment bases hold for every tile.
         for staged in [true] {
             let (mut kw, mw, nw_, klw) = build();
+            // The card's shared memory rather than the synthetic 8 KB: the
+            // split-K form holds a warp-private tile plus the combine buffer,
+            // ~9.5 KB for this shape, so an 8 KB device has no staged plan to
+            // offer at any warp layout and the enumeration says so.
+            let mut info = cuda();
+            info.local_mem_size = 49152;
+            kw.dev_info = Some(Arc::new(info));
             assert!(!kw.split(mw, split::SplitMode::Unroll, 32).is_null(), "split-K m split");
             assert!(!kw.split(nw_, split::SplitMode::Unroll, 32).is_null(), "split-K n split");
             assert!(!kw.split(klw, split::SplitMode::Unroll, 16).is_null(), "split-K k split");
             kw.verify();
-            let wopt = kw.opt_tensorize();
-            wopt.apply(&mut kw, plan_config(0, 10, staged));
+            let wopt = tensorize_space(&kw);
+            let cfg = plan_config(&wopt, 0, WARP_LAYOUTS[10], staged);
+            wopt.apply(&mut kw, cfg);
             kw.default_epilogue();
             kw.verify();
             let Some(warped) = run(kw, &a, &b) else { return };
@@ -3153,6 +3520,100 @@ mod tests {
             println!("split-k (staged={staged}) vs scalar: max |err| = {warped_worst}");
             assert!(warped_worst < 1e-2, "split-K tensorize (staged={staged}) disagrees with the scalar kernel: {warped_worst}");
         }
+    }
+
+    /// A tile grid in the exchanged orientation: the same splits, the operands
+    /// swapped and the output addressed through the exchanged strides. Every
+    /// enumerated grid must reproduce the scalar matmul, whichever orientation
+    /// it emits.
+    #[test]
+    fn transposed_grid_values() {
+        const M: i64 = 128;
+        const N: i64 = 8192;
+        const K: i64 = 3072;
+
+        let build = || {
+            let mut k = Kernel::new(Dev::Auto);
+            k.dev_info = Some(Arc::new(cuda()));
+            let a = k.param(DType::F16);
+            let b = k.param(DType::F16);
+            let c16 = k.param_mut(DType::F16);
+            let c32 = k.param_mut(DType::F32);
+            let m = k.group_range(0, M);
+            let n = k.group_range(1, N);
+            let acc = k.storage(DType::F32, MemScope::Register, 1);
+            let zero = k.const_val(0.0f32);
+            k.store(acc, zero, 0i64);
+            k.loop_over(K, |k, lv| {
+                let a_idx = k.mad(m, K, lv);
+                let a_load = k.load(a, a_idx);
+                let b_idx = k.mad(n, K, lv);
+                let b_load = k.load(b, b_idx);
+                let prod = k.mul(a_load, b_load);
+                let prod = k.cast(prod, DType::F32);
+                let prev = k.load(acc, 0i64);
+                let sum = k.add(prod, prev);
+                k.store(acc, sum, 0i64);
+            });
+            let res = k.load(acc, 0i64);
+            let res16 = k.cast(res, DType::F16);
+            let res32 = k.cast(res16, DType::F32);
+            let c_idx = k.mad(m, N, n);
+            k.store(c16, res16, c_idx);
+            k.store(c32, res32, c_idx);
+            k.linearize();
+            k
+        };
+
+        let run = |k: Kernel, a: &Tensor, b: &Tensor| -> Option<Vec<f32>> {
+            let compiled = match k.compile() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("skipping: {e}");
+                    return None;
+                }
+            };
+            let out = compiled.forward(&[a, b], vec![[M, N], [M, N]]).unwrap();
+            Some(out[1].clone().try_into().unwrap())
+        };
+
+        let seed = build();
+        let opt = seed.opt_tensorize();
+        let ncfg = opt.nconfigs();
+        println!("tile-grid candidates: {ncfg}");
+
+        let dev = match Dev::all().into_iter().find(|d| !matches!(d, Dev::C | Dev::Host)) {
+            Some(d) => d,
+            None => {
+                eprintln!("skipping: no device");
+                return;
+            }
+        };
+        let a = Tensor::rand([M, K], DType::F16).unwrap().to(dev).unwrap();
+        let b = Tensor::rand([N, K], DType::F16).unwrap().to(dev).unwrap();
+        let Some(want) = run(seed.clone(), &a, &b) else { return };
+
+        let mut checked = 0usize;
+        for cfg in 0..ncfg {
+            let mut k = seed.clone();
+            opt.apply(&mut k, cfg);
+            k.verify();
+            k.default_epilogue();
+            let Some(got) = run(k, &a, &b) else {
+                println!("config {cfg}: did not run");
+                continue;
+            };
+            checked += 1;
+            // The two kernels accumulate in a different order, so an f16
+            // result may round across its own ULP: the check is relative to
+            // the magnitude, never tighter than the f16 spacing.
+            let mut worst = 0.0f32;
+            for i in 0..(M * N) as usize {
+                worst = worst.max((got[i] - want[i]).abs() / (1.0 + want[i].abs()));
+            }
+            assert!(worst < 1e-2, "tile-grid config {cfg} disagrees with the scalar kernel: {worst}");
+        }
+        println!("tile-grid candidates checked: {checked}");
     }
 
     /// The staged tensorizer at `k lanes 32`: the recipe enumerates that window
@@ -3218,9 +3679,10 @@ mod tests {
         assert!(!ks.split(ns, split::SplitMode::Unroll, 128).is_null(), "staged n split");
         assert!(!ks.split(kls, split::SplitMode::Unroll, 32).is_null(), "staged k split");
         ks.verify();
-        let sopt = ks.opt_tensorize();
+        let sopt = tensorize_space(&ks);
         assert!(sopt.nconfigs() > 0, "the four-step window is a staged config");
-        sopt.apply(&mut ks, plan_config(0, 0, true));
+        let cfg = plan_config(&sopt, 0, WARP_LAYOUTS[0], true);
+        sopt.apply(&mut ks, cfg);
         ks.default_epilogue();
         ks.verify();
 
@@ -3299,7 +3761,7 @@ mod tests {
         // The split kernel carries one pre-tiled shape, so shape index 0;
         // layout 10 is `(1, 1, 2)`, the K split that sums per-warp partials
         // through the combine buffer.
-        let combine = plan_config(0, 10, true);
+        let combine = plan_config(&tensorize_space(&k), 0, WARP_LAYOUTS[10], true);
         opt.apply(&mut k, combine);
         k.default_epilogue();
         k.devectorize().expect("llama form devectorizes");
@@ -3428,9 +3890,9 @@ mod tests {
 
         let t = k.opt_tensorize();
         println!("tensorize nconfigs = {}", t.nconfigs());
-        // One matched region, thirteen layouts, two operand forms, with the
-        // split-K layouts offered staged only.
-        assert_eq!(t.nconfigs(), 115, "one region and four tile grids, per layout and operand form");
+        // One matched region, plus the tile grids the warp layouts and staging
+        // levels can actually emit.
+        assert_eq!(t.nconfigs(), 26, "one region and the tile grids that fit, per layout and operand form");
         t.apply(&mut k, 0);
         k.verify();
         println!("--- after tensorize ---");
@@ -3553,7 +4015,11 @@ mod tests {
         k.store(c, res, c_idx);
 
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 1403, "one region and sixty tile grids, per layout and operand form");
+        assert_eq!(
+            opt.nconfigs(),
+            475,
+            "one region per layout and operand form, plus the tile grids at the warp layouts and staging levels that can emit them"
+        );
         opt.apply(&mut k, 0);
         k.verify();
 

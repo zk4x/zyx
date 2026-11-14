@@ -1962,7 +1962,7 @@ impl Tensor {
     pub fn load_gguf_py<'py>(py: Python<'py>, path: &str) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyDict>)> {
         let (metadata, tensors) = Tensor::load_gguf(path)?;
         let meta_dict = PyDict::new(py);
-        for (k, v) in &metadata {
+        for (k, v) in metadata.iter() {
             meta_dict.set_item(k, gguf_metadata_to_py(py, v))?;
         }
         let tensor_dict = PyDict::new(py);

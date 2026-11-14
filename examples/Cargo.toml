@@ -11,6 +11,7 @@ members = [
     "tiny-net2",
     "llama",
     "qwen3.8-27b",
+    "bonsai-27b",
     "tt_gemm",
 ]
 

@@ -1432,14 +1432,17 @@ impl Kernel {
                         // conversions.
                         let t_slot = comp.slot_of(t);
                         let f_slot = comp.slot_of(f);
-                        comp.registers[t_slot].1 += 1;
-                        comp.registers[f_slot].1 += 1;
+                        // A constant or an unroll lane is owned for the whole
+                        // kernel (`u32::MAX`, never freed): pinning it must not
+                        // wrap the refcount.
+                        comp.registers[t_slot].1 = comp.registers[t_slot].1.saturating_add(1);
+                        comp.registers[f_slot].1 = comp.registers[f_slot].1.saturating_add(1);
                         let t = comp.convert_value(t, dtypes[&if_true].0, dtype)?;
                         let f = comp.convert_value(f, dtypes[&if_false].0, dtype)?;
                         _ = writeln!(comp.body, "{}@%r{cond} mov.{mt} %r{reg}, %r{t};", comp.indent);
                         _ = writeln!(comp.body, "{}@!%r{cond} mov.{mt} %r{reg}, %r{f};", comp.indent);
-                        comp.registers[t_slot].1 -= 1;
-                        comp.registers[f_slot].1 -= 1;
+                        comp.registers[t_slot].1 = comp.registers[t_slot].1.saturating_sub(1);
+                        comp.registers[f_slot].1 = comp.registers[f_slot].1.saturating_sub(1);
                     }
                 }
                 Op::Loop { len } => {

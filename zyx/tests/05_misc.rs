@@ -995,6 +995,57 @@ fn conv1() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// Winograd F(4x4,3x3) against a patch-sum reference: a 3x3 kernel with
+/// stride/dilation 1 takes the winograd path, with groups > 1 and asymmetric
+/// per-axis padding (padding = [1, 2]: H gets 1, W gets 2) so a swapped
+/// padding/tile axis cannot pass.
+#[test]
+fn conv_winograd() -> Result<(), ZyxError> {
+    let (bs, cin_, cout, groups) = (1usize, 4usize, 4usize, 2usize);
+    let (cin, h, w) = (cin_ / groups, 5usize, 7usize);
+    let (ph, pw) = (1usize, 2usize);
+    let (oy, ox) = (h + 2 * ph - 3 + 1, w + 2 * pw - 3 + 1);
+
+    let xv: Vec<f32> = (0..bs * cin_ * h * w).map(|i| (i % 7) as f32 * 0.1 - 0.3).collect();
+    let wv: Vec<f32> = (0..cout * cin * 9).map(|i| (i % 5) as f32 * 0.2 - 0.4).collect();
+    let x = Tensor::from_vec(xv, [bs as i64, cin_ as i64, h as i64, w as i64])?;
+    let weight = Tensor::from_vec(wv.clone(), [cout as i64, cin as i64, 3i64, 3])?;
+
+    let y = x.conv(&weight, None, groups as u64, [1], [1], [ph as i64, pw as i64])?.to_vec::<f32>()?;
+    assert_eq!(y.len(), bs * cout * oy * ox);
+
+    // patch-sum reference: out[b,o,y,x] = sum_c,i,j pad(x)[b, o/rcout*cin+c, y+i, x+j] * w[o,c,i,j]
+    let padded = x.rpad_zeros([(pw as i64, pw as i64), (ph as i64, ph as i64)])?;
+    let pv = padded.to_vec::<f32>()?;
+    let (phh, pww) = (h + 2 * ph, w + 2 * pw);
+    let rcout = cout / groups;
+    let mut want = Vec::with_capacity(y.len());
+    for b in 0..bs {
+        for o in 0..cout {
+            for yy in 0..oy {
+                for xx in 0..ox {
+                    let mut acc = 0f32;
+                    for c in 0..cin {
+                        for i in 0..3 {
+                            for j in 0..3 {
+                                let cid = (o / rcout) * cin + c;
+                                acc += pv[((b * cin_ + cid) * phh + yy + i) * pww + xx + j] * wv[((o * cin + c) * 3 + i) * 3 + j];
+                            }
+                        }
+                    }
+                    want.push(acc);
+                }
+            }
+        }
+    }
+
+    for (k, (got, exp)) in y.iter().zip(&want).enumerate() {
+        assert!((got - exp).abs() < 1e-4, "conv_winograd[{k}]: winograd {got} vs reference {exp}");
+    }
+
+    Ok(())
+}
+
 /*#[test]
 fn conv2() -> Result<(), ZyxError> {
     // Input: 0..24 → [1,1,5,5]

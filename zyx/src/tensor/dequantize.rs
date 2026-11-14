@@ -399,7 +399,8 @@ fn decode_grid(hex: &str, bits_per_elem: u32, map: &[f32], rows: usize, cols: us
 /// Builds a `[rows, cols]` F32 lookup table from a packed hex grid.
 fn grid_tensor(hex: &str, bits_per_elem: u32, map: &[f32], rows: i64, cols: i64) -> Result<Tensor, ZyxError> {
     let vals = decode_grid(hex, bits_per_elem, map, rows as usize, cols as usize)?;
-    Tensor::from(vals).reshape([rows, cols])
+    let table: Vec<Vec<f32>> = vals.chunks_exact(cols as usize).map(<[f32]>::to_vec).collect();
+    Ok(Tensor::from(table))
 }
 
 /// A byte column of `blocks` as a `[num_blocks, len]` U8 view.
@@ -472,9 +473,13 @@ fn lut_row(table: &Tensor, idx: &Tensor, cols: i64) -> Result<Tensor, ZyxError> 
 }
 
 /// Expands a `[num_blocks, 1]` U8 into 8 F32 sign lanes (`+1`/`-1`).
+///
+/// Eight scalar shifts rather than one `arange`: `arange` is
+/// `full + cumsum`, and folding that into this graph produced an op used
+/// before its declaration (`verify.rs:248`) in the IQ2 dequant.
 fn sign_bits(byte: &Tensor) -> Result<Tensor, ZyxError> {
-    let shifts = Tensor::arange(0u8, 8u8, 1u8)?;
-    let bits = ((byte >> shifts) & 1u8).cast(DType::F32);
+    let lanes: Vec<Tensor> = (0u8..8).map(|shift| ((byte.clone() >> shift) & 1u8).cast(DType::F32)).collect();
+    let bits = Tensor::cat(lanes.iter(), 1)?;
     Ok(Tensor::from(1f32) - bits * 2f32)
 }
 

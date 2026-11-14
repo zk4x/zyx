@@ -1178,17 +1178,24 @@ impl Kernel {
         }
 
         // Reachability from the store roots. Any op not on a store's dependency
-        // chain is dead and removed.
+        // chain is dead and removed. Mark an op reachable when it is *pushed*,
+        // not when it is popped: `parameters()` is then read once per op, so
+        // the traversal costs one step per op however many edges lead into it.
+        // Marking on pop charged one step per incoming edge, and a dequant
+        // graph with heavy fan-in exhausted the old 50k step budget.
         let mut reachable = Set::default();
-        let mut pending = roots;
-        for _ in 0..50_000 {
-            let Some(op_id) = pending.pop() else { break };
+        let mut pending = Vec::with_capacity(roots.len());
+        for op_id in roots {
             if self.ops.contains_id(op_id) && reachable.insert(op_id) {
-                pending.extend(self.at(op_id).parameters());
+                pending.push(op_id);
             }
         }
-        if !pending.is_empty() {
-            panic!("toposort did not finish in 50000 steps");
+        while let Some(op_id) = pending.pop() {
+            for param in self.at(op_id).parameters() {
+                if self.ops.contains_id(param) && reachable.insert(param) {
+                    pending.push(param);
+                }
+            }
         }
 
         for op_id in self.ops.ids().collect::<Vec<_>>() {

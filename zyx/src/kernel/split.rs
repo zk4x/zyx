@@ -727,6 +727,296 @@ impl Kernel {
             }
         }
     }
+
+    /// Read-only counterpart of [`Kernel::split`]'s refusal contract: `true`
+    /// only when `split(axis_id, split_mode, factor)` would apply.
+    ///
+    /// A make function uses this to enumerate variants without cloning or
+    /// mutating the kernel. Every `return OpId::NULL` in `split` has a
+    /// matching `return false` here, so a plan this admits is a split `split`
+    /// applies; the converse is not claimed — `split` refuses configs a make
+    /// function may still offer, and its callers ignore `OpId::NULL`.
+    pub(crate) fn can_split(&self, axis_id: OpId, split_mode: SplitMode, factor: u16) -> bool {
+        // The render ceiling: a split multiplies the IR it renders.
+        if self.ops.len().0.saturating_mul(u32::from(factor)) > crate::kernel::MAX_OPS {
+            return false;
+        }
+        let factor_dim = Dim::from(factor);
+        match split_mode {
+            SplitMode::Local => {
+                // A lane split on top of a staged tile is refused.
+                if self.iter_unordered().any(|(_, op)| matches!(op, Op::Storage { scope: MemScope::Local, .. })) {
+                    return false;
+                }
+                let Op::Range { kind: RangeKind::Group(len_id), .. } = self.ops[axis_id].op else {
+                    return false;
+                };
+                self.is_sym_multiple(len_id, factor_dim)
+            }
+            SplitMode::Group => {
+                let Op::Range { kind: RangeKind::Group(len_id), .. } = self.ops[axis_id].op else {
+                    return false;
+                };
+                self.is_sym_multiple(len_id, factor_dim)
+            }
+            SplitMode::Unroll => match self.ops[axis_id].op {
+                Op::Range { kind: RangeKind::Group(len_id), .. } => {
+                    if !self.is_sym_multiple(len_id, factor_dim) {
+                        return false;
+                    }
+                    // Soundness: the lane closure the split introduces must
+                    // only feed per-lane addresses, exactly as the mutation
+                    // path validates before it touches the kernel.
+                    let mut varies: Set<OpId> = Set::default();
+                    varies.insert(axis_id);
+                    for _ in 0..10_000 {
+                        let mut grown = false;
+                        for (op, _) in self.iter_unordered() {
+                            if !varies.contains(&op) && self.at(op).parameters().any(|p| varies.contains(&p)) {
+                                varies.insert(op);
+                                grown = true;
+                            }
+                        }
+                        if !grown {
+                            break;
+                        }
+                    }
+                    for (_, op) in self.iter_unordered() {
+                        match *op {
+                            Op::Store { dst, dst_idx, src, .. } => {
+                                let addr_varies = !dst_idx.is_null() && varies.contains(&dst_idx);
+                                let val_varies = varies.contains(&src);
+                                let base = self.at(dst);
+                                let global = matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
+                                if !matches!(base, Op::Storage { .. } | Op::Param { .. })
+                                    || (global && !addr_varies)
+                                    || (!global
+                                        && !matches!(base, Op::Storage { scope: MemScope::Register, .. })
+                                        && !addr_varies
+                                        && val_varies)
+                                {
+                                    return false;
+                                }
+                            }
+                            Op::Copy { dst, dst_idx, .. } => {
+                                let addr_varies = !dst_idx.is_null() && varies.contains(&dst_idx);
+                                let base = self.at(dst);
+                                let global = matches!(base, Op::Storage { scope: MemScope::Global, .. } | Op::Param { .. });
+                                if !matches!(base, Op::Storage { .. } | Op::Param { .. }) || (global && !addr_varies) {
+                                    return false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    // A bool-len `if` over this axis would execute
+                    // all-or-nothing once unrolled.
+                    let mut op_id = self.next_op(axis_id);
+                    while !op_id.is_null() {
+                        if let Op::Loop { len, .. } = self.ops[op_id].op
+                            && self.dtype(len) == crate::DType::Bool
+                            && self.depends_on(len, axis_id, &mut Set::default())
+                        {
+                            return false;
+                        }
+                        op_id = self.next_op(op_id);
+                    }
+                    true
+                }
+                Op::Loop { len: len_id } => {
+                    // Loop unroll: strip-mine plus a Reduce of the lane
+                    // product into the accumulator store.
+                    if factor_dim < 2 || !self.is_sym_multiple(len_id, factor_dim) {
+                        return false;
+                    }
+                    {
+                        let end = self.get_last_dim_op(axis_id);
+                        let mut op_id = self.next_op(axis_id);
+                        while op_id != end {
+                            if op_id.is_null() {
+                                break;
+                            }
+                            if let Op::Loop { len, .. } = self.ops[op_id].op
+                                && self.dtype(len) == crate::DType::Bool
+                                && self.depends_on(len, axis_id, &mut Set::default())
+                            {
+                                return false;
+                            }
+                            op_id = self.next_op(op_id);
+                        }
+                    }
+                    // The accumulator: a register storage preceding the loop
+                    // with no other loop in between.
+                    let acc_id;
+                    let mut op_id = self.prev_op(axis_id);
+                    loop {
+                        if op_id.is_null() {
+                            return false;
+                        }
+                        match self.ops[op_id].op {
+                            Op::Loop { .. } => return false,
+                            Op::Storage { scope: MemScope::Register, .. } => {
+                                acc_id = op_id;
+                                break;
+                            }
+                            _ => {}
+                        }
+                        op_id = self.prev_op(op_id);
+                    }
+                    // The loop must write it: an init store exists before it.
+                    op_id = acc_id;
+                    loop {
+                        if let Op::Store { dst, .. } = self.ops[op_id].op
+                            && dst == acc_id
+                        {
+                            break;
+                        }
+                        op_id = self.next_op(op_id);
+                        if op_id == axis_id {
+                            return false;
+                        }
+                    }
+                    // The body is one loop, at most one register side effect,
+                    // and the loop var feeds every side effect.
+                    let mut has_store = false;
+                    let endloop_id;
+                    let mut op_id = self.next_op(axis_id);
+                    loop {
+                        if op_id.is_null() {
+                            return false;
+                        }
+                        match self.ops[op_id].op {
+                            Op::Loop { .. } => return false,
+                            Op::Store { dst, .. } => {
+                                if has_store {
+                                    return false;
+                                }
+                                if !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. }) {
+                                    return false;
+                                }
+                                has_store = true;
+                            }
+                            Op::Copy { src, dst, .. } => {
+                                if has_store
+                                    || !matches!(self.ops[src].op, Op::Storage { scope: MemScope::Register, .. })
+                                    || !matches!(self.ops[dst].op, Op::Storage { scope: MemScope::Register, .. })
+                                {
+                                    return false;
+                                }
+                                has_store = true;
+                            }
+                            Op::EndLoop => {
+                                endloop_id = op_id;
+                                break;
+                            }
+                            _ => {}
+                        }
+                        op_id = self.next_op(op_id);
+                    }
+                    {
+                        let mut unfed = false;
+                        let mut use_id = self.next_op(axis_id);
+                        while use_id != endloop_id && !unfed {
+                            if use_id.is_null() {
+                                break;
+                            }
+                            match self.ops[use_id].op {
+                                Op::Copy { .. } | Op::Store { .. }
+                                    if !self
+                                        .at(use_id)
+                                        .parameters()
+                                        .any(|p| p == axis_id || self.depends_on(p, axis_id, &mut Set::default())) =>
+                                {
+                                    unfed = true;
+                                }
+                                _ => {}
+                            }
+                            use_id = self.next_op(use_id);
+                        }
+                        if unfed {
+                            return false;
+                        }
+                    }
+                    // No body value may escape the loop.
+                    let end = self.get_last_dim_op(axis_id);
+                    let mut body_set: Set<OpId> = Set::default();
+                    body_set.insert(axis_id);
+                    let mut walk_id = self.next_op(axis_id);
+                    while walk_id != end {
+                        if walk_id.is_null() {
+                            break;
+                        }
+                        body_set.insert(walk_id);
+                        walk_id = self.next_op(walk_id);
+                    }
+                    let mut walk_id = self.next_op(end);
+                    while !walk_id.is_null() {
+                        if self.at(walk_id).parameters().any(|p| body_set.contains(&p)) {
+                            return false;
+                        }
+                        walk_id = self.next_op(walk_id);
+                    }
+                    // The acc store combines the acc load with a lane-varying
+                    // product through one binary, and the acc operand is the
+                    // load itself (not a nested chain).
+                    let acc_store_src = {
+                        let mut found = None;
+                        let mut op_id = self.next_op(axis_id);
+                        while op_id != endloop_id {
+                            if let Op::Store { dst, src, .. } = self.ops[op_id].op
+                                && dst == acc_id
+                            {
+                                found = Some(src);
+                                break;
+                            }
+                            op_id = self.next_op(op_id);
+                        }
+                        let Some(src) = found else { return false };
+                        src
+                    };
+                    let acc_load_id = {
+                        let mut found = OpId::NULL;
+                        let mut op_id = self.next_op(axis_id);
+                        while op_id != endloop_id {
+                            if let Op::Load { src, .. } = self.ops[op_id].op
+                                && src == acc_id
+                            {
+                                found = op_id;
+                                break;
+                            }
+                            op_id = self.next_op(op_id);
+                        }
+                        found
+                    };
+                    if acc_load_id.is_null() {
+                        return false;
+                    }
+                    let (sx, sy) = match self.ops[acc_store_src].op {
+                        Op::Binary { x, y, .. } => (x, y),
+                        _ => return false,
+                    };
+                    let x_acc = sx == acc_load_id || self.depends_on(sx, acc_load_id, &mut Set::default());
+                    let y_acc = sy == acc_load_id || self.depends_on(sy, acc_load_id, &mut Set::default());
+                    if x_acc == y_acc {
+                        return false;
+                    }
+                    let (acc_side, prod_side) = if x_acc { (sx, sy) } else { (sy, sx) };
+                    if acc_side != acc_load_id {
+                        return false;
+                    }
+                    self.depends_on(prod_side, axis_id, &mut Set::default())
+                }
+                _ => false,
+            },
+            SplitMode::Loop => {
+                let len_id = match self.ops[axis_id].op {
+                    Op::Range { kind: RangeKind::Group(len_id), .. } | Op::Loop { len: len_id } => len_id,
+                    _ => return false,
+                };
+                self.is_sym_multiple(len_id, factor_dim)
+            }
+        }
+    }
 }
 
 impl Kernel {

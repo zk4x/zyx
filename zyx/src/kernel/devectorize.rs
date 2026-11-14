@@ -449,6 +449,9 @@ impl Kernel {
 
         // For remapping parameters.
         let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
+        // Component extracts replaced by one lane's copy (see the `Op::Index`
+        // arm below): every consumer reads that copy, not the extract.
+        let mut aliases: Map<OpId, OpId> = Map::default();
 
         // Now loop over remaining ops and duplicate element-conditional ones.
         // The walk is linear in IR order so a producer's clones are
@@ -474,6 +477,23 @@ impl Kernel {
                 | Op::Const(_) => {}
                 Op::Reduce { .. } => unreachable!("reduce not devectorized before the unroll pass"),
                 ref op => {
+                    // A component extract of a value the lane is unfolding:
+                    // the extract picks one lane of the vector by a constant
+                    // lane number, so it names that lane's own copy. It is not
+                    // duplicated (duplicating would keep the lane number and
+                    // read past a single-element copy); every consumer gets the
+                    // copy, whichever lane it belongs to.
+                    if let Op::Index { vec, idx } = *op
+                        && let Some(clones) = remaps.get(&vec)
+                    {
+                        let lane_op = if idx == 0 { Some(vec) } else { clones.get(idx - 1).copied() };
+                        if let Some(lane_op) = lane_op {
+                            remaps.insert(walk_id, vec![lane_op; (len - 1) as usize]);
+                            aliases.insert(walk_id, lane_op);
+                            walk_id = next;
+                            continue;
+                        }
+                    }
                     let mut elem_cond = false;
                     for param in op.parameters() {
                         if param == unroll_id || remaps.contains_key(&param) {
@@ -561,6 +581,22 @@ impl Kernel {
                 }
             }
             walk_id = next;
+        }
+
+        // Extracts replaced by a lane's copy: point every read (including the
+        // lane-0 originals, which never consult `remaps`) at the copy and drop
+        // the extract.
+        for (index_op, lane_op) in aliases {
+            let mut scan = self.head;
+            while !scan.is_null() {
+                for p in self.ops[scan].op.parameters_mut() {
+                    if *p == index_op {
+                        *p = lane_op;
+                    }
+                }
+                scan = self.next_op(scan);
+            }
+            self.remove_op(index_op);
         }
 
         if self.iter_unordered().any(|(_, op)| op.parameters().any(|p| p == unroll_id)) {
