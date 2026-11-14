@@ -12,10 +12,8 @@ license = "LGPL-3.0-only WITH Classpath-exception-2.0"
 keywords = ["tensor", "deep-learning", "neural-network", "autodiff"]
 categories = ["computer-vision", "science"]
 rust-version = "1.88.0"
-build = "build.rs"
 include = [
     "src/**",
-    "build.rs",
     "firmware/**",
     "tests/01_unary.rs",
     "tests/02_binary.rs",
@@ -53,24 +51,11 @@ nanoserde = { version = "0.2.1", default-features = false, features = ["std", "b
 wgpu = { version = "29.0.1", default-features = false, features = ["vulkan", "metal", "dx12", "wgsl", "gles"], optional = true } # MIT or Apache 2.0
 pollster = { version = "0.4.0", default-features = false, optional = true } # MIT or Apache 2.0
 
-# Pyo3 is used only for python bindings
-pyo3 = { version = "0.29.0", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
-
 # tiny_http is used by the viz feature for the web server
 tiny_http = { version = "0.12.0", optional = true } # MIT
 
-# Tenstorrent. The device, kernel and simulator layers live in
-# `src/backend/tenstorrent/` (in-tree), and the RISC-V firmware images are
-# built from `firmware/tt-firmware` by `build.rs`. `tt-isa` is the hardware
-# definition crate (instruction encoders, register maps, coordinate spaces).
-# Path dependency while the crate is edited in the tree; the crates.io version
-# follows once the surface settles.
-tt-isa = { git = "https://github.com/zk4x/tt-isa", optional = true }
-
-# `libc` for the simulator's fork isolation, `libm` for the SFPU op programs'
-# host-side approximations.
-libc = { version = "0.2.174", default-features = false, optional = true }
-libm = { version = "0.2.11", default-features = false, optional = true }
+# Pyo3 is used only for python bindings
+pyo3 = { version = "0.29.0", optional = true, features = ["extension-module", "generate-import-lib"] } # MIT or Apache 2.0
 
 [dev-dependencies]
 matrixmultiply = "0.3"
@@ -81,36 +66,28 @@ crate-type = ["lib"]
 [features]
 default = [
     #"viz",
-    #"tenstorrent",
     #"wgpu",
     #"py",
     #"time",
     #"debug_tensor_op",
 ]
 
-# Enables the Tenstorrent backend and its lowering.
-tenstorrent = ["dep:tt-isa", "dep:libc", "dep:libm"]
-
 # Enables wgpu backend
 wgpu = ["dep:wgpu", "dep:pollster"]
 
-# Enables us to create python bindings with pyo3, annotates structs with pyclass
-py = ["dep:pyo3"]
-
 # Enables timing for optimization passes
 time = []
-
-# Tenstorrent firmware build options: control how `build.rs` compiles the
-# RISC-V images (see `firmware/tt-firmware`).
-fast-reads = []
-encoded-guard = ["fast-reads"]
-ttinsn-experiment = []
 
 # Enables debug println! at the start of every tensor op
 debug_tensor_op = []
 
 # Enables web-based kernel visualization server on port 4242
 viz = ["dep:tiny_http"]
+
+# Enables us to create python bindings with pyo3, annotates structs with pyclass
+py = ["dep:pyo3"]
+
+tenstorrent = []
 
 # Optimize for linking time, 'cause linker is so slow...
 [profile.dev] # Modify profile settings via config.

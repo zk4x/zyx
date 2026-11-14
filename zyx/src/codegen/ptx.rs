@@ -196,6 +196,9 @@ impl Compiler {
             BOp::BitAnd => "and",
             BOp::BitShiftLeft => "shl",
             BOp::BitShiftRight => "shr",
+            // C `!=` is unordered: it is true when either side is NaN, so
+            // floats need `setp.neu`, not the ordered `setp.ne`.
+            BOp::NotEq if dtype.is_float() => "setp.neu",
             BOp::NotEq => "setp.ne",
             BOp::Eq => "setp.eq",
         }
@@ -237,6 +240,10 @@ impl Compiler {
             UOp::Rsqrt => match dtype {
                 DType::F32 => Ok("rsqrt.approx"),
                 DType::F16 => Ok("rsqrt.approx"),
+                // `rsqrt.approx.f64` has existed since PTX ISA 7.0 and is
+                // accepted for sm_75; there is no need for a reciprocal of a
+                // square root.
+                DType::F64 => Ok("rsqrt.approx"),
                 _ => Err(BackendError {
                     status: ErrorStatus::KernelCompilation,
                     context: format!("PTX: rsqrt not available for {dtype:?}").into(),
@@ -448,7 +455,40 @@ impl Compiler {
         Ok(())
     }
 
-    /// Emit a store of the register(s) at `x` to `[addr]` in global space.
+    /// Convert one value register between float widths. `Select` and `Store`
+    /// can see an arm/value of a different dtype than the result (the graph
+    /// promotes), and PTX registers are typed: the value is converted, never
+    /// moved at the wrong width.
+    fn convert_value(&mut self, reg: u16, from: DType, to: DType) -> Result<u16, BackendError> {
+        if from == to {
+            return Ok(reg);
+        }
+        let (op, tmp) = match (from, to) {
+            (DType::F16, DType::F32) => ("cvt.f32.f16", DType::F32),
+            (DType::BF16, DType::F32) => ("cvt.f32.bf16", DType::F32),
+            (DType::F32, DType::F16) => ("cvt.rn.f16.f32", DType::F16),
+            (DType::F32, DType::BF16) => ("cvt.rn.bf16.f32", DType::BF16),
+            _ => {
+                return Err(BackendError {
+                    status: ErrorStatus::KernelCompilation,
+                    context: format!("PTX: no {from:?} to {to:?} conversion").into(),
+                });
+            }
+        };
+        let t = self.new_reg(tmp, Vec::new(), 1);
+        _ = writeln!(self.body, "{}{op} %r{t}, %r{reg};", self.indent);
+        Ok(t)
+    }
+
+    /// Convert store components to the buffer's dtype before the store.
+    fn convert_store(&mut self, regs: &[u16], from: DType, to: DType) -> Result<Vec<u16>, BackendError> {
+        let mut out = Vec::with_capacity(regs.len());
+        for &r in regs {
+            out.push(self.convert_value(r, from, to)?);
+        }
+        Ok(out)
+    }
+
     fn emit_store(&mut self, shape: &[Dim], dtype: DType, regs: &[u16], addr: &str) -> Result<(), BackendError> {
         if matches!(dtype, DType::F16 | DType::BF16) && shape.is_empty() {
             let tmp = self.new_reg(DType::U16, Vec::new(), 1);
@@ -820,7 +860,13 @@ impl Kernel {
                     // be narrower (a broadcast) or an instruction result with
                     // no lane shape of its own.
                     let access_shape = self.shape(dst_idx);
-                    let dtype = dtypes[&x].0;
+                    // The buffer decides the element width: a graph can carry
+                    // an f32 expression into an f16 output (the gradient of an
+                    // f16 tensor picks up f32 constants), and the value is
+                    // converted here, exactly like the C and CUDA renders, not
+                    // reinterpreted at the wider stride.
+                    let value_dtype = dtypes[&x].0;
+                    let dtype = dtypes[&dst_buf].0;
                     let byte_shift = (dtype.bit_size() / 8).ilog2();
                     let offset = comp.new_reg(DType::U64, Vec::new(), 1);
                     match comp.get_scope(self, dst_buf) {
@@ -849,6 +895,7 @@ impl Kernel {
                             } else {
                                 let idx = comp.get_var_addr(dst_idx);
                                 let regs = comp.components_of(self, x, &dtypes)?;
+                                let regs = comp.convert_store(&regs, value_dtype, dtype)?;
                                 if IDX_T.bit_size() == 64 {
                                     if offset != idx {
                                         _ = writeln!(comp.body, "{}mov.u64 %r{offset}, %r{idx};", comp.indent);
@@ -866,6 +913,7 @@ impl Kernel {
                         MemScope::Local => {
                             let idx = comp.get_var_addr(dst_idx);
                             let regs = comp.components_of(self, x, &dtypes)?;
+                            let regs = comp.convert_store(&regs, value_dtype, dtype)?;
                             let byte_shift = (dtype.bit_size() / 8).ilog2();
                             // A shared variable's address is a 32-bit offset in
                             // the shared window, in a register of its own.
@@ -1090,6 +1138,7 @@ impl Kernel {
                             // wrong op.
                             let t = match dtype {
                                 DType::U32 | DType::I32 => "b32",
+                                DType::U64 | DType::I64 => "b64",
                                 DType::U16 | DType::I16 | DType::F16 | DType::BF16 => "b16",
                                 _ => {
                                     return Err(BackendError {
@@ -1172,6 +1221,15 @@ impl Kernel {
                     // The value itself stays a byte/half in its own register so
                     // `ld/st.u8` remains a byte access.
                     let shift = matches!(bop, BOp::BitShiftLeft | BOp::BitShiftRight);
+                    // PTX takes the shift count as a 32-bit value whatever the
+                    // operand width, so a 64-bit count is narrowed first.
+                    let ys = if shift && dtypes[&y].0.bit_size() == 64 && imm(self, y).is_none() {
+                        let t = comp.new_reg(DType::U32, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}cvt.u32.u64 %r{t}, {ys};", comp.indent);
+                        format!("%r{t}")
+                    } else {
+                        ys
+                    };
                     let byte = xdtype == DType::U8 || xdtype == DType::I8;
                     let shift16 = shift && (xdtype == DType::U16 || xdtype == DType::I16);
                     if byte || shift16 {
@@ -1269,28 +1327,71 @@ impl Kernel {
                         continue;
                     }
                     let type_ext = match bop {
+                        // Shifts are not bit-size instructions: `shr` takes
+                        // `.s32`/`.u32`/`.s64`/`.u64` (a `.b32` shift fills with
+                        // zeros, so `-8 >> 2` comes out huge), while `shl` only
+                        // takes the bit-size types.
+                        BOp::BitShiftLeft => match dtypes[&x].0 {
+                            DType::Bool => "pred",
+                            dt => match dt.bit_size() {
+                                16 | 32 => "b32",
+                                64 => "b64",
+                                n => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("PTX: unsupported shift bit size {n}").into(),
+                                    });
+                                }
+                            },
+                        },
+                        BOp::BitShiftRight => match dtypes[&x].0 {
+                            DType::Bool => "pred",
+                            dt => {
+                                let signed = matches!(dt, DType::I8 | DType::I16 | DType::I32 | DType::I64);
+                                match (signed, dt.bit_size()) {
+                                    (true, 16 | 32) => "s32",
+                                    (true, 64) => "s64",
+                                    (false, 16 | 32) => "u32",
+                                    (false, 64) => "u64",
+                                    (_, n) => {
+                                        return Err(BackendError {
+                                            status: ErrorStatus::KernelCompilation,
+                                            context: format!("PTX: unsupported shift bit size {n}").into(),
+                                        });
+                                    }
+                                }
+                            }
+                        },
                         // Bit-size instructions: PTX has no signed or unsigned
                         // form for them, and `.s64`/`.u64` are rejected by
                         // ptxas. Booleans keep the predicate form.
-                        BOp::BitShiftLeft | BOp::BitShiftRight | BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::And | BOp::Or => {
-                            match dtypes[&x].0 {
-                                DType::Bool => "pred",
-                                dtype => match dtype.bit_size() {
-                                    16 => "b16",
-                                    32 => "b32",
-                                    64 => "b64",
-                                    n => {
-                                        return Err(BackendError {
-                                            status: ErrorStatus::KernelCompilation,
-                                            context: format!("PTX: unsupported bitwise bit size {n}").into(),
-                                        });
-                                    }
-                                },
-                            }
-                        }
+                        BOp::BitAnd | BOp::BitOr | BOp::BitXor | BOp::And | BOp::Or => match dtypes[&x].0 {
+                            DType::Bool => "pred",
+                            dtype => match dtype.bit_size() {
+                                16 => "b16",
+                                32 => "b32",
+                                64 => "b64",
+                                n => {
+                                    return Err(BackendError {
+                                        status: ErrorStatus::KernelCompilation,
+                                        context: format!("PTX: unsupported bitwise bit size {n}").into(),
+                                    });
+                                }
+                            },
+                        },
                         _ => dtypes[&x].0.ptx(),
                     };
-                    _ = writeln!(comp.body, "{}{}.{} %r{reg}, {xs}, {ys};", comp.indent, comp.bop_to_ptx(bop, dtype), type_ext,);
+                    // The instruction is named by the operand dtype: a
+                    // comparison's result is `bool`, and only the operand
+                    // tells an f32 `setp.neu` from an integer `setp.ne`.
+                    let op_dtype = dtypes[&x].0;
+                    _ = writeln!(
+                        comp.body,
+                        "{}{}.{} %r{reg}, {xs}, {ys};",
+                        comp.indent,
+                        comp.bop_to_ptx(bop, op_dtype),
+                        type_ext,
+                    );
                 }
                 // Branchless select as a predicated mov-pair (tinygrad's
                 // WHERE lowers the same way): the winning arm's bits are
@@ -1322,8 +1423,23 @@ impl Kernel {
                         comp.release_reg(w);
                     } else {
                         let mt = dtype.reg_ptx();
+                        // The arms may carry a different dtype than the result
+                        // (an f16 value selected against an f32 one). An arm
+                        // whose last use is this op already has refcount 0, so
+                        // `convert_value` could hand its physical slot out as
+                        // the destination temp and clobber the value before
+                        // the mov reads it: pin both arms across both
+                        // conversions.
+                        let t_slot = comp.slot_of(t);
+                        let f_slot = comp.slot_of(f);
+                        comp.registers[t_slot].1 += 1;
+                        comp.registers[f_slot].1 += 1;
+                        let t = comp.convert_value(t, dtypes[&if_true].0, dtype)?;
+                        let f = comp.convert_value(f, dtypes[&if_false].0, dtype)?;
                         _ = writeln!(comp.body, "{}@%r{cond} mov.{mt} %r{reg}, %r{t};", comp.indent);
                         _ = writeln!(comp.body, "{}@!%r{cond} mov.{mt} %r{reg}, %r{f};", comp.indent);
+                        comp.registers[t_slot].1 -= 1;
+                        comp.registers[f_slot].1 -= 1;
                     }
                 }
                 Op::Loop { len } => {

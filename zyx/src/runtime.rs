@@ -3538,7 +3538,7 @@ impl Runtime {
         // stores into a GlobalMut param bound to dst's buffer; an eager src
         // extends its own kernel instead. dst becomes a pending Leaf — reads
         // materialize the store first.
-        if let TensorData::Leaf { shape_id: dst_shape_id, rc: dst_rc, .. } = self.tensors[dst] {
+        if let TensorData::Leaf { shape_id: dst_shape_id, .. } = self.tensors[dst] {
             let dst_buf = self.leaf_buffer(dst).expect("assign: bare Leaf dst has no buffer");
             let dtype = self.dtype(dst);
             let (kernel_id, src_op) = match self.tensors[src] {
@@ -3550,6 +3550,30 @@ impl Runtime {
                 TensorData::Graph { .. } | TensorData::GraphLeaf { .. } | TensorData::Symbolic { .. } => {
                     panic!("assign: src {src} is not an eager/promoted tensor: {:?}", self.tensors[src])
                 }
+            };
+            // `src` may read dst's own buffer (the optimizer's `p = p - lr*g`).
+            // The single-pass fusion stays, but no kernel may list one tensor as
+            // both a load and a store: fork each such load edge onto an alias
+            // `Leaf` over the same buffer — two params over one buffer, the shape
+            // the graph kernelizer builds for a fused self-update. The replaced
+            // edge's reference on dst moves to the alias.
+            let mut i = 0;
+            while i < self.kernels[kernel_id].loads.len() {
+                if self.kernels[kernel_id].loads[i] == dst {
+                    let alias = self.tensors.push(TensorData::Leaf {
+                        shape_id: dst_shape_id,
+                        dtype,
+                        buffer: Arc::clone(&dst_buf),
+                        rc: 1,
+                    });
+                    self.kernels[kernel_id].loads[i] = alias;
+                    self.release(dst);
+                }
+                i += 1;
+            }
+            let dst_rc = match self.tensors[dst] {
+                TensorData::Leaf { rc, .. } => rc,
+                ref t => panic!("assign: dst {dst} is not a Leaf after load-edge aliasing: {t:?}"),
             };
             let dst_shape_op = self.replay_expr(kernel_id, dst_shape_id);
             let mut_param = self.kernels[kernel_id].kernel.push_back(Op::Param {
@@ -4198,13 +4222,22 @@ impl Runtime {
 
     /// Autotune (or fetch from cache) a compiled program for `kernel`.
     ///
-    /// `buffers` are the complete launch arguments from the caller,
-    /// positionally bound: read-only params (`Global` buffers and scalar
-    /// `Variable` values) in head order, then `GlobalMut` stores in head
-    /// order. Every buffer is preallocated (eager path) or freshly
-    /// allocated by the graph caller; every variable carries its actual
-    /// runtime value. Nothing is invented here.
-    pub fn get_or_autotune(&mut self, kernel: Kernel, buffers: &[LaunchArg]) -> Result<(DeviceProgramId, u64), ZyxError> {
+    /// `buffers` are the read-only launch arguments from the caller,
+    /// positionally bound in head order: `Global` buffer args and scalar
+    /// `Variable` values, each already holding the data the caller will run
+    /// on. `mut_lens` carries one byte length per trailing `GlobalMut` store
+    /// param, also in head order. The search allocates a scratch target for
+    /// each of those and measures the candidates against it, so a timed launch
+    /// never writes a live tensor (an in-place store would otherwise
+    /// accumulate its result once per measurement); the winner is launched by
+    /// the caller with the real buffers. A cache hit returns before any
+    /// allocation.
+    pub fn get_or_autotune(
+        &mut self,
+        kernel: Kernel,
+        buffers: &[LaunchArg],
+        mut_lens: &[Dim],
+    ) -> Result<(DeviceProgramId, u64), ZyxError> {
         // Canonicalize param ids to head-order ordinals before anything
         // else: raw ids are builder-local identities (tensor/expr ids),
         // so structurally identical kernels canonicalize identically
@@ -4271,7 +4304,11 @@ impl Runtime {
                 }
                 op_id = kernel.next_op(op_id);
             }
-            debug_assert_eq!(buffers.len(), n_params, "caller arg count must match kernel param count");
+            debug_assert_eq!(
+                buffers.len() + mut_lens.len(),
+                n_params,
+                "caller argument + store length count must match kernel param count"
+            );
         }
         let dev_info = device_id.info()?;
         kernel.linearize();
@@ -4295,12 +4332,29 @@ impl Runtime {
             kernel.default_epilogue();
         }
 
+        // Timed launches run against scratch store targets. A store arg is a
+        // timing target: writing the caller's destination once per measured
+        // launch is wasted work, and for an in-place kernel it would also
+        // accumulate measurement results into a live tensor. A cache hit
+        // returned above, so this exists only inside a search. Nothing is
+        // copied — only the timing launches read the scratch, and the winner is
+        // launched by the caller with the real buffers.
+        let pool = device_id.pool();
+        let mut tuning: Vec<LaunchArg> = Vec::with_capacity(buffers.len() + mut_lens.len());
+        tuning.extend_from_slice(buffers);
+        let mut tune_scratch: Vec<Arc<Placement>> = Vec::with_capacity(mut_lens.len());
+        for &len in mut_lens {
+            let chunk = pool.allocate(len)?;
+            tune_scratch.push(Arc::new(Placement { shards: vec![Shard { pool, chunk, offset: 0, len: len as usize }] }));
+            tuning.push(LaunchArg::Buffer { chunk, offset: 0, len: len as usize });
+        }
+
         // Debug bisect (`ZYX_DEBUG=256`): skip seed preparation, the
         // epilogue and the search; run linearize + readability passes + DCE
         // and compile the seed directly.
         if crate::debug_mask().no_search() {
             let device_id = kernel.dev;
-            let (_winner, program_id, timing) = crate::kernel::autotune::NoSearch.run_with_launch_args(kernel, buffers)?;
+            let (_winner, program_id, timing) = crate::kernel::autotune::NoSearch.run_with_launch_args(kernel, &tuning)?;
             self.programs.insert(kernel_id, program_id);
             self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
             return Ok((program_id, timing));
@@ -4309,7 +4363,7 @@ impl Runtime {
         let beam_search = crate::backend::autotune_config();
         let (winner, timing) = beam_search.run_with_launch_args(
             [kernel],
-            buffers,
+            &tuning,
             &Kernel::default_optimizations(),
             Kernel::default_epilogue,
             Kernel::base_cost,
@@ -4379,6 +4433,23 @@ impl Runtime {
     }
 
     pub(crate) fn materialize_kernel(&mut self, kid: KernelId) -> Result<(), ZyxError> {
+        // Reject an unrunnable kernel before any state moves. The placement
+        // check below happens after the kernel's outputs have been re-homed to
+        // pending stores; an error there leaves tensors that no kernel can
+        // ever launch (a later materialize then indexes dead state).
+        if self.kernels[kid].kernel.dev == Dev::Auto {
+            let required = self.kernels[kid].kernel.required_capabilities();
+            let capable = Dev::all().into_iter().any(|dev_id| {
+                !dev_id.aot_only()
+                    && dev_id.info().is_ok_and(|info| required.iter().all(|(dt, caps)| info.supports_dtype(*dt).contains(*caps)))
+            });
+            if !capable {
+                let req: Vec<String> = required.iter().map(|(dt, caps)| format!("{dt:?}:{caps:?}")).collect();
+                return Err(ZyxError::AllocationError(
+                    format!("kernel requires unsupported dtype/ops {req:?} on every device").into(),
+                ));
+            }
+        }
         // Flush pending loads first: a PendingLeaf's value is owed by a live
         // kernel, so launch it (via add_store over its outputs, the runtime
         // custom) before anything below touches buffers. Recursive: the owed
@@ -4893,9 +4964,24 @@ impl Runtime {
             buffers.push(LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len });
         }
 
+        // The search allocates its own store timing targets from these byte
+        // lengths (`get_or_autotune`): only the read-only args are passed, so a
+        // measured launch never writes the destination the queue below binds.
+        let mut_lens: Vec<Dim> = stores
+            .iter()
+            .map(|&tid| match &self.tensors[tid] {
+                TensorData::PendingLeaf { old_buffer: Some(buf), .. } => {
+                    let [shard] = &buf.shards[..] else {
+                        todo!("multi-shard tensor in materialize tuning store")
+                    };
+                    shard.len as Dim
+                }
+                ref t => panic!("materialize: store {tid} has no buffer before autotune: {t:?}"),
+            })
+            .collect();
         // Compile (caches in kernel_map / programs; timed probes inside
         // use launch_timed, which stays).
-        let (dev_prog, _timing) = self.get_or_autotune(kernel, &buffers)?;
+        let (dev_prog, _timing) = self.get_or_autotune(kernel, &buffers[..loads.len()], &mut_lens)?;
 
         // One-off launch queue: one slot per arg in positional order
         // (loads ↔ Global+Variable params, then stores ↔ GlobalMut).

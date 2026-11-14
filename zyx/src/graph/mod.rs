@@ -2377,37 +2377,6 @@ impl Runtime {
                 debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut params");
             }
 
-            // GlobalMut store targets that alias a Global read param: the fused
-            // in-place self-update (`p = p - lr*g`) reads and writes one buffer.
-            // Timing buffers must alias too, or the measured kernel differs from
-            // the real launch (distinct pointers vs one pointer twice).
-            let mut mut_alias: Map<usize, usize> = Map::default();
-            {
-                let mut ro_classes: Vec<OpId> = Vec::new();
-                let (mut load_idx, mut store_idx) = (0usize, 0usize);
-                let mut p = ek.kernel.head;
-                while !p.is_null() {
-                    match ek.kernel.ops[p].op {
-                        Op::Param { kind: ParamKind::Global, .. } => {
-                            ro_classes.push(ek.loads[load_idx]);
-                            load_idx += 1;
-                        }
-                        Op::Param { kind: ParamKind::Variable, .. } => load_idx += 1,
-                        Op::Param { kind: ParamKind::GlobalMut, .. } => {
-                            let class = ek.stores[store_idx];
-                            if let Some(r) = ro_classes.iter().position(|&c| c == class) {
-                                mut_alias.insert(store_idx, r);
-                            }
-                            store_idx += 1;
-                        }
-                        _ => {}
-                    }
-                    p = ek.kernel.next_op(p);
-                }
-                debug_assert_eq!(load_idx, ek.loads.len(), "loads must parallel Global|Variable params");
-                debug_assert_eq!(store_idx, ek.stores.len(), "stores must parallel GlobalMut params");
-            }
-
             for &dev_id in device_ids.iter() {
                 // AOT-only devices never compile generic zyx kernels
                 if dev_id.aot_only() {
@@ -2421,20 +2390,16 @@ impl Runtime {
                 // every NULL slot, pre-filled with ones like eager inputs.
                 let pool_id = dev_id.pool();
                 let mut full_args: Vec<LaunchArg> = Vec::with_capacity(args.len());
-                let mut full_mut: Vec<LaunchArg> = Vec::with_capacity(mut_lens.len());
-                // Read-buffer arg by Global-param ordinal: a GlobalMut store
-                // target that aliases one of these (fused in-place self-update)
-                // must reuse the same allocation, so autotune measures the real
-                // read-write-aliasing access pattern.
-                let mut ro_args: Vec<Option<LaunchArg>> = vec![None; ro_lens.len()];
+                // Byte length per GlobalMut store param. The search allocates
+                // its own timing target from it (`get_or_autotune`), so nobody
+                // here allocates or aliases a store destination.
+                let mut mut_bytes: Vec<Dim> = Vec::with_capacity(mut_lens.len());
                 let mut fresh: Vec<Arc<Placement>> = Vec::new();
                 {
                     let (mut vi, mut rli, mut mli) = (0usize, 0usize, 0usize);
                     let mut p = kernel.head;
                     while !p.is_null() {
                         if let Op::Param { kind, dtype, .. } = kernel.ops[p].op {
-                            let ro_slot = rli;
-                            let mut_slot = mli;
                             match kind {
                                 ParamKind::Variable => {
                                     full_args.push(args[vi].clone());
@@ -2491,16 +2456,7 @@ impl Runtime {
                                     } else {
                                         (dtype.bit_size() as Dim * (len + 1)) / 8
                                     };
-                                    let reuse = if is_mut {
-                                        mut_alias.get(&mut_slot).and_then(|&r| ro_args[r].clone())
-                                    } else {
-                                        None
-                                    };
-                                    if let Some(arg) = reuse {
-                                        // Same buffer read and written: one
-                                        // allocation, two args.
-                                        full_mut.push(arg);
-                                    } else if !is_mut {
+                                    if !is_mut {
                                         // Fill with dtype ONE, element by
                                         // element, directly into a HOST-POOL
                                         // staging buffer — never a Vec (tensors
@@ -2577,22 +2533,12 @@ impl Runtime {
                                             todo!("multi-shard staging upload in graph launch")
                                         };
                                         let arg = LaunchArg::Buffer { chunk: shard.chunk, offset: shard.offset, len: shard.len };
-                                        ro_args[ro_slot] = Some(arg.clone());
                                         full_args.push(arg);
                                     } else {
-                                        // Mut timing buffers are written by the
-                                        // kernel: allocate directly, no upload.
-                                        let buf = pool_id.allocate(bytes_alloc)?;
-                                        let placed = Arc::new(Placement {
-                                            shards: vec![Shard {
-                                                pool: pool_id,
-                                                chunk: buf,
-                                                offset: 0,
-                                                len: bytes_alloc as usize,
-                                            }],
-                                        });
-                                        fresh.push(Arc::clone(&placed));
-                                        full_mut.push(LaunchArg::Buffer { chunk: buf, offset: 0, len: bytes_alloc as usize });
+                                        // The search allocates the timing target
+                                        // from this byte length; nothing here
+                                        // allocates or aliases a store buffer.
+                                        mut_bytes.push(bytes_alloc);
                                     }
                                 }
                             }
@@ -2600,8 +2546,7 @@ impl Runtime {
                         p = kernel.next_op(p);
                     }
                 }
-                full_args.extend(full_mut);
-                let (dev_prog, timing) = self.get_or_autotune(kernel, &full_args)?;
+                let (dev_prog, timing) = self.get_or_autotune(kernel, &full_args, &mut_bytes)?;
                 // Dropping the fresh placements returns every timing buffer
                 // to its pool's free list (last-owner Drop).
                 drop(fresh);

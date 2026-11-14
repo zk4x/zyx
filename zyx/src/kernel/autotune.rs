@@ -650,19 +650,27 @@ impl BeamSearch {
                     continue;
                 }
                 // The resolved grid: computed before the launch so a launch
-                // that hangs still names its extents.
-                let grid = {
-                    let gws = gws_from_kernel(&kernel, &kernel.dev_info().max_global_work_dims)
-                        .expect("grid expression of a lowered kernel");
-                    let mut dims: [Dim; 3] = [1, 1, 1];
-                    let mut dim = |ordinal: usize| match &args[ordinal] {
-                        LaunchArg::Variable(c) => c.as_dim().expect("gws param is not a dim"),
-                        LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
-                    };
-                    for (axis, g) in gws.iter().enumerate().take(3) {
-                        dims[axis] = g.eval(&mut dim);
+                // that hangs still names its extents. A candidate whose grid
+                // exceeds the device limits cannot be launched at all, so it
+                // is rejected like any other invalid optimization variant.
+                let grid = match gws_from_kernel(&kernel, &kernel.dev_info().max_global_work_dims) {
+                    Ok(gws) => {
+                        let mut dims: [Dim; 3] = [1, 1, 1];
+                        let mut dim = |ordinal: usize| match &args[ordinal] {
+                            LaunchArg::Variable(c) => c.as_dim().expect("gws param is not a dim"),
+                            LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
+                        };
+                        for (axis, g) in gws.iter().enumerate().take(3) {
+                            dims[axis] = g.eval(&mut dim);
+                        }
+                        dims
                     }
-                    dims
+                    Err(e) => {
+                        eprintln!("autotune: candidate seq={:?} failed: {e:?}", opt_seq.opts);
+                        record_measurement(&candidate, opt_seq, seed_id, self.n_launches, None, None, "failed");
+                        last_error = Some(e.into());
+                        continue;
+                    }
                 };
                 // Dump the lowered IR of one named candidate.
                 if std::env::var("ZYX_DUMP_SEQ").ok().is_some_and(|spec| {

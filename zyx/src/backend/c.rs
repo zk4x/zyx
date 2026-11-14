@@ -31,6 +31,19 @@ use std::{
 
 static C_DEVICE: OnceLock<Mutex<CDevice>> = OnceLock::new();
 
+/// Flags for the C compilation. They are part of the artifact (they decide
+/// NaN/Inf handling, reassociation, OpenMP), so they key the disk cache too:
+/// the pre-render kernel hash cannot see them.
+const C_FLAGS: [&str; 7] = [
+    "-shared",
+    "-O3",
+    "-ffast-math",
+    "-fno-finite-math-only",
+    "-fno-associative-math",
+    "-fPIC",
+    "-o",
+];
+
 #[derive(Debug, DeJson)]
 #[nserde(default)]
 pub struct CConfig {
@@ -330,9 +343,17 @@ impl CDevice {
         // --- Phase 0: Compute kernel hash and check disk cache ---
         // Keyed on the ORIGINAL kernel hash: stable across the render
         // port. render_c computes the same hash pre-render for the
-        // compiled symbol name, so cache hits still resolve.
+        // compiled symbol name, so cache hits still resolve. The flags are
+        // hashed in as well, because they change the artifact and the kernel
+        // hash cannot see them.
         let hash = kernel.get_hash();
         let name = format!("k_{hash:016x}");
+        let flags_tag = {
+            use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+            let mut flags = DefaultHasher::new();
+            C_FLAGS.hash(&mut flags);
+            flags.finish() as u32
+        };
 
         let cache_dir = std::env::var_os("XDG_CONFIG_HOME")
             .and_then(|p| {
@@ -345,7 +366,7 @@ impl CDevice {
         // Skip the disk cache when debug_asm is set so the generated source is
         // always printed below.
         if !debug_asm && let Some(ref cache_dir) = cache_dir {
-            let cached_so = cache_dir.join(format!("{hash:016x}.so"));
+            let cached_so = cache_dir.join(format!("{hash:016x}-{flags_tag:08x}.so"));
             if cached_so.is_file()
                 && let Ok(lib) = unsafe { Library::new(&cached_so) }
             {
@@ -396,10 +417,10 @@ impl CDevice {
         // LLVM's -ffast-math reassociation: clang rewrites x*a + (1-x)*b into
         // x*(a-b) + b, which catastrophically cancels when b is a huge value
         // like the -1e30 log-prob used by ctc_loss.
-        cmd.args(["-shared", "-O3", "-ffast-math", "-fno-associative-math", "-fPIC", "-o"])
-            .arg(&so_path)
-            .arg(&c_path)
-            .arg("-lm");
+        // -fno-finite-math-only keeps NaN and infinity meaningful: fast-math
+        // otherwise assumes they never appear, folds `x != x` to false and
+        // `x == inf` to false, which breaks `isnan`/`isinf`.
+        cmd.args(C_FLAGS).arg(&so_path).arg(&c_path).arg("-lm");
         if self.has_openmp && gws0 > 1 {
             cmd.arg(if is_clang { "-fopenmp=libgomp" } else { "-fopenmp" });
         }
@@ -423,11 +444,20 @@ impl CDevice {
             println!("{full_source}");
         }
 
-        // Cache the compiled .so for future runs
+        // Cache the compiled .so for future runs. Publish atomically: `copy`
+        // into the final name would make `is_file()` true while the file is
+        // still partial, and a second process hitting the cache would dlopen a
+        // truncated library (a load that faults later, not a clean error).
+        // The temp lives in the cache dir so the rename cannot cross a
+        // filesystem, and carries the pid so concurrent compiles never share
+        // one.
         if let Some(ref cache_dir) = cache_dir {
             let _ = std::fs::create_dir_all(cache_dir);
-            let cached_so = cache_dir.join(format!("{hash:016x}.so"));
-            let _ = std::fs::copy(&so_path, &cached_so);
+            let cached_so = cache_dir.join(format!("{hash:016x}-{flags_tag:08x}.so"));
+            let tmp = cache_dir.join(format!(".{hash:016x}-{flags_tag:08x}.{}.tmp", std::process::id()));
+            if std::fs::copy(&so_path, &tmp).is_ok() {
+                let _ = std::fs::rename(&tmp, &cached_so);
+            }
         }
 
         // Load the shared library

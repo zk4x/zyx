@@ -12,6 +12,7 @@
 use crate::DebugMask;
 use crate::Dev;
 use crate::GGUFMetadataValue;
+use crate::backend::DTypeCapability;
 use crate::kernel::{CompiledKernel, Kernel, MemScope, OpId};
 use crate::shape::Dim;
 use crate::tape::FrozenTape;
@@ -447,6 +448,18 @@ impl Tensor {
     #[pyo3(name = "dtype")]
     pub fn dtype_py(&self) -> DType {
         self.dtype()
+    }
+
+    /// Capability bits of `dtype` on the devices this process can use, as a
+    /// `DTypeCapability`: the union over every enabled backend, matching the
+    /// set `materialize` picks a device from. A test asks this before running
+    /// an op; a backend set narrows with `ZYX_DEV`, so `ZYX_DEV=cpu` reports
+    /// the C backend's capabilities and `ZYX_DEV=cuda` the GPU's.
+    #[staticmethod]
+    #[must_use]
+    #[pyo3(name = "dtype_capability")]
+    pub fn dtype_capability_py(dtype: DType) -> PyDTypeCapability {
+        PyDTypeCapability(Tensor::dtype_capability(dtype))
     }
 
     #[must_use]
@@ -2013,6 +2026,7 @@ impl PyDev {
         Self(Dev::Cuda(id))
     }
     /// Tenstorrent chip with the given id.
+    #[cfg(feature = "tenstorrent")]
     #[staticmethod]
     fn tt(id: u16) -> Self {
         Self(Dev::TT(id))
@@ -2035,6 +2049,168 @@ impl PyDev {
     }
     fn __repr__(&self) -> String {
         format!("Dev::{:?}", self.0)
+    }
+}
+
+// capability bindings
+/// Python-visible per-dtype capability bitmask, returned by
+/// `Tensor.dtype_capability(dtype)`. One boolean accessor per operation bit.
+///
+/// `or` and `and` are Python keywords, so the two predicate bits are exposed
+/// as `logical_or`/`logical_and`; every other accessor keeps its Rust name.
+#[pyo3::pyclass(name = "DTypeCapability", from_py_object)]
+#[derive(Clone, Copy)]
+pub struct PyDTypeCapability(pub DTypeCapability);
+
+#[pyo3::pymethods]
+impl PyDTypeCapability {
+    fn neg(&self) -> bool {
+        self.0.neg()
+    }
+    fn bitnot(&self) -> bool {
+        self.0.bitnot()
+    }
+    fn exp(&self) -> bool {
+        self.0.exp()
+    }
+    fn exp2(&self) -> bool {
+        self.0.exp2()
+    }
+    fn ln(&self) -> bool {
+        self.0.ln()
+    }
+    fn log2(&self) -> bool {
+        self.0.log2()
+    }
+    fn reciprocal(&self) -> bool {
+        self.0.reciprocal()
+    }
+    fn sqrt(&self) -> bool {
+        self.0.sqrt()
+    }
+    fn sin(&self) -> bool {
+        self.0.sin()
+    }
+    fn cos(&self) -> bool {
+        self.0.cos()
+    }
+    fn floor(&self) -> bool {
+        self.0.floor()
+    }
+    fn trunc(&self) -> bool {
+        self.0.trunc()
+    }
+    fn abs(&self) -> bool {
+        self.0.abs()
+    }
+    fn add(&self) -> bool {
+        self.0.add()
+    }
+    fn sub(&self) -> bool {
+        self.0.sub()
+    }
+    fn mul(&self) -> bool {
+        self.0.mul()
+    }
+    fn div(&self) -> bool {
+        self.0.div()
+    }
+    fn pow(&self) -> bool {
+        self.0.pow()
+    }
+    #[pyo3(name = "mod")]
+    fn mod_(&self) -> bool {
+        self.0.r#mod()
+    }
+    fn cmplt(&self) -> bool {
+        self.0.cmplt()
+    }
+    fn cmpgt(&self) -> bool {
+        self.0.cmpgt()
+    }
+    fn max(&self) -> bool {
+        // `Ord::max` takes an argument and wins method resolution here; the
+        // inherent bit accessor is the single-bit `contains` form.
+        self.0.contains(DTypeCapability::MAX)
+    }
+    #[pyo3(name = "logical_or")]
+    fn logical_or(&self) -> bool {
+        self.0.or()
+    }
+    #[pyo3(name = "logical_and")]
+    fn logical_and(&self) -> bool {
+        self.0.and()
+    }
+    fn bitxor(&self) -> bool {
+        self.0.bitxor()
+    }
+    fn bitor(&self) -> bool {
+        self.0.bitor()
+    }
+    fn bitand(&self) -> bool {
+        self.0.bitand()
+    }
+    fn bitshiftleft(&self) -> bool {
+        self.0.bitshiftleft()
+    }
+    fn bitshiftright(&self) -> bool {
+        self.0.bitshiftright()
+    }
+    fn noteq(&self) -> bool {
+        self.0.noteq()
+    }
+    fn eq(&self) -> bool {
+        self.0.contains(DTypeCapability::EQ)
+    }
+    fn cast(&self) -> bool {
+        self.0.cast()
+    }
+    fn storage(&self) -> bool {
+        self.0.storage()
+    }
+
+    fn any(&self) -> bool {
+        self.0.any()
+    }
+
+    fn __repr__(&self) -> String {
+        let bits = [
+            ("neg", self.0.neg()),
+            ("bitnot", self.0.bitnot()),
+            ("exp", self.0.exp()),
+            ("exp2", self.0.exp2()),
+            ("ln", self.0.ln()),
+            ("log2", self.0.log2()),
+            ("reciprocal", self.0.reciprocal()),
+            ("sqrt", self.0.sqrt()),
+            ("sin", self.0.sin()),
+            ("cos", self.0.cos()),
+            ("floor", self.0.floor()),
+            ("trunc", self.0.trunc()),
+            ("abs", self.0.abs()),
+            ("add", self.0.add()),
+            ("sub", self.0.sub()),
+            ("mul", self.0.mul()),
+            ("div", self.0.div()),
+            ("pow", self.0.pow()),
+            ("mod", self.0.r#mod()),
+            ("cmplt", self.0.cmplt()),
+            ("cmpgt", self.0.cmpgt()),
+            ("max", self.0.contains(DTypeCapability::MAX)),
+            ("logical_or", self.0.or()),
+            ("logical_and", self.0.and()),
+            ("bitxor", self.0.bitxor()),
+            ("bitor", self.0.bitor()),
+            ("bitand", self.0.bitand()),
+            ("bitshiftleft", self.0.bitshiftleft()),
+            ("bitshiftright", self.0.bitshiftright()),
+            ("noteq", self.0.noteq()),
+            ("eq", self.0.contains(DTypeCapability::EQ)),
+            ("cast", self.0.cast()),
+            ("storage", self.0.storage()),
+        ];
+        let set: Vec<&str> = bits.iter().filter(|(_, on)| *on).map(|(name, _)| *name).collect();
+        format!("DTypeCapability({})", set.join("|"))
     }
 }
 
@@ -2244,6 +2420,7 @@ pub fn register_dtype(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DType>()?;
     m.add_class::<Reduction>()?;
     m.add_class::<DebugMask>()?;
+    m.add_class::<PyDTypeCapability>()?;
     Ok(())
 }
 

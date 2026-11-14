@@ -883,11 +883,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tt-isa"
-version = "0.1.0"
-source = "git+https://github.com/zk4x/tt-isa#9345f205150e4f4852840440a46b28821225766e"
-
-[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1274,14 +1269,11 @@ dependencies = [
 name = "zyx"
 version = "0.17.0"
 dependencies = [
- "libc",
  "libloading 0.9.0",
- "libm",
  "matrixmultiply",
  "nanoserde",
  "pollster",
  "pyo3",
  "tiny_http",
- "tt-isa",
  "wgpu",
 ]

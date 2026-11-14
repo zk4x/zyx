@@ -39,7 +39,10 @@ fn llama_embedding() -> Result<(), ZyxError> {
     };
 
     let weight = Tensor::rand([VOCAB, HIDDEN], DType::F32)?;
-    let expected: Vec<f32> = weight.narrow(0, i64::from(TOKEN), 1i64)?.reshape([HIDDEN])?.try_into()?;
+    let expected: Vec<f32> = weight
+        .narrow(0, i64::from(TOKEN), 1i64)?
+        .reshape([HIDDEN])?
+        .try_into()?;
 
     let mut embedding = Embedding::from_params(weight)?;
     // Only the weight moves: `arange` must stay the lazy `Tensor::arange`
@@ -86,14 +89,19 @@ fn embedding_gather_small() -> Result<(), ZyxError> {
     let tokens: Vec<u32> = (0..ROWS).map(|r| ((r * 37 + 7) % VOCAB) as u32).collect();
     let mut expected: Vec<f32> = Vec::new();
     for &t in tokens.iter() {
-        let row: Vec<f32> = weight.narrow(0, i64::from(t), 1i64)?.reshape([HIDDEN])?.try_into()?;
+        let row: Vec<f32> = weight
+            .narrow(0, i64::from(t), 1i64)?
+            .reshape([HIDDEN])?
+            .try_into()?;
         expected.extend(row);
     }
 
     let mut embedding = Embedding::from_params(weight.clone())?;
     embedding.weight = embedding.weight.to(dev)?;
-    let ids = Tensor::from(tokens.clone()).reshape([ROWS, 1i64])?.to(dev)?;
-    let got: Vec<f32> = embedding.forward(ids)?.to(Dev::C)?.try_into()?;
+    let ids = Tensor::from(tokens.clone())
+        .reshape([ROWS, 1i64])?
+        .to(dev)?;
+    let got: Vec<f32> = embedding.forward(ids)?.try_into()?;
     if got != expected {
         let mut hits: Vec<i64> = Vec::new();
         for r in 0..VOCAB {
@@ -102,7 +110,10 @@ fn embedding_gather_small() -> Result<(), ZyxError> {
                 hits.push(r);
             }
         }
-        panic!("the gather returned row(s) {hits:?} first, expected row {}", tokens[0]);
+        panic!(
+            "the gather returned row(s) {hits:?} first, expected row {}",
+            tokens[0]
+        );
     }
     Ok(())
 }

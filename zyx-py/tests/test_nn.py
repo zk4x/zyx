@@ -144,7 +144,7 @@ def test_optimizer_eager_update():
         "import zyx\n"
         "p = zyx.Tensor.from_vec([1.0, 2.0], (2,))\n"
         "zyx.optim.SGD(learning_rate=0.5).update([p], [zyx.Tensor.from_vec([1.0, 1.0], (2,))])\n"
-        "assert p.item() == 0.0, p.item()\n"
+        "assert p.numpy().tolist() == [0.5, 1.5], p.numpy()\n"
     )
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert r.returncode == 0, "eager optimizer update aborted:\n" + r.stderr[-1500:]
