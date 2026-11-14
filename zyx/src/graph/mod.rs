@@ -2307,6 +2307,33 @@ impl Runtime {
         println!("Autotuning");
         let device_ids: Vec<Dev> = Dev::all();
 
+        // Args bind positionally over `loads` then `stores`, so a duplicated
+        // or unread input param would still cost a slot. A class id is the
+        // graph's buffer identity here (replay binds one placement per class),
+        // so identical input classes merge; a `Variable` load is skipped on
+        // both sides.
+        let kids: Vec<JitKernelId> = self.graphs[graph_id].jit_kernels.iter().map(|(kid, _)| kid).collect();
+        for kid in kids {
+            let keys: Vec<OpId> = {
+                let ek = &self.graphs[graph_id].jit_kernels[kid];
+                let mut keys = Vec::with_capacity(ek.loads.len());
+                let mut li = 0usize;
+                let mut p = ek.kernel.head;
+                while !p.is_null() {
+                    if let Op::Param { kind, .. } = ek.kernel.ops[p].op {
+                        if kind == ParamKind::Global {
+                            keys.push(ek.loads[li]);
+                        }
+                        li += 1;
+                    }
+                    p = ek.kernel.next_op(p);
+                }
+                keys
+            };
+            let JitKernelData { kernel, loads, .. } = &mut self.graphs[graph_id].jit_kernels[kid];
+            kernel.dedup_params(loads, &keys);
+        }
+
         let jit_kernels: *const Slab<JitKernelId, JitKernelData> = &self.graphs[graph_id].jit_kernels;
         let jit_kernels: &Slab<JitKernelId, JitKernelData> = unsafe { &*jit_kernels };
         let total = jit_kernels.len().0 as i64 * device_ids.len() as i64;

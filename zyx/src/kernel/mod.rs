@@ -1294,6 +1294,97 @@ impl Kernel {
         param_ops.iter().enumerate().filter(|&(_, &lv_id)| !to_remove.contains(&lv_id)).map(|(i, _)| loads[i]).collect()
     }
 
+    /// Drop `Param` nodes nothing reads and merge `Global` params that name
+    /// the same buffer, keeping `loads` in step.
+    ///
+    /// A shard is a handle, never a buffer identity, so the caller passes one
+    /// key per **buffer-backed** load — the loads whose param is `Global`, in
+    /// op order (a `Variable` load has no buffer and is skipped on both
+    /// sides). Two `Global` params merge when their dtype and key agree.
+    /// `Variable` and `GlobalMut` params are never touched. Whatever only the
+    /// removed params referenced (their shape cone) is dropped in the same
+    /// sweep.
+    ///
+    /// Returns the removed shards, for the caller to release.
+    pub(crate) fn dedup_params<T: Copy, K: Eq>(&mut self, loads: &mut Vec<T>, load_keys: &[K]) -> Vec<T> {
+        if loads.len() == 0 {
+            return Vec::new();
+        }
+        struct Param<T> {
+            op: OpId,
+            kind: ParamKind,
+            dtype: DType,
+            shard: T,
+        }
+        // One ordered walk: every input param with its shard, and every OpId
+        // some other op reads. A param's own `shape` operand is not a read:
+        // it is null after linearize and never names a buffer.
+        let mut params: Vec<Param<T>> = Vec::with_capacity(loads.len());
+        let mut read: Set<OpId> = Set::with_capacity_and_hasher(loads.len(), BuildHasherDefault::default());
+        let mut li = 0usize;
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            match self.at(op_id) {
+                Op::Param { dtype, kind, .. } if *kind != ParamKind::GlobalMut => {
+                    let shard = loads[li];
+                    li += 1;
+                    params.push(Param { op: op_id, kind: *kind, dtype: *dtype, shard });
+                }
+                op => read.extend(op.parameters()),
+            }
+            op_id = self.next_op(op_id);
+        }
+        debug_assert_eq!(li, loads.len(), "dedup_params: loads must parallel Global|Variable params");
+
+        // An unread `Global` param loses its node; a live one whose buffer
+        // already has a param merges into the first one in op order.
+        let mut key_idx = 0usize;
+        let mut dead: Set<OpId> = Set::default();
+        let mut remaps: Map<OpId, OpId> = Map::default();
+        let mut kept: Vec<(usize, &K)> = Vec::new();
+        for (i, p) in params.iter().enumerate() {
+            if p.kind == ParamKind::Variable {
+                continue;
+            }
+            let key = &load_keys[key_idx];
+            key_idx += 1;
+            if !read.contains(&p.op) {
+                dead.insert(p.op);
+                continue;
+            }
+            match kept.iter().find(|&&(j, k)| params[j].dtype == p.dtype && k == key) {
+                Some(&(j, _)) => {
+                    remaps.insert(p.op, params[j].op);
+                }
+                None => kept.push((i, key)),
+            }
+        }
+        debug_assert_eq!(key_idx, load_keys.len(), "dedup_params: one key per Global load");
+        let removed: Set<OpId> = dead.iter().copied().chain(remaps.keys().copied()).collect();
+        if removed.is_empty() {
+            return Vec::new();
+        }
+        self.apply_remaps(&remaps);
+        for &op in &removed {
+            self.remove_op(op);
+        }
+        // Whatever only the removed params referenced (their shape cone) is
+        // unreachable from any root now.
+        self.dead_code_elimination();
+
+        let mut dropped: Vec<T> = Vec::new();
+        let mut new_loads: Vec<T> = Vec::with_capacity(loads.len());
+        for p in &params {
+            if removed.contains(&p.op) {
+                dropped.push(p.shard);
+            } else {
+                new_loads.push(p.shard);
+            }
+        }
+        *loads = new_loads;
+        dropped
+    }
+
     /// Iterate over all operations in the kernel.
     ///
     /// Returns an iterator over all operations without any ordering guarantees.

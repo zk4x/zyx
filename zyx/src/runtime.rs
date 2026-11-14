@@ -4505,6 +4505,22 @@ impl Runtime {
                 *k = KernelId::NULL;
             }
         }
+        // Launch args bind positionally over `loads` then `stores`, so an
+        // unread param or two params behind one buffer each cost a slot — and
+        // a CUDA param block slot, 8 bytes of the 4 KiB budget. The shard is a
+        // handle, so buffer identity is the placement it resolves to; a
+        // `Variable` load has no buffer and is skipped on both sides. Dropped
+        // shards keep their refs until the launch, like every other load.
+        let dedup_dropped: Vec<TensorId> = {
+            let load_keys: Vec<Arc<Placement>> = self.kernels[kid]
+                .loads
+                .iter()
+                .filter(|t| !matches!(self.tensors[**t], TensorData::Symbolic { .. }))
+                .map(|&t| self.leaf_buffer(t).expect("dedup: a Global load must have a buffer"))
+                .collect();
+            let KernelData { kernel, loads, .. } = &mut self.kernels[kid];
+            kernel.dedup_params(loads, &load_keys)
+        };
         let KernelData { outputs, loads, stores, mut kernel } = unsafe { self.kernels.remove_and_return(kid) };
 
         debug_assert!(outputs.is_empty(), "all outputs must be stored before materialize");
@@ -4522,6 +4538,9 @@ impl Runtime {
             // load edges must be released exactly as in the launch path, or
             // the counts orphan and the tensors leak.
             for &tid in &loads {
+                self.release(tid);
+            }
+            for tid in dedup_dropped {
                 self.release(tid);
             }
             return Ok(());
