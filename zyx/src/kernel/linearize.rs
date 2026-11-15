@@ -110,7 +110,7 @@ impl Kernel {
         }
 
         self.duplicate_multi_use_consts();
-        self.single_use_and_loads();
+        self.wrap_global_reads_in_loads();
 
         #[cfg(debug_assertions)]
         {
@@ -414,7 +414,7 @@ impl Kernel {
     /// param gets its own `Load` (with a placeholder index until
     /// `add_indexing` builds the real one from the use's view). Every other
     /// value keeps its users as they are.
-    fn single_use_and_loads(&mut self) {
+    fn wrap_global_reads_in_loads(&mut self) {
         let mut op_id = self.tail;
         while !op_id.is_null() {
             let n = self.ops[op_id].op.parameters().count();
@@ -679,7 +679,7 @@ impl Kernel {
                 }
                 Op::Param { dtype, kind, shape, id } => {
                     // A read-only param has no view of its own any more: every
-                    // read is a `Load` (see `single_use_and_loads`). Nothing to
+                    // read is a `Load` (see `wrap_global_reads_in_loads`). Nothing to
                     // fold here — the `Load` arm builds each use's index.
                     if matches!(kind, ParamKind::Global | ParamKind::Variable) && !views.contains_key(&op_id) {
                         continue;
