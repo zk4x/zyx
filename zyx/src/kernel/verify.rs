@@ -44,11 +44,13 @@ impl Kernel {
         }
 
         // Detect the kernel's linearization state from its stores — the rule
-        // that always holds: a pre-linearize store writes a whole view to a
-        // bare `Param`; linearization gives every store destination an
-        // index expression. (Param shapes can NOT be used for detection:
-        // `Variable` params have null shapes even pre-linearization.)
-        let mut param_dst_stores = 0u32;
+        // that always holds: a pre-linearize store writes a whole view and
+        // carries a NULL index; linearization gives every store its index
+        // expression. The destination node says nothing about the stage: a
+        // pre-linearize store may write through a movement chain (a narrow
+        // assign). (Param shapes can NOT be used for detection: `Variable`
+        // params have null shapes even pre-linearization.)
+        let mut null_index_stores = 0u32;
         let mut indexed_stores = 0u32;
         let mut has_post_linearize_ops = false;
         let mut has_move_or_reduce = false;
@@ -74,9 +76,9 @@ impl Kernel {
                         }
                         debug_assert!(!is_nan, "kernel contains a NaN constant at op {scan:?}");
                     }
-                    Op::Store { dst, dst_idx, .. } => {
-                        if dst_idx.is_null() && matches!(self.at(*dst), Op::Param { .. }) {
-                            param_dst_stores += 1;
+                    Op::Store { dst_idx, .. } => {
+                        if dst_idx.is_null() {
+                            null_index_stores += 1;
                         } else {
                             indexed_stores += 1;
                         }
@@ -152,16 +154,16 @@ impl Kernel {
                 scan = self.next_op(scan);
             }
         }
-        debug_assert!(param_dst_stores + indexed_stores > 0, "kernel must contain at least one store");
-        if param_dst_stores > 0 && indexed_stores > 0 {
-            println!("Invalid mixed kernel: whole-view stores and indexed stores/copies.");
+        debug_assert!(null_index_stores + indexed_stores > 0, "kernel must contain at least one store");
+        if null_index_stores > 0 && indexed_stores > 0 {
+            println!("Invalid mixed kernel: stores with both NULL and actual indices.");
             self.debug();
             panic!();
         }
 
         // Verify param/storage ordering: global params (RO) → GlobalMut params → local storages → everything else.
         // Only meaningful post-linearization; skipped for pre-linearize DAGs.
-        if param_dst_stores == 0 {
+        if null_index_stores == 0 {
             debug_assert!(!has_move_or_reduce, "post-linearize kernel must not contain Move/graph-shape ops");
             #[derive(PartialEq, Eq)]
             #[allow(dead_code)]
@@ -282,6 +284,18 @@ impl Kernel {
                                 debug_assert_eq!(dtypes[&dst_idx], IDX_T, "store index must be {IDX_T}");
                                 check(op_id, dst_idx, &stack);
                             }
+                        }
+                        // Pre-linearize whole-view write through a movement
+                        // view (a narrow assign into a slice of the buffer):
+                        // the destination names the buffer through the view,
+                        // so there is no index to check yet.
+                        Op::Narrow { .. }
+                        | Op::Pad { .. }
+                        | Op::Reshape { .. }
+                        | Op::Expand { .. }
+                        | Op::Permute { .. }
+                        | Op::Flip { .. } => {
+                            debug_assert!(dst_idx.is_null(), "a movement destination must be a whole-view store");
                         }
                         Op::Storage { .. } => {
                             if !params.contains_key(&dst) && !storages.contains_key(&dst) {

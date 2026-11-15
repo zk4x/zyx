@@ -682,11 +682,6 @@ fn dequantize_2bit() -> Result<(), ZyxError> {
 }
 
 #[test]
-// RED: the fused Q3_K graph carries one Global param per merge step (585 of
-// them, most unread), so its PTX needs 4680 bytes of parameter space and the
-// driver rejects it (4352 max). Reproducer for the eager merge duplicating
-// params; out of the default gate until that merge drops them.
-#[ignore]
 fn dequantize_3bit() -> Result<(), ZyxError> {
     if !Tensor::dtype_capability(DType::F16).any() {
         return Ok(());

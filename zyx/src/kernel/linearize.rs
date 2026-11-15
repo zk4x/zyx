@@ -110,6 +110,7 @@ impl Kernel {
         }
 
         self.duplicate_multi_use_consts();
+        self.single_use_and_loads();
 
         #[cfg(debug_assertions)]
         {
@@ -406,6 +407,81 @@ impl Kernel {
         }
     }
 
+    /// Turn every read of a read-only global param into an explicit `Load`
+    /// whose index the walk fills in.
+    ///
+    /// One backward walk: each data operand that names a read-only `Global`
+    /// param gets its own `Load` (with a placeholder index until
+    /// `add_indexing` builds the real one from the use's view). Every other
+    /// value keeps its users as they are.
+    fn single_use_and_loads(&mut self) {
+        let mut op_id = self.tail;
+        while !op_id.is_null() {
+            let n = self.ops[op_id].op.parameters().count();
+            for slot in 0..n {
+                // Which operand slots carry a value, as opposed to a dim, an
+                // index or a metadata shape.
+                let is_data = match &self.ops[op_id].op {
+                    Op::Store { dst_idx, .. } => slot == if dst_idx.is_null() { 1 } else { 2 },
+                    Op::Reshape { .. }
+                    | Op::Expand { .. }
+                    | Op::Permute { .. }
+                    | Op::Flip { .. }
+                    | Op::Pad { .. }
+                    | Op::Narrow { .. }
+                    | Op::Reduce { .. }
+                    | Op::Cast { .. }
+                    | Op::Bitcast { .. }
+                    | Op::Unary { .. }
+                    | Op::Index { .. }
+                    | Op::After { .. }
+                    | Op::ToDevice { .. }
+                    | Op::Contiguous { .. }
+                    | Op::Detach { .. } => slot == 0,
+                    Op::Binary { .. } => slot < 2,
+                    Op::Select { .. } | Op::Wmma { .. } => slot < 3,
+                    Op::Asm { .. } | Op::Stack { .. } => true,
+                    // Every remaining op carries no value operand: leaves,
+                    // storages, control flow, lane metadata and kernel
+                    // boundaries.
+                    Op::Const(_)
+                    | Op::Param { .. }
+                    | Op::Storage { .. }
+                    | Op::Load { .. }
+                    | Op::Copy { .. }
+                    | Op::Range { .. }
+                    | Op::Loop { .. }
+                    | Op::EndLoop
+                    | Op::Barrier
+                    | Op::Unroll { .. }
+                    | Op::Source(_)
+                    | Op::Program { .. }
+                    | Op::Kernel(_)
+                    | Op::TT(_)
+                    | Op::GPU(_)
+                    | Op::Spirv(_)
+                    | Op::PTX(_) => false,
+                };
+                if !is_data {
+                    continue;
+                }
+                let Some(src) = self.ops[op_id].op.parameters().nth(slot) else {
+                    continue;
+                };
+                if matches!(&self.ops[src].op, Op::Param { kind: ParamKind::Global, .. }) {
+                    // One load per read; `src_idx` stays a placeholder until
+                    // `add_indexing` builds the real index from the use's view.
+                    let idx = self.insert_before(op_id, Op::Const(Constant::idx(0)));
+                    let load = self.insert_before(op_id, Op::Load { src, src_idx: idx });
+                    if let Some(p) = self.ops[op_id].op.parameters_mut().nth(slot) {
+                        *p = load;
+                    }
+                }
+            }
+            op_id = self.prev_op(op_id);
+        }
+    }
+
     /// Inserts index arithmetic (views, strides, pads, bounds checks) for
     /// every op. Runs after phase 1: from here on shapes are not parameters
     /// of ops anymore — at the end of `add_indexing` every `Param { shape }`
@@ -417,6 +493,90 @@ impl Kernel {
         // once so every branch reuses them instead of inserting fresh constants.
         let zero = self.const_idx(0);
         let one = self.const_idx(1);
+
+        // Value shapes for the whole kernel, gathered once before anything is
+        // rewritten: one forward walk in list order, each op's axis lengths
+        // (symbolic ids, never resolved to numbers) taken from its operands'
+        // entries by applying the op's transform directly here. A read-only
+        // param is where a shape enters (its descriptor); a `Load` carries the
+        // shape of the buffer it reads. Lengths that a transform synthesises
+        // (`Stack`'s element count, `Storage`/`Unroll`'s width) are inserted as
+        // the same symbolic index constants the rest of the kernel uses.
+        let mut shapes: Map<OpId, Vec<OpId>> = Map::default();
+        {
+            let mut op_id = self.head;
+            for _ in 0..1_000_000 {
+                if op_id.is_null() {
+                    break;
+                }
+                let dims: Vec<OpId> = match self.ops[op_id].op.clone() {
+                    Op::Const(_) | Op::Range { .. } | Op::Loop { .. } | Op::EndLoop | Op::Barrier => Vec::new(),
+                    Op::Param { shape, .. } => self.shape_descriptor(shape),
+                    Op::Load { src, .. } => shapes[&src].clone(),
+                    Op::Storage { len, .. } => vec![self.const_idx(len)],
+                    Op::Unroll { len, .. } => vec![self.const_idx(u32::from(len))],
+                    Op::Stack { ref ops } => match ops.first() {
+                        None => Vec::new(),
+                        Some(&x) => {
+                            let mut dims = shapes[&x].clone();
+                            dims.insert(0, self.const_idx(ops.len() as u32));
+                            dims
+                        }
+                    },
+                    Op::Reshape { shape, .. } | Op::Expand { shape, .. } => self.shape_descriptor(shape),
+                    Op::Permute { x, ref axes } => crate::shape::permute(&shapes[&x], axes),
+                    Op::Flip { x, .. }
+                    | Op::Store { src: x, .. }
+                    | Op::Cast { x, .. }
+                    | Op::Bitcast { x, .. }
+                    | Op::Unary { x, .. } => shapes[&x].clone(),
+                    Op::Narrow { x, axis, len, .. } | Op::Pad { x, axis, len, .. } => {
+                        let mut dims = shapes[&x].clone();
+                        if dims.is_empty() {
+                            dims = vec![len];
+                        } else {
+                            dims[axis as usize] = len;
+                        }
+                        dims
+                    }
+                    // Legacy reduce: the reduced trailing dim goes away.
+                    Op::Reduce { x, .. } => {
+                        let mut dims = shapes[&x].clone();
+                        dims.pop();
+                        dims
+                    }
+                    // Scalars broadcast: an empty side takes the other's dims.
+                    Op::Binary { x, y, .. } => match (shapes[&x].is_empty(), shapes[&y].is_empty()) {
+                        (true, _) => shapes[&y].clone(),
+                        (false, true) => shapes[&x].clone(),
+                        (false, false) => shapes[&y].clone(),
+                    },
+                    // The non-scalar arm decides, true before false before cond.
+                    Op::Select { cond, if_true, if_false } => {
+                        if !shapes[&if_true].is_empty() {
+                            shapes[&if_true].clone()
+                        } else if !shapes[&if_false].is_empty() {
+                            shapes[&if_false].clone()
+                        } else {
+                            shapes[&cond].clone()
+                        }
+                    }
+                    Op::Index { vec, .. } => {
+                        let mut dims = shapes[&vec].clone();
+                        if !dims.is_empty() {
+                            dims.remove(0);
+                        }
+                        dims
+                    }
+                    ref op => todo!("linearize: shape of {op:?}"),
+                };
+                shapes.insert(op_id, dims);
+                op_id = self.next_op(op_id);
+            }
+            if !op_id.is_null() {
+                panic!("linearize: shape gather did not finish in 1000000 steps");
+            }
+        }
 
         // For each op, shape and strides: (index, stride, left pad, right pad, axis length)
         let mut views: Map<OpId, SView> = Map::default();
@@ -518,11 +678,10 @@ impl Kernel {
                     self.ops[op_id].op = Op::Select { cond: pc, if_true: z, if_false: zero };
                 }
                 Op::Param { dtype, kind, shape, id } => {
-                    // Metadata-only param: referenced only as a shape descriptor
-                    // (never loaded as data), so no view was seeded for it.
-                    // Load paths only — a shaped param must always be loaded.
+                    // A read-only param has no view of its own any more: every
+                    // read is a `Load` (see `single_use_and_loads`). Nothing to
+                    // fold here — the `Load` arm builds each use's index.
                     if matches!(kind, ParamKind::Global | ParamKind::Variable) && !views.contains_key(&op_id) {
-                        debug_assert!(shape.is_null(), "viewless param must be a scalar, got {shape:?}");
                         continue;
                     }
                     match kind {
@@ -601,55 +760,47 @@ impl Kernel {
                             self.ops[op_id].op = Op::Select { cond: pc, if_true: src, if_false: zero };
                         }
                         ParamKind::Global => {
-                            let view = views.remove(&op_id).unwrap();
-                            let SView { dims, mask } = view;
-                            // Bounds condition: valid where index is within the source
-                            // extent. `len` is the literal shape, so the plain bounds
-                            // check idx >= 0 && idx < len is exact; every movement op
-                            // bakes its shift into `idx` and adjusts `len`, so no separate pad terms are needed.
-                            //   index = sum over axes of idx * stride
-                            //   pc    = and over axes of (idx >= 0) && (idx < len)
-                            // The propagated mask (from pad/narrow arms) is ANDed in
-                            // after the bounds: it carries validity that the idx/len
-                            // encoding alone cannot express (e.g. a shrink's lower
-                            // bound surviving an Expand broadcast).
-                            let mut index = self.const_idx(0);
-                            let mut pc = self.const_val(true);
-                            let mut stride = one;
-                            let mut strides = Vec::with_capacity(dims.len());
-                            for d in dims.iter().rev() {
-                                strides.push(stride);
-                                stride = self.mul(stride, d.len);
-                            }
-                            strides.reverse();
-                            for (d, s) in dims.iter().zip(strides) {
-                                index = self.mad(d.idx, s, index);
-                                let ge = self.cmpge(d.idx, zero);
-                                pc = self.and(ge, pc);
-                                // A dim length of 0 is the inferred-dim marker and must
-                                // never reach the kernel IR (Tensor::reshape rejects it).
-                                debug_assert!(
-                                    self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
-                                    "inferred dim (0) must not reach linearize"
-                                );
-                                let lt = self.cmplt(d.idx, d.len);
-                                pc = self.and(lt, pc);
-                            }
-                            if let Some(m) = mask {
-                                pc = self.and(m, pc);
-                            }
-                            // Insert the ro source storage immediately before this op so the
-                            // global param order (which buffer args bind to) is preserved.
-                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, id });
-                            // Clamp the offset where the padding condition fails, so the load
-                            // always reads in-bounds, then gate the loaded value itself.
-                            let zero_idx = self.push_back(Op::Const(Constant::idx(0)));
-                            let offset = self.select(pc, index, zero_idx);
-                            let z = self.load(src, offset);
-                            let zero = self.push_back(Op::Const(dtype.zero_constant()));
-                            self.ops[op_id].op = Op::Select { cond: pc, if_true: z, if_false: zero };
+                            unreachable!("linearize: a read-only param is read through a Load, never directly")
                         }
                     }
+                }
+                Op::Load { src, .. } => {
+                    // One use of a read-only global param: the index and bounds
+                    // come from the accumulated view, exactly as they would for
+                    // the param itself, but each use emits its own load.
+                    let Some(view) = views.remove(&op_id) else {
+                        panic!("linearize: load {op_id:?} has no view");
+                    };
+                    let SView { dims, mask } = view;
+                    let dtype = self.dtype(op_id);
+                    let mut index = self.const_idx(0);
+                    let mut pc = self.const_val(true);
+                    let mut stride = one;
+                    let mut strides = Vec::with_capacity(dims.len());
+                    for d in dims.iter().rev() {
+                        strides.push(stride);
+                        stride = self.mul(stride, d.len);
+                    }
+                    strides.reverse();
+                    for (d, s) in dims.iter().zip(strides) {
+                        index = self.mad(d.idx, s, index);
+                        let ge = self.cmpge(d.idx, zero);
+                        pc = self.and(ge, pc);
+                        debug_assert!(
+                            self.resolve_const(d.len).and_then(Constant::as_dim) != Some(0),
+                            "inferred dim (0) must not reach linearize"
+                        );
+                        let lt = self.cmplt(d.idx, d.len);
+                        pc = self.and(lt, pc);
+                    }
+                    if let Some(m) = mask {
+                        pc = self.and(m, pc);
+                    }
+                    let zero_idx = self.push_back(Op::Const(Constant::idx(0)));
+                    let offset = self.select(pc, index, zero_idx);
+                    let load = self.insert_before(op_id, Op::Load { src, src_idx: offset });
+                    let zero = self.push_back(Op::Const(dtype.zero_constant()));
+                    self.ops[op_id].op = Op::Select { cond: pc, if_true: load, if_false: zero };
                 }
                 Op::Store { dst, src, .. } => {
                     // The store writes its dst op's whole view. Loop lengths come
@@ -700,7 +851,7 @@ impl Kernel {
                     // The store already names its whole-view Param destination;
                     // the Param handler above attaches the flat write index
                     // once computed. Seed the views from the dst.
-                    let dims = self.shape_ids(dst);
+                    let dims = shapes[&dst].clone();
                     let mut view = Vec::new();
                     for (axis, &len) in dims.iter().enumerate().rev() {
                         let idx = self.group_range(axis as u32, len);
@@ -725,7 +876,7 @@ impl Kernel {
                     // recomputed from the input shape, which includes the reduced
                     // axis). The reduced axis is the freshly-opened loop with the
                     // input's contiguous stride and zero padding.
-                    let x_shape = self.shape_ids(x);
+                    let x_shape = shapes[&x].clone();
                     let n = x_shape.len();
                     let non_reduce = out_view.dims.len();
                     let mut view = Vec::with_capacity(n);
@@ -761,7 +912,7 @@ impl Kernel {
                     // into `d.idx` by the pad handlers, so no lp handling is needed
                     // here.
                     let out_view = views[&op_id].clone();
-                    let x_shape = self.shape_ids(x);
+                    let x_shape = shapes[&x].clone();
                     let n = x_shape.len();
                     let mut x_strides = vec![one; n];
                     let mut st = one;
@@ -825,7 +976,7 @@ impl Kernel {
                     // resolves to something != 1. A dynamic dim resolves to None
                     // and is treated as non-broadcast (identity), the safe
                     // default. No concrete shape() lookup is required.
-                    let x_shape = self.shape_ids(x);
+                    let x_shape = shapes[&x].clone();
                     let shape = self.shape_descriptor(shape);
                     // New leading axes are prepended broadcasts; the input axes
                     // align to the tail of the output shape. A broadcast input
@@ -913,7 +1064,7 @@ impl Kernel {
                     let d = view.dims[axis as usize];
                     let idx = self.sub(d.idx, lp);
                     let orig = {
-                        let dims = self.shape_ids(x);
+                        let dims = shapes[&x].clone();
                         dims[axis as usize]
                     };
                     let rp = self.sub(len, lp);
@@ -992,7 +1143,7 @@ impl Kernel {
                     self.ops[op_id].op = Op::Select { cond, if_true: x, if_false: zero_const };
                 }
                 Op::Narrow { x, axis, start, .. } => {
-                    let x_shape = self.shape_ids(x);
+                    let x_shape = shapes[&x].clone();
                     let mut view = views[&op_id].clone();
                     // Pure backward narrow: the input coordinate along the
                     // narrowed axis is `start + out_idx`, and the axis length
@@ -1054,12 +1205,12 @@ impl Kernel {
                         // not the output view. The output mask is inherited
                         // so padded regions still read zero.
                         let mask = view.mask;
-                        if self.shape(x).is_empty() {
+                        if shapes[&x].is_empty() {
                             views.insert(x, SView { dims: Vec::new(), mask });
                         } else {
                             views.insert(x, view.clone());
                         }
-                        if self.shape(y).is_empty() {
+                        if shapes[&y].is_empty() {
                             views.insert(y, SView { dims: Vec::new(), mask });
                         } else {
                             views.insert(y, view);
@@ -1085,7 +1236,7 @@ impl Kernel {
                         // mask over the same elements.
                         let mask = view.mask;
                         for &o in &[cond, if_true, if_false] {
-                            if self.shape(o).is_empty() {
+                            if shapes[&o].is_empty() {
                                 views.insert(o, SView { dims: Vec::new(), mask });
                             } else {
                                 views.insert(o, view.clone());
@@ -1446,9 +1597,20 @@ impl Kernel {
             if dtypes.iter().all(|&d| d == dtypes[0]) {
                 continue;
             }
-            // Scalars are operands whose value shape is `[]`.
-            let scalars: Vec<(OpId, DType)> =
-                operands.iter().copied().zip(dtypes.iter().copied()).filter(|&(o, _)| self.shape(o).is_empty()).collect();
+            // Scalars are operands whose value shape is `[]`. A load carries the
+            // shape of the buffer it reads, so look through it to the source.
+            let scalars: Vec<(OpId, DType)> = operands
+                .iter()
+                .copied()
+                .zip(dtypes.iter().copied())
+                .filter(|&(o, _)| {
+                    let src = match &self.ops[o].op {
+                        Op::Load { src, .. } => *src,
+                        _ => o,
+                    };
+                    self.shape(src).is_empty()
+                })
+                .collect();
             if scalars.is_empty() {
                 self.debug();
                 panic!("autocast_scalars: mixed-dtype op {op_id} has no scalar operand to cast");
@@ -1467,7 +1629,13 @@ impl Kernel {
                     .iter()
                     .copied()
                     .zip(dtypes.iter().copied())
-                    .filter(|&(o, _)| !self.shape(o).is_empty())
+                    .filter(|&(o, _)| {
+                        let src = match &self.ops[o].op {
+                            Op::Load { src, .. } => *src,
+                            _ => o,
+                        };
+                        !self.shape(src).is_empty()
+                    })
                     .map(|(_, d)| d)
                     .collect();
                 let target = nonscalar[0];
