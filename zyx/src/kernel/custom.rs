@@ -407,6 +407,19 @@ impl Kernel {
         self.push_back(Op::Range { axis, kind: RangeKind::Local(len) })
     }
 
+    /// Unfold lane: `len` parallel copies on `axis`, a *value* dimension
+    /// rather than a thread or loop. Every op that consumes the lane is
+    /// expanded per lane by `devectorize` (or kept as a vector width where the
+    /// access is contiguous), so a kernel written with lanes is the parallel
+    /// structure and the unfolded scalar form comes from the epilogue.
+    ///
+    /// `axis` picks which value dimension the lane occupies: lanes that compose
+    /// (a vector width and a step count, say) must sit on different axes, or
+    /// their shapes fail to broadcast.
+    pub fn unroll(&mut self, axis: u32, len: u16) -> OpId {
+        self.push_back(Op::Unroll { axis, len })
+    }
+
     /// Warp lane index derived from a local thread range.
     ///
     /// Local axis 0 is the hardware warp: its value is the lane id within the

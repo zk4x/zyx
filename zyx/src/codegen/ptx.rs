@@ -323,6 +323,30 @@ impl Compiler {
         base
     }
 
+    /// Pack the four int8 elements one lane holds for an `m8n8k16` int8 mma
+    /// operand into the one 32-bit register the instruction takes (k
+    /// ascending, lowest k in the lowest byte). A single 32-bit component is
+    /// already that word — the form a packed int8 tile is read in, one
+    /// `ld.shared.b32` per operand — and is used as it is.
+    /// The one 32-bit operand word an `m8n8k16` int8 mma lane holds: four
+    /// int8 values, lowest k in the lowest byte. The instruction reads the
+    /// word, not its bytes, so a staged int8 tile is read as one `u32` per
+    /// operand and used as it is.
+    fn pack_s8_mma_operand(&mut self, comps: &[u16]) -> u16 {
+        match comps {
+            [w] => {
+                let reg = self.new_reg(DType::U32, Vec::new(), 1);
+                _ = writeln!(self.body, "{}mov.b32 %r{reg}, %r{w};", self.indent);
+                reg
+            }
+            other => todo!(
+                "PTX: s8 mma operand must be one packed 32-bit word (four int8 bytes), got {} components: \
+                 stage the operand as a word, a per-byte operand needs the register widening first",
+                other.len()
+            ),
+        }
+    }
+
     fn get_var(&mut self, x: OpId) -> u16 {
         let r = self.var_map[&x];
         if self.aliases.contains(&x) {
@@ -1521,6 +1545,45 @@ impl Kernel {
                     let vb = comp.components_of(self, vec, &dtypes)?;
                     comp.var_map.insert(op_id, vb[idx]);
                     comp.aliases.insert(op_id);
+                }
+                // Integer 8x8x16: the Turing `mma.sync.aligned.m8n8k16` int8
+                // instruction (sm_75 has this shape, not Ampere's
+                // m16n8k16/m16n8k32). One lane holds four int8 elements of a
+                // row (k ascending, lowest k in the lowest byte) as one
+                // 32-bit word: A row-major 8x16, B col-major 16x8 (addressed
+                // as the 8 x 16 `N x K` view), C 8x8 s32 in two words.
+                //
+                // The operand is either
+                // - four int8 components (a `Stack` of the four k values the
+                //   lane holds), packed into the word here with `prmt`, or
+                // - one 32-bit component, which *is* the packed word — the
+                //   form the staged int8 tile is read in (one `ld.shared.b32`
+                //   of four consecutive k bytes), so no packing is emitted.
+                Op::Wmma { dims, layout, dtype: MMADType::s8_s8_s32_s32, c, a, b } => {
+                    if dims != MMADims::m8n8k16 || layout != MMALayout::row_col {
+                        todo!("PTX: s8 wmma combo dims={dims:?} layout={layout:?} not implemented");
+                    }
+                    let a_comps = comp.components_of(self, a, &dtypes)?;
+                    let b_comps = comp.components_of(self, b, &dtypes)?;
+                    let c_comps = comp.components_of(self, c, &dtypes)?;
+                    let a_word = Compiler::pack_s8_mma_operand(&mut comp, &a_comps);
+                    let b_word = Compiler::pack_s8_mma_operand(&mut comp, &b_comps);
+                    // A broadcast accumulator names one register for both
+                    // words; the instruction reads two.
+                    let (c0, c1) = match c_comps.as_slice() {
+                        [c] => (*c, *c),
+                        [c0, c1] => (*c0, *c1),
+                        other => todo!("PTX: s8 mma C fragment must hold 1 or 2 words, got {}", other.len()),
+                    };
+                    let reg = comp.new_var(op_id, DType::I32, vec![2], rcs[&op_id]);
+                    _ = writeln!(
+                        comp.body,
+                        "{}mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {{%r{reg}, %r{}}}, {{%r{a_word}}}, {{%r{b_word}}}, {{%r{c0}, %r{c1}}};",
+                        comp.indent,
+                        reg + 1,
+                    );
+                    comp.release_reg(a_word);
+                    comp.release_reg(b_word);
                 }
                 Op::Wmma { dims, layout, dtype, c, a, b } => {
                     // Only the m16n8k8 f16->f32 path is implemented; other

@@ -477,14 +477,20 @@ impl Kernel {
                 | Op::Const(_) => {}
                 Op::Reduce { .. } => unreachable!("reduce not devectorized before the unroll pass"),
                 ref op => {
-                    // A component extract of a value the lane is unfolding:
-                    // the extract picks one lane of the vector by a constant
-                    // lane number, so it names that lane's own copy. It is not
-                    // duplicated (duplicating would keep the lane number and
-                    // read past a single-element copy); every consumer gets the
-                    // copy, whichever lane it belongs to.
+                    // A component extract of a value the lane is unfolding.
+                    // When the value's element count *is* the lane width, its
+                    // only dimension is the lane, so a constant index selects
+                    // one lane's copy: every consumer reads that copy and the
+                    // extract is dropped. When the value carries a real
+                    // component dimension on top of the lane (a 4-byte vector
+                    // load under a fill lane, shape `[4, len]`), the index
+                    // picks a *component* of each lane, which is a per-lane op
+                    // like any other — it falls through to the duplication
+                    // below and each clone reads its own lane's copy of the
+                    // vector.
                     if let Op::Index { vec, idx } = *op
                         && let Some(clones) = remaps.get(&vec)
+                        && self.elements(vec) == i64::try_from(len).unwrap_or(0)
                     {
                         let lane_op = if idx == 0 { Some(vec) } else { clones.get(idx - 1).copied() };
                         if let Some(lane_op) = lane_op {

@@ -869,7 +869,7 @@ impl Kernel {
                     dtypes.insert(op_id, (dtype, shape));
                     *rcs.entry(vec).or_insert(0) += 1;
                 }
-                Op::Wmma { dims: _, layout: _, dtype, a, b, c } => {
+                Op::Wmma { dims: wdims, layout: _, dtype, a, b, c } => {
                     let out_dtype = match dtype {
                         MMADType::f16_f16_f16_f32 => DType::F32,
                         MMADType::f16_f16_f16_f16 => DType::F16,
@@ -878,7 +878,11 @@ impl Kernel {
                         | MMADType::b1_b1_s32_xor_popc
                         | MMADType::b1_b1_s32_and_popc => DType::I32,
                     };
-                    dtypes.insert(op_id, (out_dtype, vec![4]));
+                    // The accumulator's element count is the instruction's
+                    // `m*n/32` per lane (f16 16x8 = 4, int8 8x8 = 2).
+                    let (dm, dn, _) = wdims.decompose_mnk();
+                    let slots = usize::try_from(dm * dn / 32).expect("mma fragment slots");
+                    dtypes.insert(op_id, (out_dtype, vec![slots as Dim]));
                     *rcs.entry(a).or_insert(0) += 1;
                     *rcs.entry(b).or_insert(0) += 1;
                     *rcs.entry(c).or_insert(0) += 1;

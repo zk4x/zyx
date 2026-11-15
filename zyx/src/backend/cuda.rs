@@ -163,9 +163,29 @@ fn cuda_mma_variants() -> Vec<MMAVariant> {
         b: nk.clone(),
         c: mn.clone(),
     };
+    // Turing's int8 instruction: 8x8x16 with one 32-bit word per lane on each
+    // input (four int8 values, k ascending) and two s32 accumulators. Both
+    // idents are `U8` tiles: A's `M x K` view and B's `N x K` view each read
+    // four consecutive k bytes per lane, so the two maps are the same shape.
+    let i8_rows = FragField { axis: FragAxis::Row, shift: 2, width: 3, stride: 1 };
+    let i8_bytes = FragField { axis: FragAxis::Col, shift: 0, width: 2, stride: 4 };
+    let i8_acc = FragField { axis: FragAxis::Col, shift: 0, width: 2, stride: 2 };
+    let i8_ab = FragMap { fields: vec![i8_rows, i8_bytes], slots: vec![(0, 0), (0, 1), (0, 2), (0, 3)] };
+    let i8_c = FragMap { fields: vec![i8_rows, i8_acc], slots: vec![(0, 0), (0, 1)] };
     vec![
         variant(MMADType::f16_f16_f16_f32, DType::F32),
         variant(MMADType::f16_f16_f16_f16, DType::F16),
+        MMAVariant {
+            dims: MMADims::m8n8k16,
+            layout: MMALayout::row_col,
+            dtype: MMADType::s8_s8_s32_s32,
+            a_dtype: DType::U8,
+            b_dtype: DType::U8,
+            c_dtype: DType::I32,
+            a: i8_ab.clone(),
+            b: i8_ab,
+            c: i8_c,
+        },
     ]
 }
 
