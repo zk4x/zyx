@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use zyx::{DType, Dev, FrozenTape, QDType, Tape, Tensor, ZyxError};
+use zyx::{DType, Dev, FrozenTape, QDType, Tape, Tensor, ZyxError, bf16};
 use zyx_nn::RMSNorm;
 
 use crate::config::Config;
@@ -122,10 +122,20 @@ impl Bonsai {
         let dev = compute_device();
         prism.to(dev)?;
 
+        // A BF16 tensor is widened on the host: PTX has no bf16 `cvt` below
+        // sm_80, so no BF16 value may enter a kernel on such a card. The widen
+        // is exact (bf16 to f32 is the top 16 bits) and happens before the copy
+        // to the device, so no BF16 buffer ever reaches a kernel.
         let mut take = |name: &str| -> Result<Tensor, ZyxError> {
-            host.remove(name)
-                .ok_or_else(|| ZyxError::parse_error(format!("gguf is missing tensor `{name}`").into()))?
-                .to(dev)
+            let t = host
+                .remove(name)
+                .ok_or_else(|| ZyxError::parse_error(format!("gguf is missing tensor `{name}`").into()))?;
+            if t.dtype() == DType::BF16 {
+                let vals: Vec<f32> = t.to_vec::<bf16>()?.into_iter().map(bf16::to_f32).collect();
+                let shape = t.resolve_shape();
+                return Tensor::from_vec(vals, shape)?.to(dev);
+            }
+            t.to(dev)
         };
         let emb_blocks = take("token_embd.weight")?;
         let vocab = emb_blocks.resolve_shape()[0] * PQ2_BLOCK / cfg.hidden;

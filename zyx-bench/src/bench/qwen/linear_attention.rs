@@ -10,12 +10,14 @@
 //! model — so this bench is the state update, not the projections around it.
 //!
 //! Both routines are ports of the reference in
-//! `examples/bonsai-27b/src/model.rs`; the shapes are the checkpoint's.
+//! `examples/bonsai-27b/src/model.rs`; the shapes are the checkpoint's. Each
+//! phase is traced on its own [`Tape`] — one tape per timed kernel — so the
+//! measured launches are the graph kernels the port runs.
 
-use zyx::{DType, Tensor, ZyxError};
+use zyx::{DType, Tape, Tensor, ZyxError};
 
 use super::shapes::{CHUNK, SEQ, SSM_STATE, SSM_V_HEADS};
-use crate::bench::{bench_dev, run};
+use crate::bench::bench_dev;
 
 /// Decode then prefill: one bench entry for the delta rule, both phases.
 pub fn bench() -> Result<(), ZyxError> {
@@ -34,6 +36,7 @@ fn step() -> Result<(), ZyxError> {
     let b = Tensor::rand([1i64, SSM_V_HEADS], DType::F32)?.to(dev)?;
     let state = make([SSM_V_HEADS, SSM_STATE, SSM_STATE])?;
 
+    let tape = Tape::new([&q, &k, &v, &g, &b, &state])?;
     let q = q.squeeze([0]);
     let k = k.squeeze([0]);
     let v = v.squeeze([0]);
@@ -45,7 +48,9 @@ fn step() -> Result<(), ZyxError> {
     let delta = (v - g.clone().unsqueeze(1)? * kv) * b.unsqueeze(1)?;
     let state = state * g.unsqueeze(1)?.unsqueeze(1)? + k.unsqueeze(2)? * delta.unsqueeze(1)?;
     let core = (state * q.unsqueeze(2)?).sum([1])?;
-    run(core.unsqueeze(0)?)
+    let core = core.unsqueeze(0)?;
+    tape.realize([&core])?;
+    Ok(())
 }
 
 /// A padded prefill chunk run: `delta_chunked` at the prefill width.
@@ -59,9 +64,13 @@ fn chunked() -> Result<(), ZyxError> {
     let b = Tensor::rand([SEQ, SSM_V_HEADS], DType::F32)?.to(dev)?;
     let state = make([SSM_V_HEADS, SSM_STATE, SSM_STATE])?;
 
-    let (core, _state) = delta_chunked(&q, &k, &v, &g, &b, &state)?;
+    let tape = Tape::new([&q, &k, &v, &g, &b, &state])?;
+    let (core, state) = delta_chunked(&q, &k, &v, &g, &b, &state)?;
     println!("qwen linear_attention delta_chunked seq={SEQ} chunk={CHUNK} state=[{SSM_V_HEADS}x{SSM_STATE}x{SSM_STATE}]");
-    run(core)
+    // Both outputs are realized: the port writes the new state back, so the
+    // state store is part of what this entry times.
+    tape.realize([&core, &state])?;
+    Ok(())
 }
 
 /// Llama.cpp's chunked gated delta rule (prefill).

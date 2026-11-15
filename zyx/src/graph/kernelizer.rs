@@ -686,15 +686,6 @@ impl Graph {
                             let base_ordinal = base_ordinal
                                 .unwrap_or_else(|| todo!("assign: dst op {dst_op:?} is not a view over a buffer param"));
                             let dst_leaf = dst_loads[base_ordinal];
-                            for (i, &c) in dst_loads.iter().enumerate() {
-                                if i == base_ordinal {
-                                    continue;
-                                }
-                                assert!(
-                                    is_var_class(self, c),
-                                    "assign: dst view load class {c:?} is neither the base buffer nor a dim variable"
-                                );
-                            }
                             assert!(
                                 !self.jit_kernels[kid].loads.contains(&dst_leaf),
                                 "assign: src kernel loads dst tensor, not allowed to avoid data races"
@@ -755,6 +746,19 @@ impl Graph {
                                             matches!(kind, ParamKind::GlobalMut | ParamKind::Variable),
                                             "assign: unexpected param kind {kind:?} in dst movement kernel"
                                         );
+                                        // Only the params this slice replays feed the
+                                        // store's address, and each must be a scalar dim
+                                        // variable. The kernel's other params belong to
+                                        // classes that never name the address written (a
+                                        // merged compute kernel), so they are not the
+                                        // assign's concern.
+                                        if op_id != dst_param {
+                                            assert!(
+                                                is_var_class(self, dst_loads[this_ordinal]),
+                                                "assign: dst slice param {op_id:?} load class {:?} is neither the base buffer nor a dim variable",
+                                                dst_loads[this_ordinal]
+                                            );
+                                        }
                                         // The shape descriptor is an OpId into the
                                         // dst kernel; ops are re-pushed into the
                                         // merged kernel with new IDs, so it must be

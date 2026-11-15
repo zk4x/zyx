@@ -10,13 +10,18 @@
 //! is part of the traced step), so the measured kernel is the one the model
 //! runs. Weights are `[rows*cols/128, 34]` U8 super-blocks, the checkpoint's
 //! own layout.
+//!
+//! Each projection is traced on its own [`Tape`], promoted exactly like the
+//! port's `forward`: activation and weight are tape leaves and the fused
+//! dequantize-matmul is one traced step, realized before the next shape. The
+//! kernel that runs is therefore the graph kernel, not an eager one.
 
-use zyx::{DType, Dev, QDType, Tensor, ZyxError};
+use zyx::{DType, Dev, QDType, Tape, Tensor, ZyxError};
 
 use super::shapes::{
     CONV_DIM, FFN, HEADS, HEAD_DIM, HIDDEN, KV_HEADS, PQ2_BLOCK, PQ2_ROW, SEQ, VALUE_DIM, VOCAB,
 };
-use crate::bench::{bench_dev, run};
+use crate::bench::bench_dev;
 
 /// `(name, k, n)` of every projection, in the order a block runs them: the
 /// full-attention block's four, the gated-delta block's three, then the SwiGLU
@@ -60,8 +65,12 @@ fn gemms(sizes: &[i64]) -> Result<(), ZyxError> {
             let w = pq2(dev, n, k)?;
             eprintln!("[mark] {name}: built");
             println!("qwen matmul {name} [{seq}x{k}]x[{k}x{n}]");
+            // One tape per timed kernel: leaves promoted as the port promotes
+            // them, the dequantize a traced op, then realized.
+            let tape = Tape::new([&x, &w])?;
             let w = w.dequantize(QDType::PQ2_0, DType::F16)?.reshape([n, k])?;
-            run(x.dot_dtype_output(w.t(), DType::F32, DType::F32)?)?;
+            let out = x.dot_dtype_output(w.t(), DType::F32, DType::F32)?;
+            tape.realize([&out])?;
             eprintln!("[mark] {name}: ran");
         }
     }
@@ -74,9 +83,11 @@ fn lm_head() -> Result<(), ZyxError> {
     let x = Tensor::rand([1i64, HIDDEN], DType::F16)?.to(dev)?;
     let w = pq2(dev, VOCAB, HIDDEN)?;
     println!("qwen matmul lm_head [1x{HIDDEN}]x[{HIDDEN}x{VOCAB}]");
+    let tape = Tape::new([&x, &w])?;
     let w = w
         .dequantize(QDType::PQ2_0, DType::F16)?
         .reshape([VOCAB, HIDDEN])?;
-    run(x.dot_dtype_output(w.t(), DType::F32, DType::F32)?)?;
+    let out = x.dot_dtype_output(w.t(), DType::F32, DType::F32)?;
+    tape.realize([&out])?;
     Ok(())
 }
