@@ -208,8 +208,8 @@ pinned.numpy()                           # [4, 4] float array
 ```
 
 Available selectors: `Dev.cpu()`, `Dev.cuda(id)`,
-`Dev.opencl(id)`, `Dev.vulkan(id)`, `Dev.dummy()`. `Dev.auto()` resolves the
-pending choice.
+`Dev.opencl(id)`, `Dev.vulkan(id)`, `Dev.dummy()`. `Dev.all()` lists every
+device this process can use, in backend order.
 
 ### Configuring backends
 

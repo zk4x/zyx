@@ -54,6 +54,7 @@ wins on the fixed placeholder).
 | `TT_TTSIM_LIB_X2` / `TT_TTSIM_LIB_X4` | Simulator library for dual-/quad-chip builds |
 | `TT_MATH` | Tenstorrent SFPU math mode: `precise` (default) or `approx` |
 | `ZYX_KERN_TRACE` | Kernelizer split/store tracing on stderr |
+| `ZYX_NO_CACHE` | Disable every on-disk cache (autotune winners, C backend objects) |
 | `AGENT=1` | Colorless debug output (also auto-detected when stdout is not a terminal) |
 
 The `ZYX_TT_*`, `TT_TTSIM_*`, and `TT_MATH` variables apply only to builds with

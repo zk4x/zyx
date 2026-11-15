@@ -355,13 +355,17 @@ impl CDevice {
             flags.finish() as u32
         };
 
-        let cache_dir = std::env::var_os("XDG_CONFIG_HOME")
-            .and_then(|p| {
-                let p = PathBuf::from(p);
-                if p.is_absolute() { Some(p) } else { None }
-            })
-            .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
-            .map(|p| p.join("zyx/cache/c"));
+        let cache_dir = if crate::cache_disabled() {
+            None
+        } else {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .and_then(|p| {
+                    let p = PathBuf::from(p);
+                    if p.is_absolute() { Some(p) } else { None }
+                })
+                .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
+                .map(|p| p.join("zyx/cache/c"))
+        };
 
         // Skip the disk cache when debug_asm is set so the generated source is
         // always printed below.

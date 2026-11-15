@@ -219,6 +219,7 @@
 // -----------------------------
 
 use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path, sync::Arc};
+use nanoserde::{DeBin, SerBin};
 
 #[cfg(feature = "viz")]
 use crate::viz::Viz;
@@ -2599,33 +2600,14 @@ impl Runtime {
                     return Ok(tid);
                 }
 
-                // Reshape of an unrealized reduce result is metadata, not a
-                // kernel: re-home x itself as the stored PendingLeaf with
-                // the new shape (same tid, no new kernel, no duplicate).
-                // add_store keeps the normal store path — buffer creation,
-                // launch conversion, and reads all work unchanged — and the
-                // store uses the op's own shape, which has the same element
-                // count. Only when the store would fire due to a reduce on
-                // a store-free kernel; kernels that already store keep the
-                // old path.
-                if let TensorData::Eager { kernel_id, op_id, .. } = self.tensors[x] {
-                    let reduce_src = {
-                        let kernel = &self.kernels[kernel_id].kernel;
-                        self.leaf_buffer(x).is_none() && !kernel.contains_stores() && kernel.is_preceded_by_reduce(op_id)
-                    };
-                    if reduce_src {
-                        self.add_store(x)?;
-                        match &mut self.tensors[x] {
-                            TensorData::PendingLeaf { shape_id, .. } | TensorData::Leaf { shape_id, .. } => {
-                                *shape_id = shape_expr
-                            }
-                            ref t => panic!("reshape: stored reduce result {x} is not a leaf: {t:?}"),
-                        }
-                        self.retain(x);
-                        return Ok(x);
-                    }
-                }
-
+                // A reduce result is rebuilt on shape ops like any other value:
+                // re-homing it in place (`add_store` + rewriting its `shape_id`,
+                // same tid) folded the reshape into the store, but that edit is
+                // visible through every other handle to the same tensor —
+                // `gcs.unsqueeze(3)` turned a `[48,2,64]` cumsum into
+                // `[48,2,64,1]`, and the next `gcs.unsqueeze(2)` read the new
+                // rank. `reshape` takes `&self`, so the source handle always
+                // outlives the call and such a fold is never safe here.
                 let (kernel_id, op_id) = self.duplicate_or_store(x, false)?;
 
                 debug_assert_eq!(
@@ -3947,6 +3929,71 @@ impl Runtime {
     }
 }
 
+/// Version of the stored autotune-record layout. Bump when the record changes
+/// shape (the kernel IR has its own `IR_FORMAT_VERSION` inside `Kernel`).
+///
+/// A record from another layout, backend, device or compute capability is
+/// ignored, never reinterpreted.
+const TUNING_CACHE_VERSION: u8 = 1;
+
+/// Directory of the on-disk autotune cache: `$XDG_CONFIG_HOME/zyx/cache/kernel`,
+/// else `~/.config/zyx/cache/kernel` — the same root the C backend uses for its
+/// compiled objects. No root, or `ZYX_NO_CACHE`, means no cache.
+fn kernel_cache_dir() -> Option<std::path::PathBuf> {
+    if crate::cache_disabled() {
+        return None;
+    }
+    std::env::var_os("XDG_CONFIG_HOME")
+        .and_then(|p| {
+            let p = std::path::PathBuf::from(p);
+            if p.is_absolute() { Some(p) } else { None }
+        })
+        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
+        .map(|p| p.join("zyx/cache/kernel"))
+}
+
+/// The stored autotune result for one scheduled kernel: the winning kernel of
+/// the search and the time it measured.
+///
+/// `Kernel`'s own binary form carries the IR, `dev` and the `DeviceInfo`
+/// snapshot (compute capability included), so a record is self-describing: one
+/// from another version, backend, device or capability is rejected on load.
+fn load_tuned_kernel(hash: u64, dev: Dev, cc: [i32; 2]) -> Option<(Kernel, u64)> {
+    let path = kernel_cache_dir()?.join(format!("{hash:016x}.bin"));
+    let bytes = std::fs::read(path).ok()?;
+    let mut offset = 0usize;
+    let version: u8 = DeBin::de_bin(&mut offset, &bytes).ok()?;
+    if version != TUNING_CACHE_VERSION {
+        return None;
+    }
+    let kernel = Kernel::de_bin(&mut offset, &bytes).ok()?;
+    let timing = u64::de_bin(&mut offset, &bytes).ok()?;
+    if kernel.dev != dev || kernel.dev_info.as_ref().map(|info| info.cc) != Some(cc) {
+        return None;
+    }
+    Some((kernel, timing))
+}
+
+/// Stores the autotune result for one scheduled kernel. Best effort: a missing
+/// or read-only cache directory must never fail the computation, it only means
+/// the next process searches again.
+fn store_tuned_kernel(hash: u64, kernel: &Kernel, timing: u64) {
+    let Some(dir) = kernel_cache_dir() else { return };
+    let mut bytes = Vec::new();
+    TUNING_CACHE_VERSION.ser_bin(&mut bytes);
+    kernel.ser_bin(&mut bytes);
+    timing.ser_bin(&mut bytes);
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{hash:016x}.bin"));
+    // Write-then-rename: a reader never sees a half-written record, and two
+    // processes racing on the same entry write identical bytes for identical
+    // input, so the rename is the commit.
+    let tmp = dir.join(format!(".{hash:016x}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, &bytes).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
 impl Runtime {
     /// Ensures `x` lives alone in a **store-free** kernel and returns its `(kid, op_id)` in
     /// that kernel — the canonical "clean" placement for a tensor that another op (e.g.
@@ -4289,6 +4336,21 @@ impl Runtime {
         }
 
         let device_id = kernel.dev;
+
+        // The search is the expensive part of a cold start (hundreds of timed
+        // candidate launches per kernel) while codegen is a couple of
+        // milliseconds, so only the search is skipped on a hit: the stored
+        // winner is re-compiled. `Kernel`'s binary form carries `dev` and the
+        // `DeviceInfo` snapshot, so a record from another device, capability or
+        // IR version is ignored rather than reinterpreted.
+        let tuned_hash = kernel.get_hash();
+        let cache_cc = kernel.dev_info.as_ref().map_or([0, 0], |info| info.cc);
+        if let Some((winner, timing)) = load_tuned_kernel(tuned_hash, device_id, cache_cc) {
+            let program_id = device_id.compile(&winner, crate::debug_mask().asm())?;
+            self.programs.insert(kernel_id, program_id);
+            self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
+            return Ok((program_id, timing));
+        }
         #[cfg(feature = "viz")]
         let sched_kernel = kernel.clone();
 
@@ -4375,6 +4437,7 @@ impl Runtime {
         let program_id = device_id.compile(&winner, crate::debug_mask().asm())?;
         self.programs.insert(kernel_id, program_id);
         self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
+        store_tuned_kernel(tuned_hash, &winner, timing);
 
         #[cfg(feature = "viz")]
         {

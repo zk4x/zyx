@@ -614,6 +614,282 @@ impl LSTMCell {
     }
 }
 
+/// Python bindings for [`RopeScaling`]: Llama-3 style RoPE scaling factors.
+#[pymethods]
+impl RopeScaling {
+    /// Create a new scaling configuration.
+    #[new]
+    #[pyo3(signature = (factor, high_freq_factor, low_freq_factor, original_max_position_embeddings))]
+    pub fn py_new(
+        factor: f64,
+        high_freq_factor: f64,
+        low_freq_factor: f64,
+        original_max_position_embeddings: i64,
+    ) -> Self {
+        Self {
+            factor,
+            high_freq_factor,
+            low_freq_factor,
+            original_max_position_embeddings,
+        }
+    }
+
+    /// Scale applied beyond the original context.
+    #[getter]
+    pub fn factor(&self) -> f64 {
+        self.factor
+    }
+
+    /// Set the scale applied beyond the original context.
+    #[setter]
+    pub fn set_factor(&mut self, value: f64) {
+        self.factor = value;
+    }
+
+    /// Upper wavelength bound of the interpolated band.
+    #[getter]
+    pub fn high_freq_factor(&self) -> f64 {
+        self.high_freq_factor
+    }
+
+    /// Set the upper wavelength bound of the interpolated band.
+    #[setter]
+    pub fn set_high_freq_factor(&mut self, value: f64) {
+        self.high_freq_factor = value;
+    }
+
+    /// Lower wavelength bound of the interpolated band.
+    #[getter]
+    pub fn low_freq_factor(&self) -> f64 {
+        self.low_freq_factor
+    }
+
+    /// Set the lower wavelength bound of the interpolated band.
+    #[setter]
+    pub fn set_low_freq_factor(&mut self, value: f64) {
+        self.low_freq_factor = value;
+    }
+
+    /// Context length the unscaled table was built for.
+    #[getter]
+    pub fn original_max_position_embeddings(&self) -> i64 {
+        self.original_max_position_embeddings
+    }
+
+    /// Set the context length the unscaled table was built for.
+    #[setter]
+    pub fn set_original_max_position_embeddings(&mut self, value: i64) {
+        self.original_max_position_embeddings = value;
+    }
+}
+
+/// Python bindings for [`RopeConfig`]: rotary embedding parameters.
+#[pymethods]
+impl RopeConfig {
+    /// Create a new rotary embedding configuration.
+    #[new]
+    #[pyo3(signature = (head_dim, max_position_embeddings, theta, scaling=None))]
+    pub fn py_new(
+        head_dim: i64,
+        max_position_embeddings: i64,
+        theta: f64,
+        scaling: Option<RopeScaling>,
+    ) -> Self {
+        Self {
+            head_dim,
+            max_position_embeddings,
+            theta,
+            scaling,
+        }
+    }
+
+    /// Per-head width.
+    #[getter]
+    pub fn head_dim(&self) -> i64 {
+        self.head_dim
+    }
+
+    /// Set the per-head width.
+    #[setter]
+    pub fn set_head_dim(&mut self, value: i64) {
+        self.head_dim = value;
+    }
+
+    /// Number of rows in the frequency table.
+    #[getter]
+    pub fn max_position_embeddings(&self) -> i64 {
+        self.max_position_embeddings
+    }
+
+    /// Set the number of rows in the frequency table.
+    #[setter]
+    pub fn set_max_position_embeddings(&mut self, value: i64) {
+        self.max_position_embeddings = value;
+    }
+
+    /// RoPE base frequency.
+    #[getter]
+    pub fn theta(&self) -> f64 {
+        self.theta
+    }
+
+    /// Set the RoPE base frequency.
+    #[setter]
+    pub fn set_theta(&mut self, value: f64) {
+        self.theta = value;
+    }
+
+    /// Optional long-context scaling.
+    #[getter]
+    pub fn scaling(&self) -> Option<RopeScaling> {
+        self.scaling
+    }
+
+    /// Set the optional long-context scaling.
+    #[setter]
+    pub fn set_scaling(&mut self, value: Option<RopeScaling>) {
+        self.scaling = value;
+    }
+}
+
+/// Python bindings for the SwiGLU feed-forward block.
+#[pymethods]
+impl SwiGlu {
+    /// Create a new SwiGLU block with random projections.
+    #[new]
+    #[pyo3(signature = (n_embd, intermediate, dtype=DType::F32))]
+    pub fn py_new(n_embd: i64, intermediate: i64, dtype: DType) -> ZyxResult<Self> {
+        Self::new(n_embd, intermediate, dtype)
+    }
+
+    /// Forward pass, `[batch, seq, n_embd]` in and out.
+    #[pyo3(name = "forward")]
+    pub fn forward_py(&self, x: &Tensor) -> ZyxResult<Tensor> {
+        self.forward(x.clone())
+    }
+
+    /// Call the block (alias for forward).
+    #[pyo3(name = "__call__")]
+    pub fn call_py(&self, x: &Tensor) -> ZyxResult<Tensor> {
+        self.forward(x.clone())
+    }
+}
+
+/// Python bindings for the grouped-query attention block.
+#[pymethods]
+impl GqaAttention {
+    /// Create a new attention block with random projections and a zeroed cache.
+    #[new]
+    #[pyo3(signature = (n_embd, n_head, n_kv_head, rope, max_context, dtype=DType::F32))]
+    pub fn py_new(
+        n_embd: i64,
+        n_head: i64,
+        n_kv_head: i64,
+        rope: &RopeConfig,
+        max_context: i64,
+        dtype: DType,
+    ) -> ZyxResult<Self> {
+        Self::new(n_embd, n_head, n_kv_head, rope, max_context, dtype)
+    }
+
+    /// Forward pass. `start_pos` and `cache_len` are symbolic tensors.
+    #[pyo3(name = "forward")]
+    pub fn forward_py(
+        &mut self,
+        xs: &Tensor,
+        start_pos: &Tensor,
+        cache_len: &Tensor,
+    ) -> ZyxResult<Tensor> {
+        self.forward(xs, start_pos, cache_len)
+    }
+
+    /// Call the block (alias for forward).
+    #[pyo3(name = "__call__")]
+    pub fn call_py(
+        &mut self,
+        xs: &Tensor,
+        start_pos: &Tensor,
+        cache_len: &Tensor,
+    ) -> ZyxResult<Tensor> {
+        self.forward(xs, start_pos, cache_len)
+    }
+
+    /// Key cache, `[max_context, n_kv_head, head_dim]`.
+    #[getter]
+    pub fn cache_k(&self) -> Tensor {
+        self.cache_k.clone()
+    }
+
+    /// Value cache, same shape as `cache_k`.
+    #[getter]
+    pub fn cache_v(&self) -> Tensor {
+        self.cache_v.clone()
+    }
+}
+
+/// Python bindings for the pre-norm decoder block.
+#[pymethods]
+impl DecoderBlock {
+    /// Assemble a block from its attention block, its MLP and the norm size.
+    #[new]
+    #[pyo3(signature = (self_attn, mlp, n_embd, eps, dtype=DType::F32))]
+    pub fn py_new(
+        self_attn: GqaAttention,
+        mlp: SwiGlu,
+        n_embd: i64,
+        eps: f64,
+        dtype: DType,
+    ) -> Self {
+        Self::new(self_attn, mlp, n_embd, eps, dtype)
+    }
+
+    /// Forward pass. `start_pos` and `cache_len` are symbolic tensors.
+    #[pyo3(name = "forward")]
+    pub fn forward_py(
+        &mut self,
+        xs: &Tensor,
+        start_pos: &Tensor,
+        cache_len: &Tensor,
+    ) -> ZyxResult<Tensor> {
+        self.forward(xs, start_pos, cache_len)
+    }
+
+    /// Call the block (alias for forward).
+    #[pyo3(name = "__call__")]
+    pub fn call_py(
+        &mut self,
+        xs: &Tensor,
+        start_pos: &Tensor,
+        cache_len: &Tensor,
+    ) -> ZyxResult<Tensor> {
+        self.forward(xs, start_pos, cache_len)
+    }
+
+    /// Grouped-query attention block.
+    #[getter]
+    pub fn self_attn(&self) -> GqaAttention {
+        self.self_attn.clone()
+    }
+
+    /// SwiGLU feed-forward block.
+    #[getter]
+    pub fn mlp(&self) -> SwiGlu {
+        self.mlp.clone()
+    }
+
+    /// RMSNorm applied to the attention branch input.
+    #[getter]
+    pub fn input_layernorm(&self) -> RMSNorm {
+        self.input_layernorm.clone()
+    }
+
+    /// RMSNorm applied to the MLP branch input.
+    #[getter]
+    pub fn post_attention_layernorm(&self) -> RMSNorm {
+        self.post_attention_layernorm.clone()
+    }
+}
+
 /// Helper to register all nn classes in the zyx-py module.
 pub fn register_nn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Linear>()?;
@@ -631,5 +907,10 @@ pub fn register_nn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RNNCell>()?;
     m.add_class::<GRUCell>()?;
     m.add_class::<LSTMCell>()?;
+    m.add_class::<RopeScaling>()?;
+    m.add_class::<RopeConfig>()?;
+    m.add_class::<SwiGlu>()?;
+    m.add_class::<GqaAttention>()?;
+    m.add_class::<DecoderBlock>()?;
     Ok(())
 }

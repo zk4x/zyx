@@ -395,6 +395,33 @@ fn cumsum() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn cumsum_result_keeps_its_shape() -> Result<(), ZyxError> {
+    // `reshape` used to fold a reduce result in place: the caller's handle was
+    // re-homed, so the *source* tensor silently changed rank. In the decoder
+    // block's `delta_chunked` that turned `gcs` ([48,2,64]) into [48,2,64,1]
+    // after `unsqueeze(3)`, and `unsqueeze(2)` then produced [48,2,1,64,1], so
+    // `gi - gj` failed to broadcast.
+    let flat: Vec<f32> = (0..128 * 48).map(|i| i as f32 * 0.001).collect();
+    let g = Tensor::from_vec(flat, [128, 48])?.transpose(0, 1)?.reshape([48, 2, 64])?;
+    let gcs = g.cumsum(2)?;
+    let gi = gcs.unsqueeze(3)?;
+    let gj = gcs.unsqueeze(2)?;
+    assert_eq!(gcs.resolve_shape(), vec![48, 2, 64]);
+    assert_eq!(gi.resolve_shape(), vec![48, 2, 64, 1]);
+    assert_eq!(gj.resolve_shape(), vec![48, 2, 1, 64]);
+    assert_eq!((gi - gj).resolve_shape(), vec![48, 2, 64, 64]);
+    // The reshape of the reduce result must not change its values either.
+    let first: Vec<f32> = gcs.narrow(0, 0i64, 1i64)?.narrow(1, 0i64, 1i64)?.reshape([64])?.to_vec()?;
+    let mut expected = 0f32;
+    let row: Vec<f32> = g.narrow(0, 0i64, 1i64)?.narrow(1, 0i64, 1i64)?.reshape([64])?.to_vec()?;
+    for (got, &x) in first.iter().zip(row.iter()) {
+        expected += x;
+        assert_eq!(*got, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn arange_3() -> Result<(), ZyxError> {
     let x = Tensor::arange(0, 10, 2)?;
     //println!("{x}");

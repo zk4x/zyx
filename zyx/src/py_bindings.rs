@@ -17,7 +17,7 @@ use crate::kernel::{CompiledKernel, Kernel, MemScope, OpId};
 use crate::shape::Dim;
 use crate::tape::FrozenTape;
 use crate::tensor::{Axis, DebugGuard, Reduction};
-use crate::{DType, Tape, Tensor, ZyxError};
+use crate::{DType, QDType, Tape, Tensor, ZyxError};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyIndexError;
 use pyo3::prelude::*;
@@ -130,10 +130,13 @@ fn extract_tensor_or_scalar(obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     if let Ok(t) = obj.extract::<Tensor>() {
         return Ok(t);
     }
-    if let Ok(v) = obj.extract::<f64>() {
+    // Python ints become IDX_T scalars, matching Rust's `Tensor / i64` and
+    // `Tensor + i64`: a float scalar would make integer-tensor arithmetic
+    // (dim lengths, `//`, index offsets) go through the float path.
+    if let Ok(v) = obj.extract::<i64>() {
         return Ok(Tensor::from(v));
     }
-    if let Ok(v) = obj.extract::<i64>() {
+    if let Ok(v) = obj.extract::<f64>() {
         return Ok(Tensor::from(v));
     }
     Err(PyTypeError::new_err("expected Tensor or numeric"))
@@ -490,6 +493,14 @@ impl Tensor {
     pub fn assign_py(&self, src: &Bound<'_, PyAny>) -> PyResult<()> {
         let src = extract_tensor_or_scalar(src).map_err(|e| ZyxError::ParseError(format!("{e:?}").into()))?;
         self.clone().assign(src).map_err(|e| e.into())
+    }
+
+    /// Decode raw quantized super-blocks (`[num_blocks, block_bytes]` U8, as
+    /// `load_gguf` returns them) into a dense float tensor of `num_blocks *
+    /// block_elements` values.
+    #[pyo3(name = "dequantize")]
+    pub fn dequantize_py(&self, qdtype: QDType, dtype: DType) -> Result<Tensor, ZyxError> {
+        self.dequantize(qdtype, dtype)
     }
 
     #[staticmethod]
@@ -1529,21 +1540,21 @@ impl Tensor {
         self.slice(ranges).map_err(|e| PyIndexError::new_err(format!("{e:?}")))
     }
 
-    #[pyo3(name = "dot", signature = (rhs, out_dtype=None))]
-    fn dot_py(&self, rhs: &Bound<PyAny>, out_dtype: Option<DType>) -> Result<Tensor, ZyxError> {
-        let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        match out_dtype {
-            Some(dtype) => self.dot_dtype(rhs, dtype),
-            None => self.dot(rhs),
-        }
+    #[pyo3(name = "dot", signature = (rhs, acc_dtype=None, out_dtype=None))]
+    fn dot_py(&self, rhs: &Bound<PyAny>, acc_dtype: Option<DType>, out_dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+        self.matmul_py(rhs, acc_dtype, out_dtype)
     }
 
-    #[pyo3(name = "matmul", signature = (rhs, out_dtype=None))]
-    fn matmul_py(&self, rhs: &Bound<PyAny>, out_dtype: Option<DType>) -> Result<Tensor, ZyxError> {
+    #[pyo3(name = "matmul", signature = (rhs, acc_dtype=None, out_dtype=None))]
+    fn matmul_py(&self, rhs: &Bound<PyAny>, acc_dtype: Option<DType>, out_dtype: Option<DType>) -> Result<Tensor, ZyxError> {
         let rhs = extract_tensor_or_scalar(rhs).map_err(|e| ZyxError::DTypeError(format!("{e:?}").into()))?;
-        match out_dtype {
-            Some(dtype) => self.dot_dtype(rhs, dtype),
-            None => self.dot(rhs),
+        match (acc_dtype, out_dtype) {
+            // Both defaults: the plain matmul, exactly like `tinygrad.Tensor.matmul`.
+            (None, None) => self.dot(rhs),
+            (acc, out) => {
+                let acc = acc.unwrap_or_else(|| self.dtype().least_upper_dtype(rhs.dtype()));
+                self.dot_dtype_output(rhs, acc, out.unwrap_or(acc))
+            }
         }
     }
 
@@ -2010,10 +2021,11 @@ pub struct PyDev(pub Dev);
 
 #[pyo3::pymethods]
 impl PyDev {
-    /// Auto-select: resolves to the first available device.
+    /// Every device this process can use, in `Dev::all` order (CPU first,
+    /// then one entry per CUDA/Vulkan/OpenCL/WGPU device).
     #[staticmethod]
-    fn auto() -> Self {
-        Self(Dev::Auto)
+    fn all() -> Vec<Self> {
+        Dev::all().into_iter().map(Self).collect()
     }
     /// CPU backend.
     #[staticmethod]
@@ -2412,12 +2424,24 @@ pub fn register_tensor(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyKernel>()?;
     m.add_class::<PyCompiledKernel>()?;
     m.add_class::<PyDev>()?;
+    m.add_class::<DebugGuard>()?;
     Ok(())
+}
+
+/// Python bindings for [`DebugMask`]: the `ZYX_DEBUG` bitmask.
+#[pymethods]
+impl DebugMask {
+    /// Create a debug mask from its bits (see the `ZYX_DEBUG` table).
+    #[new]
+    pub fn py_new(bits: u32) -> Self {
+        Self::new(bits)
+    }
 }
 
 /// Re-export helper for zyx-py to register DType class.
 pub fn register_dtype(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DType>()?;
+    m.add_class::<QDType>()?;
     m.add_class::<Reduction>()?;
     m.add_class::<DebugMask>()?;
     m.add_class::<PyDTypeCapability>()?;

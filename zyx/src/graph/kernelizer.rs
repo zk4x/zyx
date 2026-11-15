@@ -629,21 +629,70 @@ impl Graph {
                             self.jit_kernels[kid].stores.push(dst);
                             value_op = src_op;
                         } else {
-                            // The dst kernel's loads mix the owning buffer with
-                            // dim-variable classes. Exactly ONE buffer entry may
-                            // exist — trace it instead of assuming a position,
-                            // fail loud otherwise.
+                            // The destination's address lives in `dst_kid`, but only
+                            // as the backward slice of `dst_op`: a movement chain
+                            // over one buffer param plus the scalar arithmetic that
+                            // feeds its shape/index operands. The kernel around that
+                            // slice may carry other classes' work and its own stores
+                            // (a merged compute kernel), and none of it names the
+                            // address being written — so the store depends on the
+                            // slice, never on the kernel's contents.
+                            let dst_kernel = self.jit_kernels[dst_kid].kernel.clone();
                             let dst_loads = self.jit_kernels[dst_kid].loads.clone();
                             let is_var_class = |g: &Self, c: OpId| matches!(&g.ops[c].op, Op::Param { dtype, shape, .. } if dtype == &IDX_T && shape.is_null());
-                            let mut buffer_classes = dst_loads.iter().copied().filter(|&c| !is_var_class(self, c));
-                            let dst_leaf = match (buffer_classes.next(), buffer_classes.next()) {
-                                (Some(c), None) => c,
-                                found => panic!("assign: dst kernel must contain exactly one buffer load, got {:?}", found.0),
-                            };
-                            for &c in &dst_loads {
+
+                            // Backtrace to dst's base param: the op the store writes
+                            // through, whatever else the slice computes around it.
+                            let mut dst_param = dst_op;
+                            for _ in 0..100 {
+                                match dst_kernel.ops[dst_param].op {
+                                    Op::Reshape { x, .. }
+                                    | Op::Expand { x, .. }
+                                    | Op::Permute { x, .. }
+                                    | Op::Flip { x, .. }
+                                    | Op::Pad { x, .. }
+                                    | Op::Narrow { x, .. } => dst_param = x,
+                                    Op::Storage { .. } => break,
+                                    _ => {}
+                                }
+                            }
+
+                            // The slice: every op `dst_op` transitively depends on.
+                            let mut slice: Set<OpId> = Set::default();
+                            let mut pending = vec![dst_op];
+                            while let Some(op_id) = pending.pop() {
+                                if !slice.insert(op_id) {
+                                    continue;
+                                }
+                                pending.extend(dst_kernel.ops[op_id].op.parameters().filter(|p| !p.is_null()));
+                            }
+
+                            // `loads` is positionally aligned with the kernel's
+                            // params, so the base buffer is the load at dst_param's
+                            // ordinal. Every other param the view depends on is a
+                            // scalar dim variable.
+                            let mut ordinal = 0usize;
+                            let mut base_ordinal = None;
+                            let mut q = dst_kernel.head;
+                            while !q.is_null() {
+                                if matches!(dst_kernel.ops[q].op, Op::Param { .. }) {
+                                    if q == dst_param {
+                                        base_ordinal = Some(ordinal);
+                                    }
+                                    ordinal += 1;
+                                }
+                                q = dst_kernel.next_op(q);
+                            }
+                            let base_ordinal = base_ordinal
+                                .unwrap_or_else(|| todo!("assign: dst op {dst_op:?} is not a view over a buffer param"));
+                            let dst_leaf = dst_loads[base_ordinal];
+                            for (i, &c) in dst_loads.iter().enumerate() {
+                                if i == base_ordinal {
+                                    continue;
+                                }
                                 assert!(
-                                    c == dst_leaf || is_var_class(self, c),
-                                    "assign: dst kernel load class {c:?} is neither the buffer nor a dim variable"
+                                    is_var_class(self, c),
+                                    "assign: dst view load class {c:?} is neither the base buffer nor a dim variable"
                                 );
                             }
                             assert!(
@@ -670,41 +719,29 @@ impl Graph {
                                 rcs[&dst]
                             );
 
-                            // Remove dst's movement-only kernel; its base buffer is
-                            // dst_leaf's. The assign store reuses that buffer in-place.
-                            let JitKernelData { kernel: dst_kernel, stores, outputs, .. } =
-                                unsafe { self.jit_kernels.remove_and_return(dst_kid) };
-                            debug_assert!(stores.is_empty());
-
-                            // Backtrace to dst's base param.
-                            let mut dst_param = dst_op;
-                            for _ in 0..100 {
-                                match dst_kernel.ops[dst_param].op {
-                                    Op::Reshape { x, .. }
-                                    | Op::Expand { x, .. }
-                                    | Op::Permute { x, .. }
-                                    | Op::Flip { x, .. }
-                                    | Op::Pad { x, .. }
-                                    | Op::Narrow { x, .. } => dst_param = x,
-                                    Op::Storage { .. } => break,
-                                    _ => {}
-                                }
-                            }
-
-                            // Replay dst's movement chain into src's kernel. The
-                            // replayed base param becomes the mutable (GlobalMut)
-                            // store target; the last replayed move yields dst's final
-                            // position. Every replayed param keeps its load class,
-                            // aligned in param order (positional args law).
+                            // Replay the slice into src's kernel. The replayed base
+                            // param becomes the mutable (GlobalMut) store target; the
+                            // last replayed move yields dst's final position. Every
+                            // replayed param keeps its load class, aligned in param
+                            // order (positional args law).
                             let mut op_map: Map<OpId, OpId> = Map::default();
                             // NULL maps to itself: shape operands of scalar
                             // movement ops (Reshape/Expand to scalar) pass
                             // through instead of panicking on lookup.
                             op_map.insert(OpId::NULL, OpId::NULL);
                             let mut new_def_loads: Vec<OpId> = Vec::new();
-                            let mut def_i = 0usize;
+                            let mut ordinal = 0usize;
                             let mut op_id = dst_kernel.head;
                             while !op_id.is_null() {
+                                let is_param = matches!(dst_kernel.ops[op_id].op, Op::Param { .. });
+                                let this_ordinal = ordinal;
+                                if is_param {
+                                    ordinal += 1;
+                                }
+                                if !slice.contains(&op_id) {
+                                    op_id = dst_kernel.next_op(op_id);
+                                    continue;
+                                }
                                 match dst_kernel.ops[op_id].op {
                                     Op::Const(value) => {
                                         let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
@@ -735,9 +772,8 @@ impl Graph {
                                         // PURE STORE: it must NOT register in loads —
                                         // its buffer slot comes via `stores` instead.
                                         if kind == ParamKind::Variable {
-                                            new_def_loads.push(dst_loads[def_i]);
+                                            new_def_loads.push(dst_loads[this_ordinal]);
                                         }
-                                        def_i += 1;
                                         op_map.insert(op_id, id);
                                     }
                                     Op::Reshape { x, shape } => {
@@ -785,8 +821,58 @@ impl Graph {
                                         let id = self.jit_kernels[kid].kernel.push_back(Op::Stack { ops: mapped });
                                         op_map.insert(op_id, id);
                                     }
+                                    // Scalar arithmetic in the slice computes *where*
+                                    // the store lands (a dynamic narrow's start/length,
+                                    // a padded region's bounds), not what it stores.
+                                    // Replaying it keeps the address exact; only the
+                                    // scalar value ops are allowed, a value op on a
+                                    // tensor shape would be a different element.
+                                    Op::Unary { x, uop } => {
+                                        assert!(
+                                            dst_kernel.shape(op_id).is_empty(),
+                                            "assign: dst view has non-scalar Unary {uop:?}"
+                                        );
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Unary { x: op_map[&x], uop });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Binary { x, y, bop } => {
+                                        assert!(
+                                            dst_kernel.shape(op_id).is_empty(),
+                                            "assign: dst view has non-scalar Binary {bop:?}"
+                                        );
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Binary { x: op_map[&x], y: op_map[&y], bop });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Cast { x, dtype } => {
+                                        assert!(
+                                            dst_kernel.shape(op_id).is_empty(),
+                                            "assign: dst view has non-scalar Cast {dtype:?}"
+                                        );
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Cast { x: op_map[&x], dtype });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Bitcast { x, dtype } => {
+                                        assert!(
+                                            dst_kernel.shape(op_id).is_empty(),
+                                            "assign: dst view has non-scalar Bitcast {dtype:?}"
+                                        );
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Bitcast { x: op_map[&x], dtype });
+                                        op_map.insert(op_id, id);
+                                    }
+                                    Op::Select { cond, if_true, if_false } => {
+                                        assert!(
+                                            dst_kernel.shape(op_id).is_empty(),
+                                            "assign: dst view has non-scalar Select"
+                                        );
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Select {
+                                            cond: op_map[&cond],
+                                            if_true: op_map[&if_true],
+                                            if_false: op_map[&if_false],
+                                        });
+                                        op_map.insert(op_id, id);
+                                    }
                                     _ => unreachable!(
-                                        "assign: dst kernel must be movement-only, got {:?}",
+                                        "assign: dst view depends on non-address op {:?}",
                                         dst_kernel.ops[op_id].op
                                     ),
                                 }
@@ -794,19 +880,51 @@ impl Graph {
                             }
                             value_op = op_id;
 
-                            // Classes still living in the removed dst kernel (e.g.
-                            // shape consts merged into the movement chain) move to
-                            // the replayed kernel: remap visited and carry their
-                            // outstanding output entries over, keeping rc balanced.
-                            for (&vclass, (vkid, vop)) in visited.iter_mut() {
-                                if *vkid == dst_kid && vclass != dst {
-                                    let count = outputs.iter().filter(|&&c| c == vclass).count() as u32;
-                                    self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(vclass, count as usize));
-                                    *vkid = kid;
-                                    if let Some(&new_op) = op_map.get(vop) {
+                            // Drop the destination's kernel only when it is exactly
+                            // the view replayed above: then `dst` is dead (the store
+                            // consumed it), nothing else lives there, and the classes
+                            // bound to it move with the replay. A kernel that also
+                            // carries other classes' work or stores of its own stays —
+                            // the store never depended on it, and removing it would
+                            // take live work down with it.
+                            let mut kernel_ops = 0usize;
+                            let mut q = dst_kernel.head;
+                            while !q.is_null() {
+                                kernel_ops += 1;
+                                q = dst_kernel.next_op(q);
+                            }
+                            let only_dst_outputs = self.jit_kernels[dst_kid].outputs.iter().all(|&c| c == dst);
+                            if slice.len() == kernel_ops
+                                && only_dst_outputs
+                                && self.jit_kernels[dst_kid].stores.is_empty()
+                            {
+                                // Classes still living in the removed dst kernel (e.g.
+                                // shape consts merged into the movement chain) move to
+                                // the replayed kernel: remap visited and carry their
+                                // outstanding output entries over, keeping rc balanced.
+                                let removed = unsafe { self.jit_kernels.remove_and_return(dst_kid) };
+                                debug_assert!(removed.stores.is_empty());
+                                for (&vclass, (vkid, vop)) in visited.iter_mut() {
+                                    if *vkid == dst_kid && vclass != dst {
+                                        let Some(&new_op) = op_map.get(vop) else {
+                                            todo!(
+                                                "assign: class {vclass:?} lives in dst view kernel {dst_kid:?} but was not replayed"
+                                            )
+                                        };
+                                        let count = removed.outputs.iter().filter(|&&c| c == vclass).count() as u32;
+                                        self.jit_kernels[kid].outputs.extend(std::iter::repeat_n(vclass, count as usize));
+                                        *vkid = kid;
                                         *vop = new_op;
                                     }
                                 }
+                            } else {
+                                // The dst kernel keeps its own work; only the
+                                // pre-assign view output is gone.
+                                self.jit_kernels[dst_kid].outputs.retain(|&c| c != dst);
+                                assert!(
+                                    !self.jit_kernels[dst_kid].outputs.is_empty() || !self.jit_kernels[dst_kid].stores.is_empty(),
+                                    "assign: dst kernel {dst_kid:?} holds no work besides the dst view, but was not removable"
+                                );
                             }
 
                             let dst_op = op_map.get(&dst_op).copied().unwrap_or(op_map[&dst_param]);

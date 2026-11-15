@@ -5,8 +5,8 @@ use zyx::{DType, Tensor, ZyxError};
 use zyx_derive::Module;
 
 /// RMS norm layer
-#[derive(Debug, Module)]
-#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[derive(Debug, Clone, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 pub struct RMSNorm {
     /// weight
     pub weight: Tensor,

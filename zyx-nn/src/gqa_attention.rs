@@ -16,6 +16,7 @@ use zyx_derive::Module;
 /// Llama-3 style RoPE frequency scaling: a piecewise rescale of the
 /// low-frequency end of the table.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 pub struct RopeScaling {
     /// Scale applied beyond the original context.
     pub factor: f64,
@@ -29,6 +30,7 @@ pub struct RopeScaling {
 
 /// Rotary position embedding parameters.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 pub struct RopeConfig {
     /// Per-head width.
     pub head_dim: i64,
@@ -132,8 +134,8 @@ fn rotate(xs: &Tensor, cos: &Tensor, sin: &Tensor, offset: &Tensor) -> Result<Te
 
 /// Causal multi-head attention with grouped key/value heads, rotary
 /// embeddings, and an owned kv-cache.
-#[derive(Debug, Module)]
-#[cfg_attr(feature = "py", pyo3::pyclass)]
+#[derive(Debug, Clone, Module)]
+#[cfg_attr(feature = "py", pyo3::pyclass(from_py_object))]
 pub struct GqaAttention {
     q_proj: Linear,
     k_proj: Linear,

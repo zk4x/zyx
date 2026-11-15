@@ -12,6 +12,7 @@ pub mod llama;
 pub mod ln_softmax;
 pub mod matmul;
 pub mod mma_nt;
+pub mod qwen;
 pub mod reduce;
 pub mod reduce_axis;
 pub mod reduce_multi_axis;
