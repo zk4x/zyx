@@ -9,9 +9,7 @@ zyx = { path = "../../zyx" }
 zyx-nn = { path = "../../zyx-nn" }
 zyx-derive = { path = "../../zyx-derive" }
 zyx-optim = { path = "../../zyx-optim" }
-serde = { version = "*", features = ["derive"] }
 tokenizers = "*"
 clap = { version = "*", features = ["derive"] }
 rand = "*"
 half = "*"
-serde_json = "*"

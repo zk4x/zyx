@@ -7,6 +7,7 @@
 //! Layer-0 stages already match torch exactly (see layer0.rs).
 //! `FULL_LAYERS` env overrides the layer count for bisection.
 
+use llama::LlamaConfig;
 use zyx::{DType, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, RMSNorm};
 
@@ -15,34 +16,41 @@ fn full_prefill() -> Result<(), ZyxError> {
     Tensor::set_implicit_casts(false);
     let base = "/home/x/Dev/rust/zyx/examples/models/llama-3.2-3b";
 
-    let cfg_text = std::fs::read_to_string(format!("{base}/config.json")).unwrap();
-    let cfg: serde_json::Value = serde_json::from_str(&cfg_text).unwrap();
-    let hidden = cfg["hidden_size"].as_u64().unwrap() as i64;
-    let nh = cfg["num_attention_heads"].as_u64().unwrap() as i64;
-    let nkv = cfg["num_key_value_heads"].as_u64().unwrap() as i64;
-    let nlayers_full = cfg["num_hidden_layers"].as_u64().unwrap();
-    let nlayers: u64 = std::env::var("FULL_LAYERS").ok().and_then(|v| v.parse().ok()).unwrap_or(nlayers_full);
+    // Config from the checkpoint's own GGUF metadata (no `config.json`).
+    // A tied checkpoint carries no separate output projection.
+    let (meta, mut raw) =
+        Tensor::load_gguf(format!("{base}/Llama-3.2-3B-Instruct-f16.gguf")).unwrap();
+    let tie_word_embeddings = !raw.contains_key("output.weight");
+    let cfg = LlamaConfig::from_gguf(&meta, tie_word_embeddings, 4096).unwrap();
+    let nh = cfg.num_attention_heads;
+    let nkv = cfg.num_key_value_heads();
+    let nlayers_full = cfg.num_hidden_layers;
+    let nlayers: i64 = std::env::var("FULL_LAYERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(nlayers_full);
     eprintln!("FULL nlayers={nlayers}");
-    let eps = cfg["rms_norm_eps"].as_f64().unwrap();
-    let theta = cfg["rope_theta"].as_f64().unwrap();
-    let hd = cfg["head_dim"].as_u64().unwrap() as i64;
-    let max_pos = cfg["max_position_embeddings"].as_u64().unwrap() as i64;
-    let max_ctx = cfg["max_context"].as_u64().unwrap_or(4096) as i64;
-    let s = &cfg["rope_scaling"];
-    let factor = s["factor"].as_f64().unwrap();
-    let high = s["high_freq_factor"].as_f64().unwrap();
-    let low = s["low_freq_factor"].as_f64().unwrap();
-    let orig = s["original_max_position_embeddings"].as_u64().unwrap() as f64;
-    assert!(cfg["tie_word_embeddings"].as_bool().unwrap(), "tied head");
+    let eps = cfg.rms_norm_eps;
+    let theta = cfg.rope_theta;
+    let hd = cfg.head_dim();
+    let max_pos = cfg.max_position_embeddings;
+    let max_ctx = cfg.max_context as i64;
+    let scaling = cfg.rope_scaling.expect("llama-3 rope scaling");
+    let factor = scaling.factor;
+    let high = scaling.high_freq_factor;
+    let low = scaling.low_freq_factor;
+    let orig = scaling.original_max_position_embeddings as f64;
+    assert!(cfg.tie_word_embeddings, "tied head");
 
     let tokenizer = tokenizers::Tokenizer::from_file(format!("{base}/tokenizer.json")).unwrap();
     let ids: Vec<u32> = tokenizer.encode("Hello", true).unwrap().get_ids().to_vec();
     assert_eq!(ids, vec![128000u32, 9906u32], "prompt ids");
     let seqlen = ids.len() as i64;
 
-    let (_meta, mut raw) = Tensor::load_gguf(format!("{base}/Llama-3.2-3B-Instruct-f16.gguf")).unwrap();
     let embed = raw.remove("token_embd.weight").expect("token_embd.weight");
-    let out_norm_w = raw.remove("output_norm.weight").expect("output_norm.weight");
+    let out_norm_w = raw
+        .remove("output_norm.weight")
+        .expect("output_norm.weight");
 
     // Rope tables, same math as layer0.rs, cast to F16.
     let mut inv_freq: Vec<f32> = (0..hd)
@@ -89,8 +97,12 @@ fn full_prefill() -> Result<(), ZyxError> {
         let gw = raw.remove(&(p.clone() + "ffn_gate.weight")).unwrap();
         let uw = raw.remove(&(p.clone() + "ffn_up.weight")).unwrap();
         let dw = raw.remove(&(p.clone() + "ffn_down.weight")).unwrap();
-        let ck = Tensor::zeros([max_ctx, nkv, hd], DType::F16).contiguous().unwrap();
-        let cv = Tensor::zeros([max_ctx, nkv, hd], DType::F16).contiguous().unwrap();
+        let ck = Tensor::zeros([max_ctx, nkv, hd], DType::F16)
+            .contiguous()
+            .unwrap();
+        let cv = Tensor::zeros([max_ctx, nkv, hd], DType::F16)
+            .contiguous()
+            .unwrap();
         for w in [&an, &qw, &kw, &vw, &ow, &pn, &gw, &uw, &dw, &ck, &cv] {
             tape.add(w).unwrap();
         }
@@ -110,7 +122,9 @@ fn full_prefill() -> Result<(), ZyxError> {
         .reshape([1i64.into(), 1i64.into(), vocab_size.clone(), 1i64.into()])
         .unwrap()
         .cast(DType::F32);
-    let wm = embed.reshape([1i64.into(), 1i64.into(), vocab_size, embed_size]).unwrap();
+    let wm = embed
+        .reshape([1i64.into(), 1i64.into(), vocab_size, embed_size])
+        .unwrap();
     let one_hot = arange.equal(idx).unwrap().cast(wm.dtype());
     let mut xs = (one_hot * wm).sum([2]).unwrap();
 
@@ -118,18 +132,38 @@ fn full_prefill() -> Result<(), ZyxError> {
     let n_rep = (nh / nkv) as usize;
     let seq_len_i = seqlen;
     let mask: Vec<f32> = (0..seq_len_i as usize)
-        .flat_map(|i| (0..seq_len_i as usize).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 }))
+        .flat_map(|i| {
+            (0..seq_len_i as usize).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 })
+        })
         .collect();
     // Hoisted out of the layer loop: one mask/scale for all layers.
     let mask_t = Tensor::from(mask).reshape([seq_len_i, seq_len_i]).unwrap();
     let scale_t = Tensor::from(1.0f32 / (hd as f32).sqrt());
     for (an, qw, kw, vw, ow, pn, gw, uw, dw, ck, cv) in &layers {
-        let inorm = RMSNorm { weight: an.clone().cast(DType::F16), eps };
+        let inorm = RMSNorm {
+            weight: an.clone().cast(DType::F16),
+            eps,
+        };
         let h = inorm.forward(&xs).unwrap();
         let [b3, seq3, _e3] = h.dims::<3>().unwrap();
-        let q = Linear { weight: qw.clone(), bias: None }.forward(&h).unwrap();
-        let k = Linear { weight: kw.clone(), bias: None }.forward(&h).unwrap();
-        let v = Linear { weight: vw.clone(), bias: None }.forward(&h).unwrap();
+        let q = Linear {
+            weight: qw.clone(),
+            bias: None,
+        }
+        .forward(&h)
+        .unwrap();
+        let k = Linear {
+            weight: kw.clone(),
+            bias: None,
+        }
+        .forward(&h)
+        .unwrap();
+        let v = Linear {
+            weight: vw.clone(),
+            bias: None,
+        }
+        .forward(&h)
+        .unwrap();
         let q4 = q
             .reshape([b3.clone(), seq3.clone(), nh.into(), hd.into()])
             .unwrap()
@@ -146,13 +180,29 @@ fn full_prefill() -> Result<(), ZyxError> {
             .transpose(1, 2)
             .unwrap();
         let [rseq_q, _] = q4.rdims::<2>().unwrap();
-        let qr = q4.rope(cos.narrow(0, &pos, &rseq_q).unwrap(), sin.narrow(0, &pos, &rseq_q).unwrap()).unwrap();
+        let qr = q4
+            .rope(
+                cos.narrow(0, &pos, &rseq_q).unwrap(),
+                sin.narrow(0, &pos, &rseq_q).unwrap(),
+            )
+            .unwrap();
         let [rseq_k, _] = k4.rdims::<2>().unwrap();
-        let kr = k4.rope(cos.narrow(0, &pos, &rseq_k).unwrap(), sin.narrow(0, &pos, &rseq_k).unwrap()).unwrap();
+        let kr = k4
+            .rope(
+                cos.narrow(0, &pos, &rseq_k).unwrap(),
+                sin.narrow(0, &pos, &rseq_k).unwrap(),
+            )
+            .unwrap();
         let k_assign = kr.clone().squeeze([0]).transpose(0, 1).unwrap();
         let v_assign = v4.clone().squeeze([0]).transpose(0, 1).unwrap();
-        ck.narrow(0, &pos, &seq3).unwrap().assign(&k_assign).unwrap();
-        cv.narrow(0, &pos, &seq3).unwrap().assign(&v_assign).unwrap();
+        ck.narrow(0, &pos, &seq3)
+            .unwrap()
+            .assign(&k_assign)
+            .unwrap();
+        cv.narrow(0, &pos, &seq3)
+            .unwrap()
+            .assign(&v_assign)
+            .unwrap();
         // Concrete length via item(), exactly as layer0.rs: the read narrow
         // takes a Variable, never the symbolic seq dim.
         let cache_len_var = Tensor::variable(seq3.item::<i64>());
@@ -200,20 +250,52 @@ fn full_prefill() -> Result<(), ZyxError> {
         let ctx = probs.matmul(&vv).unwrap().transpose(1, 2).unwrap();
         let d = nh * hd;
         let ctx = ctx.reshape([b3.clone(), seq3.clone(), d.into()]).unwrap();
-        let attn_out = Linear { weight: ow.clone(), bias: None }.forward(ctx).unwrap();
+        let attn_out = Linear {
+            weight: ow.clone(),
+            bias: None,
+        }
+        .forward(ctx)
+        .unwrap();
         let xs_res = attn_out.clone() + xs.clone();
-        let post = RMSNorm { weight: pn.clone().cast(DType::F16), eps };
+        let post = RMSNorm {
+            weight: pn.clone().cast(DType::F16),
+            eps,
+        };
         let h2 = post.forward(&xs_res).unwrap();
-        let gate = Linear { weight: gw.clone(), bias: None }.forward(&h2).unwrap().swish();
-        let up = Linear { weight: uw.clone(), bias: None }.forward(&h2).unwrap();
-        let down = Linear { weight: dw.clone(), bias: None }.forward(gate * up).unwrap();
+        let gate = Linear {
+            weight: gw.clone(),
+            bias: None,
+        }
+        .forward(&h2)
+        .unwrap()
+        .swish();
+        let up = Linear {
+            weight: uw.clone(),
+            bias: None,
+        }
+        .forward(&h2)
+        .unwrap();
+        let down = Linear {
+            weight: dw.clone(),
+            bias: None,
+        }
+        .forward(gate * up)
+        .unwrap();
         xs = down + xs_res;
     }
 
-    let final_norm = RMSNorm { weight: out_norm_w.cast(DType::F16), eps }.forward(&xs).unwrap();
+    let final_norm = RMSNorm {
+        weight: out_norm_w.cast(DType::F16),
+        eps,
+    }
+    .forward(&xs)
+    .unwrap();
     let last = final_norm.clone().narrow(1, seqlen - 1i64, 1i64).unwrap();
     // Tied head in F32, same as torch (`last.float() @ table.float().t()`).
-    let logits = last.cast(DType::F32).matmul(embed.cast(DType::F32).t()).unwrap();
+    let logits = last
+        .cast(DType::F32)
+        .matmul(embed.cast(DType::F32).t())
+        .unwrap();
 
     tape.realize([&final_norm, &logits]).unwrap();
     let lv: Vec<f32> = logits.clone().cast(DType::F32).try_into().unwrap();

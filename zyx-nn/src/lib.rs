@@ -74,13 +74,10 @@ pub use transformer_encoder_layer::TransformerEncoderLayer;
 mod transformer_decoder_layer;
 pub use transformer_decoder_layer::TransformerDecoderLayer;
 
-// LLM blocks (llama-family): grouped-query attention with rotary embeddings,
-// a SwiGLU feed-forward, and the pre-norm decoder block that chains them.
+// LLM blocks (llama-family): rotary embeddings and the pre-norm decoder
+// block, whose fields carry the GGUF tensor names.
 mod gqa_attention;
-pub use gqa_attention::{GqaAttention, RopeConfig, RopeScaling};
-
-mod swiglu;
-pub use swiglu::SwiGlu;
+pub use gqa_attention::RopeScaling;
 
 mod decoder_block;
 pub use decoder_block::DecoderBlock;

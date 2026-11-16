@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+use llama::LlamaConfig;
 use zyx::{DType, Tape, Tensor, ZyxError};
 use zyx_nn::{Linear, RMSNorm};
 
@@ -20,23 +21,26 @@ fn layer0() -> Result<(), ZyxError> {
     Tensor::set_implicit_casts(false);
     let base = "/home/x/Dev/rust/zyx/examples/models/llama-3.2-3b";
 
-    // Config, read from file (no hardcoded dims).
-    let cfg_text = std::fs::read_to_string(format!("{base}/config.json")).unwrap();
-    let cfg: serde_json::Value = serde_json::from_str(&cfg_text).unwrap();
-    let hidden = cfg["hidden_size"].as_u64().unwrap() as i64;
-    let inter = cfg["intermediate_size"].as_u64().unwrap() as i64;
-    let nh = cfg["num_attention_heads"].as_u64().unwrap() as i64;
-    let nkv = cfg["num_key_value_heads"].as_u64().unwrap() as i64;
-    let eps = cfg["rms_norm_eps"].as_f64().unwrap();
-    let theta = cfg["rope_theta"].as_f64().unwrap();
-    let hd = cfg["head_dim"].as_u64().unwrap() as i64;
-    let max_pos = cfg["max_position_embeddings"].as_u64().unwrap() as i64;
-    let max_ctx = cfg["max_context"].as_u64().unwrap_or(4096) as i64;
-    let s = &cfg["rope_scaling"];
-    let factor = s["factor"].as_f64().unwrap();
-    let high = s["high_freq_factor"].as_f64().unwrap();
-    let low = s["low_freq_factor"].as_f64().unwrap();
-    let orig = s["original_max_position_embeddings"].as_u64().unwrap() as f64;
+    // Config from the checkpoint's own GGUF metadata (no `config.json`).
+    // A tied checkpoint carries no separate output projection.
+    let (meta, mut raw) =
+        Tensor::load_gguf(format!("{base}/Llama-3.2-3B-Instruct-f16.gguf")).unwrap();
+    let tie_word_embeddings = !raw.contains_key("output.weight");
+    let cfg = LlamaConfig::from_gguf(&meta, tie_word_embeddings, 4096).unwrap();
+    let hidden = cfg.hidden_size;
+    let inter = cfg.intermediate_size;
+    let nh = cfg.num_attention_heads;
+    let nkv = cfg.num_key_value_heads();
+    let eps = cfg.rms_norm_eps;
+    let theta = cfg.rope_theta;
+    let hd = cfg.head_dim();
+    let max_pos = cfg.max_position_embeddings;
+    let max_ctx = cfg.max_context as i64;
+    let scaling = cfg.rope_scaling.expect("llama-3 rope scaling");
+    let factor = scaling.factor;
+    let high = scaling.high_freq_factor;
+    let low = scaling.low_freq_factor;
+    let orig = scaling.original_max_position_embeddings as f64;
 
     // Prompt ids, same tokenizer call as the example.
     let tokenizer = tokenizers::Tokenizer::from_file(format!("{base}/tokenizer.json")).unwrap();
@@ -47,7 +51,6 @@ fn layer0() -> Result<(), ZyxError> {
 
     // GGUF weights, same file as the example. No output.weight exists here,
     // so the tied head path is the only option (matches the example).
-    let (_meta, mut raw) = Tensor::load_gguf(format!("{base}/Llama-3.2-3B-Instruct-f16.gguf")).unwrap();
     let embed = raw.remove("token_embd.weight").expect("token_embd.weight");
     let an_w = raw.remove("blk.0.attn_norm.weight").expect("blk.0.attn_norm.weight");
     let qw = raw.remove("blk.0.attn_q.weight").expect("blk.0.attn_q.weight");

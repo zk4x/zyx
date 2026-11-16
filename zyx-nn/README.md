@@ -21,7 +21,7 @@ This crate provides a collection of common neural network building blocks implem
 ### Attention Mechanisms
 - `CausalSelfAttention` — Causal self-attention for transformers
 - `MultiheadAttention` — Multi-head attention with configurable heads
-- `GqaAttention` — Grouped-query attention with rotary position embeddings (`RopeConfig`, `RopeScaling`)
+- `RopeScaling` — Llama-3 style long-context rescaling of the rotary frequency table
 
 ### Embeddings & Convolution
 - `Embedding` — Learnable embedding lookup
@@ -30,8 +30,7 @@ This crate provides a collection of common neural network building blocks implem
 ### Transformers
 - `TransformerEncoderLayer` — Single transformer encoder block
 - `TransformerDecoderLayer` — Single transformer decoder block
-- `DecoderBlock` — Pre-norm decoder block: grouped-query attention plus a SwiGLU MLP
-- `SwiGlu` — SwiGLU feed-forward block
+- `DecoderBlock` — Pre-norm decoder block: grouped-query attention plus a SwiGLU MLP, GGUF-named fields
 - `PositionalEncoding` — Sinusoidal positional embeddings
 
 ### Python Bindings

@@ -44,6 +44,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
+use syn::ext::IdentExt;
 use syn::{parse_macro_input, Data, DataStruct, DeriveInput};
 
 /// Implements FromIterator<Item = (String, Tensor)> and Module for your struct.
@@ -380,3 +381,311 @@ fn vec_elem_type(ty: &syn::Type) -> Option<&syn::Type> {
 fn has_no_param_attr(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| a.path().is_ident("no_param"))
 }
+
+/// Derives GGUF metadata parsing for a hyperparameter struct.
+///
+/// The derive generates two constructors on the struct:
+///
+/// - `from_gguf(metadata, <skipped fields...>)` reads
+///   `general.architecture` and delegates with `"<arch>."` as the prefix.
+/// - `from_gguf_with_prefix(metadata, prefix, <skipped fields...>)` resolves
+///   every key as `format!("{prefix}{suffix}")`. `prefix` is used verbatim, so
+///   it must include the trailing dot; this is the entry a parent struct's
+///   `#[gguf(group = ...)]` field calls.
+///
+/// Field attributes:
+/// - `#[gguf("suffix")]` — metadata key suffix, relative to the prefix. A
+///   field without the attribute uses its own name.
+/// - `#[gguf(skip)]` — not in the metadata; the value comes from a trailing
+///   constructor parameter, in declaration order.
+/// - `#[gguf(group = "rope.scaling", gate = "rope.scaling.type")]` — an
+///   `Option<Nested>` field whose `Nested` also derives `gguf`. The field is
+///   `None` when the gate key is absent and
+///   `Some(Nested::from_gguf_with_prefix(metadata, "{prefix}{group}."))`
+///   otherwise; the gate is relative to the same prefix.
+///
+/// `default = <value>` on any of the above sets the field's value in the
+/// generated `impl Default` (any expression: `128256`, `1e-5`, `false`,
+/// `Some(8)`, `None`). A field without one uses
+/// `::core::default::Default::default()` (0 / 0.0 / false / `None`); a
+/// `#[gguf(skip)]` field must declare one, since it has no metadata key.
+/// The derive always emits `impl Default`, so a hand-written one must be
+/// removed.
+///
+/// Field types: `i64` (`int`), `Option<i64>` (`opt_int`), `f64` (`float`),
+/// `Option<f64>` (`opt_float`), or a group field.
+#[proc_macro_derive(gguf, attributes(gguf))]
+pub fn gguf_derive(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    derive_gguf(&input)
+}
+
+/// One field's `#[gguf(...)]` specification.
+enum GgufField {
+    /// Metadata key suffix; the field keeps its own value.
+    Key {
+        /// Key suffix, relative to the prefix.
+        suffix: String,
+        /// `Default` value, when the field declares one.
+        default: Option<syn::Expr>,
+    },
+    /// Value comes from a constructor parameter.
+    Skip {
+        /// `Default` value; mandatory, a skipped field has no metadata key.
+        default: syn::Expr,
+    },
+    /// `Option<Nested>` built from a key group, gated on a key's presence.
+    Group {
+        /// Key group, relative to the prefix (`"rope.scaling"`).
+        group: String,
+        /// Key whose presence turns the group on (`"rope.scaling.type"`).
+        gate: String,
+        /// `Default` value, when the field declares one.
+        default: Option<syn::Expr>,
+    },
+}
+
+/// One comma-separated item inside `#[gguf(...)]`: `"key"`, `skip`,
+/// `group = ".."`, `gate = ".."` or `default = <value>`.
+enum GgufArg {
+    /// Bare metadata key suffix.
+    Key(syn::LitStr),
+    /// Value used by the generated `Default`.
+    Default(syn::Expr),
+    /// Value comes from a constructor parameter.
+    Skip,
+    /// Key group prefix.
+    Group(syn::LitStr),
+    /// Key whose presence turns a group on.
+    Gate(syn::LitStr),
+}
+
+impl syn::parse::Parse for GgufArg {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        if input.peek(syn::LitStr) {
+            return Ok(Self::Key(input.parse()?));
+        }
+        let name: syn::Ident = input.call(syn::Ident::parse_any)?;
+        if name == "skip" && !input.peek(syn::Token![=]) {
+            return Ok(Self::Skip);
+        }
+        input.parse::<syn::Token![=]>()?;
+        if name == "default" {
+            return Ok(Self::Default(input.parse()?));
+        }
+        if name == "group" {
+            return Ok(Self::Group(input.parse()?));
+        }
+        if name == "gate" {
+            return Ok(Self::Gate(input.parse()?));
+        }
+        Err(syn::Error::new(
+            name.span(),
+            "unknown `gguf` attribute; expected a key string, `skip`, `group = \"...\"`, `gate = \"...\"` or `default = <value>`",
+        ))
+    }
+}
+
+/// Reads a field's `#[gguf(...)]` attribute, defaulting to the field name.
+fn gguf_field(attrs: &[syn::Attribute], name: &syn::Ident) -> syn::Result<GgufField> {
+    let field_name = name.to_string();
+    let Some(attr) = attrs.iter().find(|a| a.path().is_ident("gguf")) else {
+        return Ok(GgufField::Key {
+            suffix: field_name,
+            default: None,
+        });
+    };
+    if let syn::Meta::Path(_) = &attr.meta {
+        return Ok(GgufField::Key {
+            suffix: field_name,
+            default: None,
+        });
+    }
+    let args = attr.parse_args_with(syn::punctuated::Punctuated::<GgufArg, syn::Token![,]>::parse_terminated)?;
+    let mut suffix: Option<String> = None;
+    let mut default: Option<syn::Expr> = None;
+    let mut skip = false;
+    let mut group: Option<String> = None;
+    let mut gate: Option<String> = None;
+    for arg in args {
+        match arg {
+            GgufArg::Key(lit) => {
+                if suffix.is_some() {
+                    return Err(syn::Error::new_spanned(lit, "duplicate `gguf` key"));
+                }
+                suffix = Some(lit.value());
+            }
+            GgufArg::Default(expr) => {
+                if default.is_some() {
+                    return Err(syn::Error::new_spanned(expr, "duplicate `gguf` default"));
+                }
+                default = Some(expr);
+            }
+            GgufArg::Skip => skip = true,
+            GgufArg::Group(lit) => {
+                if group.is_some() {
+                    return Err(syn::Error::new_spanned(lit, "duplicate `gguf` group"));
+                }
+                group = Some(lit.value());
+            }
+            GgufArg::Gate(lit) => {
+                if gate.is_some() {
+                    return Err(syn::Error::new_spanned(lit, "duplicate `gguf` gate"));
+                }
+                gate = Some(lit.value());
+            }
+        }
+    }
+    match (skip, group, gate) {
+        (true, None, None) => match default {
+            Some(default) => Ok(GgufField::Skip { default }),
+            None => Err(syn::Error::new_spanned(
+                attr,
+                "`#[gguf(skip)]` needs `default = <value>`; a skipped field has no metadata key",
+            )),
+        },
+        (true, _, _) => Err(syn::Error::new_spanned(attr, "`skip` cannot be combined with `group`/`gate`")),
+        (false, Some(group), Some(gate)) => Ok(GgufField::Group { group, gate, default }),
+        (false, Some(_), None) | (false, None, Some(_)) => {
+            Err(syn::Error::new_spanned(attr, "`group` and `gate` are used together"))
+        }
+        (false, None, None) => Ok(GgufField::Key {
+            suffix: suffix.unwrap_or(field_name),
+            default,
+        }),
+    }
+}
+
+/// Returns the element type when `ty` is `Option<Elem>`.
+fn option_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(type_path) = ty else { return None };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else { return None };
+    let mut types = args.args.iter().filter_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+    types.next()
+}
+
+/// The `Self { field: .. }` entry of the generated `Default`: the declared
+/// value, or `Default::default()` (0 / 0.0 / false / `None`) when there is none.
+fn gguf_default_init(name: &syn::Ident, default: Option<&syn::Expr>) -> proc_macro2::TokenStream {
+    match default {
+        Some(expr) => quote!(#name: #expr),
+        None => quote!(#name: ::core::default::Default::default()),
+    }
+}
+
+fn derive_gguf(input: &DeriveInput) -> TokenStream {
+    let struct_name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let fields = match &input.data {
+        Data::Struct(DataStruct { fields, .. }) => fields,
+        _ => return syn::Error::new_spanned(struct_name, "`gguf` can only be derived for a struct").to_compile_error().into(),
+    };
+
+    let mut specs = Vec::new();
+    for field in fields.iter() {
+        let Some(name) = &field.ident else {
+            return syn::Error::new_spanned(struct_name, "`gguf` needs a struct with named fields").to_compile_error().into();
+        };
+        match gguf_field(&field.attrs, name) {
+            Ok(spec) => specs.push((name, &field.ty, spec)),
+            Err(error) => return error.to_compile_error().into(),
+        }
+    }
+
+    let mut inits = Vec::new();
+    let mut default_inits = Vec::new();
+    let mut skip_params = Vec::new();
+    let mut skip_args = Vec::new();
+    for (name, ty, spec) in &specs {
+        match spec {
+            GgufField::Skip { default } => {
+                skip_params.push(quote!(#name: #ty));
+                skip_args.push(quote!(#name));
+                inits.push(quote!(#name));
+                default_inits.push(gguf_default_init(name, Some(default)));
+            }
+            GgufField::Key { suffix, default } => {
+                let accessor = match quote!(#ty).to_string().as_str() {
+                    "i64" => quote!(metadata.int(&key)?),
+                    "Option < i64 >" => quote!(metadata.opt_int(&key)?),
+                    "f64" => quote!(metadata.float(&key)?),
+                    "Option < f64 >" => quote!(metadata.opt_float(&key)?),
+                    _ => {
+                        return syn::Error::new_spanned(
+                            ty,
+                            "`gguf` field must be `i64`, `Option<i64>`, `f64` or `Option<f64>`; \
+                             use `#[gguf(group = \"..\", gate = \"..\")]` for a nested struct or `#[gguf(skip)]`",
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                };
+                inits.push(quote! {
+                    #name: {
+                        let key = format!("{prefix}{}", #suffix);
+                        #accessor
+                    }
+                });
+                default_inits.push(gguf_default_init(name, default.as_ref()));
+            }
+            GgufField::Group { group, gate, default } => {
+                let Some(inner) = option_inner(ty) else {
+                    return syn::Error::new_spanned(ty, "a `gguf` group field must be `Option<Nested>`").to_compile_error().into();
+                };
+                inits.push(quote! {
+                    #name: if metadata.contains_key(&format!("{prefix}{}", #gate)) {
+                        Some(#inner::from_gguf_with_prefix(metadata, &format!("{prefix}{}.", #group))?)
+                    } else {
+                        None
+                    }
+                });
+                default_inits.push(gguf_default_init(name, default.as_ref()));
+            }
+        }
+    }
+
+    // `impl Default` bounds every type parameter, the way `#[derive(Default)]` does.
+    let mut default_generics = input.generics.clone();
+    for param in default_generics.type_params_mut() {
+        param.bounds.push(syn::parse_quote!(::core::default::Default));
+    }
+    let (default_impl_generics, _, default_where_clause) = default_generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics #struct_name #ty_generics #where_clause {
+            #[doc = "Builds the struct from GGUF metadata, keying every field on `general.architecture`. Skipped fields are the extra parameters, in declaration order."]
+            pub fn from_gguf(
+                metadata: &::zyx::GGUFMetadata
+                #(, #skip_params)*
+            ) -> ::core::result::Result<Self, ::zyx::ZyxError> {
+                let prefix = format!("{}.", metadata.str("general.architecture")?);
+                Self::from_gguf_with_prefix(metadata, &prefix #(, #skip_args)*)
+            }
+
+            #[doc = "Builds the struct from GGUF metadata under an explicit key prefix. `prefix` is used verbatim and must include the trailing dot (`\"llama.\"`). Skipped fields are the extra parameters, in declaration order."]
+            pub fn from_gguf_with_prefix(
+                metadata: &::zyx::GGUFMetadata,
+                prefix: &str
+                #(, #skip_params)*
+            ) -> ::core::result::Result<Self, ::zyx::ZyxError> {
+                Ok(Self { #(#inits),* })
+            }
+        }
+
+        impl #default_impl_generics ::core::default::Default for #struct_name #ty_generics #default_where_clause {
+            fn default() -> Self {
+                Self { #(#default_inits),* }
+            }
+        }
+    };
+    expanded.into()
+}
+

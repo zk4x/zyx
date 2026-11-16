@@ -6,10 +6,8 @@
 //! The model itself lives in the `llama` library target (`src/lib.rs`), so
 //! benchmarks and other examples can reuse it without going through the CLI.
 
-use std::collections::HashMap;
-
 use clap::Parser;
-use llama::{Llama, LlamaConfig, load_weights};
+use llama::Llama;
 use rand::{distr::Distribution, SeedableRng};
 use tokenizers::Tokenizer;
 use zyx::{DType, Tensor, ZyxError};
@@ -280,36 +278,18 @@ struct Args {
 
     #[arg(long, value_parser = parse_dtype, default_value_t = DType::F16)]
     dtype: DType,
-    #[arg(long)]
-    config_file: Option<String>,
 }
 
 fn main() -> Result<(), ZyxError> {
     Tensor::set_implicit_casts(false);
     let args = Args::parse();
-    let weight_file = args.weight_file.unwrap_or_else(|| "model.safetensors".to_string());
+    let weight_file = args
+        .weight_file
+        .unwrap_or_else(|| "../models/llama-3.2-3b/Llama-3.2-3B-Instruct-f16.gguf".to_string());
     let tokenizer_file = args.tokenizer_file.unwrap_or_else(|| "tokenizer.json".to_string());
     let tokenizer = Tokenizer::from_file(&tokenizer_file).unwrap();
 
-    let model = if weight_file.ends_with(".gguf") {
-        if args.config_file.is_some() {
-            eprintln!("note: --config-file is ignored for GGUF; the file carries its own config");
-        }
-        Llama::from_gguf(&weight_file, args.dtype, args.max_context).unwrap()
-    } else {
-        let cfg: LlamaConfig = match &args.config_file {
-            Some(path) => {
-                let content = std::fs::read_to_string(path).unwrap();
-                serde_json::from_str(&content).unwrap()
-            }
-            None => LlamaConfig {
-                max_context: args.max_context,
-                ..LlamaConfig::default()
-            },
-        };
-        let mut vb: HashMap<String, Tensor> = load_weights(&weight_file);
-        Llama::new(&cfg, &mut vb, args.dtype)
-    };
+    let model = Llama::from_gguf(&weight_file, args.dtype, args.max_context).unwrap();
 
     let prompt = args.prompt.clone().unwrap_or_else(|| "Hello".to_string());
     let mut pipeline = TextGeneration::new(

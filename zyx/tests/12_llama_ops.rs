@@ -425,11 +425,10 @@ fn llama_causal_mask_compare() -> Result<(), ZyxError> {
         return Ok(());
     }
     let seq = 4i64;
-    // Mirror llama's get_mask: the causal mask is built on the HOST with -inf
-    // entries and added to the attention scores. No on-graph where_ (see the
-    // `where_` doc: its branchless decomposition NaNs on 0 * -inf).
-    // TODO: possibly for some models in the future a ternary where op will be
-    // needed for on-graph masks with -inf.
+    // Mirror llama's get_mask: the causal mask is a `-inf`/0 matrix added to
+    // the attention scores. `select` is an exact `cmov` (see its doc), so an
+    // on-graph `masked_fill(mask, -inf)` is equivalent; this pins the
+    // host-built additive form.
     let mask: Vec<f32> =
         (0..seq as usize).flat_map(|i| (0..seq as usize).map(move |j| if j > i { f32::NEG_INFINITY } else { 0.0 })).collect();
     let masked = Tensor::from(mask).reshape([seq, seq])?.cast(DType::BF16);

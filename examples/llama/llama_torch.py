@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 """Torch reference for llama prefill, one step, layer-0 detail + full-model logits.
 
-Uses the same GGUF file as zyx (no download), reads config.json and
-tokenizer.json (no hardcode), runs on cuda:0 fp16. Python gguf shapes are
-already [out, in], so no transpose is needed here; Rust remap .t() only
-compensates its own loader dim order. Linear is x @ W.t() on both sides.
+Uses the same GGUF file as zyx (no download): the config comes from the same
+metadata map zyx's `#[derive(gguf)]` parses, so there is no config.json beside
+the checkpoint. tokenizer.json is the one extra file. Runs on cuda:0 fp16.
+The GGUF stores linear weights as [out, in] and both sides use them as is:
+torch computes x @ W.t().
 """
 
-import json
 import os
 
 import torch
@@ -18,12 +18,46 @@ from tokenizers import Tokenizer
 
 BASE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "llama-3.2-3b")
 GGUF_PATH = os.path.join(BASE, "Llama-3.2-3B-Instruct-f16.gguf")
-CONFIG_PATH = os.path.join(BASE, "config.json")
 TOKENIZER_PATH = os.path.join(BASE, "tokenizer.json")
 
 
-def load_gguf_weights(path):
-    reader = GGUFReader(path)
+def gguf_value(reader, key, default=None):
+    field = reader.fields.get(key)
+    return field.contents()[0] if field is not None else default
+
+
+def load_config(reader):
+    """Config in the field vocabulary of zyx's `LlamaConfig`, read from the
+    checkpoint's own metadata under `<general.architecture>.`."""
+    arch = gguf_value(reader, "general.architecture")
+
+    def value(key, default=None):
+        return gguf_value(reader, f"{arch}.{key}", default)
+
+    rope_scaling = None
+    if value("rope.scaling.type") is not None:
+        rope_scaling = {
+            "factor": value("rope.scaling.factor"),
+            "high_freq_factor": value("rope.scaling.high_freq_factor"),
+            "low_freq_factor": value("rope.scaling.low_freq_factor"),
+            "original_max_position_embeddings": value("rope.scaling.original_context_length"),
+        }
+    return {
+        "vocab_size": value("vocab_size"),
+        "hidden_size": value("embedding_length"),
+        "intermediate_size": value("feed_forward_length"),
+        "num_hidden_layers": value("block_count"),
+        "num_attention_heads": value("attention.head_count"),
+        "num_key_value_heads": value("attention.head_count_kv"),
+        "max_position_embeddings": value("context_length"),
+        "rms_norm_eps": value("attention.layer_norm_rms_epsilon"),
+        "rope_theta": value("rope.freq_base"),
+        "head_dim": value("attention.key_length"),
+        "rope_scaling": rope_scaling,
+    }
+
+
+def load_gguf_weights(reader):
     weights = {}
     for t in reader.tensors:
         import numpy as np
@@ -138,12 +172,12 @@ def show(name, t):
 def main_prefill():
     device = torch.device("cuda:0")
     dtype = torch.float16
-    with open(CONFIG_PATH) as f:
-        cfg = json.load(f)
+    reader = GGUFReader(GGUF_PATH)
+    cfg = load_config(reader)
     tok = Tokenizer.from_file(TOKENIZER_PATH)
     ids = tok.encode("Hello", add_special_tokens=True).ids
     print(f"prompt ids={ids}", flush=True)
-    weights = load_gguf_weights(GGUF_PATH)
+    weights = load_gguf_weights(reader)
     # move needed tensors to cuda fp16 (norms cast to fp16 to match zyx)
     needed_prefixes = ("token_embd.weight", "output_norm.weight") + tuple(f"blk.{i}." for i in range(cfg["num_hidden_layers"]))
     w = {}

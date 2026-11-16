@@ -1490,9 +1490,9 @@ impl Tensor {
     ///
     /// Returns a shape error if the axis is out of range or the padding is invalid.
     #[track_caller]
-    pub fn pad_zeros_axis(&self, axis: UAxis, lp: Tensor, len: Tensor) -> Result<Tensor, ZyxError> {
-        let lp = lp.cast(IDX_T);
-        let len = len.cast(IDX_T);
+    pub fn pad_zeros_axis(&self, axis: UAxis, lp: impl Into<Tensor>, len: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let lp = lp.into().cast(IDX_T);
+        let len = len.into().cast(IDX_T);
         let mut rt = RT.lock();
         debug_assert_eq!(rt.dtype(lp.id), DType::I64, "pad_zeros_axis lp must have dtype IDX_T (i64)");
         debug_assert_eq!(rt.dtype(len.id), DType::I64, "pad_zeros_axis len must have dtype IDX_T (i64)");
@@ -1500,18 +1500,20 @@ impl Tensor {
         Ok(Tensor { id })
     }
 
-    /// Applies `(lp, len)` zero padding to a single axis, validating against
-    /// this tensor's shape.
-    fn pad_axis(&self, axis: UAxis, l: i64, r: i64) -> Result<Tensor, ZyxError> {
-        let shape = self.resolve_shape();
-        let orig = shape[axis as usize];
-        let removed = (if l < 0 { -l } else { 0 }) + (if r < 0 { -r } else { 0 });
-        if orig + l + r < 0 || removed >= orig {
+    /// Applies `(lp, len)` zero padding to a single axis, validating against this tensor's shape.
+    fn pad_axis(&self, axis: UAxis, l: impl Into<Tensor>, r: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+        let l = l.into();
+        let r = r.into();
+        let shape = self.shape();
+        let orig = &shape[axis as usize];
+        let l_it: Dim = l.clone().item();
+        let r_it: Dim = r.clone().item();
+        let removed = (if l_it < 0i64 { -l_it } else { 0 }) + (if r_it < 0 { -r_it } else { 0 });
+        if orig.item::<Dim>() + l_it + r_it < 0 || removed >= orig.item() {
             return Err(ZyxError::shape_error(format!("Invalid padding left={l}, right={r} on dimension size {orig}").into()));
         }
-        let lp = Tensor::from(l);
-        let len = Tensor::from(orig + l + r);
-        self.pad_zeros_axis(axis, lp, len)
+        let len = Tensor::from(orig + l.clone() + r);
+        self.pad_zeros_axis(axis, l, len)
     }
 
     /// Pad this tensor with zeros using per-dimension `(left, right)` padding
@@ -1532,22 +1534,17 @@ impl Tensor {
     /// invalid.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
-    pub fn pad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
-        let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
+    pub fn pad_zeros(
+        &self,
+        padding: impl IntoIterator<Item = (impl Into<Tensor>, impl Into<Tensor>)>,
+    ) -> Result<Tensor, ZyxError> {
         let rank = self.rank() as usize;
-
-        if padding.len() > rank {
-            return Err(ZyxError::shape_error(
-                format!("Padding with {} dimensions, but tensor only has rank {rank}", padding.len()).into(),
-            ));
-        }
-        padding.extend(std::iter::repeat_n((0i64, 0i64), rank - padding.len()));
-
         let mut cur = self.clone();
-        for (i, &(l, r)) in padding.iter().enumerate() {
-            if l != 0 || r != 0 {
-                cur = cur.pad_axis(i as UAxis, l, r)?;
+        for (axis, (l, r)) in padding.into_iter().enumerate() {
+            if axis >= rank {
+                return Err(ZyxError::shape_error(format!("Padding dimension {axis} exceeds the tensor's rank {rank}").into()));
             }
+            cur = cur.pad_axis(axis as UAxis, l, r)?;
         }
         Ok(cur)
     }
@@ -1570,8 +1567,11 @@ impl Tensor {
     /// invalid.
     #[allow(clippy::missing_panics_doc)]
     #[track_caller]
-    pub fn rpad_zeros(&self, padding: impl IntoIterator<Item = (i64, i64)>) -> Result<Tensor, ZyxError> {
-        let mut padding: Vec<(i64, i64)> = padding.into_iter().collect();
+    pub fn rpad_zeros(
+        &self,
+        padding: impl IntoIterator<Item = (impl Into<Tensor>, impl Into<Tensor>)>,
+    ) -> Result<Tensor, ZyxError> {
+        let mut padding: Vec<(Tensor, Tensor)> = padding.into_iter().map(|(l, r)| (l.into(), r.into())).collect();
         let rank = self.rank() as usize;
 
         if padding.len() > rank {
@@ -1580,14 +1580,12 @@ impl Tensor {
             ));
         }
 
-        padding.extend(std::iter::repeat_n((0i64, 0i64), rank - padding.len()));
+        padding.extend(std::iter::repeat_n((Tensor::from(0i64), Tensor::from(0i64)), rank - padding.len()));
         padding.reverse();
 
         let mut cur = self.clone();
-        for (i, &(l, r)) in padding.iter().enumerate() {
-            if l != 0 || r != 0 {
-                cur = cur.pad_axis(i as UAxis, l, r)?;
-            }
+        for (i, (l, r)) in padding.into_iter().enumerate() {
+            cur = cur.pad_axis(i as UAxis, l, r)?;
         }
         Ok(cur)
     }
@@ -1609,24 +1607,31 @@ impl Tensor {
     ///
     /// Returns a shape error if the padding is invalid.
     #[allow(clippy::missing_panics_doc)]
-    pub fn pad(&self, padding: impl IntoIterator<Item = (i64, i64)>, value: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
+    pub fn pad(
+        &self,
+        padding: impl IntoIterator<Item = (impl Into<Tensor>, impl Into<Tensor>)>,
+        value: impl Into<Tensor>,
+    ) -> Result<Tensor, ZyxError> {
         let dtype = self.dtype();
         let value: Tensor = value.into();
-        let padding: Vec<(i64, i64)> = padding.into_iter().collect();
+        let padding: Vec<(Tensor, Tensor)> = padding.into_iter().map(|(l, r)| (l.into(), r.into())).collect();
+        // The padded shape and the validity check are concrete, so the amounts
+        // are resolved here; the padding tensors are passed on as they came in.
+        let dims: Vec<(Dim, Dim)> = padding.iter().map(|(l, r)| (l.clone().item(), r.clone().item())).collect();
         let mut sh = self.resolve_shape();
         if value.dtype() != dtype {
             return Err(ZyxError::dtype_error(
                 format!("Cannot pad tensor with dtype {} with value of dtype {}", dtype, value.dtype()).into(),
             ));
         }
-        if !padding.len() <= sh.len() && padding.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
-            return Err(ZyxError::shape_error(format!("Cannot pad tensor with shape {sh:?} with padding {padding:?}").into()));
+        if !dims.len() <= sh.len() && dims.iter().zip(sh.iter().rev()).all(|(&(lp, rp), &d)| if lp < 0 { Dim::try_from(-lp).unwrap() <= d } else { true } && if rp < 0 { Dim::try_from(-rp).unwrap() <= d } else { true }) {
+            return Err(ZyxError::shape_error(format!("Cannot pad tensor with shape {sh:?} with padding {dims:?}").into()));
         }
         let t0 = self.pad_zeros(padding.clone())?;
         // 0/1 validity mask: bool (select requires a bool cond; the old
         // arithmetic where_ accepted any dtype by casting).
         let ones = Tensor::ones(sh.clone(), DType::Bool);
-        crate::shape::pad(&mut sh, &padding);
+        crate::shape::pad(&mut sh, &dims);
         let zeros = Tensor::zeros(sh, dtype);
         Ok(t0 + ones.pad_zeros(padding)?.select(zeros, value)?)
     }
@@ -3061,12 +3066,9 @@ impl Tensor {
     ///
     /// # Note
     ///
-    /// Delegates to `where_`, so it inherits its branchless decomposition and
-    /// its ±inf limitation: filling with ±inf (or `self` containing ±inf on
-    /// kept elements) produces `NaN`. Use a finite value instead.
-    // TODO: possibly for some models in the future a ternary where op will be
-    // needed here (graph node + kernel IR + backends); then masked_fill can
-    // support ±inf values.
+    /// Delegates to [`Tensor::select`], whose ternary kernel moves the winning
+    /// arm's bits (`cmov`) instead of multiplying them: `±inf` on the dead
+    /// side stays dead, so a `-inf` fill is exact.
     ///
     /// # Example
     ///
@@ -3090,23 +3092,31 @@ impl Tensor {
     #[must_use]
     #[track_caller]
     #[allow(clippy::missing_panics_doc)]
-    fn tri(r: Dim, c: Dim, diagonal: i64, dtype: DType) -> Tensor {
-        if r == 0 || c == 0 || diagonal >= c {
+    fn tri(r: impl Into<Tensor>, c: impl Into<Tensor>, diagonal: impl Into<Tensor>, dtype: DType) -> Tensor {
+        let r = r.into();
+        let c = c.into();
+        let diagonal = diagonal.into();
+        // The branches and the final slice need concrete values; at tensor level
+        // a symbolic amount always resolves. The matrix itself stays symbolic.
+        let r_i: Dim = r.clone().item();
+        let c_i: Dim = c.clone().item();
+        let d_i: Dim = diagonal.clone().item();
+        if r_i == 0 || c_i == 0 || d_i >= c_i {
             return Tensor::zeros([r, c], dtype);
         }
-        if r + diagonal <= 0 {
+        if r_i + d_i <= 0 {
             return Tensor::ones([r, c], dtype);
         }
-        let s = r + c - 1;
-        let t = Tensor::ones([s, s], dtype).rpad_zeros([(0i64, s)]).unwrap();
-        let t = t.reshape([2 * s * s]).unwrap();
-        let t = t.rpad_zeros([(0i64, -s)]).unwrap();
-        let t = t.reshape([s, 2 * s - 1]).unwrap();
-        let t = t.rpad_zeros([(0i64, -(2 * s - 1 - s))]).unwrap();
-        if diagonal <= 0 {
-            t.slice((0..r, (-diagonal)..(c - diagonal))).unwrap()
+        let s = &r + &c - 1;
+        let t = Tensor::ones([s.clone(), s.clone()], dtype).rpad_zeros([(Tensor::from(0i64), s.clone())]).unwrap();
+        let t = t.reshape([s.clone() * s.clone() * 2]).unwrap();
+        let t = t.rpad_zeros([(Tensor::from(0i64), -s.clone())]).unwrap();
+        let t = t.reshape([s.clone(), s.clone() * 2 - 1]).unwrap();
+        let t = t.rpad_zeros([(Tensor::from(0i64), -(s.clone() - 1))]).unwrap();
+        if d_i <= 0 {
+            t.slice((0..r_i, (-d_i)..(c_i - d_i))).unwrap()
         } else {
-            t.slice((diagonal..(r + diagonal), 0..c)).unwrap()
+            t.slice((d_i..(r_i + d_i), 0..c_i)).unwrap()
         }
     }
 

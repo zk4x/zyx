@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
 //! `#[derive(Module)]` on `Llama`: the `Vec<DecoderBlock>` stack is walked
-//! element by element (torch-style labels, `layers.{i}.…`), and `plans` is
+//! element by element and every label is the GGUF tensor name
+//! (`blk.{i}.attn_q.weight`, `token_embd.weight`, `output.weight`), so a
+//! checkpoint binds through `Module::set_params` with no renaming. `plans` is
 //! skipped because it is `#[no_param]`.
 //!
 //! Runs on whatever backend `ZYX_DEV` selects; it allocates weights and builds
@@ -38,20 +40,20 @@ fn llama_module_walks_layers_and_skips_plans() {
     assert_eq!(labels.len(), model.iter().count(), "labels: {labels:?}");
 
     for expected in [
-        "embedding.weight",
-        "layers.0.self_attn.q_proj.weight",
-        "layers.0.self_attn.k_proj.weight",
-        "layers.0.self_attn.cache_k",
-        "layers.0.self_attn.cache_v",
-        "layers.0.input_layernorm.weight",
-        "layers.0.post_attention_layernorm.weight",
-        "layers.0.mlp.gate_proj.weight",
-        "layers.0.mlp.up_proj.weight",
-        "layers.0.mlp.down_proj.weight",
-        "layers.1.self_attn.o_proj.weight",
-        "layers.1.input_layernorm.weight",
-        "norm.weight",
-        "lm_head.weight",
+        "token_embd.weight",
+        "blk.0.attn_q.weight",
+        "blk.0.attn_k.weight",
+        "blk.0.cache_k",
+        "blk.0.cache_v",
+        "blk.0.attn_norm.weight",
+        "blk.0.ffn_norm.weight",
+        "blk.0.ffn_gate.weight",
+        "blk.0.ffn_up.weight",
+        "blk.0.ffn_down.weight",
+        "blk.1.attn_output.weight",
+        "blk.1.attn_norm.weight",
+        "output_norm.weight",
+        "output.weight",
     ] {
         assert!(labels.iter().any(|label| label == expected), "missing {expected}: {labels:?}");
     }
@@ -74,7 +76,7 @@ fn llama_module_walks_layers_and_skips_plans() {
 #[test]
 fn llama_forward_runs_from_the_derived_module_tree() {
     let model_cfg = cfg();
-    let vocab = model_cfg.vocab_size as i64;
+    let vocab = model_cfg.vocab_size;
     let mut model = Llama::random(&model_cfg, DType::F32);
     let ids = zyx::Tensor::from_vec(vec![1i64, 2, 3], [1, 3]).unwrap();
     let logits = model.forward(&ids, 0).cast(DType::F32);
