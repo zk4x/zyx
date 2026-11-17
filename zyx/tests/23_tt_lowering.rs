@@ -11,7 +11,6 @@
 //! in the backend: a BF16 compute kernel is a loud codegen error, not a silent
 //! widen.
 
-#![cfg(feature = "tenstorrent")]
 
 use zyx::{DType, Dev, Tensor, ZyxError};
 

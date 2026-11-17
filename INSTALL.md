@@ -27,9 +27,8 @@ building the bindings with `maturin`.
 ## Backend prerequisites
 
 zyx itself is pure Rust: backends load their runtime libraries at load time, so
-nothing is linked at build time. The optional Tenstorrent backend is the one
-build-time exception: it compiles RISC-V firmware and needs the target and LLVM
-tools listed below.
+nothing is linked at build time. That includes Tenstorrent: its compiler and
+driver are `libskamandros.so`, found on the loader's search path.
 
 | Backend | Needs | Debian/Ubuntu | Notes |
 |---------|-------|---------------|-------|
@@ -38,7 +37,7 @@ tools listed below.
 | OpenCL | ICD loader (`libOpenCL.so`) plus a vendor ICD | `sudo apt install ocl-icd-libopencl1`; CPU-only: `sudo apt install pocl-opencl-icd` | |
 | Vulkan | `libvulkan.so.1` plus a Vulkan driver | `sudo apt install libvulkan1 mesa-vulkan-drivers vulkan-tools` | |
 | WGPU | cargo feature `wgpu` plus a wgpu backend | build with `--features wgpu` | uses Vulkan/Metal/DX12/GLES; large optional dependency tree |
-| Tenstorrent | cargo feature `tenstorrent`, the `libttsim_bh.so` simulator (obtain it from Tenstorrent), the `riscv32im-unknown-none-elf` target, and `llvm-tools` | `rustup target add riscv32im-unknown-none-elf`; `rustup component add llvm-tools` | build with `--features tenstorrent`; set `TT_TTSIM_LIB=/path/to/libttsim_bh.so`; default is `<parent-of-repo>/vendor/libttsim_bh.so`; multi-chip builds use `TT_TTSIM_LIB_X2` / `TT_TTSIM_LIB_X4` |
+| Tenstorrent | `libskamandros.so` on the dynamic loader's search path | build [skamandros](https://github.com/zk4x/skamandros) (`cargo build --release`) and add its `target/release` to `LD_LIBRARY_PATH` (or install the library) | zyx loads it with `dlopen`, like `libcuda.so`; no cargo feature. skamandros picks the target itself (`$TT_METAL_SIMULATOR` for the simulator, `TT_HARDWARE=1` for the card) |
 
 With no C compiler and no GPU runtime, zyx has no devices. To see what was
 found:
@@ -52,10 +51,7 @@ are in [ENV_VARS.md](ENV_VARS.md).
 
 ## Building from source
 
-The Tenstorrent firmware lives in `zyx/firmware/tt-firmware` and is built by
-`zyx/build.rs` only when the `tenstorrent` feature is enabled; the ISA tables
-come from the [`tt-isa`](https://github.com/zk4x/tt-isa) crate. No sibling
-checkout is required:
+No sibling checkout is required:
 
 ```bash
 git clone https://github.com/zk4x/zyx
@@ -63,13 +59,13 @@ cd zyx/zyx
 cargo build
 ```
 
-The Tenstorrent backend additionally needs the RISC-V target and LLVM tools
-that `build.rs` uses for the firmware images:
+The Tenstorrent backend needs [skamandros](https://github.com/zk4x/skamandros)
+built and loadable:
 
 ```bash
-rustup target add riscv32im-unknown-none-elf
-rustup component add llvm-tools
-cargo build --features tenstorrent
+git clone https://github.com/zk4x/skamandros
+cd skamandros && cargo build --release
+export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
 ```
 
 Run the tests (no GPU needed):

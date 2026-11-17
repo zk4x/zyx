@@ -10,12 +10,10 @@ or `pip install zyx-py` is enough. Prerequisites for every backend are listed in
 - a C compiler (`clang` or `gcc`) for the C backend
 - optionally, a GPU runtime (CUDA, OpenCL, Vulkan, WGPU); a missing runtime only
   means that backend contributes no devices
-- for the optional Tenstorrent backend, the `libttsim_bh.so` simulator, the
-  `riscv32im-unknown-none-elf` target, and `llvm-tools`
+- for the optional Tenstorrent backend, `libskamandros.so` on the dynamic
+  loader's search path (`LD_LIBRARY_PATH`)
 
-The Tenstorrent firmware lives in `zyx/firmware/tt-firmware` and is built by
-`zyx/build.rs` when the `tenstorrent` feature is enabled; the ISA tables come
-from the `tt-isa` crate. No sibling checkout is required:
+No sibling checkout is required:
 
 ```bash
 git clone https://github.com/zk4x/zyx
@@ -23,13 +21,13 @@ cd zyx/zyx
 cargo build
 ```
 
-The Tenstorrent backend additionally needs the RISC-V target and LLVM tools that
-`build.rs` uses for the firmware images:
+The Tenstorrent backend loads [skamandros](https://github.com/zk4x/skamandros)
+with `dlopen`; build it and put its `target/release` on the loader path:
 
 ```bash
-rustup target add riscv32im-unknown-none-elf
-rustup component add llvm-tools
-cargo build --features tenstorrent
+git clone https://github.com/zk4x/skamandros
+cd skamandros && cargo build --release
+export LD_LIBRARY_PATH="$PWD/target/release:$LD_LIBRARY_PATH"
 ```
 
 ## Tests

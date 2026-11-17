@@ -49,16 +49,13 @@ wins on the fixed placeholder).
 | `ZYX_BENCH_OUT` | Append one JSON line per measured autotune candidate to this path |
 | `ZYX_BENCH_TAG` | Tag for the benchmark rows (`untagged` by default) |
 | `ZYX_TT_IR` | Dump the Tenstorrent IR before/after `tt_tile`, `tt_reindex`, `tt_dataflow_select` |
-| `ZYX_TT_DUMP` | Dump each Tenstorrent role program (bytes, entries, length) |
-| `TT_TTSIM_LIB` | Path to the Tenstorrent simulator library (default `vendor/libttsim_bh.so`) |
-| `TT_TTSIM_LIB_X2` / `TT_TTSIM_LIB_X4` | Simulator library for dual-/quad-chip builds |
-| `TT_MATH` | Tenstorrent SFPU math mode: `precise` (default) or `approx` |
 | `ZYX_KERN_TRACE` | Kernelizer split/store tracing on stderr |
 | `ZYX_NO_CACHE` | Disable every on-disk cache (autotune winners, C backend objects) |
 | `AGENT=1` | Colorless debug output (also auto-detected when stdout is not a terminal) |
 
-The `ZYX_TT_*`, `TT_TTSIM_*`, and `TT_MATH` variables apply only to builds with
-the `tenstorrent` feature.
+The Tenstorrent path is reached through `libskamandros.so`, found on the
+dynamic loader's search path (`LD_LIBRARY_PATH`); the simulator or card is
+chosen by skamandros itself (`$TT_METAL_SIMULATOR` or `TT_HARDWARE=1`).
 
 **First debug step**: run with `ZYX_DEBUG=1` to see which backends initialized
 and how many devices they found. If no devices appear, check whether a

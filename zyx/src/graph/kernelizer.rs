@@ -844,7 +844,11 @@ impl Graph {
                                             dst_kernel.shape(op_id).is_empty(),
                                             "assign: dst view has non-scalar Binary {bop:?}"
                                         );
-                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Binary { x: op_map[&x], y: op_map[&y], bop });
+                                        let id = self.jit_kernels[kid].kernel.push_back(Op::Binary {
+                                            x: op_map[&x],
+                                            y: op_map[&y],
+                                            bop,
+                                        });
                                         op_map.insert(op_id, id);
                                     }
                                     Op::Cast { x, dtype } => {
@@ -864,10 +868,7 @@ impl Graph {
                                         op_map.insert(op_id, id);
                                     }
                                     Op::Select { cond, if_true, if_false } => {
-                                        assert!(
-                                            dst_kernel.shape(op_id).is_empty(),
-                                            "assign: dst view has non-scalar Select"
-                                        );
+                                        assert!(dst_kernel.shape(op_id).is_empty(), "assign: dst view has non-scalar Select");
                                         let id = self.jit_kernels[kid].kernel.push_back(Op::Select {
                                             cond: op_map[&cond],
                                             if_true: op_map[&if_true],
@@ -875,10 +876,9 @@ impl Graph {
                                         });
                                         op_map.insert(op_id, id);
                                     }
-                                    _ => unreachable!(
-                                        "assign: dst view depends on non-address op {:?}",
-                                        dst_kernel.ops[op_id].op
-                                    ),
+                                    _ => {
+                                        unreachable!("assign: dst view depends on non-address op {:?}", dst_kernel.ops[op_id].op)
+                                    }
                                 }
                                 op_id = dst_kernel.next_op(op_id);
                             }
@@ -898,10 +898,7 @@ impl Graph {
                                 q = dst_kernel.next_op(q);
                             }
                             let only_dst_outputs = self.jit_kernels[dst_kid].outputs.iter().all(|&c| c == dst);
-                            if slice.len() == kernel_ops
-                                && only_dst_outputs
-                                && self.jit_kernels[dst_kid].stores.is_empty()
-                            {
+                            if slice.len() == kernel_ops && only_dst_outputs && self.jit_kernels[dst_kid].stores.is_empty() {
                                 // Classes still living in the removed dst kernel (e.g.
                                 // shape consts merged into the movement chain) move to
                                 // the replayed kernel: remap visited and carry their

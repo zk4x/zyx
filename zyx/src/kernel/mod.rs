@@ -142,7 +142,6 @@ mod predict_cost;
 mod ptx;
 mod recipe;
 mod split;
-#[cfg(feature = "tenstorrent")]
 mod tenstorrent;
 mod verify;
 

@@ -50,9 +50,10 @@ when you do not need a GPU; omit it to let zyx pick the fastest available
 device. Backend selection is described in [CONFIG.md](CONFIG.md) and
 [ENV_VARS.md](ENV_VARS.md).
 
-Tenstorrent hardware needs the `tenstorrent` cargo feature, the
-`riscv32im-unknown-none-elf` target, `llvm-tools`, and the simulator library
-(`TT_TTSIM_LIB`); see [INSTALL.md](INSTALL.md). A failed simulator init is an
+Tenstorrent hardware needs `libskamandros.so` on the dynamic loader's search
+path (`LD_LIBRARY_PATH`) and a target chosen by skamandros itself
+(`$TT_METAL_SIMULATOR` with the Blackhole descriptor beside it, or
+`TT_HARDWARE=1`); see [INSTALL.md](INSTALL.md). A failed device init is an
 error, never a retry — do not loop on it.
 
 ## Checks before a PR

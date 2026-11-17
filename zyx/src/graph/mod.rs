@@ -2445,41 +2445,35 @@ impl Runtime {
                                         (len, false, _cid)
                                     };
                                     // A TT param buffer is *physical*: whole 32x32
-                                    // tile images, row/column padded, exactly what
+                                    // tile pages, row/column padded, exactly what
                                     // `tilize_transfer` and `materialize` allocate.
                                     // A rank-1 value is a tile column (element `i` is
                                     // row `i`, lane 0). A timing buffer with only the
                                     // logical element count leaves the reader's
                                     // whole-tile move running past the chunk.
                                     let bytes_alloc = if pool_id.is_tt_layout() {
-                                        #[cfg(feature = "tenstorrent")]
-                                        {
-                                            let shape = self.graphs[graph_id].shape(_cid);
-                                            let mut dims: Vec<Dim> = Vec::with_capacity(shape.len());
-                                            for &d in &shape {
-                                                let v = self
-                                                    .resolve_symbolic_class(graph_id, d)
-                                                    .expect("tt param buffer: dim class does not resolve");
-                                                dims.push(v.as_dim().expect("tt param buffer: dim is not a length"));
-                                            }
-                                            let (rows, cols) = match dims.as_slice() {
-                                                [.., r, c] => (*r, *c),
-                                                [c] => (*c, 1),
-                                                [] => (1, 1),
-                                            };
-                                            let outer: Dim = if dims.len() >= 2 {
-                                                dims[..dims.len() - 2].iter().product()
-                                            } else {
-                                                1
-                                            };
-                                            let pr = ((rows + 31) / 32) * 32;
-                                            let pc = ((cols + 31) / 32) * 32;
-                                            (outer * pr * pc) / 1024 * tt_isa::dm::TILE_SLOT as Dim
+                                        let shape = self.graphs[graph_id].shape(_cid);
+                                        let mut dims: Vec<Dim> = Vec::with_capacity(shape.len());
+                                        for &d in &shape {
+                                            let v = self
+                                                .resolve_symbolic_class(graph_id, d)
+                                                .expect("tt param buffer: dim class does not resolve");
+                                            dims.push(v.as_dim().expect("tt param buffer: dim is not a length"));
                                         }
-                                        #[cfg(not(feature = "tenstorrent"))]
-                                        {
-                                            unreachable!("tt param buffer: tenstorrent feature off")
-                                        }
+                                        let (rows, cols) = match dims.as_slice() {
+                                            [.., r, c] => (*r, *c),
+                                            [c] => (*c, 1),
+                                            [] => (1, 1),
+                                        };
+                                        let outer: Dim = if dims.len() >= 2 {
+                                            dims[..dims.len() - 2].iter().product()
+                                        } else {
+                                            1
+                                        };
+                                        let pr = ((rows + 31) / 32) * 32;
+                                        let pc = ((cols + 31) / 32) * 32;
+                                        let el = Dim::from(dtype.bit_size() / 8);
+                                        (outer * pr * pc) / 1024 * 1024 * el
                                     } else {
                                         (dtype.bit_size() as Dim * (len + 1)) / 8
                                     };

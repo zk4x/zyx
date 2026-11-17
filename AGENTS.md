@@ -189,9 +189,8 @@ cd zyx && AGENT=1 cargo test --test <file> <name>
 cd zyx && AGENT=1 cargo test -- --nocapture   # ALWAYS for debug output
 cd zyx && cargo fmt
 ```
-- TT: `TT_METAL_RUNTIME_ROOT=/home/x/Dev/cpp/tt-metal cargo build --features tenstorrent`
-- TT sim: export `TT_METAL_SIMULATOR=~/Dev/cpp/tt-sim/libttsim_bh.so`
-  + `TT_METAL_SLOW_DISPATCH_MODE=1` before `cargo test --features tenstorrent`.
+- TT: `LD_LIBRARY_PATH` includes skamandros's `target/release` (it loads `libskamandros.so`)
+- TT sim: export `TT_METAL_SIMULATOR=~/Dev/cpp/tt-sim/libttsim_bh.so`, then run the test (skamandros reads it).
 - Clippy is NOT a gate. Python: `python3.12`. Tests return `Result<(), ZyxError>`.
 - Timeout cap: 10s MAX per individual test RUN (one test only, not the suite).
   Test execution only, not compilation, not tool use in general.

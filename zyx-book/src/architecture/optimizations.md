@@ -90,25 +90,16 @@ user-supplied epilogue must not be able to skip them.
 pub fn device_epilogue(&mut self) {
     self.unfold_pows();               // Pow -> exp2(y * log2 x), every backend
     if device_is_tenstorrent {
-        self.tt_tile();               // vector IR -> tiles
-        self.tt_unfold();             // Exp2/Log2 become native ops
-        self.tt_reindex();            // logical indices -> tile traffic
-        self.default_epilogue();      // clean the tile IR
-        self.tt_dataflow_select();    // phase boundary: native instructions
-        self.tt_sfpu_fusion();        // value -> lane register
-        self.tt_lreg_alloc();         // virtual -> physical LREGs
-        self.tt_dst_reuse();          // coalesce DST tiles
-        self.tt_reg_sync();           // Semset/Wait/Post hand-offs
-        self.tt_verify();
+        self.tt_tile();               // vector IR -> tiles; skamandros lowers the rest
     } else {
         self.devectorize();           // lane vectors -> scalar statements
     }
 }
 ```
 
-The Tenstorrent path is the physical IR described in
-[Codegen and the Physical IR](./codegen.md); generic passes may not run after
-`tt_dataflow_select`, and `tt_verify` replaces the generic `verify`.
+The tiled Tenstorrent program is written out by `codegen::skamandros` and
+compiled by `libskamandros.so`: the movers, circular-buffer hand-offs, `Dst`
+allocation and instruction encoders are all skamandros's.
 
 ## Autotuned Passes
 

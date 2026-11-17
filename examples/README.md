@@ -40,10 +40,10 @@ cargo run --release -p tiny-net
 
 Exceptions:
 
-- **`tt_gemm`** and **`qwen3.8-27b`** are Tenstorrent examples. They need the
-  `tenstorrent` feature, the RISC-V target and `llvm-tools` (see
+- **`tt_gemm`** and **`qwen3.8-27b`** are Tenstorrent examples. They need
+  [skamandros](https://github.com/zk4x/skamandros) built and loadable (see
   [INSTALL.md](../INSTALL.md)), and a Tenstorrent runtime/board
-  (`TT_METAL_RUNTIME_ROOT` for the runtime build). Both are excluded from
+  (`TT_METAL_SIMULATOR` or `TT_HARDWARE=1`). Both are excluded from
   `run_ci.sh` while their kernels are ported.
 - **`qwen3.8-27b`** has no `run.sh` and needs its 17 GB quantized GGUF; the plan
   and current status are in [`qwen3.8-27b/plan.md`](qwen3.8-27b/plan.md) and
@@ -65,5 +65,5 @@ Downloaded data and models are ignored by git.
   download/conversion (`mnist`, `mnist-snn`)
 - `huggingface_hub` — `phi`, `llama`, `qwen3.8-27b`
 - `curl` — `nanogpt`
-- a Tenstorrent runtime/board and the `tenstorrent` feature — `tt_gemm`,
+- a Tenstorrent runtime/board and `libskamandros.so` on `LD_LIBRARY_PATH` — `tt_gemm`,
   `qwen3.8-27b`
