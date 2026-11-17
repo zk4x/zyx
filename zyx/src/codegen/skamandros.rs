@@ -125,8 +125,8 @@ struct Compiler<'a> {
     ones: Map<DType, String>,
     /// One zero/`low` literal per dtype, for accumulator initialization.
     zeroes: Map<DType, String>,
-    /// Emitted unit index per element index, so a load and its store reuse
-    /// the one `div`.
+    /// Emitted page ordinal per element index, so a load and its store reuse
+    /// the one decomposition.
     indices: Map<OpId, String>,
 }
 
@@ -135,26 +135,18 @@ impl Compiler<'_> {
         format!("%v{id}")
     }
 
-    /// The access unit for an index expression, as skamandros's `a,b` shape,
-    /// plus the element stride one unit step moves. A tile/row/column is 32
-    /// lanes wide on its varying axis; a scalar is one datum.
-    fn unit(&self, idx: OpId) -> Result<([Dim; 2], u64), BackendError> {
+    /// The access unit of a DRAM access: one whole 32x32 tile page.
+    ///
+    /// The unit is a tile, and the access must be a tile too: a vector or a
+    /// scalar access names lanes inside a page (`1,32`/`1,1` would step the
+    /// parameter by 128/4 bytes, while the upload wrote 4 KiB pages), so it is
+    /// refused loudly rather than addressed as if it were a page.
+    fn unit(&self, idx: OpId) -> Result<[Dim; 2], BackendError> {
         let shape = self.k.shape(idx);
-        let unit: [Dim; 2] = match shape.len() {
-            0 => [1, 1],
-            1 => {
-                // A vector is a row or a column depending on which axis its
-                // `Unroll` was split from: axis 0 runs down rows, axis 1 runs
-                // across columns.
-                match self.vector_axis(idx) {
-                    Some(0) => [32, 1],
-                    _ => [1, 32],
-                }
-            }
-            _ => [32, 32],
-        };
-        let stride = if unit == [1, 1] { 1 } else { 32 };
-        Ok((unit, stride))
+        if shape.len() != 2 {
+            return Err(tt_err(format!("skamandros: access {idx:?} of shape {shape:?} is not a tile")));
+        }
+        Ok([32, 32])
     }
 
     /// The axis of the first `Unroll` feeding `root`'s index expression.
@@ -173,19 +165,107 @@ impl Compiler<'_> {
         None
     }
 
-    /// The base of an element index in access-unit units.
-    fn unit_index(&mut self, idx: OpId, unit: u64) -> String {
+    /// The page ordinal of a logical index into a tiled parameter.
+    ///
+    /// The upload lays a plane out row-major in tiles, face order inside a
+    /// page, so the page a logical index names is
+    /// `outer*ntr*ntc + (row/32)*ntc + col/32`. Each term of the index is
+    /// classified by its stride against the plane, the way the old
+    /// `tt_reindex` did: a multiple of the plane is an outer slice, a multiple
+    /// of 32 rows is a tile row, a multiple of 32 columns a tile column. A term
+    /// that lands inside a page (a lane, or a row of one) has no page form and
+    /// is refused instead of being silently misaddressed.
+    fn page_index(&mut self, idx: OpId, base: OpId) -> Result<String, BackendError> {
         if let Some(name) = self.indices.get(&idx) {
-            return name.clone();
+            return Ok(name.clone());
         }
-        let base = self.name(idx);
-        if unit <= 1 {
-            return base;
+        let shape = self.k.shape(base);
+        let (rows, cols) = match shape.as_slice() {
+            [.., r, c] => (*r, *c),
+            [c] => (*c, 1),
+            [] => (1, 1),
+        };
+        if rows <= 0 || cols <= 0 {
+            return Err(tt_err(format!("skamandros: parameter {base:?} has non-positive plane {rows}x{cols}")));
         }
-        let out = format!("%u{}", usize::from(idx));
-        let _ = writeln!(self.text, "{out} = div {base} {unit}");
-        self.indices.insert(idx, out.clone());
-        out
+        let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
+        let plane = rows * cols;
+        let strides = self
+            .k
+            .get_strides(idx)
+            .ok_or_else(|| tt_err(format!("skamandros: access {idx:?} has no stride form")))?;
+        let mut terms: Vec<(OpId, Dim)> = Vec::new();
+        for (var, (_, stride)) in strides.iter() {
+            let (var, s) = (*var, *stride);
+            if var == OpId::NULL || s == 0 {
+                continue;
+            }
+            // A lane is the page's own axis: the prologue emits every lane
+            // variable as the constant 0, so it names no page.
+            match self.k.ops[var].op {
+                Op::Unroll { .. } | Op::Range { kind: RangeKind::Local(_), .. } => continue,
+                _ => {}
+            }
+            if s % plane == 0 && s >= plane {
+                terms.push((var, s / plane * ntr * ntc));
+            } else if s % (32 * cols) == 0 && s >= 32 * cols {
+                terms.push((var, s / (32 * cols) * ntc));
+            } else if s % 32 == 0 && s < cols {
+                terms.push((var, s / 32));
+            } else {
+                return Err(tt_err(format!(
+                    "skamandros: access {idx:?} varies inside a tile page (stride {s}, plane {rows}x{cols})"
+                )));
+            }
+        }
+        // A concrete offset splits the same way; nothing is assumed zero.
+        let cst = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
+        let row_c = (cst / cols) % rows;
+        let col_c = cst % cols;
+        if cst % 32 != 0 || row_c % 32 != 0 {
+            return Err(tt_err(format!("skamandros: access {idx:?} starts inside a tile page (offset {cst})")));
+        }
+        let page_c = (cst / plane) * ntr * ntc + row_c / 32 * ntc + col_c / 32;
+        let mut acc: Option<String> = None;
+        for (var, weight) in terms {
+            let name = self.name(var);
+            let value = if weight == 1 {
+                name
+            } else {
+                let cst = format!("%p{}w{}", usize::from(idx), usize::from(var));
+                let _ = writeln!(self.text, "{cst} = const i32 {weight}");
+                let term = format!("%p{}v{}", usize::from(idx), usize::from(var));
+                let _ = writeln!(self.text, "{term} = mul {name} {cst}");
+                term
+            };
+            acc = Some(match acc {
+                Some(prev) => {
+                    let sum = format!("%p{}s{}", usize::from(idx), usize::from(var));
+                    let _ = writeln!(self.text, "{sum} = add {prev} {value}");
+                    sum
+                }
+                None => value,
+            });
+        }
+        let acc = match (acc, page_c) {
+            (Some(acc), 0) => acc,
+            (Some(acc), c) => {
+                let cst = self.page_const(idx, c)?;
+                let sum = format!("%p{}c", usize::from(idx));
+                let _ = writeln!(self.text, "{sum} = add {acc} {cst}");
+                sum
+            }
+            (None, c) => self.page_const(idx, c)?,
+        };
+        self.indices.insert(idx, acc.clone());
+        Ok(acc)
+    }
+
+    /// A constant page ordinal, declared once per name.
+    fn page_const(&mut self, idx: OpId, value: Dim) -> Result<String, BackendError> {
+        let name = format!("%pc{}", usize::from(idx));
+        let _ = writeln!(self.text, "{name} = const i32 {value}");
+        Ok(name)
     }
 
     fn zero(&mut self, dtype: DType) -> Result<String, BackendError> {
@@ -301,11 +381,14 @@ impl Kernel {
                     let _ = writeln!(c.text, "{} = {coord}", c.name(op_id));
                 }
                 Op::Range { axis, kind: RangeKind::Local(_) } => {
-                    // A local axis is a thread id on a GPU; Tensix has none.
-                    // The tiling that produces one is a search candidate, not
-                    // a program shape, so it reads as lane 0.
-                    let _ = axis;
-                    let _ = writeln!(c.text, "{} = const i32 0", c.name(op_id));
+                    // A local work axis is a thread id, and Tensix has none.
+                    // Emitting it as lane 0 would silently drop the axis, so
+                    // the candidate is refused: `tt_tile` owns filling that
+                    // gap, and a search candidate that leaves it open is not a
+                    // program this backend can render.
+                    return Err(tt_err(format!(
+                        "skamandros: local work axis {axis} has no Tensix form"
+                    )));
                 }
                 Op::Unroll { .. } => {
                     // A lane is the access unit's own dimension; the emitted
@@ -368,23 +451,23 @@ impl Kernel {
                     let _ = writeln!(c.text, "{name} = sel {} {} {}", c.name(*cond), c.name(*if_true), c.name(*if_false));
                 }
                 Op::Load { src, src_idx } => {
-                    let (unit, elems) = c.unit(*src_idx)?;
-                    let idx = c.unit_index(*src_idx, elems);
+                    let unit = c.unit(*src_idx)?;
+                    let idx = c.page_index(*src_idx, *src)?;
                     let _ = writeln!(c.text, "load {},{} {name} = {} [{idx}]", unit[0], unit[1], c.name(*src));
                 }
                 Op::Store { dst, dst_idx, src } => {
-                    let (unit, elems) = c.unit(*dst_idx)?;
-                    let idx = c.unit_index(*dst_idx, elems);
+                    let unit = c.unit(*dst_idx)?;
+                    let idx = c.page_index(*dst_idx, *dst)?;
                     let _ = writeln!(c.text, "store {},{} {} [{idx}] = {}", unit[0], unit[1], c.name(*dst), c.name(*src));
                 }
                 Op::Copy { src, src_idx, dst, dst_idx } => {
-                    let (su, se) = c.unit(*src_idx)?;
-                    let (du, de) = c.unit(*dst_idx)?;
+                    let su = c.unit(*src_idx)?;
+                    let du = c.unit(*dst_idx)?;
                     if su != du {
                         return Err(tt_err(format!("skamandros: copy units {su:?} and {du:?} disagree")));
                     }
-                    let sidx = c.unit_index(*src_idx, se);
-                    let didx = c.unit_index(*dst_idx, de);
+                    let sidx = c.page_index(*src_idx, *src)?;
+                    let didx = c.page_index(*dst_idx, *dst)?;
                     let _ = writeln!(c.text, "copy {},{} {} [{didx}] = {} [{sidx}]", su[0], su[1], c.name(*dst), c.name(*src));
                 }
                 Op::Reduce { x, rop, reduce_axis } => {
@@ -433,7 +516,13 @@ impl Compiler<'_> {
     /// Emit a grid term, defining any value it needs in the tail.
     fn gws(&mut self, dim: &GwsDim) -> Result<String, BackendError> {
         Ok(match dim {
-            GwsDim::Const(c) => c.to_string(),
+            GwsDim::Const(c) => {
+                // A grid term is a value, like every other operand: a literal
+                // that a `mul`/`add` below names must be a declared const.
+                let name = format!("%gc{}", self.tail.len());
+                let _ = writeln!(self.tail, "{name} = const i32 {c}");
+                name
+            }
             GwsDim::Param(ordinal) => self
                 .params
                 .get(*ordinal)
