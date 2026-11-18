@@ -27,76 +27,7 @@ const VEC_COMPONENTS: [&str; 16] = [
     "x", "y", "z", "w", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "sa", "sb",
 ];
 
-// cuDNN v9 graph API constants (from cudnn_graph_v9.h). The library is dlopen'd
-// at runtime like libcuda; these are hardcoded so no C headers are needed.
-const CUDNN_STATUS_SUCCESS: c_int = 0;
-
-const CUDNN_BACKEND_OPERATIONGRAPH_DESCRIPTOR: c_int = 15;
-const CUDNN_BACKEND_VARIANT_PACK_DESCRIPTOR: c_int = 16;
-const CUDNN_BACKEND_TENSOR_DESCRIPTOR: c_int = 17;
-const CUDNN_BACKEND_MATMUL_DESCRIPTOR: c_int = 18;
-const CUDNN_BACKEND_OPERATION_MATMUL_DESCRIPTOR: c_int = 19;
-const CUDNN_BACKEND_ENGINEHEUR_DESCRIPTOR: c_int = 4;
-const CUDNN_BACKEND_EXECUTION_PLAN_DESCRIPTOR: c_int = 5;
-
-const CUDNN_ATTR_TENSOR_DATA_TYPE: c_int = 901;
-const CUDNN_ATTR_TENSOR_DIMENSIONS: c_int = 902;
-const CUDNN_ATTR_TENSOR_STRIDES: c_int = 903;
-const CUDNN_ATTR_TENSOR_UNIQUE_ID: c_int = 906;
-const CUDNN_ATTR_TENSOR_IS_VIRTUAL: c_int = 907;
-
-const CUDNN_ATTR_MATMUL_COMP_TYPE: c_int = 1500;
-
-const CUDNN_ATTR_OPERATION_MATMUL_ADESC: c_int = 1520;
-const CUDNN_ATTR_OPERATION_MATMUL_BDESC: c_int = 1521;
-const CUDNN_ATTR_OPERATION_MATMUL_CDESC: c_int = 1522;
-const CUDNN_ATTR_OPERATION_MATMUL_DESC: c_int = 1523;
-
-const CUDNN_ATTR_OPERATIONGRAPH_OPS: c_int = 801;
-
-const CUDNN_ATTR_ENGINEHEUR_MODE: c_int = 200;
-const CUDNN_ATTR_ENGINEHEUR_OPERATION_GRAPH: c_int = 201;
-const CUDNN_ATTR_ENGINEHEUR_RESULTS: c_int = 202;
-
-const CUDNN_ATTR_EXECUTION_PLAN_ENGINE_CONFIG: c_int = 401;
-const CUDNN_ATTR_EXECUTION_PLAN_WORKSPACE_SIZE: c_int = 402;
-
-const CUDNN_ATTR_VARIANT_PACK_UNIQUE_IDS: c_int = 1000;
-const CUDNN_ATTR_VARIANT_PACK_DATA_POINTERS: c_int = 1001;
-const CUDNN_ATTR_VARIANT_PACK_WORKSPACE: c_int = 1003;
-
-const CUDNN_TYPE_DATA_TYPE: c_int = 1;
-const CUDNN_TYPE_BOOLEAN: c_int = 2;
-const CUDNN_TYPE_INT64: c_int = 3;
-const CUDNN_TYPE_VOID_PTR: c_int = 6;
-const CUDNN_TYPE_HEUR_MODE: c_int = 8;
-const CUDNN_TYPE_BACKEND_DESCRIPTOR: c_int = 15;
-
-const CUDNN_DATA_FLOAT: c_int = 0;
-const CUDNN_DATA_HALF: c_int = 2;
-const CUDNN_DATA_BFLOAT16: c_int = 9;
-
-const CUDNN_HEUR_MODE_INSTANT: c_int = 0;
-
-type cudnnHandle_t = *mut cudnnContext;
-type cudnnBackendDescriptor_t = *mut cudnnBackend;
-type cudnnDataType_t = c_int;
-type cudnnStatus_t = c_int;
-
-#[repr(C)]
-#[derive(Debug)]
-struct cudnnContext {
-    _unused: [u8; 0],
-}
-
-#[repr(C)]
-#[derive(Debug)]
-struct cudnnBackend {
-    _unused: [u8; 0],
-}
-
 use std::{
-    collections::BTreeSet,
     ffi::{CString, c_char, c_int, c_uint, c_void},
     hash::BuildHasherDefault,
     path::PathBuf,
@@ -197,8 +128,6 @@ pub struct CUDAConfig {
     /// If set to None, then it will automatically use all CUDA devices,
     /// otherwise it uses only selected devices
     pub device_ids: Option<Vec<i32>>,
-    /// Whether to use cuDNN for AOT matmul kernels. Defaults to true.
-    cudnn: bool,
     /// Number of hardware queues (CUDA streams) per device used by the
     /// batched-submission worker. Defaults to 8 when unset.
     queues: Option<usize>,
@@ -215,7 +144,6 @@ pub struct CUDAMemoryPool {
     /// Resolved driver symbols, copied per pool so device init never
     /// needs a process-global driver handle.
     pub(super) fns: CudaFns,
-    pub(super) cudnn_available: bool,
     /// Keeps libcuda loaded for the worker thread's symbols.
     _lib: Arc<Library>,
 }
@@ -235,7 +163,6 @@ pub struct CUDADevice {
     memory_pool: Pool,
     dev_info: Arc<DeviceInfo>,
     pub compute_capability: [c_int; 2],
-    cudnn_available: bool,
 }
 
 /// Partition-held handle of a worker-captured graph executable. Dropping
@@ -262,62 +189,6 @@ pub(super) struct CUDAProgram {
     /// Per-`Param` kinds in head order, used at submission to split launch
     /// args into reads (`Global`) and writes (`GlobalMut`).
     params: Vec<ParamKind>,
-}
-
-/// A cuDNN v9 graph execution plan plus the metadata needed to launch it:
-/// the ordered tensor UIDs for the variant pack and the workspace pointer.
-#[derive(Debug)]
-pub(super) struct CudnnPlan {
-    plan: cudnnBackendDescriptor_t,
-    /// Tensor UIDs in launch-arg order: inputs then outputs.
-    arg_uids: Vec<i64>,
-    workspace: u64,
-    workspace_bytes: Dim,
-    /// All intermediate descriptors created while building the plan, in
-    /// creation order. Destroyed in reverse at release.
-    descrs: Vec<cudnnBackendDescriptor_t>,
-}
-
-/// dlopen'd cuDNN library: the v9 graph API functions plus the handle/descriptor
-/// create/destroy. Kept in a struct so the library stays loaded for the worker
-/// thread and symbols are resolved once at init.
-struct CudnnLib {
-    #[allow(dead_code)]
-    _lib: Library,
-    create: unsafe extern "C" fn(*mut cudnnHandle_t) -> cudnnStatus_t,
-    destroy: unsafe extern "C" fn(cudnnHandle_t) -> cudnnStatus_t,
-    backend_create_descriptor: unsafe extern "C" fn(c_int, *mut cudnnBackendDescriptor_t) -> cudnnStatus_t,
-    backend_destroy_descriptor: unsafe extern "C" fn(cudnnBackendDescriptor_t) -> cudnnStatus_t,
-    backend_finalize: unsafe extern "C" fn(cudnnBackendDescriptor_t) -> cudnnStatus_t,
-    backend_set_attribute: unsafe extern "C" fn(cudnnBackendDescriptor_t, c_int, c_int, i64, *const c_void) -> cudnnStatus_t,
-    backend_get_attribute:
-        unsafe extern "C" fn(cudnnBackendDescriptor_t, c_int, c_int, i64, *mut i64, *mut c_void) -> cudnnStatus_t,
-    backend_execute: unsafe extern "C" fn(cudnnHandle_t, cudnnBackendDescriptor_t, cudnnBackendDescriptor_t) -> cudnnStatus_t,
-}
-
-/// A generic description of a cuDNN graph subgraph, mirroring the cuDNN v9
-/// graph API. Sent to the worker thread for JIT compilation at match time.
-#[derive(Debug)]
-pub(super) struct CudnnGraph {
-    tensors: Vec<CudnnTensor>,
-    ops: Vec<CudnnOp>,
-    /// Non-virtual tensor UIDs in launch-arg order (inputs then outputs).
-    arg_uids: Vec<i64>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct CudnnTensor {
-    uid: i64,
-    shape: Vec<Dim>,
-    dtype: DType,
-    /// Virtual tensors are intermediates; only non-virtual tensors appear in
-    /// the launch arg list.
-    is_virtual: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(super) enum CudnnOp {
-    Matmul { a: i64, b: i64, c: i64, compute_dtype: DType },
 }
 
 #[derive(Debug)]
@@ -435,8 +306,7 @@ enum CUDACommand {
     /// Execute a preplanned partition: allocate unbound defs from their
     /// specs, capture to a CUDA graph on first sight (or patch + relaunch
     /// the `graph` executable), launch, reply fresh chunks + graph id.
-    /// Partitions holding cuDNN programs are submitted directly and never
-    /// captured. Dynamic-shape repeats (vars mismatch) recapture in place
+    /// Dynamic-shape repeats (vars mismatch) recapture in place
     /// under the same id.
     Replay {
         cmds: Vec<Cmd>,
@@ -579,7 +449,7 @@ fn no_pool(id: u16) -> BackendError {
     BackendError { status: ErrorStatus::Initialization, context: format!("Pool::Cuda({id}) is not available").into() }
 }
 
-fn load_driver() -> Result<(Arc<Library>, Option<Arc<CudnnLib>>, Vec<i32>, CudaFns), BackendError> {
+fn load_driver() -> Result<(Arc<Library>, Vec<i32>, CudaFns), BackendError> {
     let debug_dev = super::debug_backends();
     let config = super::config();
     if let Some(device_ids) = &config.cuda.device_ids
@@ -609,15 +479,6 @@ fn load_driver() -> Result<(Arc<Library>, Option<Arc<CudnnLib>>, Vec<i32>, CudaF
         }
         return Err(BackendError { status: ErrorStatus::DyLibNotFound, context: "[cuda] libcuda.so not found.".into() });
     };
-
-    // Load cuDNN for AOT matmul kernels (optional). Kept alive for the worker
-    // threads via an Arc; without it the CUDA backend still works normally.
-    let cudnn = if config.cuda.cudnn { load_cudnn() } else { None };
-    if debug_dev && cudnn.is_some() {
-        println!("[cuda] cuDNN graph API loaded");
-    } else if debug_dev && !config.cuda.cudnn {
-        println!("[cuda] cuDNN disabled by config");
-    }
 
     let cuInit: unsafe extern "C" fn(c_uint) -> CUDAStatus = *unsafe { cuda.get(b"cuInit\0") }?;
     let cuDriverGetVersion: unsafe extern "C" fn(*mut c_int) -> CUDAStatus = *unsafe { cuda.get(b"cuDriverGetVersion\0") }?;
@@ -763,7 +624,7 @@ fn load_driver() -> Result<(Arc<Library>, Option<Arc<CudnnLib>>, Vec<i32>, CudaF
         cuMemcpyDtoDAsync,
     };
     let lib = Arc::new(cuda);
-    Ok((lib, cudnn, device_ids, fns))
+    Ok((lib, device_ids, fns))
 }
 
 /// Spawns one GPU's worker thread (owns the CUDA context) and returns nothing;
@@ -771,7 +632,6 @@ fn load_driver() -> Result<(Arc<Library>, Option<Arc<CudnnLib>>, Vec<i32>, CudaF
 /// the old `initialize_device` so pool init can run without device init.
 fn spawn_worker(
     fns: CudaFns,
-    cudnn: Option<Arc<CudnnLib>>,
     lib: Arc<Library>,
     device: CUdevice,
     dev_ordinal: i32,
@@ -896,17 +756,6 @@ fn spawn_worker(
         // This worker's pool identity: placements resolve through the shard
         // addressed to this pool.
         let my_pool = pool;
-
-        // Create the cuDNN handle on this worker thread (it owns the
-        // current CUDA context). Optional — only used by AOT cudnn kernels.
-        let cudnn_handle = cudnn.as_ref().and_then(|cudnn| {
-            let mut handle = ptr::null_mut();
-            if unsafe { (cudnn.create)(&raw mut handle) } == CUDNN_STATUS_SUCCESS {
-                Some(handle)
-            } else {
-                None
-            }
-        });
 
         // Worker loop
         'work_thread_loop: while let Ok(cmd) = rx.recv() {
@@ -1308,13 +1157,36 @@ fn spawn_worker(
                                 return Err(e);
                             }
                             cap_events.push(ev);
-                                // (those take the direct path above).
-                                let CUDAProgram::Module { function, .. } = &programs[program.program_id] else {
-                                    return Err(BackendError {
-                                        status: ErrorStatus::KernelLaunch,
-                                        context: "capture of non-module program".into(),
-                                    });
-                                };
+                        }
+                        let entry = cmds.len();
+                        let recaptured = (|| -> Result<(CUgraph, Vec<Vec<OpId>>, Vec<u64>), BackendError> {
+                            unsafe { (cuStreamBeginCapture)(streams[0].stream, 0) }.check(ErrorStatus::KernelLaunch)?;
+                            // Fork root first: a record on a stream that
+                            // never entered capture is a non-captured
+                            // event, and waiting on one later is an
+                            // isolation error — every side stream forks
+                            // from this record (entry wait below).
+                            unsafe { (cuEventRecord)(cap_events[entry], streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
+                            let mut entered = vec![false; streams.len()];
+                            let mut node_args: Vec<Vec<OpId>> = Vec::new();
+                            let mut ptrs: Vec<u64> = Vec::new();
+                            // Capture-local edge pair: same record/wait
+                            // shape as the direct path, but over the fresh
+                            // events above so the baked nodes are
+                            // self-consistent on relaunch.
+                            let wait_for = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
+                                for &p in &waits[idx] {
+                                    unsafe { (cuStreamWaitEvent)(stream, cap_events[p], 0) }.check(ErrorStatus::KernelLaunch)?;
+                                }
+                                Ok(())
+                            };
+                            let mark_done = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
+                                unsafe { (cuEventRecord)(cap_events[idx], stream) }.check(ErrorStatus::KernelLaunch)?;
+                                Ok(())
+                            };
+                            for (idx, cmd) in cmds.iter().enumerate() {
+                                let Cmd::Launch { program, args, .. } = cmd else { continue };
+                                let CUDAProgram { function, .. } = &programs[program.program_id];
                                 let function = *function;
                                 let (grid, block) = geometry_of(program.program_id, args)?;
                                 let mut buffer_ptrs = Vec::new();
@@ -1491,7 +1363,7 @@ fn spawn_worker(
                         let id = graphs.push(CapturedGraph { exec, node_args, ptrs, vars: vars.clone(), events: cap_events });
                         unsafe { (cuGraphLaunch)(exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
                         Ok(ReplayResult { fresh, graph: Some(id) })
-                    }}();
+                    })();
                     let _ = reply.send(result);
                 }
                 CUDACommand::CopyHtoD { src, dst, bytes, reply } => {
@@ -1580,14 +1452,14 @@ fn spawn_worker(
                     }
                 }
                 CUDACommand::ReleaseProgram { program_id } => {
-                    let CUDAProgram::Module { module, .. } = &programs[program_id]:
+                    let CUDAProgram { module, .. } = &programs[program_id];
                     let _ = unsafe { (cuModuleUnload)(*module) }.check(ErrorStatus::Deinitialization);
                     programs.remove(program_id);
                 }
             }
+        }
         //println!("DEINIT receiver");
-        });
-    }
+    });
 }
 
 /// Single backend initializer: enumerates GPUs once, spawns one worker per
@@ -1595,8 +1467,7 @@ fn spawn_worker(
 /// Reads config directly; called via `backend()` which publishes both tables.
 fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADevice>>), BackendError> {
     let debug_dev = super::debug_backends();
-    let (lib, cudnn, device_ids, fns) = load_driver()?;
-    let cudnn_available = cudnn.is_some();
+    let (lib, device_ids, fns) = load_driver()?;
     let mut pools = Vec::new();
     let mut devs = Vec::new();
     for dev_ordinal in device_ids {
@@ -1634,7 +1505,6 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
         let index = devs.len();
         spawn_worker(
             fns,
-            cudnn.clone(),
             Arc::clone(&lib),
             device,
             dev_ordinal,
@@ -1649,7 +1519,6 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
             device,
             dev_ordinal,
             fns,
-            cudnn_available,
             _lib: Arc::clone(&lib),
         }));
         let mut dev = CUDADevice {
@@ -1679,7 +1548,6 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
             }),
             memory_pool: Pool::Cuda(index as u16),
             compute_capability: [major, minor],
-            cudnn_available,
             dev_id: u32::try_from(dev_ordinal).unwrap(),
         };
         let cuDeviceGetAttribute = fns.cuDeviceGetAttribute;
@@ -2348,8 +2216,8 @@ fn buffer_ptr(buffers: &Slab<ChunkId, CUDABuffer>, chunk: ChunkId, offset: usize
     Ok(buf.ptr + offset as u64)
 }
 
-/// Resolves launch args against the buffer table and submits one kernel (or
-/// cuDNN plan) onto `stream`. Used by `LaunchTimed`.
+/// Resolves launch args against the buffer table and submits one kernel onto
+/// `stream`. Used by `LaunchTimed`.
 #[allow(clippy::too_many_arguments)]
 fn submit_launch(
     programs: &Slab<DeviceProgramId, CUDAProgram>,
@@ -2372,7 +2240,7 @@ fn submit_launch(
         *mut *mut c_void,
     ) -> CUDAStatus,
 ) -> Result<(), BackendError> {
-    let CUDAProgram { module, ref function, lws, gws, params } = programs[program_id];
+    let CUDAProgram { function, lws, gws, params, .. } = &programs[program_id];
     let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
     // Boxed so reallocs of this vec can never dangle the
     // pointers handed to cuLaunchKernel.
@@ -2428,446 +2296,6 @@ fn submit_launch(
         (cuLaunchKernel)(*function, gx, gy, gz, lws[0], lws[1], lws[2], 0, stream, kernel_params.as_mut_ptr(), ptr::null_mut())
     }
     .check(ErrorStatus::KernelLaunch)
-}
-
-/// dlopens libcudnn.so.9 and resolves the graph API symbols. Returns `None` if
-/// the library or any required symbol is missing — cuDNN AOT is then disabled.
-fn load_cudnn() -> Option<Arc<CudnnLib>> {
-    let paths = [
-        "/usr/lib/x86_64-linux-gnu/libcudnn.so.9",
-        "/usr/local/lib/libcudnn.so.9",
-        "/usr/lib/libcudnn.so.9",
-        "/usr/local/cuda/lib64/libcudnn.so.9",
-        "/opt/cuda/lib64/libcudnn.so.9",
-        "/opt/cudnn/lib/libcudnn.so.9",
-    ];
-    let lib = paths.into_iter().find_map(|path| unsafe { Library::new(path) }.ok())?;
-    let create: unsafe extern "C" fn(*mut cudnnHandle_t) -> cudnnStatus_t = *unsafe { lib.get(b"cudnnCreate\0") }.ok()?;
-    let destroy: unsafe extern "C" fn(cudnnHandle_t) -> cudnnStatus_t = *unsafe { lib.get(b"cudnnDestroy\0") }.ok()?;
-    let backend_create_descriptor: unsafe extern "C" fn(c_int, *mut cudnnBackendDescriptor_t) -> cudnnStatus_t =
-        *unsafe { lib.get(b"cudnnBackendCreateDescriptor\0") }.ok()?;
-    let backend_destroy_descriptor: unsafe extern "C" fn(cudnnBackendDescriptor_t) -> cudnnStatus_t =
-        *unsafe { lib.get(b"cudnnBackendDestroyDescriptor\0") }.ok()?;
-    let backend_finalize: unsafe extern "C" fn(cudnnBackendDescriptor_t) -> cudnnStatus_t =
-        *unsafe { lib.get(b"cudnnBackendFinalize\0") }.ok()?;
-    let backend_set_attribute: unsafe extern "C" fn(cudnnBackendDescriptor_t, c_int, c_int, i64, *const c_void) -> cudnnStatus_t =
-        *unsafe { lib.get(b"cudnnBackendSetAttribute\0") }.ok()?;
-    let backend_get_attribute: unsafe extern "C" fn(
-        cudnnBackendDescriptor_t,
-        c_int,
-        c_int,
-        i64,
-        *mut i64,
-        *mut c_void,
-    ) -> cudnnStatus_t = *unsafe { lib.get(b"cudnnBackendGetAttribute\0") }.ok()?;
-    let backend_execute: unsafe extern "C" fn(
-        cudnnHandle_t,
-        cudnnBackendDescriptor_t,
-        cudnnBackendDescriptor_t,
-    ) -> cudnnStatus_t = *unsafe { lib.get(b"cudnnBackendExecute\0") }.ok()?;
-    Some(Arc::new(CudnnLib {
-        _lib: lib,
-        create,
-        destroy,
-        backend_create_descriptor,
-        backend_destroy_descriptor,
-        backend_finalize,
-        backend_set_attribute,
-        backend_get_attribute,
-        backend_execute,
-    }))
-}
-
-/// Maps a zyx `DType` to a cuDNN `cudnnDataType_t` value.
-fn cudnn_data_type(dtype: DType) -> Option<c_int> {
-    Some(match dtype {
-        DType::F32 => CUDNN_DATA_FLOAT,
-        DType::F16 => CUDNN_DATA_HALF,
-        DType::BF16 => CUDNN_DATA_BFLOAT16,
-        _ => return None,
-    })
-}
-
-/// JIT-compiles a cuDNN execution plan for a generic [`CudnnGraph`] subgraph:
-/// tensor descriptors are built for every tensor, each op is expanded into its
-/// cuDNN op descriptor (via [`build_cudnn_op`]), engine heuristics pick a
-/// kernel, and the execution plan is finalized with fixed shapes. Returns the
-/// compiled plan with its workspace allocated.
-#[allow(clippy::too_many_lines)]
-unsafe fn build_cudnn_plan(
-    cudnn: &CudnnLib,
-    graph: &CudnnGraph,
-    cuMemAlloc: unsafe extern "C" fn(*mut CUdeviceptr, usize) -> CUDAStatus,
-) -> Result<CudnnPlan, BackendError> {
-    unsafe {
-        let mut descrs: Vec<cudnnBackendDescriptor_t> = Vec::new();
-        let mut tensor_descs: Vec<cudnnBackendDescriptor_t> = Vec::new();
-        for tensor in &graph.tensors {
-            let mut desc = ptr::null_mut();
-            if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_TENSOR_DESCRIPTOR, &raw mut desc) != CUDNN_STATUS_SUCCESS {
-                for d in descrs.iter().rev() {
-                    let _ = (cudnn.backend_destroy_descriptor)(*d);
-                }
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "cuDNN create tensor descriptor".into(),
-                });
-            }
-            let dtype = cudnn_data_type(tensor.dtype).unwrap_or(CUDNN_DATA_FLOAT);
-            let dims: Vec<i64> = tensor.shape.to_vec();
-            let strides: Vec<i64> = (0..dims.len()).map(|i| dims[i + 1..].iter().product()).collect();
-            let is_virtual = tensor.is_virtual as i32;
-            if (cudnn.backend_set_attribute)(
-                desc,
-                CUDNN_ATTR_TENSOR_DATA_TYPE,
-                CUDNN_TYPE_DATA_TYPE,
-                1,
-                (&raw const dtype).cast(),
-            ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    desc,
-                    CUDNN_ATTR_TENSOR_DIMENSIONS,
-                    CUDNN_TYPE_INT64,
-                    dims.len() as i64,
-                    dims.as_ptr().cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    desc,
-                    CUDNN_ATTR_TENSOR_STRIDES,
-                    CUDNN_TYPE_INT64,
-                    strides.len() as i64,
-                    strides.as_ptr().cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    desc,
-                    CUDNN_ATTR_TENSOR_UNIQUE_ID,
-                    CUDNN_TYPE_INT64,
-                    1,
-                    (&raw const tensor.uid).cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_set_attribute)(
-                    desc,
-                    CUDNN_ATTR_TENSOR_IS_VIRTUAL,
-                    CUDNN_TYPE_BOOLEAN,
-                    1,
-                    (&raw const is_virtual).cast(),
-                ) != CUDNN_STATUS_SUCCESS
-                || (cudnn.backend_finalize)(desc) != CUDNN_STATUS_SUCCESS
-            {
-                for d in descrs.iter().rev() {
-                    let _ = (cudnn.backend_destroy_descriptor)(*d);
-                }
-                return Err(BackendError {
-                    status: ErrorStatus::KernelCompilation,
-                    context: "cuDNN configure tensor descriptor".into(),
-                });
-            }
-            tensor_descs.push(desc);
-            descrs.push(desc);
-        }
-
-        let mut op_descs: Vec<cudnnBackendDescriptor_t> = Vec::new();
-        for op in &graph.ops {
-            match unsafe { build_cudnn_op(cudnn, op, &tensor_descs, &graph.tensors, &mut descrs) } {
-                Ok(op_desc) => {
-                    op_descs.push(op_desc);
-                }
-                Err(e) => {
-                    for d in descrs.iter().rev() {
-                        let _ = (cudnn.backend_destroy_descriptor)(*d);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        // Operation graph.
-        let mut opgraph = ptr::null_mut();
-        if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_OPERATIONGRAPH_DESCRIPTOR, &raw mut opgraph) != CUDNN_STATUS_SUCCESS
-            || (cudnn.backend_set_attribute)(
-                opgraph,
-                CUDNN_ATTR_OPERATIONGRAPH_OPS,
-                CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                op_descs.len() as i64,
-                op_descs.as_ptr().cast(),
-            ) != CUDNN_STATUS_SUCCESS
-            || (cudnn.backend_finalize)(opgraph) != CUDNN_STATUS_SUCCESS
-        {
-            for d in descrs.iter().rev() {
-                let _ = (cudnn.backend_destroy_descriptor)(*d);
-            }
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN operation graph".into() });
-        }
-        descrs.push(opgraph);
-
-        // Engine heuristics: query the ranked list of engine configs.
-        let mut heur = ptr::null_mut();
-        let heur_mode = CUDNN_HEUR_MODE_INSTANT;
-        if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_ENGINEHEUR_DESCRIPTOR, &raw mut heur) != CUDNN_STATUS_SUCCESS
-            || (cudnn.backend_set_attribute)(
-                heur,
-                CUDNN_ATTR_ENGINEHEUR_MODE,
-                CUDNN_TYPE_HEUR_MODE,
-                1,
-                (&raw const heur_mode).cast(),
-            ) != CUDNN_STATUS_SUCCESS
-            || (cudnn.backend_set_attribute)(
-                heur,
-                CUDNN_ATTR_ENGINEHEUR_OPERATION_GRAPH,
-                CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                1,
-                (&raw const opgraph).cast(),
-            ) != CUDNN_STATUS_SUCCESS
-            || (cudnn.backend_finalize)(heur) != CUDNN_STATUS_SUCCESS
-        {
-            for d in descrs.iter().rev() {
-                let _ = (cudnn.backend_destroy_descriptor)(*d);
-            }
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN engine heuristics".into() });
-        }
-        descrs.push(heur);
-
-        let mut num_engines: i64 = 0;
-        if (cudnn.backend_get_attribute)(
-            heur,
-            CUDNN_ATTR_ENGINEHEUR_RESULTS,
-            CUDNN_TYPE_BACKEND_DESCRIPTOR,
-            0,
-            &raw mut num_engines,
-            ptr::null_mut(),
-        ) != CUDNN_STATUS_SUCCESS
-            || num_engines <= 0
-        {
-            for d in descrs.iter().rev() {
-                let _ = (cudnn.backend_destroy_descriptor)(*d);
-            }
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN heuristic engine query".into() });
-        }
-        let mut engine_configs: Vec<cudnnBackendDescriptor_t> = vec![ptr::null_mut(); num_engines as usize];
-        if (cudnn.backend_get_attribute)(
-            heur,
-            CUDNN_ATTR_ENGINEHEUR_RESULTS,
-            CUDNN_TYPE_BACKEND_DESCRIPTOR,
-            num_engines,
-            &raw mut num_engines,
-            engine_configs.as_mut_ptr().cast(),
-        ) != CUDNN_STATUS_SUCCESS
-        {
-            for d in descrs.iter().rev() {
-                let _ = (cudnn.backend_destroy_descriptor)(*d);
-            }
-            return Err(BackendError {
-                status: ErrorStatus::KernelCompilation,
-                context: "cuDNN heuristic engine results".into(),
-            });
-        }
-        for cfg in &engine_configs {
-            descrs.push(*cfg);
-        }
-
-        // Execution plan from the best engine config.
-        let mut plan = ptr::null_mut();
-        if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_EXECUTION_PLAN_DESCRIPTOR, &raw mut plan) != CUDNN_STATUS_SUCCESS
-            || (cudnn.backend_set_attribute)(
-                plan,
-                CUDNN_ATTR_EXECUTION_PLAN_ENGINE_CONFIG,
-                CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                1,
-                (&raw const engine_configs[0]).cast(),
-            ) != CUDNN_STATUS_SUCCESS
-            || (cudnn.backend_finalize)(plan) != CUDNN_STATUS_SUCCESS
-        {
-            for d in descrs.iter().rev() {
-                let _ = (cudnn.backend_destroy_descriptor)(*d);
-            }
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN execution plan".into() });
-        }
-
-        // Query the required workspace size and allocate it.
-        let mut workspace_bytes: i64 = 0;
-        if (cudnn.backend_get_attribute)(
-            plan,
-            CUDNN_ATTR_EXECUTION_PLAN_WORKSPACE_SIZE,
-            CUDNN_TYPE_INT64,
-            1,
-            &raw mut workspace_bytes,
-            (&raw mut workspace_bytes).cast(),
-        ) != CUDNN_STATUS_SUCCESS
-        {
-            for d in descrs.iter().rev() {
-                let _ = (cudnn.backend_destroy_descriptor)(*d);
-            }
-            return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN workspace query".into() });
-        }
-        let mut workspace: u64 = 0;
-        if workspace_bytes > 0 && (cuMemAlloc)(&raw mut workspace, workspace_bytes as usize) != CUDAStatus::CUDA_SUCCESS {
-            for d in descrs.iter().rev() {
-                let _ = (cudnn.backend_destroy_descriptor)(*d);
-            }
-            return Err(BackendError { status: ErrorStatus::MemoryAllocation, context: "cuDNN workspace alloc".into() });
-        }
-        descrs.push(plan);
-
-        Ok(CudnnPlan { plan, arg_uids: graph.arg_uids.clone(), workspace, workspace_bytes: workspace_bytes as Dim, descrs })
-    }
-}
-
-/// Builds the cuDNN op descriptor for a single [`CudnnOp`]. All descriptors it
-/// creates are appended to `descrs` so the caller can clean them up on error.
-/// Returns the finalized op descriptor.
-unsafe fn build_cudnn_op(
-    cudnn: &CudnnLib,
-    op: &CudnnOp,
-    tensor_descs: &[cudnnBackendDescriptor_t],
-    tensors: &[CudnnTensor],
-    descrs: &mut Vec<cudnnBackendDescriptor_t>,
-) -> Result<cudnnBackendDescriptor_t, BackendError> {
-    unsafe {
-        let uid_of = |uid: &i64| tensors.iter().position(|t| &t.uid == uid).map(|i| tensor_descs[i]).unwrap_or(ptr::null_mut());
-        match op {
-            CudnnOp::Matmul { a, b, c, compute_dtype } => {
-                let a_desc = uid_of(a);
-                let b_desc = uid_of(b);
-                let c_desc = uid_of(c);
-                let compute_dtype = cudnn_data_type(*compute_dtype).unwrap_or(CUDNN_DATA_FLOAT);
-
-                // Matmul config descriptor: compute type.
-                let mut mm_cfg = ptr::null_mut();
-                if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_MATMUL_DESCRIPTOR, &raw mut mm_cfg) != CUDNN_STATUS_SUCCESS
-                    || (cudnn.backend_set_attribute)(
-                        mm_cfg,
-                        CUDNN_ATTR_MATMUL_COMP_TYPE,
-                        CUDNN_TYPE_DATA_TYPE,
-                        1,
-                        (&raw const compute_dtype).cast(),
-                    ) != CUDNN_STATUS_SUCCESS
-                    || (cudnn.backend_finalize)(mm_cfg) != CUDNN_STATUS_SUCCESS
-                {
-                    return Err(BackendError { status: ErrorStatus::KernelCompilation, context: "cuDNN matmul config".into() });
-                }
-                descrs.push(mm_cfg);
-
-                let mut op_desc = ptr::null_mut();
-                if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_OPERATION_MATMUL_DESCRIPTOR, &raw mut op_desc)
-                    != CUDNN_STATUS_SUCCESS
-                    || (cudnn.backend_set_attribute)(
-                        op_desc,
-                        CUDNN_ATTR_OPERATION_MATMUL_ADESC,
-                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                        1,
-                        (&raw const a_desc).cast(),
-                    ) != CUDNN_STATUS_SUCCESS
-                    || (cudnn.backend_set_attribute)(
-                        op_desc,
-                        CUDNN_ATTR_OPERATION_MATMUL_BDESC,
-                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                        1,
-                        (&raw const b_desc).cast(),
-                    ) != CUDNN_STATUS_SUCCESS
-                    || (cudnn.backend_set_attribute)(
-                        op_desc,
-                        CUDNN_ATTR_OPERATION_MATMUL_CDESC,
-                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                        1,
-                        (&raw const c_desc).cast(),
-                    ) != CUDNN_STATUS_SUCCESS
-                    || (cudnn.backend_set_attribute)(
-                        op_desc,
-                        CUDNN_ATTR_OPERATION_MATMUL_DESC,
-                        CUDNN_TYPE_BACKEND_DESCRIPTOR,
-                        1,
-                        (&raw const mm_cfg).cast(),
-                    ) != CUDNN_STATUS_SUCCESS
-                    || (cudnn.backend_finalize)(op_desc) != CUDNN_STATUS_SUCCESS
-                {
-                    return Err(BackendError {
-                        status: ErrorStatus::KernelCompilation,
-                        context: "cuDNN matmul operation".into(),
-                    });
-                }
-                descrs.push(op_desc);
-                Ok(op_desc)
-            }
-        }
-    }
-}
-
-/// Launches a compiled cuDNN plan on `stream`: builds a variant pack binding
-/// the non-virtual tensor UIDs to the launch arg buffers (plus workspace) and
-/// executes it.
-#[allow(clippy::too_many_lines)]
-unsafe fn launch_cudnn_plan(
-    cudnn: &Option<Arc<CudnnLib>>,
-    handle: Option<cudnnHandle_t>,
-    plan: &CudnnPlan,
-    buffers: &Slab<ChunkId, CUDABuffer>,
-    args: &[LaunchArg],
-    stream: CUstream,
-) -> Result<(), BackendError> {
-    unsafe {
-        let Some(cudnn) = cudnn else {
-            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "cuDNN library not loaded.".into() });
-        };
-        let Some(handle) = handle else {
-            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "cuDNN handle missing.".into() });
-        };
-        let _ = stream;
-
-        let mut variant_pack = ptr::null_mut();
-        if (cudnn.backend_create_descriptor)(CUDNN_BACKEND_VARIANT_PACK_DESCRIPTOR, &raw mut variant_pack) != CUDNN_STATUS_SUCCESS
-        {
-            return Err(BackendError { status: ErrorStatus::KernelLaunch, context: "cuDNN variant pack".into() });
-        }
-
-        let mut data_ptrs: Vec<*mut c_void> = Vec::with_capacity(args.len());
-        for arg in args.iter() {
-            match arg {
-                LaunchArg::Variable(_) => todo!("scalar variant-pack entries in cuDNN launches"),
-                LaunchArg::Buffer { chunk, offset, len } => {
-                    data_ptrs.push(buffer_ptr(buffers, *chunk, *offset, *len)? as *mut c_void)
-                }
-            }
-        }
-        let unique_ids: Vec<i64> = plan.arg_uids.clone();
-
-        let set_ok = (cudnn.backend_set_attribute)(
-            variant_pack,
-            CUDNN_ATTR_VARIANT_PACK_UNIQUE_IDS,
-            CUDNN_TYPE_INT64,
-            unique_ids.len() as i64,
-            unique_ids.as_ptr().cast(),
-        ) == CUDNN_STATUS_SUCCESS
-            && (cudnn.backend_set_attribute)(
-                variant_pack,
-                CUDNN_ATTR_VARIANT_PACK_DATA_POINTERS,
-                CUDNN_TYPE_VOID_PTR,
-                data_ptrs.len() as i64,
-                data_ptrs.as_ptr().cast(),
-            ) == CUDNN_STATUS_SUCCESS
-            && (if plan.workspace != 0 {
-                let ws_ptr: *mut c_void = plan.workspace as *mut c_void;
-                (cudnn.backend_set_attribute)(
-                    variant_pack,
-                    CUDNN_ATTR_VARIANT_PACK_WORKSPACE,
-                    CUDNN_TYPE_VOID_PTR,
-                    1,
-                    (&raw const ws_ptr).cast(),
-                ) == CUDNN_STATUS_SUCCESS
-            } else {
-                true
-            })
-            && (cudnn.backend_finalize)(variant_pack) == CUDNN_STATUS_SUCCESS;
-
-        if set_ok {
-            let _ = (cudnn.backend_execute)(handle, plan.plan, variant_pack);
-        }
-        let _ = (cudnn.backend_destroy_descriptor)(variant_pack);
-        if set_ok {
-            Ok(())
-        } else {
-            Err(BackendError { status: ErrorStatus::KernelLaunch, context: "cuDNN variant pack config".into() })
-        }
-    }
 }
 
 impl CUDADevice {

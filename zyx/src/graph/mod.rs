@@ -473,7 +473,7 @@ impl Graph {
     }
 
     /// Dependencies of class `cid` under the **extraction** view: once a
-    /// class is produced by a jit/AOT kernel (or [`Op::ToDevice`]), its
+    /// class is produced by a jit kernel (or [`Op::ToDevice`]), its
     /// scheduling dependencies are exactly those producers' inputs. The
     /// e-graph keeps competing derivations on the class, and following them
     /// alongside kernel inputs creates false cycles (a kernel may recompute
@@ -2634,10 +2634,9 @@ impl Runtime {
         }
     }
 
-    /// Compiles the graph into a backend [`Plan`]: pattern-matches AOT kernels,
-    /// kernelizes the remaining structural nodes, autotunes the fused kernels,
-    /// extracts the cheapest kernel path, lowers it to a [`CmdQueue`], and
-    /// schedules the resulting plan.
+    /// Compiles the graph into a backend [`Plan`]: kernelizes the structural
+    /// nodes, autotunes the fused kernels, extracts the cheapest kernel path,
+    /// lowers it to a [`CmdQueue`], and schedules the resulting plan.
     pub(crate) fn compile_graph(&mut self, graph_id: GraphId, output_set: &BTreeSet<OpId>) -> Result<Plan, ZyxError> {
         debug_assert!(self.graphs.contains_id(graph_id));
         self.debug_assert_pre_realize(graph_id);
@@ -2661,20 +2660,12 @@ impl Runtime {
             }
         }
 
-        // Pattern match specialized AOT kernels (e.g. a cuDNN matmul) so they
-        // can compete with the fused zyx kernels in extraction.
-        // SAFETY: graphs borrow ends before the match call, rust is stupid
-        let dev_ids: Vec<Dev> = Dev::all();
-        let graph_ptr: *mut Graph = &mut self.graphs[graph_id];
-        for dev_id in dev_ids {
-            dev_id.match_graph(unsafe { &mut *graph_ptr }, output_set);
-        }
-
         // Lower user custom kernels into Kernel twins so the pool grouping and
-        // gap filling below see them alongside the AOT kernels.
+        // gap filling below see them alongside the autotuned kernels.
         self.graphs[graph_id].lower_custom_kernels();
 
-        // AOT kernel output classes, grouped by the memory pool they run in.
+        // Program (custom-kernel) output classes, grouped by the memory pool
+        // they run in.
         let mut pool_kernel_outputs: Map<Pool, Set<OpId>> = Map::default();
         for cid in self.graphs[graph_id].ops.iter().filter(|(id, nd)| nd.class_of == *id).map(|(id, _)| id) {
             for nid in self.graphs[graph_id].class_nodes(cid) {
@@ -2685,7 +2676,7 @@ impl Runtime {
             }
         }
 
-        // Pass 1: fill every gap between all AOT kernels, ignoring devices.
+        // Pass 1: fill every gap between all program kernels, ignoring devices.
         let all_kernel_outputs: Set<OpId> = pool_kernel_outputs.values().flatten().copied().collect();
         self.graphs[graph_id].fill_gaps(&all_kernel_outputs, output_set);
 

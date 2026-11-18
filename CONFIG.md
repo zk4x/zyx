@@ -26,7 +26,7 @@ Every section is optional:
     "n_total_opts": 1000
   },
   "c": { "enabled": true },
-  "cuda": { "device_ids": null, "cudnn": false, "queues": 8 },
+  "cuda": { "device_ids": null, "queues": 8 },
   "opencl": { "platform_ids": null, "queues": 8 },
   "vulkan": { "device_ids": null },
   "tenstorrent": { "device_ids": null },
@@ -66,7 +66,6 @@ object. Uses the host memory pool.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `device_ids` | `Option<Vec<i32>>` | `null` | `null` = all devices; `[]` = disable CUDA; `[0, 1]` = those driver ordinals |
-| `cudnn` | `bool` | `false` | Use cuDNN for AOT matmul kernels |
 | `queues` | `Option<usize>` | `8` | Hardware queues (streams) per device |
 
 ### `opencl` — OpenCL backend

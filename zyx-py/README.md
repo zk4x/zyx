@@ -218,7 +218,7 @@ Backends can be disabled, enabled, or restricted through
 
 ```json
 {
-  "cuda":        {"device_ids": [0], "cudnn": true},
+  "cuda":        {"device_ids": [0]},
   "opencl":      {"platform_ids": []},
   "vulkan":      {"device_ids": []},
   "tenstorrent": {"device_ids": []}

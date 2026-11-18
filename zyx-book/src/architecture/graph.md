@@ -94,9 +94,8 @@ several alternative producers, and extraction chooses between them:
 
 - **CSE** via hashconsing: identical structural ops share one class.
 - **Kernel twins**: the kernelizer mints an `Op::Program` node for every fused
-  kernel candidate, on the class it produces.
-- **AOT pattern matches**: backends add `Op::Program` nodes for precompiled
-  kernels (cuDNN, ...), so they compete with fused kernels.
+  kernel candidate, on the class it produces. Custom kernels are minted the
+  same way, so they compete with fused kernels.
 - **Transfers**: extraction inserts `Op::ToDevice` nodes where the chosen
   producer and consumer live on different devices.
 

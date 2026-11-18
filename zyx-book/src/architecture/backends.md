@@ -86,7 +86,7 @@ What is left for a backend is exactly the **non-searchable, non-SSA residue**: r
 | Backend | Source | Target | Runtime |
 |---------|--------|--------|---------|
 | C | `c.rs` | C99 (compiled to .so) | Clang/GCC |
-| CUDA | `cuda.rs` | CUDA C → SASS, cuDNN for AOT matmul | CUDA driver via `libloading` |
+| CUDA | `cuda.rs` | CUDA C → SASS | CUDA driver via `libloading` |
 | OpenCL | `opencl.rs` | OpenCL C | OpenCL runtime via `libloading` |
 | Vulkan | `vulkan.rs` | SPIR-V | Vulkan via `ash` crate |
 | WGPU | `wgpu.rs` | WGSL | WGPU (feature: `wgpu`) |

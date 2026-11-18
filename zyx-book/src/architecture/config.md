@@ -23,7 +23,7 @@ A complete example (every section is optional):
         "n_total_opts": 1000
     },
     "c": { "enabled": true },
-    "cuda": { "device_ids": [0], "cudnn": true, "queues": 8 },
+    "cuda": { "device_ids": [0], "queues": 8 },
     "opencl": { "platform_ids": [0], "queues": 8 },
     "vulkan": { "device_ids": [0] },
     "tenstorrent": { "device_ids": [0] }
@@ -39,7 +39,7 @@ the `wgpu` feature; the `tenstorrent` section selects from the devices
 | Section | Keys | Default | Disable with |
 |---------|------|---------|--------------|
 | `c` | `enabled` | `true` | `"enabled": false` |
-| `cuda` | `device_ids`, `cudnn`, `queues` | all GPUs, cuDNN off, 8 queues | `"device_ids": []` |
+| `cuda` | `device_ids`, `queues` | all GPUs, 8 queues | `"device_ids": []` |
 | `opencl` | `platform_ids`, `queues` | all platforms, 8 queues | `"platform_ids": []` |
 | `vulkan` | `device_ids` | all devices | `"device_ids": []` |
 | `tenstorrent` | `device_ids` | all devices | `"device_ids": []` |
@@ -50,7 +50,6 @@ finds"; a list selects exactly those ordinals; an **empty list disables the
 backend**. Ordinals are the backend's own (CUDA driver order, Vulkan device
 index, OpenCL platform index).
 
-`cuda.cudnn` enables the cuDNN AOT matmul path (the struct default is `false`).
 `cuda.queues` and `opencl.queues` set the number of hardware command
 queues/streams per device used by the submission workers (default 8).
 

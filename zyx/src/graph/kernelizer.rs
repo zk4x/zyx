@@ -121,11 +121,12 @@ impl Graph {
                 continue;
             }
             for nid in self.class_nodes(cid) {
-                // Kernel nodes added by pattern matching (e.g. cuDNN) are never
-                // consumed here — kernelize only processes structural nodes.
-                // The same holds for user custom kernels (`Node::Custom` and its
-                // lowered `Node::Kernel` twin): their inputs are materialized via
-                // `kernel_inputs` in `fill_gaps`, not via reference counting here.
+                // Kernel nodes minted by the kernelizer are never consumed
+                // here — kernelize only processes structural nodes. The same
+                // holds for user custom kernels (`Node::Custom` and its
+                // lowered `Node::Kernel` twin): their inputs are materialized
+                // via `kernel_inputs` in `fill_gaps`, not via reference
+                // counting here.
                 if matches!(&self.ops[nid].op, Op::Program { .. } | Op::Kernel { .. }) {
                     continue;
                 }
@@ -1355,10 +1356,11 @@ impl Graph {
                 }
             }
 
-            // AOT kernel classes (e.g. a cuDNN matmul output) are computed by a
-            // backend kernel, not by this fused kernel. Materialize the class into
-            // storage and hand off to a fresh load kernel, so downstream ops (e.g.
-            // relu) start from the stored class instead of fusing into this kernel.
+            // Program kernel classes (a custom kernel's output) are computed by
+            // a backend kernel, not by this fused kernel. Materialize the class
+            // into storage and hand off to a fresh load kernel, so downstream
+            // ops (e.g. relu) start from the stored class instead of fusing
+            // into this kernel.
             if !inputs.contains(&cid) && self.class_nodes(cid).any(|nid| matches!(&self.ops[nid].op, Op::Program { .. })) {
                 let (kid, op_id) = visited[&cid];
                 let _ = self.add_store(cid, kid, op_id, &mut visited, &rcs);

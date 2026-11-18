@@ -96,8 +96,7 @@ fused into the kernel of its consumer when the surrounding ops allow it, and a
 value with several consumers is produced once with one output copy per consumer.
 Storing a value and reloading it for later consumers creates a load kernel at
 that boundary. `fill_gaps` runs the same machinery per connected region so that
-AOT kernels (e.g. a cuDNN matmul) and custom kernels can compete with fused
-kernels inside the same graph.
+custom kernels and fused kernels compete inside the same graph.
 
 Movement ops are not materialized just to be read back. Their index arithmetic
 is replayed into the consumer, and the `linearize` pass unfolds it, so a

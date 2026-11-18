@@ -30,14 +30,13 @@ use crate::{Map, Set, hashers::FHasher};
 use crate::{
     dtype::{Constant, DType},
     error::{BackendError, ErrorStatus, ZyxError},
-    graph::Graph,
     kernel::{BOp, Kernel, MMADType, MMADims, MMALayout, Op, OpId, ParamKind, RangeKind, UOp},
     shape::Dim,
     slab::SlabId,
 };
 use nanoserde::{DeBin, DeJson, SerBin};
 use std::sync::Mutex;
-use std::{collections::BTreeSet, hash::BuildHasherDefault, sync::Arc};
+use std::{hash::BuildHasherDefault, sync::Arc};
 
 mod c;
 mod cuda;
@@ -864,27 +863,6 @@ impl Dev {
             #[cfg(feature = "wgpu")]
             Dev::WGPU(id) => dlock(self, &wgpu::device(id).expect("WGPU device unavailable")).release(program_id),
         }
-    }
-
-    /// Pattern-matches subgraphs in `graph` (e.g. matmul) and adds `Node::Kernel`s
-    /// backed by this device's AOT kernels so they compete with the fused zyx
-    /// kernels in extraction. No-op for devices without AOT kernels.
-    pub fn match_graph(self, graph: &mut Graph, outputs: &BTreeSet<OpId>) {
-        match self {
-            Dev::Auto => {}
-            Dev::C => {}
-            Dev::Host => {}
-            Dev::Cuda(id) => dlock(self, cuda::device(id).expect("CUDA device unavailable")).match_graph(graph, outputs),
-            Dev::OpenCL(_) => {}
-            Dev::Vulkan(_) => {}
-
-            Dev::TT(_) => {}
-            #[cfg(feature = "wgpu")]
-            Dev::WGPU(_) => {}
-        }
-        // A vendor pass adds Node::Kernel nodes with input edges; those must
-        // never close a dependency cycle over the class graph.
-        graph.verify();
     }
 
     /// Timed launch for autotune: returns the kernel's run time in nanos.
