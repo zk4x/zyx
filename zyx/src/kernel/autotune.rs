@@ -112,12 +112,10 @@ impl Kernel {
     /// which is a property of the candidate, not of the device.
     pub(crate) fn device_epilogue(&mut self) -> Result<(), ZyxError> {
         // `Pow` -> `exp2(y * log2 x)` is a *lowering* decision, so it happens
-        // exactly once, here, for every backend: the pairs this creates are
-        // what the backend-specific passes below turn into primitives
-        // (`tt_unfold` on Tenstorrent, `devectorize` elsewhere). Keeping it out
-        // of `default_epilogue` means a kernel that is optimized many times
-        // during the search is not re-expanded each time, and a user-supplied
-        // epilogue cannot skip it.
+        // exactly once, here, for every backend. Keeping it out of
+        // `default_epilogue` means a kernel that is optimized many times during
+        // the search is not re-expanded each time, and a user-supplied epilogue
+        // cannot skip it.
         self.unfold_pows();
         // Unroll vectors never survive to a scalar backend: they unfold
         // to per-element statements. Tenstorrent tiles the vector IR
@@ -125,103 +123,17 @@ impl Kernel {
         // devectorize runs on the TT path.
         let dev_info = self.device_info();
         if dev_info.tenstorrent {
-            #[cfg(feature = "tenstorrent")]
-            {
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR before tt_tile ===");
-                    self.debug();
-                }
-                self.tt_tile();
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR after tt_tile ===");
-                    self.debug();
-                }
-                // The transcendentals are IR from here on: `Exp2`/`Log2` (and the
-                // `Pow` that `unfold_pows` left as that pair) become ordinary ops,
-                // so the native lowering only sees primitives.
-                self.tt_unfold();
-                // Logical indices -> physical tile traffic: a single-tile
-                // reduce loads a rank-3 cube and stores at the logical pitch;
-                // the NOC moves tiles.
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR before tt_reindex ===");
-                    self.debug();
-                }
-                self.tt_reindex();
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR after tt_reindex ===");
-                    self.debug();
-                }
-                // Native lowering: tile the SSA, then claim it into reader
-                // traffic (`TTOp::Copy`), run-level compute programs, and the
-                // section markers. There is no CB-sync or DST-lock pass: those
-                // are tt-metal API, not Tensix instructions.
-                // Every generic pass runs before the phase boundary: `tt_dataflow_select`
-                // selects the native instruction form, gives each result its own
-                // tile, and leaves no SSA behind. Nothing generic may run after it.
-                //
-                // `tt_dataflow_select` gets the minimal IR: the full always-on
-                // pipeline (constant folding, LICM, algebraic simplification,
-                // CSE, DCE), not just CSE + DCE. A composed frontend op leaves
-                // identity junk behind -- `Tensor::relu` is `cmpgt(0) * x`, and
-                // its `Bool -> F32` cast reaches `tt_lower_value` as `F32 -> F32`
-                // once the Bool is materialised in an F32 tile, which the cast
-                // arm has no program for.
-                self.default_epilogue();
-                // The CB plan is SSA: `tt_add_movers` writes the block copies, the
-                // writer drains and the two section markers as ordinary
-                // `Op::Copy`/`Load`/`Store` on `Circular` storages, with every
-                // boundary copy's DRAM side a canonical tile-image address. The
-                // phase boundary below only encodes it.
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR before tt_add_movers ===");
-                    self.debug();
-                }
-                self.tt_add_movers();
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR after tt_add_movers ===");
-                    self.debug();
-                }
-                // The four CB syncs over that traffic: reserve/push around every
-                // published page run, wait before every consumer, pop after the
-                // last read, then the balance and depth proof that keeps a
-                // deadlocked kernel off the board.
-                self.tt_sync_cbs();
-                self.tt_dedup_pushes();
-                self.tt_place_pops();
-                self.tt_fifo_check();
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR after tt_fifo_check ===");
-                    self.debug();
-                }
-                self.tt_dataflow_select();
-                if std::env::var_os("ZYX_TT_IR").is_some() {
-                    eprintln!("=== IR after tt_dataflow_select ===");
-                    self.debug();
-                }
-                // Chains that write an intermediate tile only to read it back:
-                // keep the value in its lane register. Before the allocator, so
-                // the rows it frees are never allocated.
-                self.tt_sfpu_fusion();
-                // The lane registers the fusion left are virtual (`>= 16`): this
-                // assigns the eight physical ones, per straight-line row body.
-                self.tt_lreg_alloc();
-                // The allocated form is legal but at maximal pressure; the reuse
-                // pass coalesces it down to the physical tile budget. It must run
-                // after allocation and before codegen.
-                self.tt_dst_reuse();
-                // Last: the role hand-off over the final physical tiles. It has to
-                // see where allocation put every tile, and it is the only pass
-                // that emits `Semset`/`Wait`/`Post`.
-                self.tt_reg_sync();
-                // Past the phase boundary the generic `verify` no longer applies:
-                // the lowered TT IR is native tiles/rows, and `tt_verify` is its
-                // checker.
-                self.tt_verify();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR before tt_tile ===");
+                self.debug();
             }
-            #[cfg(not(feature = "tenstorrent"))]
-            {
-                unreachable!("device_epilogue: tenstorrent feature off")
+            // The tiled IR is the program skamandros compiles: everything
+            // after tiling (movers, CB sync, `Dst` allocation, the encoders)
+            // lives in `libskamandros.so`, reached through `render`.
+            self.tt_tile();
+            if std::env::var_os("ZYX_TT_IR").is_some() {
+                eprintln!("=== IR after tt_tile ===");
+                self.debug();
             }
         } else {
             self.devectorize()?;
@@ -828,7 +740,7 @@ impl NoSearch {
         // TT tiling first: scalar row-major traffic becomes tile traffic
         // (tt_tile gates on the TT device itself, other devices skip).
         // Readability passes (relative order mirrors `default_epilogue`).
-        #[cfg(feature = "tenstorrent")]
+
         seed.tt_tile();
         for _ in 0..3 {
             seed.default_epilogue();

@@ -201,7 +201,9 @@ impl TextGeneration {
         let mut generated_tokens = 0usize;
         println!("prompt:\n{prompt}");
         std::io::stdout().flush().unwrap();
-        let start_gen = std::time::Instant::now();
+        // The first three decoded tokens pay kernel compilation and BeamSearch
+        // for the decode shapes; the throughput clock starts after them.
+        let mut measured: Option<std::time::Instant> = None;
 
         let mut start_pos = 0usize;
         // prefill: process the entire prompt at once
@@ -234,15 +236,20 @@ impl TextGeneration {
             start_pos += 1;
             last_tok = next_token;
             generated_tokens += 1;
+            if generated_tokens == 3 {
+                measured = Some(std::time::Instant::now());
+            }
             if next_token == eos_token {
                 break;
             }
         }
-        let dt = start_gen.elapsed();
-        println!(
-            "\n{generated_tokens} tokens generated ({:.2} token/s)",
-            generated_tokens as f64 / dt.as_secs_f64()
-        );
+        match measured {
+            Some(started) => println!(
+                "\n{generated_tokens} tokens generated ({:.2} token/s)",
+                generated_tokens as f64 / started.elapsed().as_secs_f64()
+            ),
+            None => println!("\n{generated_tokens} tokens generated"),
+        }
         Ok(())
     }
 }

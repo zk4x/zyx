@@ -167,7 +167,7 @@ pub enum Dev {
     C,
     Host,
     Cuda(u16),
-    TT(u16),     // feature = "tenstorrent"
+    TT(u16),     // Tenstorrent (libskamandros.so)
     Vulkan(u16),
     OpenCL(u16),
     WGPU(u16),   // feature = "wgpu"

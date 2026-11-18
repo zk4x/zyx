@@ -145,60 +145,62 @@ impl DecoderBlock {
     ///
     /// Returns a shape error if `xs` is not rank 3 or the cache is too short.
     pub fn forward(&mut self, xs: &Tensor, start_pos: &Tensor, cache_len: &Tensor) -> Result<Tensor, ZyxError> {
-        let residual = xs.clone();
-        let xs = self.attn_norm.forward(xs)?;
+        let residual = xs.clone(); // [b_size, seq_len, n_embd]
+        let xs = self.attn_norm.forward(xs)?; // [b_size, seq_len, n_embd]
         let [b_size, seq_len, _n_embd] = xs.dims::<3>()?;
-        let q = self.attn_q.forward(&xs)?;
-        let k = self.attn_k.forward(&xs)?;
-        let v = self.attn_v.forward(&xs)?;
+        let q = self.attn_q.forward(&xs)?; // [b_size, seq_len, q_dim]
+        let k = self.attn_k.forward(&xs)?; // [b_size, seq_len, kv_dim]
+        let v = self.attn_v.forward(&xs)?; // [b_size, seq_len, kv_dim]
 
-        let q = q.reshape([b_size.clone(), seq_len.clone(), self.num_heads.into(), self.head_dim.into()])?.transpose(1, 2)?;
-        let k = k.reshape([b_size.clone(), seq_len.clone(), self.n_kv_heads.into(), self.head_dim.into()])?.transpose(1, 2)?;
-        let v = v.reshape([b_size.clone(), seq_len.clone(), self.n_kv_heads.into(), self.head_dim.into()])?.transpose(1, 2)?;
+        let q = q.reshape([b_size.clone(), seq_len.clone(), self.num_heads.into(), self.head_dim.into()])?.transpose(1, 2)?; // [b_size, num_heads, seq_len, head_dim]
+        let k = k.reshape([b_size.clone(), seq_len.clone(), self.n_kv_heads.into(), self.head_dim.into()])?.transpose(1, 2)?; // [b_size, n_kv_heads, seq_len, head_dim]
+        let v = v.reshape([b_size.clone(), seq_len.clone(), self.n_kv_heads.into(), self.head_dim.into()])?.transpose(1, 2)?; // [b_size, n_kv_heads, seq_len, head_dim]
 
-        let q = rotate(&q, &self.cos, &self.sin, start_pos)?;
-        let k = rotate(&k, &self.cos, &self.sin, start_pos)?;
+        let q = rotate(&q, &self.cos, &self.sin, start_pos)?; // [b_size, num_heads, seq_len, head_dim]
+        let k = rotate(&k, &self.cos, &self.sin, start_pos)?; // [b_size, n_kv_heads, seq_len, head_dim]
 
-        let k_new = k.squeeze([0]).transpose(0, 1)?.cast(self.cache_k.dtype());
-        let v_new = v.squeeze([0]).transpose(0, 1)?.cast(self.cache_v.dtype());
-        self.cache_k.narrow(0, start_pos, &seq_len)?.assign(&k_new)?;
-        self.cache_v.narrow(0, start_pos, &seq_len)?.assign(&v_new)?;
+        let k_new = k.squeeze([0]).transpose(0, 1)?.cast(self.cache_k.dtype()); // [seq_len, n_kv_heads, head_dim]
+        let v_new = v.squeeze([0]).transpose(0, 1)?.cast(self.cache_v.dtype()); // [seq_len, n_kv_heads, head_dim]
+        self.cache_k.narrow(0, start_pos, &seq_len)?.assign(&k_new)?; // [seq_len, n_kv_heads, head_dim]
+        self.cache_v.narrow(0, start_pos, &seq_len)?.assign(&v_new)?; // [seq_len, n_kv_heads, head_dim]
 
-        let k = self.cache_k.narrow(0, 0i64, cache_len.clone())?.unsqueeze(0)?.transpose(1, 2)?;
-        let v = self.cache_v.narrow(0, 0i64, cache_len.clone())?.unsqueeze(0)?.transpose(1, 2)?;
+        let k = self.cache_k.narrow(0, 0i64, cache_len.clone())?.unsqueeze(0)?.transpose(1, 2)?; // [b_size, n_kv_heads, cache_len, head_dim]
+        let v = self.cache_v.narrow(0, 0i64, cache_len.clone())?.unsqueeze(0)?.transpose(1, 2)?; // [b_size, n_kv_heads, cache_len, head_dim]
 
-        let n_rep = (self.num_heads / self.n_kv_heads) as usize;
-        let k = repeat_kv(k, n_rep)?;
-        let v = repeat_kv(v, n_rep)?;
+        let n_rep = (self.num_heads / self.n_kv_heads) as usize; // num_heads / n_kv_heads
+        let k = repeat_kv(k, n_rep)?; // [b_size, num_heads, cache_len, head_dim]
+        let v = repeat_kv(v, n_rep)?; // [b_size, num_heads, cache_len, head_dim]
 
-        let scale = Tensor::from(1.0f32 / (self.head_dim as f32).sqrt()).cast(DType::F32);
+        let scale = Tensor::from(1.0f32 / (self.head_dim as f32).sqrt()).cast(DType::F32); // scalar
+
         // The kv cache is `f16` while the stream is `f32`: each dot converts
         // its activation to the cache's type and leaves an `f32` result, which
         // is `ggml_mul_mat`'s contract again.
-        let attn = q.cast(k.dtype()).matmul(k.transpose(2, 3)?)?.cast(DType::F32) * scale;
+        let attn = q.cast(k.dtype()).matmul(k.transpose(2, 3)?)?.cast(DType::F32) * scale; // [b_size, num_heads, seq_len, cache_len]
 
-        let seq_len_i = seq_len.item::<i64>();
+        let seq_len_i = seq_len.item::<i64>(); // seq_len
         let attn = if seq_len_i <= 1 {
-            attn
+            attn // [b_size, num_heads, seq_len, cache_len]
         } else {
-            let start = start_pos.item::<i64>();
-            let mask = Tensor::full([seq_len_i, start + seq_len_i], f32::NEG_INFINITY).triu(start + 1)?.cast(attn.dtype());
-            attn + mask
+            let start = start_pos.item::<i64>(); // start_pos
+            let mask = Tensor::full([seq_len_i, start + seq_len_i], f32::NEG_INFINITY).triu(start + 1)?.cast(attn.dtype()); // [seq_len, cache_len]
+            attn + mask // [b_size, num_heads, seq_len, cache_len]
         };
-        let out = attn.softmax([-1])?.cast(v.dtype()).matmul(&v)?.cast(DType::F32).transpose(1, 2)?;
-        let d = self.num_heads * self.head_dim;
-        let out = out.reshape([b_size, seq_len, d.into()])?;
-        let xs = self.attn_output.forward(out)? + residual;
+        let out = attn.softmax([-1])?.cast(v.dtype()).matmul(&v)?.cast(DType::F32).transpose(1, 2)?; // [b_size, seq_len, num_heads, head_dim]
+        let d = self.num_heads * self.head_dim; // num_heads * head_dim
+        let out = out.reshape([b_size, seq_len, d.into()])?; // [b_size, seq_len, num_heads * head_dim]
+        let xs = self.attn_output.forward(out)? + residual; // [b_size, seq_len, n_embd]
 
-        let residual = xs.clone();
-        let normed = self.ffn_norm.forward(&xs)?;
+        let residual = xs.clone(); // [b_size, seq_len, n_embd]
+        let normed = self.ffn_norm.forward(&xs)?; // [b_size, seq_len, n_embd]
+
         // Materialize the projection before the activation. Fused with `swish`,
         // the matmul comes out as one thread per output doing a 3072-long
         // serial k-loop (4.6 ms at decode) plus two extra f32 scratch buffers
         // for the sigmoid chain, and the reduce-split candidates never apply;
         // the same matmul on its own is 176 us.
-        let gate = self.ffn_gate.forward(normed.clone())?.contiguous()?.swish();
-        let up = self.ffn_up.forward(normed)?;
-        Ok(self.ffn_down.forward(gate * up)? + residual)
+        let gate = self.ffn_gate.forward(normed.clone())?.contiguous()?.swish(); // [b_size, seq_len, intermediate]
+        let up = self.ffn_up.forward(normed)?; // [b_size, seq_len, intermediate]
+        Ok(self.ffn_down.forward(gate * up)? + residual) // [b_size, seq_len, n_embd]
     }
 }

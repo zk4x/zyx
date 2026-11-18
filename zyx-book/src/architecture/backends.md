@@ -17,7 +17,7 @@ pub enum Dev {
     /// CUDA GPU with the given driver ordinal.
     Cuda(u16),
     /// Tenstorrent chip with the given id.
-    TT(u16),          // feature = "tenstorrent"
+    TT(u16),          // Tenstorrent (libskamandros.so)
     /// Vulkan physical device with the given index.
     Vulkan(u16),
     /// OpenCL device with the given index.
@@ -42,7 +42,7 @@ pub enum Pool {
     Cuda(u16),
     OpenCL(u16),
     Vulkan(u16),
-    TT(u16),          // feature = "tenstorrent"
+    TT(u16),          // Tenstorrent (libskamandros.so)
     WGPU(u16),        // feature = "wgpu"
 }
 ```
@@ -90,9 +90,9 @@ What is left for a backend is exactly the **non-searchable, non-SSA residue**: r
 | OpenCL | `opencl.rs` | OpenCL C | OpenCL runtime via `libloading` |
 | Vulkan | `vulkan.rs` | SPIR-V | Vulkan via `ash` crate |
 | WGPU | `wgpu.rs` | WGSL | WGPU (feature: `wgpu`) |
-| Tenstorrent | `tenstorrent/` | Tensix RISC-V programs | Bundled tt-sim simulator (feature: `tenstorrent`) |
+| Tenstorrent | `tenstorrent.rs` | skamandros program text | `libskamandros.so` via `libloading` |
 
-Every backend except WGPU and Tenstorrent is compiled in unconditionally.
+Every backend is compiled in unconditionally; WGPU is the only optional one.
 
 ### CUDA: micro-batched submission
 

@@ -4937,34 +4937,26 @@ impl Runtime {
             }
             let bytes = (self.resolve_shape(tid).iter().product::<Dim>() as usize * dtypes[&tid].bit_size() as usize).div_ceil(8);
             // TT buffers are physical (whole tiles, row-padded to 32);
-            // logical shapes stay. Mirrors `tilize_transfer`: one tile *image*
-            // per tile — the 16-byte header the unpacker steps over plus 1024
-            // face-order datums, padded to `tt_isa::dm::TILE_SLOT`, which is
-            // also the DRAM interleave page (`STRIPE`).
+            // logical shapes stay. Mirrors `tilize_transfer`: one page of
+            // 1024 face-order datums per 32x32 tile.
             let bytes = {
                 if pool_id.is_tt_layout() {
-                    #[cfg(feature = "tenstorrent")]
-                    {
-                        let shape = self.resolve_shape(tid);
-                        let (rows, cols) = match shape.as_slice() {
-                            [.., r, c] => (*r, *c),
-                            [c] => (1, *c),
-                            [] => (1, 1),
-                        };
-                        let outer: Dim = if shape.len() >= 2 {
-                            shape[..shape.len() - 2].iter().product()
-                        } else {
-                            1
-                        };
-                        let pr = ((rows + 31) / 32) * 32;
-                        let pc = ((cols + 31) / 32) * 32;
-                        let tiles = (outer * pr * pc) / 1024;
-                        usize::try_from(tiles * tt_isa::dm::TILE_SLOT as Dim).expect("TT tile image bytes fit usize")
-                    }
-                    #[cfg(not(feature = "tenstorrent"))]
-                    {
-                        unreachable!("TT tile image bytes: tenstorrent feature off")
-                    }
+                    let shape = self.resolve_shape(tid);
+                    let (rows, cols) = match shape.as_slice() {
+                        [.., r, c] => (*r, *c),
+                        [c] => (*c, 1),
+                        [] => (1, 1),
+                    };
+                    let outer: Dim = if shape.len() >= 2 {
+                        shape[..shape.len() - 2].iter().product()
+                    } else {
+                        1
+                    };
+                    let pr = ((rows + 31) / 32) * 32;
+                    let pc = ((cols + 31) / 32) * 32;
+                    let tiles = (outer * pr * pc) / 1024;
+                    let el = Dim::from(dtypes[&tid].bit_size() / 8);
+                    usize::try_from(tiles * 1024 * el).expect("TT tile bytes fit usize")
                 } else {
                     bytes
                 }

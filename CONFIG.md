@@ -34,8 +34,8 @@ Every section is optional:
 }
 ```
 
-`wgpu` exists only when the crate is built with the `wgpu` feature, and
-`tenstorrent` only with the `tenstorrent` feature.
+`wgpu` exists only when the crate is built with the `wgpu` feature;
+`tenstorrent` selects from the devices `libskamandros.so` exposes (device 0).
 
 ## Options Reference
 
@@ -89,10 +89,11 @@ Uses the `ash` crate for Vulkan compute.
 
 ### `tenstorrent` — Tenstorrent backend
 
-Available when the crate is built with `--features tenstorrent`. It runs through
-the bundled simulator, which is found through `TT_TTSIM_LIB` (default
-`vendor/libttsim_bh.so`). A machine without a usable simulator simply
-contributes no devices.
+Available when `libskamandros.so` is on the dynamic loader's search path
+(`LD_LIBRARY_PATH`); zyx loads it with `dlopen`, like CUDA's driver. skamandros
+chooses the target itself: `$TT_METAL_SIMULATOR` for the simulator (with the
+Blackhole descriptor beside the library) or `TT_HARDWARE=1` for the card. A
+machine without a usable library simply contributes no devices.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -114,7 +115,7 @@ Requires `--features wgpu`. Supports Vulkan, Metal, DX12, and OpenGL ES.
 | `cuda` | yes | `"device_ids": []` |
 | `opencl` | yes | `"platform_ids": []` |
 | `vulkan` | yes | `"device_ids": []` |
-| `tenstorrent` | yes (with the `tenstorrent` feature) | `"device_ids": []` |
+| `tenstorrent` | yes | `"device_ids": []` |
 | `wgpu` | yes (with the feature) | `"enabled": false` |
 
 `null`/absent means “every device the backend finds”; a list selects exactly

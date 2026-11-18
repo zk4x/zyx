@@ -63,7 +63,7 @@ CUDA, any GPU driver with Vulkan support is sufficient.
 - **Everything is diff** — every tensor in a tape can be differentiated w.r.t. any other tensor in a tape.
 - **Lazy Device Loading** — tensors load from their current memory pool (disk, another device) into the compute device only when needed.
 - **Parallel Pipelining** — the graph's fusion and device paths compete and extraction keeps the fastest measured one; plans pipeline kernels and cross-device copies across heterogeneous devices automatically.
-- **Lean Dependencies** — the core needs `libloading` (driver loading) and `nanoserde` (config); the optional Tenstorrent backend (`tenstorrent` feature) adds `libc`/`libm`, its firmware images, and the `tt-isa` crate. WGPU is the only large optional dependency.
+- **Lean Dependencies** — the core needs `libloading` (driver loading) and `nanoserde` (config). WGPU is the only large optional dependency.
 
 
 ## Crates
@@ -251,7 +251,7 @@ Zyx is a library, not a workflow: it doesn't prescribe training loops or data pi
 - [x] **OpenCL**
 - [x] **Vulkan** - SPIR-V codegen
 - [x] **WGPU** - WGSL codegen, feature: `wgpu`
-- [ ] **Tenstorrent** - preliminary, feature: `tenstorrent`, runs through the bundled simulator (`TT_TTSIM_LIB`)
+- [ ] **Tenstorrent** - via [skamandros](https://github.com/zk4x/skamandros) (`libskamandros.so`, loaded with `dlopen`)
 
 If you'd like to add a new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)

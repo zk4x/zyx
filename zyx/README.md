@@ -56,7 +56,7 @@ See [ENV_VARS.md](https://github.com/zk4x/zyx/blob/main/ENV_VARS.md) for debuggi
 - [x] `OpenCL`
 - [x] `Vulkan` — via SPIR-V codegen
 - [x] `WGPU` - via WGSL codegen, feature: `wgpu`
-- [ ] `Tenstorrent` — preliminary, feature: `tenstorrent`, runs through the bundled simulator (`TT_TTSIM_LIB`)
+- [ ] `Tenstorrent` — via [skamandros](https://github.com/zk4x/skamandros) (`libskamandros.so`, loaded with `dlopen`)
 
 If you'd like to add new backend to zyx, that would be awesome!
 Please read [ADDING_BACKENDS.md](https://github.com/zk4x/zyx/blob/main/ADDING_BACKENDS.md)
@@ -94,20 +94,18 @@ proper paths to backend runtimes (e.g. libcuda.so).
 ## Features
 
 - **wgpu** — enables the WGPU backend
-- **tenstorrent** — enables the Tenstorrent backend and its lowering
 - **py** — Python bindings (`zyx-py`)
 - **viz** — graph visualization
 - **time** — timing instrumentation for passes and launches
 
-The Tenstorrent backend needs the bundled simulator (`TT_TTSIM_LIB`).
+The Tenstorrent backend is always compiled in; it loads `libskamandros.so` from
+the dynamic loader's search path (`LD_LIBRARY_PATH`). There is no cargo feature.
 
 
 ## Dependencies
 
 Zyx uses a small, deliberately chosen set of dependencies: `nanoserde` for config parsing,
-`libloading` for dynamically loading backend drivers, and (with the `tenstorrent` feature)
-`libc`/`libm` for the simulator. The Tenstorrent path also uses the firmware images and the
-`tt-isa` crate.
+and `libloading` for dynamically loading backend drivers (CUDA, OpenCL and skamandros).
 
 zyx is about 100k lines of Rust. Runtimes are needed for their respective backends (e.g. libcuda.so)
 and hardware drivers.
