@@ -135,18 +135,24 @@ impl Compiler<'_> {
         format!("%v{id}")
     }
 
-    /// The access unit of a DRAM access: one whole 32x32 tile page.
+    /// The access unit of a DRAM access: the shape its index names.
     ///
-    /// The unit is a tile, and the access must be a tile too: a vector or a
-    /// scalar access names lanes inside a page (`1,32`/`1,1` would step the
-    /// parameter by 128/4 bytes, while the upload wrote 4 KiB pages), so it is
-    /// refused loudly rather than addressed as if it were a page.
+    /// A parameter is uploaded one 32x32 page at a time, so its rows are 32
+    /// datums each: an access of `[32]` names one row (`1,32`), a `[32,32]`
+    /// access a tile, and a scalar access a datum (`1,1`), which the machine
+    /// side still refuses. The unit is the page's layout: a row is staged
+    /// through a page of its own.
     fn unit(&self, idx: OpId) -> Result<[Dim; 2], BackendError> {
         let shape = self.k.shape(idx);
-        if shape.len() != 2 {
-            return Err(tt_err(format!("skamandros: access {idx:?} of shape {shape:?} is not a tile")));
+        match shape.as_slice() {
+            [.., 32, 32] => Ok([32, 32]),
+            [] => Ok([1, 1]),
+            [.., 32] => Ok([1, 32]),
+            [.., 1] => Ok([1, 1]),
+            _ => Err(tt_err(format!(
+                "skamandros: access {idx:?} of shape {shape:?} is neither a row nor a tile"
+            ))),
         }
-        Ok([32, 32])
     }
 
     /// The axis of the first `Unroll` feeding `root`'s index expression.
@@ -165,20 +171,24 @@ impl Compiler<'_> {
         None
     }
 
-    /// The page ordinal of a logical index into a tiled parameter.
+    /// The unit index of a logical index into a tiled parameter.
     ///
     /// The upload lays a plane out row-major in tiles, face order inside a
     /// page, so the page a logical index names is
-    /// `outer*ntr*ntc + (row/32)*ntc + col/32`. Each term of the index is
-    /// classified by its stride against the plane, the way the old
-    /// `tt_reindex` did: a multiple of the plane is an outer slice, a multiple
-    /// of 32 rows is a tile row, a multiple of 32 columns a tile column. A term
-    /// that lands inside a page (a lane, or a row of one) has no page form and
-    /// is refused instead of being silently misaddressed.
+    /// `outer*ntr*ntc + (row/32)*ntc + col/32`, and the unit index is
+    /// `page*units + row%32` — a tile page holds its one tile, a row page the
+    /// thirty-two rows of a tile. Each term of the index is classified by its
+    /// stride against the plane, the way the old `tt_reindex` did: a multiple of
+    /// the plane is an outer slice, a row stride walks the units inside a page,
+    /// a multiple of 32 columns a tile column. A term that lands inside a unit
+    /// (a lane of a row, or a row of a tile) has no unit form and is refused
+    /// instead of being silently misaddressed.
     fn page_index(&mut self, idx: OpId, base: OpId) -> Result<String, BackendError> {
         if let Some(name) = self.indices.get(&idx) {
             return Ok(name.clone());
         }
+        let unit = self.unit(idx)?;
+        let units: Dim = (32 * 32) / (unit[0] * unit[1]);
         let shape = self.k.shape(base);
         let (rows, cols) = match shape.as_slice() {
             [.., r, c] => (*r, *c),
@@ -200,21 +210,27 @@ impl Compiler<'_> {
             if var == OpId::NULL || s == 0 {
                 continue;
             }
-            // A lane is the page's own axis: the prologue emits every lane
-            // variable as the constant 0, so it names no page.
+            // A lane is the unit's own axis: the prologue emits every lane
+            // variable as the constant 0, so it names no unit.
             match self.k.ops[var].op {
                 Op::Unroll { .. } | Op::Range { kind: RangeKind::Local(_), .. } => continue,
                 _ => {}
             }
             if s % plane == 0 && s >= plane {
-                terms.push((var, s / plane * ntr * ntc));
+                terms.push((var, s / plane * ntr * ntc * units));
+            } else if units > 1 && s % cols == 0 && s >= cols {
+                // A row step walks the units inside a page and then the pages.
+                let d = s / cols;
+                terms.push((var, (d / 32) * ntc * units + d % 32));
             } else if s % (32 * cols) == 0 && s >= 32 * cols {
                 terms.push((var, s / (32 * cols) * ntc));
             } else if s % 32 == 0 && s < cols {
-                terms.push((var, s / 32));
+                // A tile column is a page of its own, so `units` units on.
+                terms.push((var, s / 32 * units));
             } else {
                 return Err(tt_err(format!(
-                    "skamandros: access {idx:?} varies inside a tile page (stride {s}, plane {rows}x{cols})"
+                    "skamandros: access {idx:?} varies inside its unit (stride {s}, unit {}x{})",
+                    unit[0], unit[1]
                 )));
             }
         }
@@ -222,10 +238,13 @@ impl Compiler<'_> {
         let cst = strides.get(&OpId::NULL).map_or(0, |(_, s)| *s);
         let row_c = (cst / cols) % rows;
         let col_c = cst % cols;
-        if cst % 32 != 0 || row_c % 32 != 0 {
-            return Err(tt_err(format!("skamandros: access {idx:?} starts inside a tile page (offset {cst})")));
+        if col_c % 32 != 0 || (units == 1 && row_c % 32 != 0) {
+            return Err(tt_err(format!(
+                "skamandros: access {idx:?} starts inside its unit (offset {cst})"
+            )));
         }
         let page_c = (cst / plane) * ntr * ntc + row_c / 32 * ntc + col_c / 32;
+        let page_c = page_c * units + row_c % 32;
         let mut acc: Option<String> = None;
         for (var, weight) in terms {
             let name = self.name(var);
