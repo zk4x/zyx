@@ -58,7 +58,6 @@
 
 use crate::runtime::Runtime;
 
-mod aot;
 mod backend;
 mod codegen;
 mod dtype;

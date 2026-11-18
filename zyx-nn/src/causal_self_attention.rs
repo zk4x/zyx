@@ -18,13 +18,7 @@ pub struct CausalSelfAttention {
 
 impl CausalSelfAttention {
     /// New causal self attention
-    pub fn new(
-        n_embd: i64,
-        n_head: i64,
-        bias: bool,
-        dropout_p: f32,
-        dtype: DType,
-    ) -> Result<CausalSelfAttention, ZyxError> {
+    pub fn new(n_embd: i64, n_head: i64, bias: bool, dropout_p: f32, dtype: DType) -> Result<CausalSelfAttention, ZyxError> {
         Ok(CausalSelfAttention {
             c_attn: Linear::new(n_embd, 3 * n_embd, bias, dtype)?,
             c_proj: Linear::new(n_embd, n_embd, bias, dtype)?,
@@ -38,23 +32,14 @@ impl CausalSelfAttention {
         let x: Tensor = x.into();
         let [b, t, c] = x.dims::<3>()?;
         let head_dim = &c / &self.n_head;
-        let mut splits = self
-            .c_attn
-            .forward(x)?
-            .split([c.clone(), c.clone(), c.clone()], 2)?;
+        let mut splits = self.c_attn.forward(x)?.split([c.clone(), c.clone(), c.clone()], 2)?;
         let mut v = splits.pop().unwrap();
         let mut k = splits.pop().unwrap();
         let mut q = splits.pop().unwrap();
 
-        k = k
-            .reshape([&b, &t, &self.n_head, &head_dim])?
-            .transpose(1, 2)?;
-        q = q
-            .reshape([&b, &t, &self.n_head, &head_dim])?
-            .transpose(1, 2)?;
-        v = v
-            .reshape([&b, &t, &self.n_head, &head_dim])?
-            .transpose(1, 2)?;
+        k = k.reshape([&b, &t, &self.n_head, &head_dim])?.transpose(1, 2)?;
+        q = q.reshape([&b, &t, &self.n_head, &head_dim])?.transpose(1, 2)?;
+        v = v.reshape([&b, &t, &self.n_head, &head_dim])?.transpose(1, 2)?;
 
         let scale = (1.0 / (head_dim.item::<f32>().sqrt())) as f32;
         //println!("scale = {scale}");
@@ -62,8 +47,8 @@ impl CausalSelfAttention {
         //println!("{att}");
         //panic!();
 
-        // TODO rewrite this
-        //att = att.masked_fill(self.bias.get((.., .., ..T, ..T)) == 0, f32::INF);
+        // TODO add self.bias
+        //att = att.masked_fill(self.bias.slice((.., .., ..t, ..t))?.equals(0), f32::INFINITY)?;
         att = att.softmax([-1])?;
         //println!("{att}");
         // TODO enable dropout
@@ -138,24 +123,9 @@ fn attention1() -> Result<(), ZyxError> {
     assert_eq!(
         x,
         [[
-            [
-                -1.34166388e-04f32,
-                -3.10145377e-04,
-                -3.39602208e-04,
-                2.14193460e-05
-            ],
-            [
-                -1.34166388e-04,
-                -3.10145377e-04,
-                -3.39602208e-04,
-                2.14193460e-05
-            ],
-            [
-                -1.34166388e-04,
-                -3.10145377e-04,
-                -3.39602208e-04,
-                2.14193460e-05
-            ]
+            [-1.34166388e-04f32, -3.10145377e-04, -3.39602208e-04, 2.14193460e-05],
+            [-1.34166388e-04, -3.10145377e-04, -3.39602208e-04, 2.14193460e-05],
+            [-1.34166388e-04, -3.10145377e-04, -3.39602208e-04, 2.14193460e-05]
         ]]
     );
 

@@ -61,31 +61,11 @@ impl TransformerDecoderLayer {
         dtype: DType,                     // tensor data type (e.g., f32, f64)
     ) -> Result<Self, ZyxError> {
         // Create self-attention and cross-attention layers
-        let self_attention = MultiheadAttention::new(
-            d_model,
-            nhead,
-            dropout,
-            bias,
-            false,
-            false,
-            None,
-            None,
-            batch_first,
-            dtype,
-        )?;
+        let self_attention =
+            MultiheadAttention::new(d_model, nhead, dropout, bias, false, false, None, None, batch_first, dtype)?;
 
-        let cross_attention = MultiheadAttention::new(
-            d_model,
-            nhead,
-            dropout,
-            bias,
-            false,
-            false,
-            None,
-            None,
-            batch_first,
-            dtype,
-        )?;
+        let cross_attention =
+            MultiheadAttention::new(d_model, nhead, dropout, bias, false, false, None, None, batch_first, dtype)?;
 
         // Create feedforward layers (two Linear layers with ReLU activation)
         let feedforward = Linear::new(d_model, dim_feedforward, bias, dtype)?;
@@ -136,14 +116,14 @@ impl TransformerDecoderLayer {
     #[allow(clippy::too_many_arguments)] // mirrors PyTorch API with multiple config parameters
     pub fn forward(
         &self,
-        tgt: &Tensor,                           // Target sequence (input to the decoder)
-        memory: &Tensor,                        // Memory sequence (encoder output)
-        tgt_mask: Option<impl Into<Tensor>>, // Optional mask for target sequence (self-attention)
-        memory_mask: Option<impl Into<Tensor>>, // Optional mask for memory sequence (cross-attention)
-        tgt_key_padding_mask: Option<impl Into<Tensor>>, // Optional padding mask for target
+        tgt: &Tensor,                                       // Target sequence (input to the decoder)
+        memory: &Tensor,                                    // Memory sequence (encoder output)
+        tgt_mask: Option<impl Into<Tensor>>,                // Optional mask for target sequence (self-attention)
+        memory_mask: Option<impl Into<Tensor>>,             // Optional mask for memory sequence (cross-attention)
+        tgt_key_padding_mask: Option<impl Into<Tensor>>,    // Optional padding mask for target
         memory_key_padding_mask: Option<impl Into<Tensor>>, // Optional padding mask for memory
-        tgt_is_causal: bool, // Whether to apply causal masking to target (autoregressive)
-        memory_is_causal: bool, // Whether to apply causal masking to memory
+        tgt_is_causal: bool,                                // Whether to apply causal masking to target (autoregressive)
+        memory_is_causal: bool,                             // Whether to apply causal masking to memory
     ) -> Result<Tensor, ZyxError> {
         let mut output = tgt.clone();
 

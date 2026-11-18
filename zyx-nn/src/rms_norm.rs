@@ -17,18 +17,14 @@ pub struct RMSNorm {
 impl RMSNorm {
     /// Initialize RMSNorm layer
     pub fn new(dim: i64, dtype: DType) -> RMSNorm {
-        RMSNorm {
-            weight: Tensor::ones([dim], dtype),
-            eps: 1e-6,
-        }
+        RMSNorm { weight: Tensor::ones([dim], dtype), eps: 1e-6 }
     }
 
     /// RMSNorm forward function
     pub fn forward(&self, x: impl Into<Tensor>) -> Result<Tensor, ZyxError> {
         let x = x.into();
         let dtype = x.dtype();
-        let x_normed =
-            &x * ((&x * &x).mean_keepdim([-1])? + Tensor::from(self.eps).cast(dtype)).rsqrt();
+        let x_normed = &x * ((&x * &x).mean_keepdim([-1])? + Tensor::from(self.eps).cast(dtype)).rsqrt();
         Ok(x_normed * &self.weight)
     }
 }

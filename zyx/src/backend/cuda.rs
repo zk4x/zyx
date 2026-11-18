@@ -254,19 +254,14 @@ impl Drop for CudaGraph {
 }
 
 #[derive(Debug)]
-pub(super) enum CUDAProgram {
-    Module {
-        module: CUmodule,
-        function: CUfunction,
-        lws: [u32; 3],
-        gws: Vec<GwsDim>,
-        /// Per-`Param` kinds in head order, used at submission to split launch
-        /// args into reads (`Global`) and writes (`GlobalMut`).
-        params: Vec<ParamKind>,
-    },
-    /// A compiled cuDNN graph execution plan. Workspace is a raw device pointer
-    /// allocated alongside the plan (cuDNN owns it, not the memory pool).
-    Cudnn { plan: CudnnPlan },
+pub(super) struct CUDAProgram {
+    module: CUmodule,
+    function: CUfunction,
+    lws: [u32; 3],
+    gws: Vec<GwsDim>,
+    /// Per-`Param` kinds in head order, used at submission to split launch
+    /// args into reads (`Global`) and writes (`GlobalMut`).
+    params: Vec<ParamKind>,
 }
 
 /// A cuDNN v9 graph execution plan plus the metadata needed to launch it:
@@ -428,14 +423,6 @@ enum CUDACommand {
         params: Vec<ParamKind>,
         name: Box<str>,
         ptx: Vec<u8>,
-        reply: Sender<Result<DeviceProgramId, BackendError>>,
-    },
-    /// JIT-compiles a cuDNN graph execution plan for the given subgraph. Shapes
-    /// and dtypes are fixed at match time. The command mirrors the cuDNN graph
-    /// API generically (tensors + ops), so it works for matmul, matmul+relu,
-    /// softmax, conv, etc. — only the matmul builder is implemented so far.
-    CompileCudnn {
-        graph: CudnnGraph,
         reply: Sender<Result<DeviceProgramId, BackendError>>,
     },
     /// Timed launch for autotune: flush + drain first (uncontended timing),
@@ -1069,26 +1056,8 @@ fn spawn_worker(
                         let _ = unsafe { get_attr(&raw mut regs, 4, function) };
                         println!("[cuda] launched kernel: {n} bytes shared, {regs} registers");
                     }
-                    let program_id = programs.push(CUDAProgram::Module { module, function, lws, gws, params });
+                    let program_id = programs.push(CUDAProgram { module, function, lws, gws, params });
                     _ = reply.send(Ok(program_id));
-                }
-                CUDACommand::CompileCudnn { graph, reply } => {
-                    let Some(cudnn) = &cudnn else {
-                        _ = reply.send(Err(BackendError {
-                            status: ErrorStatus::KernelCompilation,
-                            context: "cuDNN library not loaded.".into(),
-                        }));
-                        continue;
-                    };
-                    match unsafe { build_cudnn_plan(cudnn, &graph, cuMemAlloc) } {
-                        Ok(plan) => {
-                            let program_id = programs.push(CUDAProgram::Cudnn { plan });
-                            _ = reply.send(Ok(program_id));
-                        }
-                        Err(e) => {
-                            _ = reply.send(Err(e));
-                        }
-                    }
                 }
                 CUDACommand::LaunchTimed { program_id, args, reply } => {
                     // Uncontended timing for autotune: drain all streams,
@@ -1114,17 +1083,7 @@ fn spawn_worker(
                     }
                     let result = (|| -> Result<u64, BackendError> {
                         unsafe { (cuEventRecord)(start, streams[0].stream) }.check(ErrorStatus::KernelSync)?;
-                        submit_launch(
-                            &programs,
-                            &buffers,
-                            program_id,
-                            &args,
-                            streams[0].stream,
-                            &max_grid,
-                            &cudnn,
-                            cudnn_handle,
-                            cuLaunchKernel,
-                        )?;
+                        submit_launch(&programs, &buffers, program_id, &args, streams[0].stream, &max_grid, cuLaunchKernel)?;
                         unsafe { (cuEventRecord)(end, streams[0].stream) }.check(ErrorStatus::KernelSync)?;
                         unsafe { (cuEventSynchronize)(end) }.check(ErrorStatus::KernelSync)?;
                         let mut ms = 0f32;
@@ -1248,12 +1207,7 @@ fn spawn_worker(
                         // recording.
                         let geometry_of =
                             |program_id: DeviceProgramId, slots: &[OpId]| -> Result<([u32; 3], [u32; 3]), BackendError> {
-                                let CUDAProgram::Module { lws, gws, .. } = &programs[program_id] else {
-                                    return Err(BackendError {
-                                        status: ErrorStatus::KernelLaunch,
-                                        context: "geometry of non-module program".into(),
-                                    });
-                                };
+                                let CUDAProgram { lws, gws, .. } = &programs[program_id];
                                 let grid = |gdim: &GwsDim| -> Dim {
                                     gdim.eval(&mut |ordinal| {
                                         scalars
@@ -1276,13 +1230,6 @@ fn spawn_worker(
                                 }
                                 Ok(([gx as u32, gy as u32, gz as u32], [lws[0], lws[1], lws[2]]))
                             };
-                        // cuDNN programs rebuild their variant pack per
-                        // launch already — partitions holding one are
-                        // submitted directly and never captured.
-                        let has_cudnn = cmds.iter().any(|cmd| match cmd {
-                            Cmd::Launch { program, .. } => matches!(programs[program.program_id], CUDAProgram::Cudnn { .. }),
-                            _ => false,
-                        });
                         if dry_run {
                             return Ok(ReplayResult { fresh, graph: None });
                         }
@@ -1312,122 +1259,6 @@ fn spawn_worker(
                             unsafe { (cuEventRecord)(events[idx], stream) }.check(ErrorStatus::KernelLaunch)?;
                             Ok(())
                         };
-                        if has_cudnn {
-                            // Direct submit, never captured: cuDNN rebuilds
-                            // its variant pack per launch anyway.
-                            let Some(cudnn) = cudnn.as_ref() else {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: "cuDNN library not loaded.".into(),
-                                });
-                            };
-                            let Some(handle) = cudnn_handle else {
-                                return Err(BackendError {
-                                    status: ErrorStatus::KernelLaunch,
-                                    context: "cuDNN handle missing.".into(),
-                                });
-                            };
-                            for (idx, cmd) in cmds.iter().enumerate() {
-                                let Cmd::Launch { program, args, .. } = cmd else { continue };
-                                // cuDNN runs on the legacy default stream
-                                // (device-wide sync keeps it ordered); module
-                                // launches take their assigned stream.
-                                let on_cudnn = matches!(programs[program.program_id], CUDAProgram::Cudnn { .. });
-                                let stream = if on_cudnn {
-                                    streams[0].stream
-                                } else {
-                                    streams[queues[idx]].stream
-                                };
-                                wait_for(idx, stream)?;
-                                match &programs[program.program_id] {
-                                    CUDAProgram::Module { function, .. } => {
-                                        let function = *function;
-                                        let (grid, block) = geometry_of(program.program_id, args)?;
-                                        let mut buffer_ptrs = Vec::new();
-                                        let mut scalar_values = Vec::new();
-                                        let mut kernel_params = params_of(args, &mut buffer_ptrs, &mut scalar_values)?;
-                                        unsafe {
-                                            (cuLaunchKernel)(
-                                                function,
-                                                grid[0],
-                                                grid[1],
-                                                grid[2],
-                                                block[0],
-                                                block[1],
-                                                block[2],
-                                                0,
-                                                stream,
-                                                kernel_params.as_mut_ptr(),
-                                                ptr::null_mut(),
-                                            )
-                                        }
-                                        .check(ErrorStatus::KernelLaunch)?;
-                                    }
-                                    CUDAProgram::Cudnn { plan } => unsafe {
-                                        let mut variant_pack = ptr::null_mut();
-                                        if (cudnn.backend_create_descriptor)(
-                                            CUDNN_BACKEND_VARIANT_PACK_DESCRIPTOR,
-                                            &raw mut variant_pack,
-                                        ) != CUDNN_STATUS_SUCCESS
-                                        {
-                                            return Err(BackendError {
-                                                status: ErrorStatus::KernelLaunch,
-                                                context: "cuDNN variant pack".into(),
-                                            });
-                                        }
-                                        let mut data_ptrs: Vec<*mut c_void> = Vec::with_capacity(args.len());
-                                        for slot in args {
-                                            if slot_chunk.contains_key(slot) {
-                                                data_ptrs.push(ptr_of(slot)? as *mut c_void);
-                                            } else {
-                                                let _ = (cudnn.backend_destroy_descriptor)(variant_pack);
-                                                todo!("scalar variant-pack entries in cuDNN launches");
-                                            }
-                                        }
-                                        let unique_ids: Vec<i64> = plan.arg_uids.clone();
-                                        let set_ok = (cudnn.backend_set_attribute)(
-                                            variant_pack,
-                                            CUDNN_ATTR_VARIANT_PACK_UNIQUE_IDS,
-                                            CUDNN_TYPE_INT64,
-                                            unique_ids.len() as i64,
-                                            unique_ids.as_ptr().cast(),
-                                        ) == CUDNN_STATUS_SUCCESS
-                                            && (cudnn.backend_set_attribute)(
-                                                variant_pack,
-                                                CUDNN_ATTR_VARIANT_PACK_DATA_POINTERS,
-                                                CUDNN_TYPE_VOID_PTR,
-                                                data_ptrs.len() as i64,
-                                                data_ptrs.as_ptr().cast(),
-                                            ) == CUDNN_STATUS_SUCCESS
-                                            && (if plan.workspace != 0 {
-                                                let ws_ptr: *mut c_void = plan.workspace as *mut c_void;
-                                                (cudnn.backend_set_attribute)(
-                                                    variant_pack,
-                                                    CUDNN_ATTR_VARIANT_PACK_WORKSPACE,
-                                                    CUDNN_TYPE_VOID_PTR,
-                                                    1,
-                                                    (&raw const ws_ptr).cast(),
-                                                ) == CUDNN_STATUS_SUCCESS
-                                            } else {
-                                                true
-                                            })
-                                            && (cudnn.backend_finalize)(variant_pack) == CUDNN_STATUS_SUCCESS;
-                                        if set_ok {
-                                            let _ = (cudnn.backend_execute)(handle, plan.plan, variant_pack);
-                                        }
-                                        let _ = (cudnn.backend_destroy_descriptor)(variant_pack);
-                                        if !set_ok {
-                                            return Err(BackendError {
-                                                status: ErrorStatus::KernelLaunch,
-                                                context: "cuDNN variant pack config".into(),
-                                            });
-                                        }
-                                    },
-                                }
-                                mark_done(idx, stream)?;
-                            }
-                            return Ok(ReplayResult { fresh, graph: None });
-                        }
                         // Fast tier: identical pointers and scalars — the
                         // executable is untouched, stream order alone
                         // serializes: relaunch with no other work.
@@ -1477,36 +1308,6 @@ fn spawn_worker(
                                 return Err(e);
                             }
                             cap_events.push(ev);
-                        }
-                        let entry = cmds.len();
-                        let recaptured = (|| -> Result<(CUgraph, Vec<Vec<OpId>>, Vec<u64>), BackendError> {
-                            unsafe { (cuStreamBeginCapture)(streams[0].stream, 0) }.check(ErrorStatus::KernelLaunch)?;
-                            // Fork root first: a record on a stream that
-                            // never entered capture is a non-captured
-                            // event, and waiting on one later is an
-                            // isolation error — every side stream forks
-                            // from this record (entry wait below).
-                            unsafe { (cuEventRecord)(cap_events[entry], streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
-                            let mut entered = vec![false; streams.len()];
-                            let mut node_args: Vec<Vec<OpId>> = Vec::new();
-                            let mut ptrs: Vec<u64> = Vec::new();
-                            // Capture-local edge pair: same record/wait
-                            // shape as the direct path, but over the fresh
-                            // events above so the baked nodes are
-                            // self-consistent on relaunch.
-                            let wait_for = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
-                                for &p in &waits[idx] {
-                                    unsafe { (cuStreamWaitEvent)(stream, cap_events[p], 0) }.check(ErrorStatus::KernelLaunch)?;
-                                }
-                                Ok(())
-                            };
-                            let mark_done = |idx: usize, stream: CUstream| -> Result<(), BackendError> {
-                                unsafe { (cuEventRecord)(cap_events[idx], stream) }.check(ErrorStatus::KernelLaunch)?;
-                                Ok(())
-                            };
-                            for (idx, cmd) in cmds.iter().enumerate() {
-                                let Cmd::Launch { program, args, .. } = cmd else { continue };
-                                // Capture path never holds cuDNN programs
                                 // (those take the direct path above).
                                 let CUDAProgram::Module { function, .. } = &programs[program.program_id] else {
                                     return Err(BackendError {
@@ -1690,7 +1491,7 @@ fn spawn_worker(
                         let id = graphs.push(CapturedGraph { exec, node_args, ptrs, vars: vars.clone(), events: cap_events });
                         unsafe { (cuGraphLaunch)(exec, streams[0].stream) }.check(ErrorStatus::KernelLaunch)?;
                         Ok(ReplayResult { fresh, graph: Some(id) })
-                    })();
+                    }}();
                     let _ = reply.send(result);
                 }
                 CUDACommand::CopyHtoD { src, dst, bytes, reply } => {
@@ -1779,27 +1580,14 @@ fn spawn_worker(
                     }
                 }
                 CUDACommand::ReleaseProgram { program_id } => {
-                    match &programs[program_id] {
-                        CUDAProgram::Module { module, .. } => {
-                            let _ = unsafe { (cuModuleUnload)(*module) }.check(ErrorStatus::Deinitialization);
-                        }
-                        CUDAProgram::Cudnn { plan } => {
-                            if let Some(cudnn) = &cudnn {
-                                for desc in plan.descrs.iter().rev() {
-                                    let _ = unsafe { (cudnn.backend_destroy_descriptor)(*desc) };
-                                }
-                                if plan.workspace != 0 {
-                                    let _ = unsafe { (cuMemFree)(plan.workspace) }.check(ErrorStatus::MemoryDeallocation);
-                                }
-                            }
-                        }
-                    }
+                    let CUDAProgram::Module { module, .. } = &programs[program_id]:
+                    let _ = unsafe { (cuModuleUnload)(*module) }.check(ErrorStatus::Deinitialization);
                     programs.remove(program_id);
                 }
             }
-        }
         //println!("DEINIT receiver");
-    });
+        });
+    }
 }
 
 /// Single backend initializer: enumerates GPUs once, spawns one worker per
@@ -2267,62 +2055,6 @@ impl CUDADevice {
     pub fn release(&mut self, program_id: DeviceProgramId) {
         self.tx.send(CUDACommand::ReleaseProgram { program_id }).unwrap();
     }
-
-    /// Pattern-matches matmul subgraphs and JIT-compiles a cuDNN execution plan
-    /// for each with the exact shapes and dtypes, adding `Node::Kernel`s (with
-    /// `time = 1`) so they beat any fused zyx kernel in extraction. Only f32 is
-    /// supported for now (compute type float).
-    pub fn match_graph(&mut self, graph: &mut Graph, outputs: &BTreeSet<OpId>) {
-        if !self.cudnn_available {
-            return;
-        }
-        let order = graph.topo_sort_classes::<true>(&Set::default(), outputs, None);
-        for &cid in &order {
-            let Some(mm) = graph.match_matmul(cid) else {
-                continue;
-            };
-            // Only f32 matmul is supported by the cudnn matmul builder for now.
-            if mm.in_dtype != DType::F32 || mm.acc_dtype != DType::F32 {
-                continue;
-            }
-            let [m, n, k] = [mm.m, mm.n, mm.k];
-            println!("[CUDA] cuDNN matched matmul m={m}, n={n}, k={k}");
-
-            let graph_desc = CudnnGraph {
-                tensors: vec![
-                    CudnnTensor { uid: 0, shape: vec![m, k], dtype: DType::F32, is_virtual: false },
-                    CudnnTensor { uid: 1, shape: vec![k, n], dtype: DType::F32, is_virtual: false },
-                    CudnnTensor { uid: 2, shape: vec![m, n], dtype: DType::F32, is_virtual: false },
-                ],
-                ops: vec![CudnnOp::Matmul { a: 0, b: 1, c: 2, compute_dtype: DType::F32 }],
-                arg_uids: vec![0, 1, 2],
-            };
-            let (reply, reply_rx) = channel();
-            self.tx.send(CUDACommand::CompileCudnn { graph: graph_desc, reply }).unwrap();
-            let Ok(program_id) = reply_rx.recv().unwrap() else {
-                continue;
-            };
-            let inputs = graph.push_op(Op::Stack { ops: Box::new([mm.a, mm.b]) });
-            let outputs = graph.push_op(Op::Stack { ops: Box::new([mm.out]) });
-            graph.mint_node(
-                Op::Program {
-                    inputs,
-                    outputs,
-                    info: Box::new((
-                        ProgramId {
-                            dev: match self.memory_pool {
-                                Pool::Cuda(i) => Dev::Cuda(i),
-                                pool => unreachable!("CUDA device with non-CUDA pool {pool:?}"),
-                            },
-                            program_id,
-                        },
-                        1,
-                    )),
-                },
-                mm.out,
-            );
-        }
-    }
 }
 
 /// Preplanned CUDA partition: the ordered commands plus per-command death
@@ -2626,8 +2358,6 @@ fn submit_launch(
     args: &[LaunchArg],
     stream: CUstream,
     max_grid: &[i64; 3],
-    cudnn: &Option<Arc<CudnnLib>>,
-    cudnn_handle: Option<cudnnHandle_t>,
     cuLaunchKernel: unsafe extern "C" fn(
         CUfunction,
         c_uint,
@@ -2642,78 +2372,62 @@ fn submit_launch(
         *mut *mut c_void,
     ) -> CUDAStatus,
 ) -> Result<(), BackendError> {
-    match &programs[program_id] {
-        CUDAProgram::Module { function, lws, gws, .. } => {
-            let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
-            // Boxed so reallocs of this vec can never dangle the
-            // pointers handed to cuLaunchKernel.
-            let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
-            // Stable storage for the device pointers of buffer args —
-            // cuLaunchKernel receives their addresses by reference.
-            let mut buffer_ptrs: Vec<u64> = Vec::with_capacity(args.len());
-            for arg in args.iter() {
-                match arg {
-                    LaunchArg::Buffer { chunk, offset, len } => buffer_ptrs.push(buffer_ptr(buffers, *chunk, *offset, *len)?),
-                    LaunchArg::Variable(_) => {}
-                }
-            }
-            let mut buf_ptr_idx = 0usize;
-            for arg in args.iter() {
-                match arg {
-                    LaunchArg::Buffer { .. } => {
-                        let ptr = &buffer_ptrs[buf_ptr_idx];
-                        buf_ptr_idx += 1;
-                        let slot: *const u64 = core::ptr::from_ref(ptr);
-                        kernel_params.push(slot.cast_mut().cast());
-                    }
-                    LaunchArg::Variable(constant) => {
-                        scalar_values.push(constant.to_le_bytes().into());
-                        let value = scalar_values.last().unwrap();
-                        kernel_params.push(value.as_ptr().cast_mut().cast());
-                    }
-                }
-            }
-            let grid = |gdim: &GwsDim| -> Dim {
-                gdim.eval(&mut |ordinal| match &args[ordinal] {
-                    LaunchArg::Variable(c) => c.as_dim().unwrap(),
-                    LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
-                })
-            };
-            let default_gws = GwsDim::Const(1);
-            let (gx, gy, gz) = (
-                grid(gws.first().unwrap_or(&default_gws)),
-                grid(gws.get(1).unwrap_or(&default_gws)),
-                grid(gws.get(2).unwrap_or(&default_gws)),
-            );
-            if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
-                return Err(BackendError {
-                    status: ErrorStatus::KernelLaunch,
-                    context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
-                });
-            }
-            let (gx, gy, gz) = (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
-            if crate::debug_mask().launch() {
-                println!("[cuda] launch {program_id:?} grid=({gx},{gy},{gz}) args={args:?}");
-            }
-            unsafe {
-                (cuLaunchKernel)(
-                    *function,
-                    gx,
-                    gy,
-                    gz,
-                    lws[0],
-                    lws[1],
-                    lws[2],
-                    0,
-                    stream,
-                    kernel_params.as_mut_ptr(),
-                    ptr::null_mut(),
-                )
-            }
-            .check(ErrorStatus::KernelLaunch)
+    let CUDAProgram { module, ref function, lws, gws, params } = programs[program_id];
+    let mut kernel_params: Vec<*mut core::ffi::c_void> = Vec::new();
+    // Boxed so reallocs of this vec can never dangle the
+    // pointers handed to cuLaunchKernel.
+    let mut scalar_values: Vec<Box<[u8]>> = Vec::new();
+    // Stable storage for the device pointers of buffer args —
+    // cuLaunchKernel receives their addresses by reference.
+    let mut buffer_ptrs: Vec<u64> = Vec::with_capacity(args.len());
+    for arg in args.iter() {
+        match arg {
+            LaunchArg::Buffer { chunk, offset, len } => buffer_ptrs.push(buffer_ptr(buffers, *chunk, *offset, *len)?),
+            LaunchArg::Variable(_) => {}
         }
-        CUDAProgram::Cudnn { plan } => unsafe { launch_cudnn_plan(cudnn, cudnn_handle, plan, buffers, args, stream) },
     }
+    let mut buf_ptr_idx = 0usize;
+    for arg in args.iter() {
+        match arg {
+            LaunchArg::Buffer { .. } => {
+                let ptr = &buffer_ptrs[buf_ptr_idx];
+                buf_ptr_idx += 1;
+                let slot: *const u64 = core::ptr::from_ref(ptr);
+                kernel_params.push(slot.cast_mut().cast());
+            }
+            LaunchArg::Variable(constant) => {
+                scalar_values.push(constant.to_le_bytes().into());
+                let value = scalar_values.last().unwrap();
+                kernel_params.push(value.as_ptr().cast_mut().cast());
+            }
+        }
+    }
+    let grid = |gdim: &GwsDim| -> Dim {
+        gdim.eval(&mut |ordinal| match &args[ordinal] {
+            LaunchArg::Variable(c) => c.as_dim().unwrap(),
+            LaunchArg::Buffer { .. } => unreachable!("gws param must be a Variable launch arg"),
+        })
+    };
+    let default_gws = GwsDim::Const(1);
+    let (gx, gy, gz) = (
+        grid(gws.first().unwrap_or(&default_gws)),
+        grid(gws.get(1).unwrap_or(&default_gws)),
+        grid(gws.get(2).unwrap_or(&default_gws)),
+    );
+    if gx < 0 || gy < 0 || gz < 0 || gx > max_grid[0] || gy > max_grid[1] || gz > max_grid[2] {
+        return Err(BackendError {
+            status: ErrorStatus::KernelLaunch,
+            context: format!("grid dims ({gx},{gy},{gz}) exceed device max {max_grid:?}").into(),
+        });
+    }
+    let (gx, gy, gz) = (u32::try_from(gx).unwrap(), u32::try_from(gy).unwrap(), u32::try_from(gz).unwrap());
+    if crate::debug_mask().launch() {
+        println!("[cuda] launch {program_id:?} grid=({gx},{gy},{gz}) args={args:?}");
+    }
+    unsafe {
+        (cuLaunchKernel)(*function, gx, gy, gz, lws[0], lws[1], lws[2], 0, stream, kernel_params.as_mut_ptr(), ptr::null_mut())
+    }
+    .check(ErrorStatus::KernelLaunch)
 }
 
 /// dlopens libcudnn.so.9 and resolves the graph API symbols. Returns `None` if

@@ -87,17 +87,7 @@ impl TransformerEncoderLayer {
         let norm1 = LayerNorm::new([d_model], layer_norm_eps, true, bias, dtype)?;
         let norm2 = LayerNorm::new([d_model], layer_norm_eps, true, bias, dtype)?;
 
-        Ok(Self {
-            self_attn,
-            linear1,
-            dropout,
-            linear2,
-            norm1,
-            norm2,
-            activation,
-            norm_first,
-            batch_first,
-        })
+        Ok(Self { self_attn, linear1, dropout, linear2, norm1, norm2, activation, norm_first, batch_first })
     }
 
     /// Performs a forward pass of the Transformer encoder layer.
@@ -121,11 +111,7 @@ impl TransformerEncoderLayer {
 
         if self.norm_first {
             // Pre-norm variant
-            let sa_out = self.self_attention_block(
-                self.norm1.forward(&x)?,
-                &src_mask,
-                &src_key_padding_mask,
-            )?;
+            let sa_out = self.self_attention_block(self.norm1.forward(&x)?, &src_mask, &src_key_padding_mask)?;
             x = x + sa_out;
 
             let ff_out = self.feed_forward_block(self.norm2.forward(&x)?)?;

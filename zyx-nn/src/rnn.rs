@@ -91,14 +91,7 @@ impl RNNCell {
             None
         };
 
-        Ok(RNNCell {
-            weight_ih,
-            weight_hh,
-            bias_ih,
-            bias_hh,
-            hidden_size,
-            nonlinearity,
-        })
+        Ok(RNNCell { weight_ih, weight_hh, bias_ih, bias_hh, hidden_size, nonlinearity })
     }
 
     /// Forward function for RNNCell.
@@ -119,17 +112,9 @@ impl RNNCell {
     pub fn forward(&self, x: &Tensor, hx: &Tensor) -> Result<Tensor, ZyxError> {
         let h_new = x.matmul(self.weight_ih.t())? + hx.matmul(self.weight_hh.t())?;
 
-        let h_new = if let Some(b) = &self.bias_ih {
-            h_new + b
-        } else {
-            h_new
-        };
+        let h_new = if let Some(b) = &self.bias_ih { h_new + b } else { h_new };
 
-        let h_new = if let Some(b) = &self.bias_hh {
-            h_new + b
-        } else {
-            h_new
-        };
+        let h_new = if let Some(b) = &self.bias_hh { h_new + b } else { h_new };
 
         let h_new = match self.nonlinearity {
             "relu" => h_new.relu(),

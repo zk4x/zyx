@@ -218,8 +218,8 @@
 // value read back is always up to date.
 // -----------------------------
 
-use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path, sync::Arc};
 use nanoserde::{DeBin, SerBin};
+use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path, sync::Arc};
 
 #[cfg(feature = "viz")]
 use crate::viz::Viz;
