@@ -209,6 +209,13 @@ impl Cone {
     /// from the tile's own geometry hands them over instead of a linear index,
     /// which the coordinate split would have to divide back out of it.
     fn clone_at_coords(&self, kernel: &mut Kernel, before: OpId, row: OpId, kk: OpId) -> OpId {
+        self.clone_op_at_coords(kernel, before, row, kk, self.value)
+    }
+
+    /// [`Cone::clone_at_coords`] returning the clone of one op of the chain
+    /// instead of its value: a fill that stages a *word* of the operand needs
+    /// the chain's own load, re-derived at the element's coordinates.
+    fn clone_op_at_coords(&self, kernel: &mut Kernel, before: OpId, row: OpId, kk: OpId, target: OpId) -> OpId {
         if std::env::var("ZYX_CONE").is_ok() {
             eprintln!(
                 "CONE mn={:?} k={:?} extent={:?} value={:?} ops={:?}",
@@ -242,7 +249,7 @@ impl Cone {
             };
             remap.insert(*id, new);
         }
-        remap[&self.value]
+        remap[&target]
     }
 
     /// The length of the aligned index run over which this value is constant:
@@ -379,6 +386,111 @@ impl Quant {
             return Some(Quant { code, scale, scale_period: p });
         }
         None
+    }
+}
+
+/// An operand's code as one packed word, the form the int8 fill stages: the
+/// code's cone is `((word >> bits*(elem % codes)) & (2^bits - 1)) - zero` over
+/// a single loaded element. `codes` is how many codes that element holds, so
+/// the fill loads it once and writes `codes / 4` operand words.
+///
+/// This is the *shape* of a packed quantization, not a format: a two-bit code
+/// in a sixteen-bit word and a byte-addressable int8 code in a thirty-two-bit
+/// word are the same description at different widths.
+#[derive(Clone, Copy)]
+struct CodeWord {
+    /// The cone's own word load, rebuilt at an element's coordinates by
+    /// [`Cone::clone_op_at_coords`].
+    load: OpId,
+    /// Codes per loaded element.
+    codes: u32,
+    /// Bits per code.
+    bits: u32,
+    /// The constant the chain subtracts (`code - zero`).
+    zero: i32,
+    /// The load's element dtype.
+    dtype: crate::DType,
+}
+
+impl Quant {
+    /// The code's packed-word form, or `None` when the code is not a fixed-width
+    /// field of a single loaded element.
+    fn code_word(&self, k: &Kernel) -> Option<CodeWord> {
+        let strip = |mut v: OpId| -> OpId {
+            loop {
+                match *k.at(v) {
+                    Op::Cast { x, .. } | Op::Bitcast { x, .. } => v = x,
+                    _ => return v,
+                }
+            }
+        };
+        let con = |id: OpId| -> Option<i64> {
+            match k.at(strip(id)) {
+                Op::Const(c) => c.as_integer(),
+                _ => None,
+            }
+        };
+        let mut v = strip(self.code.value);
+        // The centering the chain applies to the code (`code - zero`).
+        let zero = if let Op::Binary { x, y, bop: BOp::Sub } = *k.at(v) {
+            let Op::Const(c) = k.at(y) else {
+                return None;
+            };
+            let z = c.as_float()?;
+            if z.fract() != 0.0 {
+                return None;
+            }
+            v = strip(x);
+            z as i32
+        } else {
+            0
+        };
+        // The code's field: `(word >> shift) & mask`.
+        let Op::Binary { x, y, bop: BOp::BitAnd } = *k.at(v) else {
+            return None;
+        };
+        let Op::Const(mc) = k.at(y) else {
+            return None;
+        };
+        let mask = mc.as_integer()?;
+        let Some(span) = u64::try_from(mask + 1).ok().filter(|m| m.is_power_of_two()) else {
+            return None;
+        };
+        let bits = u32::try_from(span.trailing_zeros()).ok()?;
+        let Op::Binary { x: sh, y: shf, bop: BOp::BitShiftRight } = *k.at(strip(x)) else {
+            return None;
+        };
+        // The shift is `bits * (elem % codes)`: a constant stride times the
+        // element's position inside the word.
+        let Op::Binary { x: sx, y: sy, bop: BOp::Mul } = *k.at(strip(shf)) else {
+            return None;
+        };
+        let (step, mob) = match (con(sx), con(sy)) {
+            (Some(c), None) => (c, sy),
+            (None, Some(c)) => (c, sx),
+            _ => return None,
+        };
+        if step != i64::from(bits) {
+            return None;
+        }
+        let Op::Binary { x: mx, y: my, bop: BOp::Mod } = *k.at(strip(mob)) else {
+            return None;
+        };
+        let codes = u32::try_from(con(my).or_else(|| con(mx))?).ok()?;
+        if codes == 0 || codes % 4 != 0 {
+            return None;
+        }
+        let word = strip(sh);
+        let Op::Load { .. } = *k.at(word) else {
+            return None;
+        };
+        Some(CodeWord { load: word, codes, bits, zero, dtype: k.dtype(word) })
+    }
+
+    /// Whether the loaded element's bytes are the codes themselves, so the fill
+    /// copies the word instead of unpacking it.
+    fn byte_word(&self, w: &CodeWord) -> bool {
+        w.bits == 8 && w.codes == 4 && w.dtype == DType::U32 && w.zero == 0
     }
 }
 
@@ -612,6 +724,9 @@ struct Plan {
     /// Stage the operands through shared memory (`ldmatrix`) instead of
     /// reading their fragments from global memory.
     staged: bool,
+    /// The staged layout: the swizzled one (bank-conflict-free rows) or the
+    /// plain one. Only the s8 form has both today; every other form has one.
+    swizzle: bool,
 }
 
 /// The tensorization optimization: one config per candidate plan.
@@ -635,8 +750,8 @@ impl Optimization for Tensorize {
                 let form =
                     p.region.map(|r| self.regions[r].variant.dtype).or_else(|| p.tiled.map(|t| self.tiled[t].variant.dtype));
                 eprintln!(
-                    "PLAN {i}: region={:?} tiled={:?} grid={:?} layout={:?} staged={} dtype={form:?}",
-                    p.region, p.tiled, p.grid, p.layout, p.staged
+                    "PLAN {i}: region={:?} tiled={:?} grid={:?} layout={:?} staged={} swizzle={} dtype={form:?}",
+                    p.region, p.tiled, p.grid, p.layout, p.staged, p.swizzle
                 );
             }
         }
@@ -705,7 +820,7 @@ impl Optimization for Tensorize {
                 1 => matches[0],
                 _ => *matches.iter().find(|t| t.mirrored == transposed).unwrap_or(&matches[0]),
             };
-            tile_to_wmma_form(kernel, chosen, plan.staged, plan.layout);
+            tile_to_wmma_form(kernel, chosen, plan.staged, plan.swizzle, plan.layout);
             if std::env::var("ZYX_KP").is_ok() {
                 eprintln!(
                     "ZYX_KP cfg={config} m_lanes={} n_lanes={} k_lanes={} layout={:?} staged={} ops={}",
@@ -723,7 +838,7 @@ impl Optimization for Tensorize {
         let staged = plan.staged;
         let layout = plan.layout;
         if let Some(i) = plan.tiled {
-            tile_to_wmma_form(kernel, &self.tiled[i], staged, layout);
+            tile_to_wmma_form(kernel, &self.tiled[i], staged, plan.swizzle, layout);
             return;
         }
         let Some(region) = plan.region else {
@@ -1438,6 +1553,126 @@ fn coop_fill_cone_i8(
 /// next eight columns for the lane groups above `rows`. Constant across the
 /// sub-tile offsets, so one per tile (the reference keeps it in one register
 /// and reaches the other sub-tiles with immediates).
+/// Stage one operand tile in the packed-word layout the `ldmatrix` mainloop
+/// reads: the payload words at `payload` and the per-group scales at
+/// `scale_col`, both inside a row of `stride` words. The code's word is loaded
+/// once per `codes` elements and expanded into `codes / 4` operand words — a
+/// copy when the loaded element's bytes are the codes themselves
+/// ([`Quant::byte_word`]), otherwise the two-bit unpack, whose lookup table is
+/// the code's own centering.
+#[allow(clippy::too_many_arguments)]
+fn coop_fill_word_tile(
+    kernel: &mut Kernel,
+    before: OpId,
+    tid: OpId,
+    quant: &Quant,
+    word: &CodeWord,
+    row_off: OpId,
+    k_off: OpId,
+    rows: Dim,
+    chunk: Dim,
+    threads: Dim,
+    tile: OpId,
+    stride: Dim,
+    payload: Dim,
+    scale_col: Dim,
+    axis: u32,
+) {
+    let put = |kernel: &mut Kernel, op: Op| -> OpId {
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
+    };
+    // ---- the payload words ----
+    let per_row = chunk / Dim::from(word.codes);
+    let total = rows * per_row;
+    let steps = (total + threads - 1) / threads;
+    let step = put(kernel, Op::Unroll { axis, len: u16::try_from(steps).expect("word fill step count") });
+    let th = put(kernel, Op::Const(Constant::idx(threads)));
+    let st = put(kernel, Op::Binary { x: step, y: th, bop: BOp::Mul });
+    let w = put(kernel, Op::Binary { x: tid, y: st, bop: BOp::Add });
+    let prc = put(kernel, Op::Const(Constant::idx(per_row)));
+    let r = put(kernel, Op::Binary { x: w, y: prc, bop: BOp::Div });
+    let c = put(kernel, Op::Binary { x: w, y: prc, bop: BOp::Mod });
+    let cc = put(kernel, Op::Const(Constant::idx(Dim::from(word.codes))));
+    let ck = put(kernel, Op::Binary { x: c, y: cc, bop: BOp::Mul });
+    let row = put(kernel, Op::Binary { x: r, y: row_off, bop: BOp::Add });
+    let kk = put(kernel, Op::Binary { x: ck, y: k_off, bop: BOp::Add });
+    // The cone's own word load at this element: the fill stages the packed
+    // operand without knowing the format, only its width.
+    let q = quant.code.clone_op_at_coords(kernel, before, row, kk, word.load);
+    let out_words = Dim::from(word.codes / 4);
+    let ow = put(kernel, Op::Const(Constant::idx(out_words)));
+    let cw = put(kernel, Op::Binary { x: c, y: ow, bop: BOp::Mul });
+    let cpay = put(kernel, Op::Const(Constant::idx(payload)));
+    let cw = put(kernel, Op::Binary { x: cw, y: cpay, bop: BOp::Add });
+    let cst = put(kernel, Op::Const(Constant::idx(stride)));
+    let mut base = put(kernel, Op::Binary { x: r, y: cst, bop: BOp::Mul });
+    base = put(kernel, Op::Binary { x: base, y: cw, bop: BOp::Add });
+    if quant.byte_word(word) {
+        put(kernel, Op::Store { dst: tile, dst_idx: base, src: q });
+    } else {
+        assert!(
+            word.bits == 2 && word.codes == 8 && word.dtype == DType::U16,
+            "the packed word fill unpacks two-bit codes, eight to a sixteen-bit word"
+        );
+        // The reference reads the half signed and turns each pair of codes
+        // into a byte with the table `i - zero`, the code's centering.
+        let qs = put(kernel, Op::Bitcast { x: q, dtype: DType::I16 });
+        let qi = put(kernel, Op::Cast { x: qs, dtype: DType::I32 });
+        let qu = put(kernel, Op::Bitcast { x: qi, dtype: DType::U32 });
+        let mut table = 0u32;
+        for i in 0..4i32 {
+            table |= u32::from((i - word.zero) as u8) << (8 * i as u32);
+        }
+        let tb = put(kernel, Op::Const(Constant::new(table)));
+        let two = put(kernel, Op::Const(Constant::new(2u32)));
+        let mask = put(kernel, Op::Const(Constant::new(0x7777u32)));
+        let sel_even = put(kernel, Op::Const(Constant::new(0x5140u32)));
+        let sel_odd = put(kernel, Op::Const(Constant::new(0x7362u32)));
+        let even = put(kernel, Op::Binary { x: qu, y: mask, bop: BOp::BitAnd });
+        let qe = put(kernel, Op::PTX(Box::new(PTXOp::Prmt { a: tb, b: tb, c: even })));
+        let sh = put(kernel, Op::Binary { x: qu, y: two, bop: BOp::BitShiftRight });
+        let odd = put(kernel, Op::Binary { x: sh, y: mask, bop: BOp::BitAnd });
+        let qo = put(kernel, Op::PTX(Box::new(PTXOp::Prmt { a: tb, b: tb, c: odd })));
+        let qx = put(kernel, Op::PTX(Box::new(PTXOp::Prmt { a: qe, b: qo, c: sel_even })));
+        let qy = put(kernel, Op::PTX(Box::new(PTXOp::Prmt { a: qe, b: qo, c: sel_odd })));
+        put(kernel, Op::Store { dst: tile, dst_idx: base, src: qx });
+        let one = put(kernel, Op::Const(Constant::idx(1i64)));
+        let base1 = put(kernel, Op::Binary { x: base, y: one, bop: BOp::Add });
+        put(kernel, Op::Store { dst: tile, dst_idx: base1, src: qy });
+    }
+    // ---- the per-group scales ----
+    let groups = chunk / Q8_1_GROUP;
+    let stotal = rows * groups;
+    let ssteps = (stotal + threads - 1) / threads;
+    let sstep = put(kernel, Op::Unroll { axis, len: u16::try_from(ssteps).expect("scale fill step count") });
+    let sth = put(kernel, Op::Const(Constant::idx(threads)));
+    let sst = put(kernel, Op::Binary { x: sstep, y: sth, bop: BOp::Mul });
+    let e = put(kernel, Op::Binary { x: tid, y: sst, bop: BOp::Add });
+    let gc = put(kernel, Op::Const(Constant::idx(groups)));
+    let sr = put(kernel, Op::Binary { x: e, y: gc, bop: BOp::Div });
+    let sg = put(kernel, Op::Binary { x: e, y: gc, bop: BOp::Mod });
+    let kg = put(kernel, Op::Const(Constant::idx(Q8_1_GROUP)));
+    let ko = put(kernel, Op::Binary { x: sg, y: kg, bop: BOp::Mul });
+    let row = put(kernel, Op::Binary { x: sr, y: row_off, bop: BOp::Add });
+    let kk = put(kernel, Op::Binary { x: ko, y: k_off, bop: BOp::Add });
+    let val = quant.scale.clone_at_coords(kernel, before, row, kk);
+    let val = if kernel.dtype(val) == DType::F32 {
+        val
+    } else {
+        put(kernel, Op::Cast { x: val, dtype: DType::F32 })
+    };
+    let bits = put(kernel, Op::Bitcast { x: val, dtype: DType::U32 });
+    let csc = put(kernel, Op::Const(Constant::idx(scale_col)));
+    let mut at = put(kernel, Op::Binary { x: sr, y: cst, bop: BOp::Mul });
+    at = put(kernel, Op::Binary { x: at, y: csc, bop: BOp::Add });
+    at = put(kernel, Op::Binary { x: at, y: sg, bop: BOp::Add });
+    put(kernel, Op::Store { dst: tile, dst_idx: at, src: bits });
+}
+
 fn ldmatrix_lane_base(kernel: &mut Kernel, before: OpId, lane: OpId, rows: Dim, k: Dim, tile_rows: Dim) -> OpId {
     let put = |kernel: &mut Kernel, op: Op| -> OpId {
         if before.is_null() {
@@ -1764,6 +1999,35 @@ fn tile_fit_s8(shape: &TileShape, staged: bool, layout: (u16, u16, u16), info: &
     }
     dbg("ok");
     Some(TileFit { mt_w, nt_w, warps, combine: false, staged: true, chunk, interleave: false })
+}
+
+/// Whether an int8 form can be emitted with both operands staged as packed
+/// words (the `mmq` shape): the block is the two 128-row bands by an
+/// eight-instruction K chunk, the warp grid owns four weight fragments and
+/// eight activation bands, and each code is a fixed-width field of one loaded
+/// word ([`Quant::code_word`]).
+fn words_fit(shape: &TileShape, layout: (u16, u16, u16), k: &Kernel, qa: &Quant, qb: &Quant) -> bool {
+    if layout != (4, 2, 1) {
+        return false;
+    }
+    if shape.a_k != 1 || shape.b_k != 1 {
+        return false;
+    }
+    if shape.mt != Dim::from(16) || shape.nt != Dim::from(16) || shape.kt != Dim::from(8) {
+        return false;
+    }
+    if shape.fm != Dim::from(8) || shape.fn_ != Dim::from(8) || shape.fk != Dim::from(16) {
+        return false;
+    }
+    for q in [qa, qb] {
+        let Some(w) = q.code_word(k) else {
+            return false;
+        };
+        if !q.byte_word(&w) && !(w.bits == 2 && w.codes == 8 && w.dtype == DType::U16) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Emit a matched tiled region as int8 wmmas: both operands' codes staged as
@@ -2123,6 +2387,278 @@ fn tile_to_wmma_s8(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u
     kernel.verify();
 }
 
+/// Emit the int8 form with both operands staged as their packed words — the
+/// `mmq` shape. A's row holds its payload words first, then the group scales,
+/// then a four-word tail; B's row holds the scales first and the payload words
+/// after them. A is read with one `ldmatrix.x4.b16` per (two-fragment, K group)
+/// pair, B with two words per fragment, and the four int32 sums of a fragment
+/// pair are folded into the f32 accumulator once per group.
+///
+/// Both operands use the same staging routine: the code's word is loaded once
+/// per `codes` elements ([`coop_fill_word_tile`]), so a two-bit weight block and
+/// an already-int8 activation block cost one global load per word, not one per
+/// element.
+fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)) {
+    let v = &t.variant;
+    let (fm, fn_, fk) = {
+        let (m, n, k) = v.dims.decompose_mnk();
+        (m as Dim, n as Dim, k as Dim)
+    };
+    let info = kernel.device_info();
+    let warp = u32::from(info.warp_size);
+    let (wm, wn, _) = layout;
+    let warps = u32::from(wm.max(1)) * u32::from(wn.max(1));
+    let mt_w = t.mt / Dim::from(wm.max(1));
+    let nt_w = t.nt / Dim::from(wn.max(1));
+    let slots = t.slots;
+    let chunk = t.kt * fk;
+    let groups = chunk / Q8_1_GROUP;
+    // The row of each staged tile, in 32-bit words: A's payload, A's scales,
+    // a four-word tail that keeps the rows of one `ldmatrix` off one bank set;
+    // B's scales, then B's payload.
+    let payload = chunk / 4;
+    let xs = payload + groups + 4;
+    let ys = groups + payload;
+    let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref()) else {
+        panic!("the packed int8 form needs both operands split into a code and a group scale")
+    };
+    let Some(wa) = qa.code_word(kernel) else {
+        panic!("the packed int8 form needs each operand's code to be a field of one loaded word")
+    };
+    let Some(wb) = qb.code_word(kernel) else {
+        panic!("the packed int8 form needs each operand's code to be a field of one loaded word")
+    };
+    let rows_a = t.mt * fm;
+    let rows_b = t.nt * fn_;
+    let xt = insert_scoped_storage(kernel, DType::U32, MemScope::Local, rows_a * xs);
+    let yt = insert_scoped_storage(kernel, DType::U32, MemScope::Local, rows_b * ys);
+
+    // ---- the accumulator: one f32 sum per (fragment, C word) ----
+    let len = mt_w * nt_w * slots;
+    if let Op::Storage { len: l, .. } = &mut kernel.ops[t.acc].op {
+        *l = len;
+    }
+    let zero_f = match kernel.at(t.init) {
+        Op::Store { src, .. } => *src,
+        _ => unreachable!("tiled tensorize: init is not a store"),
+    };
+    let clear_lane = kernel.insert_before(t.init, Op::Unroll { axis: 0, len: u16::try_from(len).expect("accumulator words") });
+    kernel.insert_before(t.init, Op::Store { dst: t.acc, dst_idx: clear_lane, src: zero_f });
+    kernel.remove_op(t.init);
+
+    // ---- the warp's place in the block ----
+    let put = |kernel: &mut Kernel, op: Op| -> OpId { kernel.insert_before(t.loop_id, op) };
+    let lane = put(kernel, Op::Range { axis: 0, kind: RangeKind::Local(warp) });
+    let mut warp_var = OpId::NULL;
+    if warps > 1 {
+        warp_var = put(kernel, Op::Range { axis: 1, kind: RangeKind::Local(warps) });
+    }
+    let tid = if warp_var.is_null() {
+        lane
+    } else {
+        let w = put(kernel, Op::Const(Constant::idx(Dim::from(warp))));
+        let base = put(kernel, Op::Binary { x: warp_var, y: w, bop: BOp::Mul });
+        put(kernel, Op::Binary { x: base, y: lane, bop: BOp::Add })
+    };
+    let band_m = if wn > 1 {
+        let c = put(kernel, Op::Const(Constant::idx(Dim::from(wn))));
+        put(kernel, Op::Binary { x: warp_var, y: c, bop: BOp::Div })
+    } else if wm > 1 {
+        warp_var
+    } else {
+        OpId::NULL
+    };
+    let band_n = if wn > 1 {
+        let c = put(kernel, Op::Const(Constant::idx(Dim::from(wn))));
+        put(kernel, Op::Binary { x: warp_var, y: c, bop: BOp::Mod })
+    } else {
+        OpId::NULL
+    };
+    let warp_off_m = if band_m.is_null() {
+        OpId::NULL
+    } else {
+        let s = put(kernel, Op::Const(Constant::idx(mt_w * fm)));
+        put(kernel, Op::Binary { x: band_m, y: s, bop: BOp::Mul })
+    };
+    let warp_off_n = if band_n.is_null() {
+        OpId::NULL
+    } else {
+        let s = put(kernel, Op::Const(Constant::idx(nt_w * fn_)));
+        put(kernel, Op::Binary { x: band_n, y: s, bop: BOp::Mul })
+    };
+    // The lane's fragment geometry: `gid = lane/4` is its row, `tig = lane%4`
+    // the four-int8 K group; the `ldmatrix` address is `lane%16` rows by
+    // `lane/16` 16-byte halves.
+    let four = put(kernel, Op::Const(Constant::idx(4i64)));
+    let gid = put(kernel, Op::Binary { x: lane, y: four, bop: BOp::Div });
+    let tig = put(kernel, Op::Binary { x: lane, y: four, bop: BOp::Mod });
+    let two = put(kernel, Op::Const(Constant::idx(2i64)));
+    let tig2 = put(kernel, Op::Binary { x: tig, y: two, bop: BOp::Mul });
+    let c16 = put(kernel, Op::Const(Constant::idx(16i64)));
+    let lanerow = put(kernel, Op::Binary { x: lane, y: c16, bop: BOp::Mod });
+    let lanehalf = put(kernel, Op::Binary { x: lane, y: c16, bop: BOp::Div });
+
+    // ---- stage both tiles for this K chunk ----
+    let end = t.update;
+    let a_base = base_expr(kernel, end, &t.a_fixed, t.a_offset, 0);
+    let b_base = base_expr(kernel, end, &t.b_fixed, t.b_offset, 0);
+    let a_roff = {
+        let ke = kernel.insert_const_idx_before(end, qa.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: a_base, y: ke, bop: BOp::Div })
+    };
+    let a_koff = {
+        let ke = kernel.insert_const_idx_before(end, qa.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: a_base, y: ke, bop: BOp::Mod })
+    };
+    let b_roff = {
+        let ke = kernel.insert_const_idx_before(end, qb.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: b_base, y: ke, bop: BOp::Div })
+    };
+    let b_koff = {
+        let ke = kernel.insert_const_idx_before(end, qb.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: b_base, y: ke, bop: BOp::Mod })
+    };
+    let threads = Dim::from(warps) * Dim::from(warp);
+    let cxs = kernel.insert_before(end, Op::Const(Constant::idx(xs)));
+    let cys = kernel.insert_before(end, Op::Const(Constant::idx(ys)));
+    let cgrp = kernel.insert_before(end, Op::Const(Constant::idx(groups)));
+    let cpay = kernel.insert_before(end, Op::Const(Constant::idx(payload)));
+    coop_fill_word_tile(kernel, end, tid, qa, &wa, a_roff, a_koff, rows_a, chunk, threads, xt, xs, 0, payload, 2);
+    coop_fill_word_tile(kernel, end, tid, qb, &wb, b_roff, b_koff, rows_b, chunk, threads, yt, ys, groups, 0, 3);
+    kernel.insert_before(end, Op::Barrier);
+
+    // ---- the mainloop: groups are a chain, the fragment pairs are emitted
+    // one after the other because their `ldmatrix` words are registers ----
+    let zero_i = kernel.insert_before(end, Op::Const(Constant::new(0i32)));
+    let zero2 = kernel.insert_before(end, Op::Stack { ops: [zero_i, zero_i].to_vec().into() });
+    let n_groups = usize::try_from(groups).expect("K groups per chunk");
+    let n_sub = usize::try_from(mt_w / 2).expect("fragment pairs per warp");
+    let n_bands = usize::try_from(nt_w).expect("activation bands per warp");
+    for g in 0..n_groups {
+        let gv = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(g).expect("K group"))));
+        let g8 = {
+            let eight = kernel.insert_before(end, Op::Const(Constant::idx(8i64)));
+            kernel.insert_before(end, Op::Binary { x: gv, y: eight, bop: BOp::Mul })
+        };
+        for sub in 0..n_sub {
+            let s16 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(sub * 2 * 8).expect("sub-tile"))));
+            let mut row = kernel.insert_before(end, Op::Binary { x: warp_off_m, y: s16, bop: BOp::Add });
+            row = kernel.insert_before(end, Op::Binary { x: row, y: lanerow, bop: BOp::Add });
+            let mut addr = kernel.insert_before(end, Op::Binary { x: row, y: cxs, bop: BOp::Mul });
+            addr = kernel.insert_before(end, Op::Binary { x: addr, y: g8, bop: BOp::Add });
+            let side = {
+                let four = kernel.insert_before(end, Op::Const(Constant::idx(4i64)));
+                kernel.insert_before(end, Op::Binary { x: lanehalf, y: four, bop: BOp::Mul })
+            };
+            addr = kernel.insert_before(end, Op::Binary { x: addr, y: side, bop: BOp::Add });
+            let frag = kernel.insert_before(
+                end,
+                Op::PTX(Box::new(PTXOp::VLdMatrix {
+                    dims: LdMatrixDims::m8n8,
+                    num: LdMatrixNum::X4,
+                    trans: LdMatrixTrans::off,
+                    dtype: LdMatrixType::b16,
+                    src: xt,
+                    addr,
+                })),
+            );
+            // The two A fragments' group scales, words 32+g of their rows.
+            let aw0 = kernel.insert_before(end, Op::Index { vec: frag, idx: 0 });
+            let aw1 = kernel.insert_before(end, Op::Index { vec: frag, idx: 1 });
+            let aw2 = kernel.insert_before(end, Op::Index { vec: frag, idx: 2 });
+            let aw3 = kernel.insert_before(end, Op::Index { vec: frag, idx: 3 });
+            let (da0, da1) = {
+                let mut crow = kernel.insert_before(end, Op::Binary { x: warp_off_m, y: s16, bop: BOp::Add });
+                crow = kernel.insert_before(end, Op::Binary { x: crow, y: gid, bop: BOp::Add });
+                let mut i0 = kernel.insert_before(end, Op::Binary { x: crow, y: cxs, bop: BOp::Mul });
+                i0 = kernel.insert_before(end, Op::Binary { x: i0, y: cpay, bop: BOp::Add });
+                i0 = kernel.insert_before(end, Op::Binary { x: i0, y: gv, bop: BOp::Add });
+                let w0 = kernel.insert_before(end, Op::Load { src: xt, src_idx: i0 });
+                let d0 = kernel.insert_before(end, Op::Bitcast { x: w0, dtype: DType::F32 });
+                let eight = kernel.insert_before(end, Op::Const(Constant::idx(8i64)));
+                let mut i1 = kernel.insert_before(end, Op::Binary { x: crow, y: eight, bop: BOp::Add });
+                i1 = kernel.insert_before(end, Op::Binary { x: i1, y: cxs, bop: BOp::Mul });
+                i1 = kernel.insert_before(end, Op::Binary { x: i1, y: cpay, bop: BOp::Add });
+                i1 = kernel.insert_before(end, Op::Binary { x: i1, y: gv, bop: BOp::Add });
+                let w1 = kernel.insert_before(end, Op::Load { src: xt, src_idx: i1 });
+                let d1 = kernel.insert_before(end, Op::Bitcast { x: w1, dtype: DType::F32 });
+                (d0, d1)
+            };
+            for bj in 0..n_bands {
+                let bj8 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(bj * 8).expect("activation band"))));
+                let mut brow = kernel.insert_before(end, Op::Binary { x: warp_off_n, y: bj8, bop: BOp::Add });
+                brow = kernel.insert_before(end, Op::Binary { x: brow, y: gid, bop: BOp::Add });
+                let brow_base = kernel.insert_before(end, Op::Binary { x: brow, y: cys, bop: BOp::Mul });
+                let mut bcol = kernel.insert_before(end, Op::Binary { x: brow_base, y: cgrp, bop: BOp::Add });
+                bcol = kernel.insert_before(end, Op::Binary { x: bcol, y: g8, bop: BOp::Add });
+                bcol = kernel.insert_before(end, Op::Binary { x: bcol, y: tig, bop: BOp::Add });
+                let b0 = kernel.insert_before(end, Op::Load { src: yt, src_idx: bcol });
+                let b1 = {
+                    let four = kernel.insert_before(end, Op::Const(Constant::idx(4i64)));
+                    let i = kernel.insert_before(end, Op::Binary { x: bcol, y: four, bop: BOp::Add });
+                    kernel.insert_before(end, Op::Load { src: yt, src_idx: i })
+                };
+                // The two C columns' activation scales: rows `2*tig + word`.
+                let (db0, db1) = {
+                    let mut r0 = kernel.insert_before(end, Op::Binary { x: warp_off_n, y: bj8, bop: BOp::Add });
+                    r0 = kernel.insert_before(end, Op::Binary { x: r0, y: tig2, bop: BOp::Add });
+                    let i0 = kernel.insert_before(end, Op::Binary { x: r0, y: cys, bop: BOp::Mul });
+                    let i0 = kernel.insert_before(end, Op::Binary { x: i0, y: gv, bop: BOp::Add });
+                    let w0 = kernel.insert_before(end, Op::Load { src: yt, src_idx: i0 });
+                    let d0 = kernel.insert_before(end, Op::Bitcast { x: w0, dtype: DType::F32 });
+                    let one = kernel.insert_before(end, Op::Const(Constant::idx(1i64)));
+                    let r1 = kernel.insert_before(end, Op::Binary { x: r0, y: one, bop: BOp::Add });
+                    let i1 = kernel.insert_before(end, Op::Binary { x: r1, y: cys, bop: BOp::Mul });
+                    let i1 = kernel.insert_before(end, Op::Binary { x: i1, y: gv, bop: BOp::Add });
+                    let w1 = kernel.insert_before(end, Op::Load { src: yt, src_idx: i1 });
+                    let d1 = kernel.insert_before(end, Op::Bitcast { x: w1, dtype: DType::F32 });
+                    (d0, d1)
+                };
+                for par in 0..2usize {
+                    let (aw, aw_next) = if par == 0 { (aw0, aw2) } else { (aw1, aw3) };
+                    let c0 = kernel
+                        .insert_before(end, Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: aw, b: b0, c: zero2 });
+                    let c1 = kernel.insert_before(
+                        end,
+                        Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: aw_next, b: b1, c: c0 },
+                    );
+                    let ai = sub * 2 + par;
+                    let base = (ai * n_bands + bj) * usize::try_from(slots).expect("C words");
+                    for slot in 0..usize::try_from(slots).expect("C words") {
+                        let iv = kernel.insert_before(end, Op::Index { vec: c1, idx: slot });
+                        let fv = kernel.insert_before(end, Op::Cast { x: iv, dtype: DType::F32 });
+                        let da = if par == 0 { da0 } else { da1 };
+                        let db = if slot == 0 { db0 } else { db1 };
+                        let sc = kernel.insert_before(end, Op::Binary { x: da, y: db, bop: BOp::Mul });
+                        let prod = kernel.insert_before(end, Op::Binary { x: fv, y: sc, bop: BOp::Mul });
+                        let idx =
+                            kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(base + slot).expect("sum index"))));
+                        let prev = kernel.insert_before(end, Op::Load { src: t.acc, src_idx: idx });
+                        let sum = kernel.insert_before(end, Op::Binary { x: prod, y: prev, bop: BOp::Add });
+                        kernel.insert_before(end, Op::Store { dst: t.acc, dst_idx: idx, src: sum });
+                    }
+                }
+            }
+        }
+    }
+    kernel.insert_before(end, Op::Barrier);
+
+    // ---- the write-back: the same C fragment geometry as the other forms ----
+    for ai in 0..usize::try_from(mt_w).expect("m fragments") {
+        for bj in 0..usize::try_from(nt_w).expect("n fragments") {
+            let combo = put(kernel, Op::Const(Constant::idx(i64::try_from(ai * n_bands + bj).expect("fragment lane"))));
+            let sl = put(kernel, Op::Unroll { axis: 2, len: u16::try_from(slots).expect("C words") });
+            scatter_epilogue(kernel, t, combo, sl, gid, tig, nt_w, slots, fm, fn_, warp_off_m, warp_off_n);
+        }
+    }
+    let mut doomed: Vec<OpId> = vec![t.update];
+    doomed.extend(t.epilogue.iter().map(|e| e.store));
+    for id in doomed {
+        kernel.remove_op(id);
+    }
+    kernel.verify();
+}
+
 /// Scatter the region's f32 accumulator to its output stores: each C word of
 /// the instruction is written at its own coordinate — `row` is the fragment's
 /// row (the warp's band included), the column the fragment's column
@@ -2193,9 +2729,13 @@ fn scatter_epilogue(
 /// Emit a matched tiled form: the int8 instruction gets its own emission (its
 /// operand words and per-group scales are staged as bytes and rescaled once
 /// per group), every f16 instruction the shared one.
-fn tile_to_wmma_form(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16, u16)) {
+fn tile_to_wmma_form(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, layout: (u16, u16, u16)) {
     if matches!(t.variant.dtype, MMADType::s8_s8_s32_s32) {
-        tile_to_wmma_s8(kernel, t, staged, layout);
+        if swizzle {
+            tile_to_wmma_s8_words(kernel, t, layout);
+        } else {
+            tile_to_wmma_s8(kernel, t, staged, layout);
+        }
     } else {
         tile_to_wmma(kernel, t, staged, layout);
     }
@@ -3913,17 +4453,24 @@ impl Kernel {
                         continue;
                     }
                     if let (Some((shape, loop_len)), Some(ti)) = (&shape, tiled_idx) {
-                        let s8 = matches!(tiled[ti].variant.dtype, MMADType::s8_s8_s32_s32);
-                        let ok = if s8 {
-                            tile_fit_s8(shape, staged, layout, &info).is_some()
-                        } else {
-                            tile_fit(shape, staged, layout, &info, |wk| self.is_sym_multiple(*loop_len, Dim::from(wk))).is_some()
-                        };
-                        if !ok {
+                        let t = &tiled[ti];
+                        if matches!(t.variant.dtype, MMADType::s8_s8_s32_s32) {
+                            if tile_fit_s8(shape, staged, layout, &info).is_some() {
+                                plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle: false });
+                            }
+                            if staged
+                                && let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref())
+                                && words_fit(shape, layout, self, qa, qb)
+                            {
+                                plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle: true });
+                            }
+                            continue;
+                        }
+                        if tile_fit(shape, staged, layout, &info, |wk| self.is_sym_multiple(*loop_len, Dim::from(wk))).is_none() {
                             continue;
                         }
                     }
-                    plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged });
+                    plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle: true });
                 }
             }
         }
@@ -4175,9 +4722,36 @@ impl Kernel {
                                                 // divides it when it divides the
                                                 // whole loop together with them.
                                                 if s8 {
-                                                    if tile_fit_s8(&shape, staged, layout, &info).is_none() {
-                                                        continue;
+                                                    if tile_fit_s8(&shape, staged, layout, &info).is_some() {
+                                                        plans.push(Plan {
+                                                            region: None,
+                                                            tiled: None,
+                                                            grid: Some((
+                                                                m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_,
+                                                                fk, transposed,
+                                                            )),
+                                                            layout,
+                                                            staged,
+                                                            swizzle: false,
+                                                        });
                                                     }
+                                                    if staged
+                                                        && let (Some(qa), Some(qb)) = (quants.0.as_ref(), quants.1.as_ref())
+                                                        && words_fit(&shape, layout, self, qa, qb)
+                                                    {
+                                                        plans.push(Plan {
+                                                            region: None,
+                                                            tiled: None,
+                                                            grid: Some((
+                                                                m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_,
+                                                                fk, transposed,
+                                                            )),
+                                                            layout,
+                                                            staged,
+                                                            swizzle: true,
+                                                        });
+                                                    }
+                                                    continue;
                                                 } else if tile_fit(&shape, staged, layout, &info, |wk| {
                                                     self.is_sym_multiple(loop_len, Dim::from(k_lanes.saturating_mul(wk)))
                                                 })
@@ -4194,6 +4768,7 @@ impl Kernel {
                                                     )),
                                                     layout,
                                                     staged,
+                                                    swizzle: true,
                                                 });
                                             }
                                         }

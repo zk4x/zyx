@@ -16,12 +16,17 @@
 //! elem  = n*K + k
 //! blk   = elem / 128                 // one super-block of 128 weights
 //! off   = elem % 128
-//! byte  = blk*34 + 2 + off/4         // 4 two-bit codes per byte
-//! code  = (byte_word >> 2*(off%4)) & 3
-//! scale = bits(f16) (lo | hi<<8)     // the block's first two bytes
+//! word  = w16[blk*17 + 1 + off/8]    // 8 two-bit codes per u16 word
+//! code  = (word >> 2*(off%8)) & 3
+//! scale = bits(f16) w16[blk*17]      // the block's first two bytes
 //! w     = (f32(code) - 1) * scale    // then rounded to f16
 //! acc  += f32(f16(w) * f16(act[k]))
 //! ```
+//!
+//! The operands are taken in the width the kernel reads them: the weight is
+//! declared `U16` (the 34-byte super-block as its 17 words) and the q8_1
+//! payload `U32` (four int8 per word). The caller supplies those views; the
+//! kernel does no implicit retyping.
 //!
 //! Asserts the result against a host GEMM on the same f16 operands, the
 //! reference dequantizing the same super-block bytes, and asserts the
@@ -40,7 +45,7 @@ use zyx::{DType, Tensor, ZyxError, f16};
 /// kernel is compared against, the way the llama test names the cuBLAS shape.
 /// `opt_tensorize` lists the kernel's own region first, then one block per tile
 /// grid in each operand orientation.
-const REFERENCE_TILE: u64 = 902;
+const REFERENCE_TILE: u64 = 538;
 
 /// Prefill width: the padded sequence length of a prefill chunk.
 const M: i64 = 128;
@@ -67,9 +72,13 @@ fn qwen_ffn_gate() -> Result<(), ZyxError> {
     // register accumulator, one store. The weight is dequantized inline, so
     // the product's multiplier is a chain of ops, not a load.
     let mut k = Kernel::new(dev);
-    let a8 = k.param(DType::I8);
+    // The operands are taken in the width the kernel reads them: the q8_1
+    // payload as u32 words (four int8 each) and the PQ2_0 super-block as its
+    // 17 u16 words (the f16 scale, then the 32 code bytes). There is no
+    // implicit retyping — the caller supplies the word views.
+    let a8 = k.param(DType::U32);
     let sa = k.param(DType::F32);
-    let w = k.param(DType::U8);
+    let w = k.param(DType::U16);
     let c = k.param_mut(DType::F32);
     let m = k.group_range(0, M);
     let n = k.group_range(1, N);
@@ -81,32 +90,27 @@ fn qwen_ffn_gate() -> Result<(), ZyxError> {
         let elem = k.mad(n, K, k_loop);
         let blk = k.div(elem, BLOCK);
         let off = k.mod_(elem, BLOCK);
-        let row_start = k.mul(blk, ROW);
-        // `elem % 4` is the code's position inside its byte, 2 bits apart.
+        // The 34-byte super-block as its 17 u16 words: word 0 is the f16
+        // scale, words 1..17 the 32 code bytes, eight 2-bit codes per word.
+        let c17 = k.const_val(17i64);
+        let wrow = k.mul(blk, c17);
         let two = k.const_val(2i64);
-        let four = k.const_val(4i64);
-        let off_byte = k.div(off, four);
-        let byte_in_row = k.add(2i64, off_byte);
-        let byte_idx = k.add(row_start, byte_in_row);
-        let word = k.load(w, byte_idx);
-        let off_mod = k.mod_(off, four);
+        let eight_i = k.const_val(8i64);
+        let off_word = k.div(off, eight_i);
+        let word_in_row = k.add(1i64, off_word);
+        let word_idx = k.add(wrow, word_in_row);
+        let word = k.load(w, word_idx);
+        let off_mod = k.mod_(off, eight_i);
         let shift = k.mul(off_mod, two);
-        // The shift amount is an operand of the word's own dtype (u8), as the
+        // The shift amount is an operand of the word's own dtype (u16), as the
         // linearized dequant chain shifts by.
-        let shift = k.cast(shift, DType::U8);
+        let shift = k.cast(shift, DType::U16);
         let shifted = k.bit_shift_right(word, shift);
-        let mask = k.const_val(3u8);
+        let mask = k.const_val(3u16);
         let code = k.bit_and(shifted, mask);
         // The block's scale: little-endian f16 in the super-block's first two
-        // bytes (`f16le` in the dequantize lowering).
-        let lo = k.load(w, row_start);
-        let hi_idx = k.add(row_start, 1i64);
-        let hi = k.load(w, hi_idx);
-        let lo16 = k.cast(lo, DType::U16);
-        let hi16 = k.cast(hi, DType::U16);
-        let eight = k.const_val(8u16);
-        let hi_shifted = k.bit_shift_left(hi16, eight);
-        let bits = k.bit_or(lo16, hi_shifted);
+        // bytes (`f16le` in the dequantize lowering), one u16 load.
+        let bits = k.load(w, wrow);
         let scale_f16 = k.bitcast(bits, DType::F16);
         let scale = k.cast(scale_f16, DType::F32);
         let code_f32 = k.cast(code, DType::F32);
@@ -115,9 +119,21 @@ fn qwen_ffn_gate() -> Result<(), ZyxError> {
         // The projection is an f16 x f16 multiply with an f32 accumulate.
         let val = k.cast(val, DType::F16);
         // The activation's own q8_1 dequant: one int8 value and the scale of
-        // its 32-element group.
+        // its 32-element group. The payload is read as u32 words, four int8
+        // each; the element's byte is the word's `elem % 4`.
         let act_idx = k.mad(m, K, k_loop);
-        let byte = k.load(a8, act_idx);
+        let four = k.const_val(4i64);
+        let word_i = k.div(act_idx, four);
+        let aword = k.load(a8, word_i);
+        let byte_off = k.mod_(act_idx, four);
+        let bo32 = k.cast(byte_off, DType::U32);
+        let eight_u = k.const_val(8u32);
+        let sh = k.mul(bo32, eight_u);
+        let bword = k.bit_shift_right(aword, sh);
+        let bmask = k.const_val(0xffu32);
+        let byte_bits = k.bit_and(bword, bmask);
+        let byte_u = k.cast(byte_bits, DType::U8);
+        let byte = k.bitcast(byte_u, DType::I8);
         let byte_f = k.cast(byte, DType::F32);
         let group = k.div(k_loop, QG);
         let kgroup = k.const_val(KGROUP);
@@ -256,7 +272,6 @@ fn qwen_ffn_gate() -> Result<(), ZyxError> {
     // The q8_1 pre-pass first: llama.cpp's quantizer is its own kernel, and the
     // projection consumes its two outputs as ordinary inputs.
     let a: Tensor = Tensor::from_vec(a_f16.clone(), [M, K])?.to(dev)?;
-    let w: Tensor = Tensor::from_vec(raw, [N * K / BLOCK, ROW])?.to(dev)?;
     let q8_kernel = quantize_q8_kernel(dev).compile()?;
     let q8_out = q8_kernel.forward(&[&a], vec![[M, K], [M, KGROUP]])?;
     let (q8_t, sa_t) = (&q8_out[0], &q8_out[1]);
@@ -272,14 +287,22 @@ fn qwen_ffn_gate() -> Result<(), ZyxError> {
             return Err(ZyxError::kernel_error(format!("q8 scale {i}: {g} != {h}").into()));
         }
     }
+    // The word views the projection takes: the q8_1 payload as u32 words (four
+    // int8 each) and the PQ2_0 super-block as 17 u16 words. The kernel does no
+    // implicit retyping, so the caller packs them here.
+    let a32: Vec<u32> =
+        q8_host.chunks_exact(4).map(|c| u32::from_le_bytes([c[0] as u8, c[1] as u8, c[2] as u8, c[3] as u8])).collect();
+    let w16: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let a32_t: Tensor = Tensor::from_vec(a32, [M * K / 4])?.to(dev)?;
+    let w16_t: Tensor = Tensor::from_vec(w16, [N * K / BLOCK * 17])?.to(dev)?;
     // The timing is the search's device-side measurement: one warmup and one
     // timed launch, bracketed by timing events, not host wall time around a
     // queue of launches. The values come from a copy compiled on its own.
     let scratch = Tensor::zeros([M, N], DType::F32).to(dev)?;
     let values = k.clone();
-    let (_winner, nanos) = BeamSearch::new().run([k], &[&q8_t, &sa_t, &w, &scratch], &[], |_| {}, |_| 0)?;
+    let (_winner, nanos) = BeamSearch::new().run([k], &[&a32_t, &sa_t, &w16_t, &scratch], &[], |_| {}, |_| 0)?;
     let compiled = values.compile()?;
-    let out = compiled.forward(&[&q8_t, &sa_t, &w], vec![[M, N]])?.pop().unwrap();
+    let out = compiled.forward(&[&a32_t, &sa_t, &w16_t], vec![[M, N]])?.pop().unwrap();
     let got: Vec<f32> = out.try_into()?;
     let nanos = nanos as f64;
 
@@ -293,6 +316,11 @@ fn qwen_ffn_gate() -> Result<(), ZyxError> {
         flop / nanos,
         bytes / nanos
     );
+    // Cold-clock floor: on an idle device the SMs sit below boost, the same
+    // clock that bounds the llama gate's 17 TFLOP/s floor. The GB/s figure
+    // rides the same launch and is printed, not gated.
+    let tflops = flop / nanos / 1e3;
+    assert!(tflops > 17.0, "ffn_gate must clear the cold-clock floor (17 TFLOP/s), got {tflops:.2}");
 
     // ---- the kernel must reproduce the reference ------------------------
     // The tensorized forms are not bit-identical to the scalar kernel: the f16

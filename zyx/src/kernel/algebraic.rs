@@ -46,6 +46,7 @@ impl Kernel {
         // them across these value-preserving checks is sound.
         let bounds = self.compute_bounds();
         self.simplify_fused(&bounds);
+        self.reduce_pow2_div_mod(&bounds);
         self.simplify_mod_shift_sequences(&bounds);
         self.simplify_mod_div_identity(&bounds);
         self.simplify_demux_roundtrip(&bounds);
@@ -598,6 +599,58 @@ impl Kernel {
         };
         if let Some(c) = folded {
             self.ops[op_id].op = Op::Const(c);
+        }
+    }
+
+    /// Rewrite `x / 2^k` into `x >> k` and `x % 2^k` into `x & (2^k - 1)` when
+    /// `x` is provably non-negative. For such an `x` the quotient and the
+    /// residue are exactly the shift and the low bits, while the backend prints
+    /// an integer `Div`/`Mod` as a `div`/`rem` instruction: a 64-bit one lowers
+    /// to a subroutine call worth tens of instructions per execution.
+    ///
+    /// The non-negativity comes from the conservative bounds, so the rewrite
+    /// never changes a truncated (negative) quotient's rounding.
+    fn reduce_pow2_div_mod(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
+        #[cfg(feature = "time")]
+        let _timer = crate::Timer::new("reduce_pow2_div_mod");
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            let next = self.next_op(op_id);
+            let &Op::Binary { x, y, bop } = self.at(op_id) else {
+                op_id = next;
+                continue;
+            };
+            if !matches!(bop, BOp::Div | BOp::Mod) {
+                op_id = next;
+                continue;
+            }
+            let Some(d) = self.resolve_const(y).and_then(Constant::as_dim) else {
+                op_id = next;
+                continue;
+            };
+            if d <= 0 || d & (d - 1) != 0 {
+                op_id = next;
+                continue;
+            }
+            let dtype = self.dtype(x);
+            if !dtype.is_int() {
+                op_id = next;
+                continue;
+            }
+            if !bounds.get(&x).is_some_and(|&(lo, _)| lo >= 0) {
+                op_id = next;
+                continue;
+            }
+            let amount = i64::from(d.trailing_zeros());
+            let konst = match bop {
+                BOp::Div => amount,
+                BOp::Mod => d - 1,
+                _ => unreachable!("the arm above kept only Div and Mod"),
+            };
+            let c = self.insert_before(op_id, Op::Const(Constant::from_le_bytes(&konst.to_le_bytes(), dtype)));
+            let bop = if bop == BOp::Div { BOp::BitShiftRight } else { BOp::BitAnd };
+            self.ops[op_id].op = Op::Binary { x, y: c, bop };
+            op_id = next;
         }
     }
 
@@ -1420,6 +1473,7 @@ mod tests {
                                     BOp::BitShiftLeft => a << b,
                                     BOp::BitShiftRight => a >> b,
                                     BOp::And => (a != 0 && b != 0) as i64,
+                                    BOp::BitAnd => a & b,
                                     _ => continue,
                                 };
                                 vals.insert(id, v);
