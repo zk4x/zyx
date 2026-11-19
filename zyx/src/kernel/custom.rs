@@ -19,7 +19,7 @@
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 use std::sync::Arc;
 
-use crate::backend::{Cmd, CmdQueue, DeviceInfo, LaunchArg, Placement, PlanDim, ProgramId, Shard};
+use crate::backend::{Cmd, CmdQueue, DeviceInfo, GwsDim, LaunchArg, Placement, PlanDim, ProgramId, Shard};
 use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
@@ -205,6 +205,44 @@ impl Kernel {
     /// meta ops. Returns the new op id.
     pub fn source(&mut self, src: &str) -> OpId {
         self.push_back(Op::Source(SourceBlock(src.into())))
+    }
+
+    /// Append a hand-written backend source block together with the launch
+    /// descriptor the backend reads for it: the kernel's `Param` kinds in head
+    /// order, the grid, and the block size.
+    ///
+    /// A kernel that holds a `Source` is rendered exactly as written — `render`
+    /// never re-lowers it and the device epilogue is skipped — so it must
+    /// already carry the descriptor, which the backends take from the first
+    /// four ops. They are inserted ahead of the kernel's own `Param` ops.
+    pub fn push_source(&mut self, src: &str, grid: [u32; 3], lws: [u32; 3]) -> OpId {
+        let mut kinds: Vec<ParamKind> = Vec::new();
+        let mut op_id = self.head;
+        while !op_id.is_null() {
+            if let Op::Param { kind, .. } = self.ops[op_id].op {
+                kinds.push(kind);
+            }
+            op_id = self.next_op(op_id);
+        }
+        let mut gws = [GwsDim::Const(Dim::from(1u32)), GwsDim::Const(Dim::from(1u32)), GwsDim::Const(Dim::from(1u32))];
+        for (slot, g) in gws.iter_mut().zip(grid) {
+            *slot = GwsDim::Const(Dim::from(g));
+        }
+        // Inserted one at a time ahead of the head, so the last one inserted
+        // (the param kinds) ends up first: the descriptor's own order.
+        let mut source = OpId::NULL;
+        for op in [
+            Op::Source(SourceBlock(src.into())),
+            Op::GPU(Box::new(GPUOp::LocalWorkSize(lws))),
+            Op::GPU(Box::new(GPUOp::Grid(gws))),
+            Op::GPU(Box::new(GPUOp::Params(kinds.into_boxed_slice()))),
+        ] {
+            let at = self.insert_before(self.head, op);
+            if matches!(self.ops[at].op, Op::Source(_)) {
+                source = at;
+            }
+        }
+        source
     }
 
     /// Append a GPU local work size (work-items per work-group / threads

@@ -1798,6 +1798,11 @@ impl CUDADevice {
             println!();
             println!("{source}");
         }
+        // NVRTC takes C strings: `String::as_ptr` is not nul-terminated, and
+        // without the terminator the parser reads past the end of the source
+        // (into whatever the allocator left next door).
+        let source_c = CString::new(source).expect("CUDA source contains a nul byte");
+        let name_c = CString::new(name.clone()).expect("program name contains a nul byte");
 
         let cudartc_paths = [
             "/usr/local/cuda/lib64/libnvrtc.so",
@@ -1837,8 +1842,8 @@ impl CUDADevice {
         unsafe {
             nvrtcCreateProgram(
                 &raw mut program,
-                source.as_ptr().cast(),
-                name.as_ptr().cast(),
+                source_c.as_ptr(),
+                name_c.as_ptr(),
                 0,
                 ptr::null_mut(),
                 ptr::null_mut(),

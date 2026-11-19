@@ -111,6 +111,13 @@ impl Kernel {
     /// that is `devectorize` growing the IR past [`crate::kernel::MAX_OPS`],
     /// which is a property of the candidate, not of the device.
     pub(crate) fn device_epilogue(&mut self) -> Result<(), ZyxError> {
+        // A kernel carrying hand-written backend source is rendered exactly as
+        // written. The descriptor ops the backend reads (param kinds, grid,
+        // block, payload) produce no value and no memory traffic, so the
+        // passes below would drop them as dead.
+        if self.ops_in_order().any(|op| matches!(op, Op::Source(_))) {
+            return Ok(());
+        }
         // `Pow` -> `exp2(y * log2 x)` is a *lowering* decision, so it happens
         // exactly once, here, for every backend. Keeping it out of
         // `default_epilogue` means a kernel that is optimized many times during

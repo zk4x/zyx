@@ -350,6 +350,21 @@ impl Kernel {
                         }
                     }
                     if lane_cond {
+                        eprintln!("DEVRED reduce={reduce_id:?} inner={walk_id:?} op={:?} params={:?}", self.ops[walk_id].op, self.ops[walk_id].op.parameters().collect::<Vec<_>>());
+                        eprintln!("DEVRED reduce op={:?} nodes={:?}", self.ops[reduce_id].op, reduce_nodes);
+                        for id in [OpId(171), OpId(214), OpId(292), OpId(210), OpId(288), OpId(213)] {
+                            eprintln!("DEVRED   {id:?} = {:?}", self.ops[id].op);
+                        }
+                        let mut it = self.head;
+                        while !it.is_null() {
+                            match &self.ops[it].op {
+                                Op::Unroll { axis: 1, len: 4 } | Op::Reduce { .. } => {
+                                    eprintln!("DEVRED  list {it:?} = {:?}", self.ops[it].op);
+                                }
+                                _ => {}
+                            }
+                            it = self.next_op(it);
+                        }
                         todo!("devectorize: reduce cone containing another reduce {walk_id}");
                     }
                 }
@@ -416,6 +431,110 @@ impl Kernel {
         self.remove_op(reduce_id);
     }
 
+    /// Whether `p` is the index expression of the access `op`: the operand a
+    /// kept access owns a private copy of (see [`Self::own_indices`]).
+    fn owns_index(op: &Op, p: OpId) -> bool {
+        match op {
+            Op::Load { src_idx, .. } => p == *src_idx,
+            Op::Store { dst_idx, .. } => p == *dst_idx,
+            Op::Copy { src_idx, dst_idx, .. } => p == *src_idx || p == *dst_idx,
+            _ => false,
+        }
+    }
+
+    /// Every access that keeps `lane` gets a private copy of the index
+    /// expression the unfolding is about to rewrite: `dup` is unfolded in
+    /// place (element 0 rewrites the original node, one clone per other
+    /// element), so an index node shared between a kept access and an unfolded
+    /// consumer cannot serve both. The index is pure arithmetic, so copying it
+    /// changes nothing but the ids.
+    fn own_indices(&mut self, lane: OpId, dup: &Set<OpId>) {
+        let ids: Vec<OpId> = self.iter_unordered().map(|(id, _)| id).collect();
+        for id in ids {
+            if dup.contains(&id) {
+                continue;
+            }
+            match self.at(id).clone() {
+                Op::Load { src, src_idx } => {
+                    if self.shares_dup(src_idx, dup) {
+                        let mut remap: Map<OpId, OpId> = Map::default();
+                        let new = self.own_index(src_idx, lane, id, &mut remap);
+                        self.ops[id].op = Op::Load { src, src_idx: new };
+                    }
+                }
+                Op::Store { dst, dst_idx, src } => {
+                    if self.shares_dup(dst_idx, dup) {
+                        let mut remap: Map<OpId, OpId> = Map::default();
+                        let new = self.own_index(dst_idx, lane, id, &mut remap);
+                        self.ops[id].op = Op::Store { dst, dst_idx: new, src };
+                    }
+                }
+                Op::Copy { src, src_idx, dst, dst_idx } => {
+                    let mut moved = false;
+                    let mut remap: Map<OpId, OpId> = Map::default();
+                    let src_idx = if self.shares_dup(src_idx, dup) {
+                        moved = true;
+                        self.own_index(src_idx, lane, id, &mut remap)
+                    } else {
+                        src_idx
+                    };
+                    let mut remap: Map<OpId, OpId> = Map::default();
+                    let dst_idx = if self.shares_dup(dst_idx, dup) {
+                        moved = true;
+                        self.own_index(dst_idx, lane, id, &mut remap)
+                    } else {
+                        dst_idx
+                    };
+                    if moved {
+                        self.ops[id].op = Op::Copy { src, src_idx, dst, dst_idx };
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Whether anything in `index`' dependency cone is about to be unfolded.
+    fn shares_dup(&self, index: OpId, dup: &Set<OpId>) -> bool {
+        let mut stack = vec![index];
+        let mut seen = Set::default();
+        while let Some(x) = stack.pop() {
+            if !seen.insert(x) {
+                continue;
+            }
+            if dup.contains(&x) {
+                return true;
+            }
+            for p in self.at(x).parameters() {
+                if !p.is_null() {
+                    stack.push(p);
+                }
+            }
+        }
+        false
+    }
+
+    /// Copy `id` and the lane-dependent cone under it, inserting the copy
+    /// before `before` (the access that reads it) and returning the copy's id.
+    /// Lane-independent nodes stay shared: the unfolding does not touch them.
+    fn own_index(&mut self, id: OpId, lane: OpId, before: OpId, remap: &mut Map<OpId, OpId>) -> OpId {
+        if let Some(&new) = remap.get(&id) {
+            return new;
+        }
+        if id == lane || !self.depends_on(id, lane, &mut Set::default()) {
+            return id;
+        }
+        let mut op = self.at(id).clone();
+        for p in op.parameters_mut() {
+            if !p.is_null() {
+                *p = self.own_index(*p, lane, before, remap);
+            }
+        }
+        let new = self.insert_before(before, op);
+        remap.insert(id, new);
+        new
+    }
+
     /// Unfold the dependent ops in `dup` per element: recreate each one once
     /// per element with the node substituted by that element's constant,
     /// rewrite element 0 in place, then drop the node when nothing reads it
@@ -428,6 +547,11 @@ impl Kernel {
             Op::Unroll { len, .. } => u64::from(*len),
             _ => unreachable!("devectorize: not an unroll node"),
         };
+        // An access that keeps this lane as a vector width owns its index
+        // expression: the unfolding rewrites every unfolded node in place to
+        // its element 0, so a node shared with a kept access would silently
+        // make that access read lane 0 for every lane.
+        self.own_indices(unroll_id, dup);
 
         // Element constants, element 0 first (element 0 rewrites the originals).
         let elem0 = self.insert_before(unroll_id, Op::Const(Constant::idx(0u64)));
@@ -775,7 +899,8 @@ impl Kernel {
         // reads it is unfolded around it — a store then keeps the vector index
         // of a value that is already per-lane.
         //
-        // 1. A kept op must have only kept consumers: an unfolded consumer        //    reads one lane of a vector.
+        // 1. A kept op must have only kept consumers: an unfolded consumer
+        //    reads one lane of a vector.
         // 2. And a kept op must read only kept operands: an unfolded operand
         //    hands it element 0, not the vector. Instructions are exempt — the
         //    unroll pass repacks their per-lane operands into a `Stack`.
@@ -786,8 +911,12 @@ impl Kernel {
                     continue;
                 }
                 let survives = consumers.get(&op).is_none_or(|cs| cs.iter().all(|c| keep[&c]));
-                let operands_kept = matches!(self.at(op), Op::Wmma { .. })
-                    || self.at(op).parameters().all(|p| p == id || !dep.contains(&p) || keep[&p]);
+                let at = self.at(op).clone();
+                // An access' index is pure arithmetic, and [`Self::own_indices`]
+                // gives every kept access its own copy of it: a demoted index
+                // does not force the access that reads it to unfold.
+                let operands_kept = matches!(at, Op::Wmma { .. })
+                    || at.parameters().all(|p| p == id || !dep.contains(&p) || keep[&p] || Self::owns_index(&at, p));
                 if !survives || !operands_kept {
                     keep.insert(op, false);
                     changed = true;

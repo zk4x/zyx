@@ -35,9 +35,448 @@ use crate::{
     DType, Map, Set,
     backend::{DeviceInfo, FragAxis, FragMap, MMAVariant},
     dtype::Constant,
-    kernel::{BOp, Kernel, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, autotune::Optimization, split::SplitMode},
+    kernel::{BOp, Kernel, MemScope, MMADType, Op, OpId, PTXOp, ParamKind, RangeKind, autotune::Optimization, split::SplitMode},
     shape::Dim,
 };
+
+/// The value of one product operand, as the tensorization sees it.
+///
+/// A plain operand is a single `Load` of its storage. A *quantized* operand is
+/// a chain of ops computed from its packed storage — a dequant — and the
+/// product multiplies that chain's value, not a load. [`Cone`] records the
+/// chain in a form the fill can rebuild element by element, without knowing
+/// which quantization format it is: everything the chain computes is a
+/// function of the two coordinates the operand's element index is composed
+/// of — the output row/column and the contraction element — so substituting
+/// those two leaves with an element's own coordinates re-derives the whole
+/// chain for that element (a block index, a code's byte, a super-block's
+/// scale row, a per-group scale's address, all of it).
+///
+/// This is what lets one matcher admit both a bare `mul(load, load)` and a
+/// fused dequant: the operand's *logical* view (its `m`/`k` or `n`/`k`
+/// strides, its dtype) is read off `root` and the chain's value exactly as it
+/// is read off the load's index, and only the fill differs.
+#[derive(Debug, Clone)]
+struct Cone {
+    /// The chain's value: the op the product multiplies.
+    value: OpId,
+    /// The affine element index the chain is rooted at (the view analysis reads
+    /// this, the fill does not: the leaves below are what it substitutes).
+    root: OpId,
+    /// Every computed op of the chain in dependency order (leaves excluded, so
+    /// params, storages, constants, ranges and lanes are referenced, not
+    /// cloned).
+    ops: Vec<(OpId, Op)>,
+    /// The row/column leaf and the contraction leaf the chain reads, and the
+    /// contraction's extent: [`Cone::clone_at`] replaces them with the
+    /// element's coordinates.
+    mn: OpId,
+    k_leaf: OpId,
+    k_extent: Dim,
+}
+
+impl Cone {
+    /// Every op the chain can be computed from, in dependency order, leaves
+    /// (params, storages, constants, ranges, lanes) excluded: those are
+    /// referenced, never cloned.
+    fn reach(k: &Kernel, value: OpId) -> Vec<OpId> {
+        let mut out = Vec::new();
+        let mut seen: Set<OpId> = Set::default();
+        Cone::walk(k, value, &mut seen, &mut out);
+        out
+    }
+
+    fn walk(k: &Kernel, id: OpId, seen: &mut Set<OpId>, out: &mut Vec<OpId>) {
+        if id.is_null() || !seen.insert(id) {
+            return;
+        }
+        let op = k.at(id);
+        if !Cone::is_leaf(op) {
+            for p in op.parameters() {
+                Cone::walk(k, p, seen, out);
+            }
+            out.push(id);
+        }
+    }
+
+    /// Whether an op is a leaf of the cone (a definition that is reused, not
+    /// part of the computed chain).
+    fn is_leaf(op: &Op) -> bool {
+        matches!(
+            op,
+            Op::Param { .. }
+                | Op::Storage { .. }
+                | Op::Const(_)
+                | Op::Range { .. }
+                | Op::Loop { .. }
+                | Op::EndLoop
+                | Op::Unroll { .. }
+        )
+    }
+
+    /// The cone behind `value`, or `None` when it is a single load (the plain
+    /// form) or when its chains do not root at exactly one affine index over
+    /// the output and contraction ranges.
+    fn at(k: &Kernel, value: OpId) -> Option<Cone> {
+        let order = Cone::reach(k, value);
+        // The root: the affine index expression every other affine part of the
+        // chain is derived from (a block index divides it, a byte masks it, a
+        // scale row strides it). Among the chain's affine ops it is the one
+        // with the *fewest* producers, and all the others must be computed
+        // from it: the chain is rooted at exactly one index expression, whether
+        // that names two axes (a scalar loop) or more (lanes the splits added).
+        let cands: Vec<OpId> = order
+            .iter()
+            .copied()
+            .filter(|&id| k.get_strides(id).is_some_and(|m| m.keys().filter(|v| !v.is_null()).count() >= 2))
+            .collect();
+        if cands.is_empty() {
+            if std::env::var("ZYX_TD").is_ok() {
+                eprintln!(
+                    "TD cone: value={:?} no affine candidate among {} ops: {:?}",
+                    k.at(value),
+                    order.len(),
+                    order.iter().map(|&id| format!("{:?}", k.at(id))).collect::<Vec<_>>()
+                );
+            }
+            return None;
+        }
+        let vars = |id: OpId| -> usize {
+            k.get_strides(id)
+                .map(|m| m.keys().filter(|v| !v.is_null()).count())
+                .unwrap_or(0)
+        };
+        let maxv = cands.iter().map(|&c| vars(c)).max()?;
+        let top: Vec<OpId> = cands.iter().copied().filter(|&c| vars(c) == maxv).collect();
+        if top.len() != 1 {
+            if std::env::var("ZYX_TD").is_ok() {
+                eprintln!("TD cone: {} top candidates for value {:?}", top.len(), k.at(value));
+            }
+            return None;
+        }
+        let root = top[0];
+        if root == value {
+            return None;
+        }
+        let (mn, k_leaf, k_extent) = element_leaves(k, root)?;
+        // Everything the chain computes must be a function of the element's two
+        // coordinates: any other varying leaf (a lane, a loop or a range) would
+        // be read at the tile's first element for every element.
+        let dead: Set<OpId> = Cone::reach(k, mn).into_iter().chain(Cone::reach(k, k_leaf)).collect();
+        for &id in &order {
+            if dead.contains(&id) {
+                continue;
+            }
+            for p in k.at(id).parameters() {
+                if matches!(k.at(p), Op::Range { .. } | Op::Loop { .. } | Op::Unroll { .. }) && p != mn && p != k_leaf {
+                    return None;
+                }
+            }
+        }
+        let ops: Vec<(OpId, Op)> = order.into_iter().map(|id| (id, k.at(id).clone())).collect();
+        if ops.last().map(|(id, _)| *id) != Some(value) {
+            return None;
+        }
+        Some(Cone { value, root, ops, mn, k_leaf, k_extent })
+    }
+
+    /// The element's two coordinates from its linear index: the row/column and
+    /// the contraction element.
+    fn coords(&self, kernel: &mut Kernel, before: OpId, index: OpId) -> (OpId, OpId) {
+        let put = |kernel: &mut Kernel, op: Op| -> OpId {
+            if before.is_null() {
+                kernel.push_back(op)
+            } else {
+                kernel.insert_before(before, op)
+            }
+        };
+        let ke = put(kernel, Op::Const(Constant::idx(self.k_extent)));
+        let row = put(kernel, Op::Binary { x: index, y: ke, bop: BOp::Div });
+        let ke = put(kernel, Op::Const(Constant::idx(self.k_extent)));
+        let kk = put(kernel, Op::Binary { x: index, y: ke, bop: BOp::Mod });
+        (row, kk)
+    }
+
+    /// Rebuild the cone in `kernel` at the element whose linear index is
+    /// `index`: every op re-derived from that element's coordinates. Returns
+    /// the value.
+    fn clone_at(&self, kernel: &mut Kernel, before: OpId, index: OpId) -> OpId {
+        let (row, kk) = self.coords(kernel, before, index);
+        self.clone_at_coords(kernel, before, row, kk)
+    }
+
+    /// Rebuild the cone at the element whose row/column coordinate and
+    /// contraction coordinate are already known. A fill that computed the two
+    /// from the tile's own geometry hands them over instead of a linear index,
+    /// which the coordinate split would have to divide back out of it.
+    fn clone_at_coords(&self, kernel: &mut Kernel, before: OpId, row: OpId, kk: OpId) -> OpId {
+        if std::env::var("ZYX_CONE").is_ok() {
+            eprintln!(
+                "CONE mn={:?} k={:?} extent={:?} value={:?} ops={:?}",
+                self.mn,
+                self.k_leaf,
+                self.k_extent,
+                self.value,
+                self.ops.iter().map(|(id, op)| format!("{id:?}={op:?}")).collect::<Vec<_>>()
+            );
+        }
+        let mut remap: Map<OpId, OpId> = Map::default();
+        remap.insert(self.mn, row);
+        remap.insert(self.k_leaf, kk);
+        for (id, op) in &self.ops {
+            // The two substituted leaves are not cloned: their coordinates
+            // already stand for them, and cloning them would re-derive the
+            // composition from the very lanes the substitution replaces.
+            if *id == self.mn || *id == self.k_leaf {
+                continue;
+            }
+            let mut op = op.clone();
+            for p in op.parameters_mut() {
+                if let Some(&new) = remap.get(p) {
+                    *p = new;
+                }
+            }
+            let new = if before.is_null() {
+                kernel.push_back(op)
+            } else {
+                kernel.insert_before(before, op)
+            };
+            remap.insert(*id, new);
+        }
+        remap[&self.value]
+    }
+
+    /// The length of the aligned index run over which this value is constant:
+    /// `1` for anything that moves with the index, the divisor's own length
+    /// for a `Div` of the index, the smaller of the two for a sum or product,
+    /// and unbounded for a value the index does not reach at all.
+    ///
+    /// This is what says a quantized operand's scale has one value per group:
+    /// the group size divides the run, so the scale is the same for every
+    /// element of the group and the int8 form can hoist it out of the
+    /// contraction.
+    /// `mn` and `k` are the two leaves the operand's element index is composed
+    /// of, and `k_extent` the contraction's extent: the row/column leaf changes
+    /// once per `k_extent` elements, the contraction leaf once per element.
+    fn period(kern: &Kernel, id: OpId, mn: OpId, k: OpId, k_extent: Dim, depth: usize) -> Option<Dim> {
+        if depth > 64 {
+            return None;
+        }
+        if id == mn {
+            return Some(k_extent);
+        }
+        if id == k {
+            return Some(Dim::from(1));
+        }
+        let op = kern.at(id);
+        if let Op::Binary { x, y, bop: BOp::Div } = op
+            && let Op::Const(c) = kern.at(*y)
+            && c.as_dim().is_some_and(|d| d > 0)
+        {
+            // `index / c` only matters for the index itself: if the numerator
+            // moves with the index, the quotient is constant on `c`-aligned
+            // runs.
+            let p = Cone::period(kern, *x, mn, k, k_extent, depth + 1)?;
+            let c = c.as_dim()?;
+            return Some(if p == Dim::from(1) { c } else { p.min(c) });
+        }
+        match op {
+            Op::Param { .. } | Op::Storage { .. } | Op::Const(_) => Some(Dim::from(i64::MAX)),
+            Op::Range { .. } | Op::Loop { .. } | Op::Unroll { .. } => Some(Dim::from(1)),
+            Op::Cast { x, .. } | Op::Bitcast { x, .. } | Op::Unary { x, .. } => {
+                Cone::period(kern, *x, mn, k, k_extent, depth + 1)
+            }
+            Op::Index { vec, .. } | Op::Copy { src: vec, .. } => Cone::period(kern, *vec, mn, k, k_extent, depth + 1),
+            Op::Load { src_idx, .. } => Cone::period(kern, *src_idx, mn, k, k_extent, depth + 1),
+            Op::Select { if_true, .. } => Cone::period(kern, *if_true, mn, k, k_extent, depth + 1),
+            Op::Binary { x, y, bop } => match bop {
+                // The index itself: nothing divides it.
+                BOp::Mod => Some(Dim::from(1)),
+                BOp::Mul => match (kern.at(*x), kern.at(*y)) {
+                    (Op::Const(_), _) => Cone::period(kern, *y, mn, k, k_extent, depth + 1),
+                    (_, Op::Const(_)) => Cone::period(kern, *x, mn, k, k_extent, depth + 1),
+                    _ => {
+                        let a = Cone::period(kern, *x, mn, k, k_extent, depth + 1)?;
+                        let b = Cone::period(kern, *y, mn, k, k_extent, depth + 1)?;
+                        Some(a.min(b))
+                    }
+                },
+                _ => {
+                    let a = Cone::period(kern, *x, mn, k, k_extent, depth + 1)?;
+                    let b = Cone::period(kern, *y, mn, k, k_extent, depth + 1)?;
+                    Some(a.min(b))
+                }
+            },
+            _ => Some(Dim::from(1)),
+        }
+    }
+}
+
+/// The int8 form's view of a cone: the operand split into the integer code the
+/// `m8n8k16` instruction multiplies and the per-group scale the epilogue
+/// applies to its int32 accumulator (llama.cpp's `q8_1`/`pq2_0` structure).
+///
+/// The split is structural, not format-specific: the cone's value is a product
+/// of two factors, and one of them is constant over the int8 instruction's
+/// group ([`Q8_1_GROUP`]) — that factor is the scale, the other is the code.
+/// The code is rebuilt at each element's own index; the scale is rebuilt at a
+/// group's representative element, from the two leaves the element index is
+/// composed of (the row/column leaf and the contraction leaf).
+#[derive(Debug, Clone)]
+struct Quant {
+    /// The code's cone: its value cast to int8 is the operand word's byte.
+    code: Cone,
+    /// The scale's cone: the value cone restricted to what the scale reads, so
+    /// it is rebuilt at a group's representative element.
+    scale: Cone,
+    /// The run of elements over which the scale is constant. It is what says
+    /// whether the scale is a per-group value (a `q8_1` activation scale) or a
+    /// per-super-block one (a weight block scale), and so whether an emission
+    /// stages it once per K chunk or reads it once per group.
+    scale_period: Dim,
+}
+
+/// Elements per int8 group: llama.cpp's `q8_1` block, and the run the weight
+/// block scales are replicated over. Two `m8n8k16` K steps.
+const Q8_1_GROUP: Dim = 32;
+
+impl Quant {
+    /// The int8 split of `cone`, or `None` when its value is not the product
+    /// of an integer code and a factor that is constant over the int8 group.
+    fn at(k: &Kernel, cone: &Cone) -> Option<Quant> {
+        // The cone's value may be wrapped in the casts the product applies
+        // (the linearized dequant casts to f16, the f16 product casts to f32).
+        let mut v = cone.value;
+        while let Op::Cast { x, .. } | Op::Bitcast { x, .. } = k.at(v) {
+            v = *x;
+        }
+        let Op::Binary { x, y, bop: BOp::Mul } = *k.at(v) else {
+            return None;
+        };
+        // Either multiplicand may be the scale.
+        for (s, c) in [(x, y), (y, x)] {
+            let Some(p) = Cone::period(k, s, cone.mn, cone.k_leaf, cone.k_extent, 0) else {
+                continue;
+            };
+            if p < Q8_1_GROUP {
+                continue;
+            }
+            let Some(code) = Cone::at(k, c) else {
+                continue;
+            };
+            if code.root != cone.root {
+                continue;
+            }
+            // The scale's own ops inside the value's cone: everything it is
+            // computed from that the cone clones (the leaves it reads stay
+            // leaves, and are substituted by coordinates like the value's).
+            let below: Set<OpId> = Cone::reach(k, s).into_iter().collect();
+            let scale_ops: Vec<(OpId, Op)> = cone.ops.iter().filter(|(id, _)| below.contains(id)).cloned().collect();
+            if !scale_ops.iter().any(|(id, _)| *id == s) {
+                continue;
+            }
+            let scale = Cone {
+                value: s,
+                root: cone.root,
+                ops: scale_ops,
+                mn: cone.mn,
+                k_leaf: cone.k_leaf,
+                k_extent: cone.k_extent,
+            };
+            return Some(Quant { code, scale, scale_period: p });
+        }
+        None
+    }
+}
+
+/// The two leaves an operand's element index is composed of: the row/column
+/// leaf (of the output range) and the contraction leaf, with the contraction's
+/// extent. The linearizer writes the view as `mn * K + k` (`mad`), in either
+/// order.
+fn element_leaves(k: &Kernel, root: OpId) -> Option<(OpId, OpId, Dim)> {
+    let Op::Binary { x, y, bop: BOp::Add } = *k.at(root) else {
+        return None;
+    };
+    let strip = |id: OpId| -> (OpId, Option<Dim>) {
+        if let Op::Binary { x, y, bop: BOp::Mul } = *k.at(id) {
+            if let Op::Const(c) = k.at(y)
+                && let Some(d) = c.as_dim()
+            {
+                return (x, Some(d));
+            }
+            if let Op::Const(c) = k.at(x)
+                && let Some(d) = c.as_dim()
+            {
+                return (y, Some(d));
+            }
+        }
+        (id, None)
+    };
+    let (xa, ka) = strip(x);
+    let (xb, kb) = strip(y);
+    match (ka, kb) {
+        (Some(k_extent), None) => Some((xa, y, k_extent)),
+        (None, Some(k_extent)) => Some((x, xb, k_extent)),
+        _ => None,
+    }
+}
+
+/// Whether a code cone reads one element per index — an int8 code addressed
+/// like the operand itself, so four consecutive k are one vector load — rather
+/// than a packed word it has to shift and mask (a multi-bit code). A packed
+/// code's loads name a word index, not the element index, so it is folded in
+/// place instead of through a byte lane.
+fn byte_code(k: &Kernel, cone: &Cone) -> bool {
+    let Some(root) = k.get_strides(cone.root) else {
+        return false;
+    };
+    let mut any = false;
+    for (_, op) in &cone.ops {
+        if let Op::Load { src_idx, .. } = op {
+            any = true;
+            let Some(map) = k.get_strides(*src_idx) else {
+                return false;
+            };
+            if map.len() != root.len() || map.iter().any(|(v, s)| root.get(v) != Some(s)) {
+                return false;
+            }
+        }
+    }
+    any
+}
+
+/// The int8 split of an operand value, when its chain exposes one.
+fn cone_quant(k: &Kernel, value: OpId) -> Option<Quant> {
+    operand_view(k, value, true).and_then(|(_, cone, _)| cone).and_then(|c| Quant::at(k, &c))
+}
+/// The operand behind one side of the product: the storage a plain load reads
+/// and that load's index, or — for a fused dequant — the chain's cone, with
+/// the affine index op the chain is rooted at. `global_only` also requires
+/// every storage the operand reads to be a global parameter (the tiled form
+/// only ever reads global operands).
+fn operand_view(k: &Kernel, value: OpId, global_only: bool) -> Option<(OpId, Option<Cone>, OpId)> {
+    let global = |src: OpId| matches!(k.at(src), Op::Param { kind: ParamKind::Global, .. });
+    if let Op::Load { src, src_idx } = *k.at(value) {
+        if std::env::var("ZYX_TD").is_ok() && global_only && !global(src) {
+            eprintln!("TD operand_view: load src {:?} is not global", k.at(src));
+        }
+        if global_only && !global(src) {
+            return None;
+        }
+        return Some((src, None, src_idx));
+    }
+    let cone = Cone::at(k, value)?;
+    if global_only {
+        for (_, op) in &cone.ops {
+            if let Op::Load { src, .. } = op
+                && !global(*src)
+            {
+                return None;
+            }
+        }
+    }
+    Some((OpId::NULL, Some(cone.clone()), cone.root))
+}
 
 /// One scalar matmul region and the instruction variant it will be built
 /// with: the region's range and the affine views of all three operands.
@@ -53,9 +492,14 @@ struct Region {
     epilogue: Vec<(OpId, OpId, Vec<crate::DType>)>,
 
     a_src: OpId,
+    /// The operand's value when it is a fused dequant chain rather than a
+    /// load, and that chain: `a_src` is then a null storage and the fill
+    /// rebuilds the cone instead of loading the view's element.
+    a_cone: Option<Cone>,
     a_m: Dim,
     a_k: Dim,
     b_src: OpId,
+    b_cone: Option<Cone>,
     b_n: Dim,
     b_k: Dim,
     c_m: Dim,
@@ -94,6 +538,13 @@ struct Tiled {
     acc: OpId,
     a_src: OpId,
     b_src: OpId,
+    /// Fused dequant chains in place of a plain load, and their int8 split
+    /// when they expose one (see [`Cone`] / [`Quant`]). The fills rebuild the
+    /// chain per tile element instead of loading the view's element.
+    a_cone: Option<Cone>,
+    b_cone: Option<Cone>,
+    a_quant: Option<Quant>,
+    b_quant: Option<Quant>,
     /// Index terms of each view with the lane axes removed.
     a_fixed: Vec<(OpId, Dim)>,
     a_offset: Dim,
@@ -127,7 +578,7 @@ struct Tiled {
 /// output rows, the output columns, and the contraction. One axis at a time:
 /// a warp grid owns disjoint output sub-tiles (nothing is summed), a K split
 /// sums the per-warp partials in shared memory.
-pub(crate) const WARP_LAYOUTS: [(u16, u16, u16); 13] = [
+pub(crate) const WARP_LAYOUTS: [(u16, u16, u16); 18] = [
     (1, 1, 1),
     (2, 1, 1),
     (1, 2, 1),
@@ -141,6 +592,13 @@ pub(crate) const WARP_LAYOUTS: [(u16, u16, u16); 13] = [
     (1, 1, 2),
     (1, 1, 4),
     (1, 1, 8),
+    // Sixteen-warp blocks: 512 threads, the shape the int8 mainloop wants
+    // (a 128x64 block is eight 16-row bands by two 32-column bands).
+    (16, 1, 1),
+    (8, 2, 1),
+    (4, 4, 1),
+    (2, 8, 1),
+    (1, 16, 1),
 ];
 
 /// One tensorization candidate: a matched region, a pre-tiled shape, or a tile
@@ -179,6 +637,18 @@ impl Optimization for Tensorize {
     fn apply(&self, kernel: &mut Kernel, config: u64) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("opt_tensorize apply");
+        if std::env::var("ZYX_PLANS").is_ok() {
+            for (i, p) in self.plans.iter().enumerate() {
+                let form = p
+                    .region
+                    .map(|r| self.regions[r].variant.dtype)
+                    .or_else(|| p.tiled.map(|t| self.tiled[t].variant.dtype));
+                eprintln!(
+                    "PLAN {i}: region={:?} tiled={:?} grid={:?} layout={:?} staged={} dtype={form:?}",
+                    p.region, p.tiled, p.grid, p.layout, p.staged
+                );
+            }
+        }
         let Some(plan) = self.plans.get(config as usize) else {
             return;
         };
@@ -189,10 +659,13 @@ impl Optimization for Tensorize {
             // counts the IR the earlier splits grew) returns NULL without
             // touching the kernel; the candidate is then the valid
             // partially-split kernel, not a tiling this plan promised.
-            if kernel.split(m, SplitMode::Unroll, m_lanes).is_null()
-                || kernel.split(n, SplitMode::Unroll, n_lanes).is_null()
-                || kernel.split(k, SplitMode::Unroll, k_lanes).is_null()
-            {
+            let sm = kernel.split(m, SplitMode::Unroll, m_lanes);
+            let sn = if sm.is_null() { OpId::NULL } else { kernel.split(n, SplitMode::Unroll, n_lanes) };
+            let sk = if sn.is_null() { OpId::NULL } else { kernel.split(k, SplitMode::Unroll, k_lanes) };
+            if std::env::var("ZYX_KP").is_ok() {
+                eprintln!("SPLIT cfg={config} ops={} m={m_lanes} sm={} sn={} sk={} ops_after={}", kernel.ops.len(), !sm.is_null(), !sn.is_null(), !sk.is_null(), kernel.ops.len());
+            }
+            if sm.is_null() || sn.is_null() || sk.is_null() {
                 return;
             }
             // The tile grid this plan asked for, in the orientation it named:
@@ -203,6 +676,9 @@ impl Optimization for Tensorize {
                 (Dim::from(m_lanes) / fm, Dim::from(n_lanes) / fn_, Dim::from(k_lanes) / fk)
             };
             let (_, forms) = kernel.tensor_forms();
+            if std::env::var("ZYX_MT").is_ok() {
+                eprintln!("ZYX_MT want={want:?} forms={:?}", forms.iter().map(|t| (t.mt, t.nt, t.kt, t.variant.dtype, t.a_cone.is_some(), t.b_cone.is_some())).collect::<Vec<_>>());
+            }
             // The form those extents name. The matcher labels the extents by
             // the *product's* operand order, so for a seed whose product is
             // written `b * a` the plan's m axis is the form's n: the extents
@@ -217,14 +693,17 @@ impl Optimization for Tensorize {
                 1 => matches[0],
                 _ => *matches.iter().find(|t| t.mirrored == transposed).unwrap_or(&matches[0]),
             };
-            tile_to_wmma(kernel, chosen, plan.staged, plan.layout);
+            tile_to_wmma_form(kernel, chosen, plan.staged, plan.layout);
+            if std::env::var("ZYX_KP").is_ok() {
+                eprintln!("ZYX_KP cfg={config} m_lanes={} n_lanes={} k_lanes={} layout={:?} staged={} ops={}", m_lanes, n_lanes, k_lanes, plan.layout, plan.staged, kernel.ops.len());
+            }
             kernel.verify();
             return;
         }
         let staged = plan.staged;
         let layout = plan.layout;
         if let Some(i) = plan.tiled {
-            tile_to_wmma(kernel, &self.tiled[i], staged, layout);
+            tile_to_wmma_form(kernel, &self.tiled[i], staged, layout);
             return;
         }
         let Some(region) = plan.region else {
@@ -350,9 +829,15 @@ impl Optimization for Tensorize {
                 let a_base = k.mad(m_base, r.a_m, a_k);
                 let b_k = k.mul(k_base, r.b_k);
                 let b_base = k.mad(n_base, r.b_n, b_k);
-                let (asl, av) = coop_fill_load(k, OpId::NULL, lane, r.a_src, a_base, r.a_m, r.a_k, fm, fk, threads);
+                let (asl, av) = match &r.a_cone {
+                    Some(cone) => coop_fill_cone(k, OpId::NULL, lane, cone, a_base, r.a_m, r.a_k, fm, fk, threads),
+                    None => coop_fill_load(k, OpId::NULL, lane, r.a_src, a_base, r.a_m, r.a_k, fm, fk, threads),
+                };
                 coop_fill_store(k, OpId::NULL, a_tile, OpId::NULL, asl, av);
-                let (bsl, bv) = coop_fill_load(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, threads);
+                let (bsl, bv) = match &r.b_cone {
+                    Some(cone) => coop_fill_cone(k, OpId::NULL, lane, cone, b_base, r.b_n, r.b_k, fn_, fk, threads),
+                    None => coop_fill_load(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, threads),
+                };
                 coop_fill_store(k, OpId::NULL, b_tile, OpId::NULL, bsl, bv);
                 k.push_back(Op::Barrier);
                 let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, fm, 0, fk / 8, OpId::NULL, OpId::NULL);
@@ -362,13 +847,19 @@ impl Optimization for Tensorize {
                 let mut a_elems = Vec::with_capacity(v.a.slots.len());
                 for &slot in &v.a.slots {
                     let idx = frag_index(k, &v.a, (m_base, k_base), (r.a_m, r.a_k), slot);
-                    a_elems.push(k.load(r.a_src, idx));
+                    a_elems.push(match &r.a_cone {
+                        Some(cone) => cone.clone_at(k, OpId::NULL, idx),
+                        None => k.load(r.a_src, idx),
+                    });
                 }
                 let a_frag = k.stack(&a_elems);
                 let mut b_elems = Vec::with_capacity(v.b.slots.len());
                 for &slot in &v.b.slots {
                     let idx = frag_index(k, &v.b, (n_base, k_base), (r.b_n, r.b_k), slot);
-                    b_elems.push(k.load(r.b_src, idx));
+                    b_elems.push(match &r.b_cone {
+                        Some(cone) => cone.clone_at(k, OpId::NULL, idx),
+                        None => k.load(r.b_src, idx),
+                    });
                 }
                 (a_frag, k.stack(&b_elems))
             };
@@ -505,6 +996,7 @@ fn frag_elems(
     lane: OpId,
     map: &FragMap,
     src: OpId,
+    cone: Option<&Cone>,
     base: OpId,
     sr: Dim,
     sc: Dim,
@@ -532,7 +1024,19 @@ fn frag_elems(
             n += 1;
         }
         let addr = slot_addr(kernel, before, lane, map, base, sr, sc, slots[i], warp);
-        if n == 1 {
+        if let Some(cone) = cone {
+            // A fused dequant has no vector form to load: the slot's own
+            // element, one chain per slot slot.
+            for s in 0..n {
+                let at = if s == 0 {
+                    addr
+                } else {
+                    let off = kernel.insert_before(before, Op::Const(Constant::idx(Dim::from(s as i64))));
+                    kernel.insert_before(before, Op::Binary { x: addr, y: off, bop: BOp::Add })
+                };
+                out.push(cone.clone_at(kernel, before, at));
+            }
+        } else if n == 1 {
             out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr }));
         } else {
             let vector = kernel.insert_before(before, Op::Unroll { axis: 0, len: n as u16 });
@@ -580,6 +1084,44 @@ fn coop_fill_load(
     before: OpId,
     lane: OpId,
     src: OpId,
+    base: OpId,
+    sr: Dim,
+    sc: Dim,
+    rows: Dim,
+    chunk: Dim,
+    threads: Dim,
+) -> (OpId, OpId) {
+    coop_fill_load_with(kernel, before, lane, src, None, base, sr, sc, rows, chunk, threads)
+}
+
+/// [`coop_fill_load`] for an operand that is a fused dequant chain rather than
+/// a plain load: the same slot layout, the same step lane, the same vector
+/// width — but the value is the chain rebuilt per element (the vector lane is
+/// the element index), since a packed operand has no contiguous view to load.
+/// `devectorize` unfolds the vector lane into one element per instruction.
+#[allow(clippy::too_many_arguments)]
+fn coop_fill_cone(
+    kernel: &mut Kernel,
+    before: OpId,
+    lane: OpId,
+    cone: &Cone,
+    base: OpId,
+    sr: Dim,
+    sc: Dim,
+    rows: Dim,
+    chunk: Dim,
+    threads: Dim,
+) -> (OpId, OpId) {
+    coop_fill_load_with(kernel, before, lane, OpId::NULL, Some(cone), base, sr, sc, rows, chunk, threads)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn coop_fill_load_with(
+    kernel: &mut Kernel,
+    before: OpId,
+    lane: OpId,
+    src: OpId,
+    cone: Option<&Cone>,
     base: OpId,
     sr: Dim,
     sc: Dim,
@@ -663,18 +1205,36 @@ fn coop_fill_load(
         let c = put(kernel, Op::Const(Constant::idx(sr)));
         put(kernel, Op::Binary { x: rrow, y: c, bop: BOp::Mul })
     };
-    let gidx = put(kernel, Op::Binary { x: base, y: rterm_v, bop: BOp::Add });
-    let gidx = put(kernel, Op::Binary { x: gidx, y: cterm, bop: BOp::Add });
-    let gidx = put(kernel, Op::Binary { x: gidx, y: rterm_s, bop: BOp::Add });
-    let gidx = put(kernel, Op::Binary { x: gidx, y: vector, bop: BOp::Add });
-    let value = put(kernel, Op::Load { src, src_idx: gidx });
+    // The element's two coordinates, handed to the cone instead of the linear
+    // index it would have to divide them back out of: the row/column is the
+    // thread's row plus its step, the contraction element the vector's start —
+    // plus the chunk's K origin, which the tile-local column does not carry.
+    let row = put(kernel, Op::Binary { x: tid_row, y: rrow, bop: BOp::Add });
+    let mut coord_k = put(kernel, Op::Binary { x: cterm, y: vector, bop: BOp::Add });
+    let mut row = row;
+    if let Some(cone) = cone {
+        let ke = put(kernel, Op::Const(Constant::idx(cone.k_extent)));
+        let koff = put(kernel, Op::Binary { x: base, y: ke, bop: BOp::Mod });
+        let roff = put(kernel, Op::Binary { x: base, y: ke, bop: BOp::Div });
+        coord_k = put(kernel, Op::Binary { x: coord_k, y: koff, bop: BOp::Add });
+        row = put(kernel, Op::Binary { x: row, y: roff, bop: BOp::Add });
+    }
+    let value = match cone {
+        Some(cone) => cone.clone_at_coords(kernel, before, row, coord_k),
+        None => {
+            let gidx = put(kernel, Op::Binary { x: base, y: rterm_v, bop: BOp::Add });
+            let gidx = put(kernel, Op::Binary { x: gidx, y: cterm, bop: BOp::Add });
+            let gidx = put(kernel, Op::Binary { x: gidx, y: rterm_s, bop: BOp::Add });
+            let gidx = put(kernel, Op::Binary { x: gidx, y: vector, bop: BOp::Add });
+            put(kernel, Op::Load { src, src_idx: gidx })
+        }
+    };
     // The shared slot is the k-block-major tile layout —
     // `((k/8)*(rows/8) + (m/8))*64 + (m%8)*8 + (k%8)` — so a vector is one
     // eight-half row of a k-block and its lanes are contiguous. Every other
     // term is a shift or a mask, and the tile packs to `rows * chunk` halves
     // with no padding: the reference's 16 KB per operand, and the 32 KB that
     // keeps two blocks resident per SM.
-    let row = put(kernel, Op::Binary { x: tid_row, y: rrow, bop: BOp::Add });
     let three = put(kernel, Op::Const(Constant::idx(3i64)));
     let seven = put(kernel, Op::Const(Constant::idx(7i64)));
     let mblk = put(kernel, Op::Binary { x: row, y: three, bop: BOp::BitShiftRight });
@@ -724,6 +1284,128 @@ fn coop_fill_store(kernel: &mut Kernel, before: OpId, tile: OpId, slot_base: OpI
         put(kernel, Op::Binary { x: slot, y: slot_base, bop: BOp::Add })
     };
     put(kernel, Op::Store { dst: tile, dst_idx: slot, src: value });
+}
+
+/// Fill a staged int8 word tile from an operand cone: `rows x chunk` int8
+/// values, four consecutive k packed into one 32-bit word (the `m8n8k16`
+/// operand word). The step lane is the run of words one thread fills, so the
+/// tile write is that thread's contiguous run.
+///
+/// `fold` picks how the four bytes of a word become one:
+///
+/// - `false` (a byte-addressed code, one int8 per element): the four bytes are
+///   one lane, and their disjoint bit fields fold with a word-wide sum. One
+///   load serves the four bytes.
+/// - `true` (a packed code, a word already holding the group's bits): each
+///   byte is read and shifted on its own, the decode being part of the cone.
+#[allow(clippy::too_many_arguments)]
+fn coop_fill_cone_i8(
+    kernel: &mut Kernel,
+    before: OpId,
+    tid: OpId,
+    cone: &Cone,
+    row_off: OpId,
+    k_off: OpId,
+    rows: Dim,
+    chunk: Dim,
+    threads: Dim,
+    fold: bool,
+    lane_axis: u32,
+) -> (OpId, OpId) {
+    let put = |kernel: &mut Kernel, op: Op| -> OpId {
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
+    };
+    let four = Dim::from(4);
+    let words = rows * (chunk / four);
+    // A tile smaller than the block would leave threads idle: every thread
+    // writes one entry per step anyway and repeats identically, which is the
+    // same value at the same address.
+    let steps = (words + threads - Dim::from(1)) / threads;
+    let step = put(kernel, Op::Unroll { axis: 1, len: u16::try_from(steps).expect("int8 fill step count") });
+    let cs = put(kernel, Op::Const(Constant::idx(steps)));
+    // The thread's own contiguous run of words: `tid * steps + step`.
+    let widx = put(kernel, Op::Binary { x: tid, y: cs, bop: BOp::Mul });
+    let widx = put(kernel, Op::Binary { x: widx, y: step, bop: BOp::Add });
+    let w_n = u32::try_from(words).expect("int8 fill: word count");
+    let widx = if w_n.is_power_of_two() {
+        let m = put(kernel, Op::Const(Constant::idx(i64::from(w_n) - 1)));
+        put(kernel, Op::Binary { x: widx, y: m, bop: BOp::BitAnd })
+    } else {
+        let cw = put(kernel, Op::Const(Constant::idx(words)));
+        put(kernel, Op::Binary { x: widx, y: cw, bop: BOp::Mod })
+    };
+    // The word's row and its word-column inside the tile: `chunk / 4` words per
+    // row, so `row = widx / wpr` and `wcol = widx % wpr`. Both are shifts when
+    // the row's word count is a power of two (it is: the chunk is a multiple of
+    // the group), and a signed 64-bit division otherwise, which lowers to a
+    // sequence and costs registers. Every byte of the word shares the row term,
+    // and the element column is `wcol * 4 + byte`.
+    let per_row = chunk / four;
+    let pr_n = u32::try_from(per_row).expect("int8 fill: words per row");
+    let (row, wcol) = if pr_n.is_power_of_two() {
+        let sh = put(kernel, Op::Const(Constant::idx(i64::from(pr_n.trailing_zeros()))));
+        let row = put(kernel, Op::Binary { x: widx, y: sh, bop: BOp::BitShiftRight });
+        let m = put(kernel, Op::Const(Constant::idx(i64::from(pr_n) - 1)));
+        let col = put(kernel, Op::Binary { x: widx, y: m, bop: BOp::BitAnd });
+        (row, col)
+    } else {
+        let wpr = put(kernel, Op::Const(Constant::idx(per_row)));
+        let row = put(kernel, Op::Binary { x: widx, y: wpr, bop: BOp::Div });
+        let col = put(kernel, Op::Binary { x: widx, y: wpr, bop: BOp::Mod });
+        (row, col)
+    };
+    let four_init = put(kernel, Op::Const(Constant::idx(4i64)));
+    let cbase = put(kernel, Op::Binary { x: wcol, y: four_init, bop: BOp::Mul });
+    // The element's coordinates in the operand's own index space: the tile's
+    // origin (which block, which K chunk) plus the tile-local row and column.
+    let cbase = put(kernel, Op::Binary { x: cbase, y: k_off, bop: BOp::Add });
+    let row = put(kernel, Op::Binary { x: row, y: row_off, bop: BOp::Add });
+    let mask = put(kernel, Op::Const(Constant::new(0xffu32)));
+    let mut word = OpId::NULL;
+    let lanes: Vec<u32> = if fold { (0..4u32).map(|b| b).collect() } else { vec![0] };
+    let b4 = if fold {
+        None
+    } else {
+        Some(put(kernel, Op::Unroll { axis: lane_axis, len: 4 }))
+    };
+    for (i, b) in lanes.iter().copied().enumerate() {
+        let c = match b4 {
+            Some(b4) => put(kernel, Op::Binary { x: cbase, y: b4, bop: BOp::Add }),
+            None => {
+                let off = put(kernel, Op::Const(Constant::idx(b)));
+                put(kernel, Op::Binary { x: cbase, y: off, bop: BOp::Add })
+            }
+        };
+        let v = cone.clone_at_coords(kernel, before, row, c);
+        let v = if kernel.dtype(v) == DType::I32 {
+            v
+        } else {
+            put(kernel, Op::Cast { x: v, dtype: DType::I32 })
+        };
+        let v = put(kernel, Op::Cast { x: v, dtype: DType::U32 });
+        let v = put(kernel, Op::Binary { x: v, y: mask, bop: BOp::BitAnd });
+        let sh = match b4 {
+            Some(b4) => {
+                let eight = put(kernel, Op::Const(Constant::new(8u32)));
+                let bu = put(kernel, Op::Cast { x: b4, dtype: DType::U32 });
+                put(kernel, Op::Binary { x: bu, y: eight, bop: BOp::Mul })
+            }
+            None => put(kernel, Op::Const(Constant::new(8u32 * b))),
+        };
+        let v = put(kernel, Op::Binary { x: v, y: sh, bop: BOp::BitShiftLeft });
+        if i == 0 && b4.is_some() {
+            word = put(kernel, Op::Reduce { x: v, rop: BOp::Add, reduce_axis: b4.unwrap() });
+        } else if i == 0 {
+            word = v;
+        } else {
+            word = put(kernel, Op::Binary { x: word, y: v, bop: BOp::Add });
+        }
+    }
+    (widx, word)
 }
 
 /// The `ldmatrix` that reads the `k_offset`-th instruction sub-tile of a
@@ -990,6 +1672,494 @@ fn tile_fit(
     Some(TileFit { mt_w, nt_w, warps, combine, staged, chunk, interleave })
 }
 
+/// Whether an int8 tile shape can be emitted at this warp layout, or `None`.
+///
+/// The int8 form stages both operands' codes as `rows x chunk` int8 words plus
+/// their per-group f32 scales in shared memory, and each warp reads its band
+/// back with plain shared loads (the int8 instruction has no `ldmatrix`). Only
+/// the staged, warp-grid (no K split) form exists: a K split would have to sum
+/// scaled integer partials, which is a different kernel.
+fn tile_fit_s8(shape: &TileShape, staged: bool, layout: (u16, u16, u16), info: &DeviceInfo) -> Option<TileFit> {
+    let TileShape { mt, nt, kt, fm, fn_, fk, a_k, b_k, slots } = *shape;
+    let dbg = |why: &str| {
+        if std::env::var("ZYX_Q").is_ok() {
+            eprintln!("FIT8 {why}: mt={mt:?} nt={nt:?} kt={kt:?} layout={layout:?}");
+        }
+    };
+    let (wm, wn, wk) = layout;
+    // The staged byte tiles need contiguous K views; the warp grid owns
+    // disjoint output sub-tiles so nothing is summed across warps.
+    if !staged || wk > 1 || a_k != 1 || b_k != 1 {
+        return None;
+    }
+    if (wm > 1 && mt % Dim::from(wm) != 0) || (wn > 1 && nt % Dim::from(wn) != 0) {
+        { dbg("reject"); return None; }
+    }
+    let mt_w = mt / Dim::from(if wm > 1 { wm } else { 1 });
+    let nt_w = nt / Dim::from(if wn > 1 { wn } else { 1 });
+    let warps = u32::from(wm) * u32::from(wn);
+    let chunk = kt * fk;
+    if chunk % Q8_1_GROUP != 0 || chunk % Dim::from(4) != 0 {
+        { dbg("reject"); return None; }
+    }
+    let a_rows = mt * fm;
+    let b_rows = nt * fn_;
+    let groups = chunk / Q8_1_GROUP;
+    // Every fill covers the tile once, repeating entries when the block has
+    // more threads than the tile has entries (the same value at the same
+    // address, so the repeats are harmless).
+    let words = |rows: Dim| rows * (chunk / Dim::from(4));
+    let _ = words;
+    // A warp's accumulators are two int32 words per fragment, and the hardware
+    // int32 tile is the sum's own size: the same register budget as the f16
+    // form's.
+    if mt_w * nt_w * slots > Dim::from(128) {
+        { dbg("reject"); return None; }
+    }
+    let bytes = (a_rows + b_rows) * chunk + (a_rows + b_rows) * groups * Dim::from(4);
+    if bytes > info.local_mem_size {
+        { dbg("reject"); return None; }
+    }
+    dbg("ok");
+    Some(TileFit { mt_w, nt_w, warps, combine: false, staged: true, chunk, interleave: false })
+}
+
+/// Emit a matched tiled region as int8 wmmas: both operands' codes staged as
+/// `rows x chunk` int8 words, a warp's fragment sums kept in its own registers,
+/// two `m8n8k16` K steps per 32-element group, and the int32 sums scaled into
+/// the f32 accumulator once per group — llama.cpp's `mmq` mainloop, over
+/// whatever quantization the cones came from.
+///
+/// The block is `wm x wn` warps over the output, each owning `mt_w` m-fragments
+/// by `nt_w` n-fragments. A lane's fragment sums are `mt_w * nt_w * slots`
+/// int32 words, indexed by the flat fragment lane and the C word, and the f32
+/// they are scaled into; one `Wmma` per K step covers the whole fragment lane.
+/// The scale of each operand is where its quantization keeps it: constant over
+/// the K chunk means staged once per chunk in the lane's registers, otherwise
+/// read from its cone at each group's first element.
+fn tile_to_wmma_s8(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16, u16)) {
+    let v = &t.variant;
+    let (fm, fn_, fk) = {
+        let (m, n, k) = v.dims.decompose_mnk();
+        (m as Dim, n as Dim, k as Dim)
+    };
+    let info = kernel.device_info();
+    let warp = u32::from(info.warp_size);
+    let shape = TileShape { mt: t.mt, nt: t.nt, kt: t.kt, fm, fn_: fn_, fk, a_k: t.a_k, b_k: t.b_k, slots: t.slots };
+    let Some(fit) = tile_fit_s8(&shape, staged, layout, &info) else {
+        panic!(
+            "tile_to_wmma_s8: no form for tile {:?}x{:?}x{:?} at layout {layout:?} staged={staged}: the enumeration must not offer it",
+            t.mt, t.nt, t.kt
+        );
+    };
+    let TileFit { mt_w, nt_w, warps, chunk, .. } = fit;
+    let (wm, wn, _) = layout;
+    let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref()) else {
+        panic!("tile_to_wmma_s8: the int8 form needs both operands split into a code and a group scale");
+    };
+    let end = t.update;
+    let slots = t.slots;
+
+    // ---- the warp's place in the block ----
+    let lane = kernel.insert_before(t.loop_id, Op::Range { axis: 0, kind: RangeKind::Local(warp) });
+    let mut warp_var = OpId::NULL;
+    if warps > 1 {
+        warp_var = kernel.insert_before(t.loop_id, Op::Range { axis: 1, kind: RangeKind::Local(warps) });
+    }
+    // The block-wide thread id the fills index with.
+    let tid = if warp_var.is_null() {
+        lane
+    } else {
+        let w = kernel.insert_const_idx_before(t.loop_id, Dim::from(warp));
+        let base = kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: w, bop: BOp::Mul });
+        kernel.insert_before(t.loop_id, Op::Binary { x: base, y: lane, bop: BOp::Add })
+    };
+    // The warp's band of the block: the row band is `warp / wn`, the column
+    // band `warp % wn`.
+    let band_m = if wn > 1 {
+        let c = kernel.insert_const_idx_before(t.loop_id, Dim::from(wn));
+        kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: c, bop: BOp::Div })
+    } else if wm > 1 {
+        warp_var
+    } else {
+        OpId::NULL
+    };
+    let band_n = if wn > 1 {
+        let c = kernel.insert_const_idx_before(t.loop_id, Dim::from(wn));
+        kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: c, bop: BOp::Mod })
+    } else {
+        OpId::NULL
+    };
+    let warp_off_m = if band_m.is_null() {
+        OpId::NULL
+    } else {
+        let s = kernel.insert_const_idx_before(t.loop_id, mt_w * fm);
+        kernel.insert_before(t.loop_id, Op::Binary { x: band_m, y: s, bop: BOp::Mul })
+    };
+    let warp_off_n = if band_n.is_null() {
+        OpId::NULL
+    } else {
+        let s = kernel.insert_const_idx_before(t.loop_id, nt_w * fn_);
+        kernel.insert_before(t.loop_id, Op::Binary { x: band_n, y: s, bop: BOp::Mul })
+    };
+    // The lane's own fragment geometry: `gid = lane/4` is its row, `tig =
+    // lane%4` the four-value K group it holds.
+    let four = kernel.insert_before(t.loop_id, Op::Const(Constant::idx(4i64)));
+    let gid = kernel.insert_before(t.loop_id, Op::Binary { x: lane, y: four, bop: BOp::Div });
+    let tig = kernel.insert_before(t.loop_id, Op::Binary { x: lane, y: four, bop: BOp::Mod });
+
+    // The accumulator words: one int32 sum and one f32 scaled sum per
+    // (fragment, C word). The fragment lane is flat (`combo = ai * nt_w + bj`)
+    // so the instruction count is a division and a remainder of it.
+    let len = mt_w * nt_w * slots;
+    if let Op::Storage { len: l, .. } = &mut kernel.ops[t.acc].op {
+        *l = len;
+    }
+    let zero_f = match kernel.at(t.init) {
+        Op::Store { src, .. } => *src,
+        _ => unreachable!("tiled tensorize: init is not a store"),
+    };
+    let zero_i = kernel.insert_before(t.init, Op::Const(Constant::new(0i32)));
+    // The per-group clear covers the whole accumulator through its own lane, not
+    // the instruction's slot expression: a store whose value is a broadcast is
+    // unfolded per lane, and unfolding the slot node would take the
+    // instruction's fragment load with it (the result is then written twice).
+    // A dedicated lane keeps that expression out of the clear's reach.
+    let clear_lane = kernel.insert_before(t.loop_id, Op::Unroll { axis: 0, len: u16::try_from(len).expect("accumulator words") });
+    let accs = insert_scoped_storage(kernel, DType::I32, MemScope::Register, len);
+    {
+        let words = kernel.insert_before(t.init, Op::Unroll { axis: 1, len: u16::try_from(len).expect("accumulator words") });
+        kernel.insert_before(t.init, Op::Store { dst: t.acc, dst_idx: words, src: zero_f });
+        kernel.insert_before(t.init, Op::Store { dst: accs, dst_idx: words, src: zero_i });
+    }
+    kernel.remove_op(t.init);
+
+    let grid = mt_w * nt_w;
+    // The warp's tile grid is one `Unroll` lane (`combo = ai * nt_w + bj`), the
+    // C words another: every parallel dimension of the mainloop is a lane, and
+    // `devectorize` turns each into its own instruction (the C words become the
+    // two-word fragment the instruction writes). Only the lane nodes are
+    // loop-invariant; every derived index is computed where it is used — the
+    // mainloop and the epilogue each rebuild their own — so nothing but the
+    // lanes themselves stays live across the K loop.
+    let anchor = t.loop_id;
+    let combo = kernel.insert_before(anchor, Op::Unroll { axis: 3, len: u16::try_from(grid).expect("fragment lane") });
+    let sl = kernel.insert_before(anchor, Op::Unroll { axis: 2, len: u16::try_from(slots).expect("C words") });
+    let ntw = kernel.insert_const_idx_before(anchor, nt_w);
+    let slots_c = kernel.insert_const_idx_before(anchor, slots);
+    let two = kernel.insert_const_idx_before(anchor, Dim::from(2));
+
+    // ---- stage the chunk's operand words ----
+    let a_rows = t.mt * fm;
+    let b_rows = t.nt * fn_;
+    let groups = chunk / Q8_1_GROUP;
+    let threads = Dim::from(warps) * Dim::from(warp);
+    let wpr = chunk / Dim::from(4);
+    let a_tile = insert_scoped_storage(kernel, DType::U32, MemScope::Local, a_rows * wpr);
+    let b_tile = insert_scoped_storage(kernel, DType::U32, MemScope::Local, b_rows * wpr);
+    // A scale that is constant over the whole K chunk is staged once per chunk
+    // in the lane's registers; every other one is read from its cone per group.
+    let a_stage = qa.scale_period >= chunk;
+    let b_stage = qb.scale_period >= chunk;
+    let a_scale = if a_stage {
+        Some(insert_scoped_storage(kernel, DType::F32, MemScope::Register, mt_w * slots))
+    } else {
+        None
+    };
+    let b_scale = if b_stage {
+        Some(insert_scoped_storage(kernel, DType::F32, MemScope::Register, nt_w * slots))
+    } else {
+        None
+    };
+    // The tile's origin for this K chunk: the same affine view the direct form
+    // addresses, evaluated on the loop's own iteration.
+    let a_base = base_expr(kernel, end, &t.a_fixed, t.a_offset, 0);
+    let b_base = base_expr(kernel, end, &t.b_fixed, t.b_offset, 0);
+
+    // The lane's fragment geometry for the mainloop.
+    let ai = kernel.insert_before(end, Op::Binary { x: combo, y: ntw, bop: BOp::Div });
+    let bj = kernel.insert_before(end, Op::Binary { x: combo, y: ntw, bop: BOp::Mod });
+    let slot = kernel.insert_before(end, Op::Binary { x: combo, y: slots_c, bop: BOp::Mul });
+    let slot = kernel.insert_before(end, Op::Binary { x: slot, y: sl, bop: BOp::Add });
+    // The rescale's own accumulator index, a separate expression: the pair of
+    // instructions that read and write the accumulator slots are the same
+    // address, but the group's rescale is a different access with its own
+    // lane shape, and sharing one node hands both its demotion.
+    let slot_r = kernel.insert_before(end, Op::Binary { x: combo, y: slots_c, bop: BOp::Mul });
+    let slot_r = kernel.insert_before(end, Op::Binary { x: slot_r, y: sl, bop: BOp::Add });
+    let tig2 = kernel.insert_before(end, Op::Binary { x: tig, y: two, bop: BOp::Mul });
+    let a_row = {
+        let f = kernel.insert_const_idx_before(end, fm);
+        let t = kernel.insert_before(end, Op::Binary { x: ai, y: f, bop: BOp::Mul });
+        let t = kernel.insert_before(end, Op::Binary { x: t, y: gid, bop: BOp::Add });
+        if warp_off_m.is_null() {
+            t
+        } else {
+            kernel.insert_before(end, Op::Binary { x: t, y: warp_off_m, bop: BOp::Add })
+        }
+    };
+    let b_row = {
+        let f = kernel.insert_const_idx_before(end, fn_);
+        let t = kernel.insert_before(end, Op::Binary { x: bj, y: f, bop: BOp::Mul });
+        let t = kernel.insert_before(end, Op::Binary { x: t, y: gid, bop: BOp::Add });
+        if warp_off_n.is_null() {
+            t
+        } else {
+            kernel.insert_before(end, Op::Binary { x: t, y: warp_off_n, bop: BOp::Add })
+        }
+    };
+    // The chunk's origin in each operand's own index space: its row (which
+    // output block) and K chunk. The fills hand the cone the element's
+    // coordinates, and the tile-local row and column do not carry it.
+    let a_roff = {
+        let ke = kernel.insert_const_idx_before(end, qa.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: a_base, y: ke, bop: BOp::Div })
+    };
+    let a_koff = {
+        let ke = kernel.insert_const_idx_before(end, qa.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: a_base, y: ke, bop: BOp::Mod })
+    };
+    let b_roff = {
+        let ke = kernel.insert_const_idx_before(end, qb.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: b_base, y: ke, bop: BOp::Div })
+    };
+    let b_koff = {
+        let ke = kernel.insert_const_idx_before(end, qb.code.k_extent);
+        kernel.insert_before(end, Op::Binary { x: b_base, y: ke, bop: BOp::Mod })
+    };
+    // A's words: one int8 per element, so four bytes are one lane and their
+    // disjoint fields fold with a word-wide sum; a packed code is folded in
+    // place instead.
+    let a_fold = !byte_code(kernel, &qa.code);
+    {
+        let (asl, av) = coop_fill_cone_i8(kernel, end, tid, &qa.code, a_roff, a_koff, a_rows, chunk, threads, a_fold, 2);
+        coop_fill_store(kernel, end, a_tile, OpId::NULL, asl, av);
+    }
+    // B's words, the same rule on the other operand.
+    let b_fold = !byte_code(kernel, &qb.code);
+    {
+        let (bsl, bv) = coop_fill_cone_i8(kernel, end, tid, &qb.code, b_roff, b_koff, b_rows, chunk, threads, b_fold, 3);
+        coop_fill_store(kernel, end, b_tile, OpId::NULL, bsl, bv);
+    }
+    // The staged scales: the value at the fragment's own row (m side: the row
+    // is `gid`, n side: the column is `2*tig + slot`), one per (fragment, C
+    // word), filled once per chunk from the chunk's first element.
+    if let Some(st) = a_scale {
+        let fl = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(mt_w).expect("m fragments") });
+        let slf = kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(slots).expect("C words") });
+        let sidx = kernel.insert_before(end, Op::Binary { x: fl, y: slots_c, bop: BOp::Mul });
+        let sidx = kernel.insert_before(end, Op::Binary { x: sidx, y: slf, bop: BOp::Add });
+        let f = kernel.insert_const_idx_before(end, fm);
+        let row = kernel.insert_before(end, Op::Binary { x: fl, y: f, bop: BOp::Mul });
+        let row = kernel.insert_before(end, Op::Binary { x: row, y: gid, bop: BOp::Add });
+        let row = if warp_off_m.is_null() {
+            row
+        } else {
+            kernel.insert_before(end, Op::Binary { x: row, y: warp_off_m, bop: BOp::Add })
+        };
+        // The chunk's first element of that row: the coordinates are already
+        // known, so the scale cone is rebuilt without splitting an index. The
+        // row carries the tile's own origin (which block of the output).
+        let row = kernel.insert_before(end, Op::Binary { x: row, y: a_roff, bop: BOp::Add });
+        let val = qa.scale.clone_at_coords(kernel, end, row, a_koff);
+        kernel.insert_before(end, Op::Store { dst: st, dst_idx: sidx, src: val });
+    }
+    if let Some(st) = b_scale {
+        let fl = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(nt_w).expect("n fragments") });
+        let slf = kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(slots).expect("C words") });
+        let sidx = kernel.insert_before(end, Op::Binary { x: fl, y: slots_c, bop: BOp::Mul });
+        let sidx = kernel.insert_before(end, Op::Binary { x: sidx, y: slf, bop: BOp::Add });
+        let f = kernel.insert_const_idx_before(end, fn_);
+        let col = kernel.insert_before(end, Op::Binary { x: fl, y: f, bop: BOp::Mul });
+        let col = kernel.insert_before(end, Op::Binary { x: col, y: tig2, bop: BOp::Add });
+        let col = kernel.insert_before(end, Op::Binary { x: col, y: slf, bop: BOp::Add });
+        let col = if warp_off_n.is_null() {
+            col
+        } else {
+            kernel.insert_before(end, Op::Binary { x: col, y: warp_off_n, bop: BOp::Add })
+        };
+        let col = kernel.insert_before(end, Op::Binary { x: col, y: b_roff, bop: BOp::Add });
+        let val = qb.scale.clone_at_coords(kernel, end, col, b_koff);
+        kernel.insert_before(end, Op::Store { dst: st, dst_idx: sidx, src: val });
+    }
+    kernel.insert_before(end, Op::Barrier);
+
+    // ---- the mainloop: one group is `Q8_1_GROUP / fk` K steps, then the
+    // scaled sum and a clear of the integer sums ----
+    let group_steps = usize::try_from(Q8_1_GROUP / fk).expect("K steps per group");
+    let n_groups = usize::try_from(groups).expect("group count");
+    for g in 0..n_groups {
+        for s in 0..group_steps {
+            let step = g * group_steps + s;
+            // The step's word within its row: four words per step of 16.
+            let widx = kernel.insert_const_idx_before(end, Dim::from(i64::try_from(step).expect("K step") * Dim::from(4)));
+            let widx = kernel.insert_before(end, Op::Binary { x: widx, y: tig, bop: BOp::Add });
+            let wpr_c = kernel.insert_const_idx_before(end, wpr);
+            let a_i = kernel.insert_before(end, Op::Binary { x: a_row, y: wpr_c, bop: BOp::Mul });
+            let a_i = kernel.insert_before(end, Op::Binary { x: a_i, y: widx, bop: BOp::Add });
+            let b_i = kernel.insert_before(end, Op::Binary { x: b_row, y: wpr_c, bop: BOp::Mul });
+            let b_i = kernel.insert_before(end, Op::Binary { x: b_i, y: widx, bop: BOp::Add });
+            let a_w = kernel.insert_before(end, Op::Load { src: a_tile, src_idx: a_i });
+            let b_w = kernel.insert_before(end, Op::Load { src: b_tile, src_idx: b_i });
+            let c_reg = kernel.insert_before(end, Op::Load { src: accs, src_idx: slot });
+            let d = kernel.insert_before(
+                end,
+                Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_w, b: b_w, c: c_reg },
+            );
+            kernel.insert_before(end, Op::Store { dst: accs, dst_idx: slot, src: d });
+        }
+        // `sum(f32) += int32 * sa[row, g] * sb[col, g]`, then clear the int
+        // sum for the next group — the operands' scales are the versions the
+        // dequant applies, so the product is the dequantized one exactly.
+        let sa_v = match a_scale {
+            Some(st) => {
+                let i = kernel.insert_before(end, Op::Binary { x: ai, y: slots_c, bop: BOp::Mul });
+                let i = kernel.insert_before(end, Op::Binary { x: i, y: sl, bop: BOp::Add });
+                kernel.insert_before(end, Op::Load { src: st, src_idx: i })
+            }
+            None => {
+                // The group's K origin is the chunk's plus `g` groups, and the
+                // row is the fragment's own plus the block's: both known here,
+                // so the scale cone is rebuilt without splitting an index.
+                let off = kernel.insert_const_idx_before(end, Dim::from(i64::try_from(g).expect("group") * Q8_1_GROUP));
+                let kk = kernel.insert_before(end, Op::Binary { x: off, y: a_koff, bop: BOp::Add });
+                let row = kernel.insert_before(end, Op::Binary { x: a_row, y: a_roff, bop: BOp::Add });
+                let val = qa.scale.clone_at_coords(kernel, end, row, kk);
+                if kernel.dtype(val) == DType::F32 {
+                    val
+                } else {
+                    kernel.insert_before(end, Op::Cast { x: val, dtype: DType::F32 })
+                }
+            }
+        };
+        let sb_v = match b_scale {
+            Some(st) => {
+                let i = kernel.insert_before(end, Op::Binary { x: bj, y: slots_c, bop: BOp::Mul });
+                let i = kernel.insert_before(end, Op::Binary { x: i, y: sl, bop: BOp::Add });
+                kernel.insert_before(end, Op::Load { src: st, src_idx: i })
+            }
+            None => {
+                // The C word's own output row: the instruction gathers its
+                // columns from the warp, and this lane's word sums the
+                // activation row `2*(lane%4) + slot`, not the row it staged.
+                let off = kernel.insert_const_idx_before(end, Dim::from(i64::try_from(g).expect("group") * Q8_1_GROUP));
+                let kk = kernel.insert_before(end, Op::Binary { x: off, y: b_koff, bop: BOp::Add });
+                let mut col = {
+                    let f = kernel.insert_const_idx_before(end, fn_);
+                    kernel.insert_before(end, Op::Binary { x: bj, y: f, bop: BOp::Mul })
+                };
+                let t2 = kernel.insert_before(end, Op::Binary { x: tig, y: two, bop: BOp::Mul });
+                col = kernel.insert_before(end, Op::Binary { x: col, y: t2, bop: BOp::Add });
+                col = kernel.insert_before(end, Op::Binary { x: col, y: sl, bop: BOp::Add });
+                if !warp_off_n.is_null() {
+                    col = kernel.insert_before(end, Op::Binary { x: col, y: warp_off_n, bop: BOp::Add });
+                }
+                let row = kernel.insert_before(end, Op::Binary { x: col, y: b_roff, bop: BOp::Add });
+                let val = qb.scale.clone_at_coords(kernel, end, row, kk);
+                if kernel.dtype(val) == DType::F32 {
+                    val
+                } else {
+                    kernel.insert_before(end, Op::Cast { x: val, dtype: DType::F32 })
+                }
+            }
+        };
+        let scale = kernel.insert_before(end, Op::Binary { x: sa_v, y: sb_v, bop: BOp::Mul });
+        let iv = kernel.insert_before(end, Op::Load { src: accs, src_idx: slot_r });
+        let fv = kernel.insert_before(end, Op::Cast { x: iv, dtype: DType::F32 });
+        let prev = kernel.insert_before(end, Op::Load { src: t.acc, src_idx: slot_r });
+        let prod = kernel.insert_before(end, Op::Binary { x: fv, y: scale, bop: BOp::Mul });
+        let sum = kernel.insert_before(end, Op::Binary { x: prod, y: prev, bop: BOp::Add });
+        kernel.insert_before(end, Op::Store { dst: t.acc, dst_idx: slot_r, src: sum });
+        kernel.insert_before(end, Op::Store { dst: accs, dst_idx: clear_lane, src: zero_i });    }
+    kernel.insert_before(end, Op::Barrier);
+
+    scatter_epilogue(kernel, t, combo, sl, gid, tig, nt_w, slots, fm, fn_, warp_off_m, warp_off_n);
+    let mut doomed: Vec<OpId> = vec![t.update];
+    doomed.extend(t.epilogue.iter().map(|e| e.store));
+    for id in doomed {
+        kernel.remove_op(id);
+    }
+    kernel.verify();
+}
+
+/// Scatter the region's f32 accumulator to its output stores: each C word of
+/// the instruction is written at its own coordinate — `row` is the fragment's
+/// row (the warp's band included), the column the fragment's column
+/// `2*(lane%4) + word` plus the warp's band and the tile's column — over the
+/// warp's tile lane.
+#[allow(clippy::too_many_arguments)]
+fn scatter_epilogue(
+    kernel: &mut Kernel,
+    t: &Tiled,
+    combo: OpId,
+    sl: OpId,
+    gid: OpId,
+    tig: OpId,
+    nt_w: Dim,
+    slots: Dim,
+    fm: Dim,
+    fn_: Dim,
+    warp_off_m: OpId,
+    warp_off_n: OpId,
+) {
+    for epi in &t.epilogue {
+        // The lane's fragment geometry, rebuilt here: the lane nodes are the
+        // block's, everything derived from them is local to its use site.
+        let ntc = kernel.insert_const_idx_before(epi.store, nt_w);
+        let ai = kernel.insert_before(epi.store, Op::Binary { x: combo, y: ntc, bop: BOp::Div });
+        let bj = kernel.insert_before(epi.store, Op::Binary { x: combo, y: ntc, bop: BOp::Mod });
+        let slots_c = kernel.insert_const_idx_before(epi.store, slots);
+        let idx = kernel.insert_before(epi.store, Op::Binary { x: combo, y: slots_c, bop: BOp::Mul });
+        let idx = kernel.insert_before(epi.store, Op::Binary { x: idx, y: sl, bop: BOp::Add });
+        let two = kernel.insert_const_idx_before(epi.store, Dim::from(2));
+        let tig2 = kernel.insert_before(epi.store, Op::Binary { x: tig, y: two, bop: BOp::Mul });
+        let fmc = kernel.insert_const_idx_before(epi.store, fm);
+        let mut row = kernel.insert_before(epi.store, Op::Binary { x: ai, y: fmc, bop: BOp::Mul });
+        row = kernel.insert_before(epi.store, Op::Binary { x: row, y: gid, bop: BOp::Add });
+        if !warp_off_m.is_null() {
+            row = kernel.insert_before(epi.store, Op::Binary { x: row, y: warp_off_m, bop: BOp::Add });
+        }
+        let f = kernel.insert_const_idx_before(epi.store, fn_);
+        let mut col = kernel.insert_before(epi.store, Op::Binary { x: bj, y: f, bop: BOp::Mul });
+        col = kernel.insert_before(epi.store, Op::Binary { x: col, y: tig2, bop: BOp::Add });
+        col = kernel.insert_before(epi.store, Op::Binary { x: col, y: sl, bop: BOp::Add });
+        if !warp_off_n.is_null() {
+            col = kernel.insert_before(epi.store, Op::Binary { x: col, y: warp_off_n, bop: BOp::Add });
+        }
+        let mut elem = kernel.insert_before(epi.store, Op::Load { src: t.acc, src_idx: idx });
+        for dtype in epi.chain.iter().rev() {
+            elem = kernel.insert_before(epi.store, Op::Cast { x: elem, dtype: *dtype });
+        }
+        let mut addr = base_expr(kernel, epi.store, &epi.fixed, epi.offset, 0);
+        let rowt = if epi.m != 1 {
+            let st = kernel.insert_const_idx_before(epi.store, epi.m);
+            kernel.insert_before(epi.store, Op::Binary { x: row, y: st, bop: BOp::Mul })
+        } else {
+            row
+        };
+        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: rowt, bop: BOp::Add });
+        let colt = if epi.n != 1 {
+            let st = kernel.insert_const_idx_before(epi.store, epi.n);
+            kernel.insert_before(epi.store, Op::Binary { x: col, y: st, bop: BOp::Mul })
+        } else {
+            col
+        };
+        addr = kernel.insert_before(epi.store, Op::Binary { x: addr, y: colt, bop: BOp::Add });
+        kernel.insert_before(epi.store, Op::Store { dst: epi.dst, dst_idx: addr, src: elem });
+    }
+}
+
+/// Emit a matched tiled form: the int8 instruction gets its own emission (its
+/// operand words and per-group scales are staged as bytes and rescaled once
+/// per group), every f16 instruction the shared one.
+fn tile_to_wmma_form(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16, u16)) {
+    if matches!(t.variant.dtype, MMADType::s8_s8_s32_s32) {
+        tile_to_wmma_s8(kernel, t, staged, layout);
+    } else {
+        tile_to_wmma(kernel, t, staged, layout);
+    }
+}
+
 /// Emit a matched tiled region as wmma instructions, in place: the
 /// accumulator storage keeps its identity, its accesses are rewritten in
 /// fragment order, and the split's reduce/update and the output stores are
@@ -1204,8 +2374,10 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
                 let sb = a_slot;
                 sync(kernel);
-                let (asl, av) =
-                    coop_fill_load(kernel, t.update, fill_lane, t.a_src, a_base, t.a_m, t.a_k, fm, chunk, fill_threads);
+                let (asl, av) = match &t.a_cone {
+                    Some(cone) => coop_fill_cone(kernel, t.update, fill_lane, cone, a_base, t.a_m, t.a_k, fm, chunk, fill_threads),
+                    None => coop_fill_load(kernel, t.update, fill_lane, t.a_src, a_base, t.a_m, t.a_k, fm, chunk, fill_threads),
+                };
                 coop_fill_store(kernel, t.update, a_tile, sb, asl, av);
                 sync(kernel);
                 let mut tk = 0;
@@ -1239,8 +2411,10 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
                 let sb = b_slot;
                 sync(kernel);
-                let (bsl, bv) =
-                    coop_fill_load(kernel, t.update, fill_lane, t.b_src, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads);
+                let (bsl, bv) = match &t.b_cone {
+                    Some(cone) => coop_fill_cone(kernel, t.update, fill_lane, cone, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads),
+                    None => coop_fill_load(kernel, t.update, fill_lane, t.b_src, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads),
+                };
                 coop_fill_store(kernel, t.update, b_tile, sb, bsl, bv);
                 sync(kernel);
                 // The accumulator stays in registers across the warp's K steps:
@@ -1361,11 +2535,15 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
             {
                 let a0 = base_expr(kernel, t.loop_id, &a_rest, t.a_offset, 0);
                 let b0 = base_expr(kernel, t.loop_id, &b_rest, t.b_offset, 0);
-                let (asl, av) =
-                    coop_fill_load(kernel, t.loop_id, fill_lane, t.a_src, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads);
+                let (asl, av) = match &t.a_cone {
+                    Some(cone) => coop_fill_cone(kernel, t.loop_id, fill_lane, cone, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads),
+                    None => coop_fill_load(kernel, t.loop_id, fill_lane, t.a_src, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads),
+                };
                 coop_fill_store(kernel, t.loop_id, ab_buf, OpId::NULL, asl, av);
-                let (bsl, bv) =
-                    coop_fill_load(kernel, t.loop_id, fill_lane, t.b_src, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads);
+                let (bsl, bv) = match &t.b_cone {
+                    Some(cone) => coop_fill_cone(kernel, t.loop_id, fill_lane, cone, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads),
+                    None => coop_fill_load(kernel, t.loop_id, fill_lane, t.b_src, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads),
+                };
                 coop_fill_store(kernel, t.loop_id, ab_buf, a_win_c, bsl, bv);
                 // Every warp reads rows other threads wrote, so the prologue's
                 // chunk has to be published before the first `ldmatrix`.
@@ -1467,10 +2645,14 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 // The next chunk's loads go out here, before the compute of
                 // this one; their stores follow it, so the global round trip is
                 // covered by the chunk's HMMAs.
-                let (asl, av) =
-                    coop_fill_load(kernel, end, fill_lane, t.a_src, a_fill, t.a_m, t.a_k, a_rows, win_k, fill_threads);
-                let (bsl, bv) =
-                    coop_fill_load(kernel, end, fill_lane, t.b_src, b_fill, t.b_n, t.b_k, b_rows, win_k, fill_threads);
+                let (asl, av) = match &t.a_cone {
+                    Some(cone) => coop_fill_cone(kernel, end, fill_lane, cone, a_fill, t.a_m, t.a_k, a_rows, win_k, fill_threads),
+                    None => coop_fill_load(kernel, end, fill_lane, t.a_src, a_fill, t.a_m, t.a_k, a_rows, win_k, fill_threads),
+                };
+                let (bsl, bv) = match &t.b_cone {
+                    Some(cone) => coop_fill_cone(kernel, end, fill_lane, cone, b_fill, t.b_n, t.b_k, b_rows, win_k, fill_threads),
+                    None => coop_fill_load(kernel, end, fill_lane, t.b_src, b_fill, t.b_n, t.b_k, b_rows, win_k, fill_threads),
+                };
                 // One lane base for the whole tile: every `ldmatrix` of every
                 // operand, pair and tile adds only its own offset to it — A's
                 // loads and B's pair loads are the same 16-row, 2-K-step shape.
@@ -1643,9 +2825,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
                     let b_base = base_expr(kernel, t.update, &b_fixed, t.b_offset, tn * fn_ * t.b_n + tk * fk * t.b_k);
                     let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
-                    let a_elems = frag_elems(kernel, t.update, lane, &v.a, t.a_src, a_base, t.a_m, t.a_k, warp);
+                    let a_elems = frag_elems(kernel, t.update, lane, &v.a, t.a_src, t.a_cone.as_ref(), a_base, t.a_m, t.a_k, warp);
                     let a_frag = kernel.insert_before(t.update, Op::Stack { ops: a_elems.into() });
-                    let b_elems = frag_elems(kernel, t.update, lane, &v.b, t.b_src, b_base, t.b_n, t.b_k, warp);
+                    let b_elems = frag_elems(kernel, t.update, lane, &v.b, t.b_src, t.b_cone.as_ref(), b_base, t.b_n, t.b_k, warp);
                     let b_frag = kernel.insert_before(t.update, Op::Stack { ops: b_elems.into() });
                     acc = kernel.insert_before(
                         t.update,
@@ -1987,7 +3169,10 @@ impl Kernel {
             let &Op::Binary { x: la, y: lb, bop: BOp::Mul } = self.at(prod) else {
                 continue;
             };
-            let (&Op::Load { src: a_src, src_idx: a_idx }, &Op::Load { src: b_src, src_idx: b_idx }) = (self.at(la), self.at(lb))
+            // Each side is a plain load or a fused dequant chain over the same
+            // affine element index; both name the operand's logical view.
+            let (Some((a_src, a_cone, a_idx)), Some((b_src, b_cone, b_idx))) =
+                (operand_view(self, la, false), operand_view(self, lb, false))
             else {
                 continue;
             };
@@ -2169,25 +3354,21 @@ impl Kernel {
             if m_range == n_range {
                 continue;
             }
-            let (a_map, b_map, a_src, b_src) = if map_la.contains_key(&m_range) && map_lb.contains_key(&n_range) {
-                (map_la, map_lb, a_src, b_src)
+            let (a_map, b_map, a_src, b_src, a_cone, b_cone, a_val, b_val) = if map_la.contains_key(&m_range)
+                && map_lb.contains_key(&n_range)
+            {
+                (map_la, map_lb, a_src, b_src, a_cone, b_cone, la, lb)
             } else if map_la.contains_key(&n_range) && map_lb.contains_key(&m_range) {
-                (map_lb, map_la, b_src, a_src)
+                (map_lb, map_la, b_src, a_src, b_cone, a_cone, lb, la)
             } else {
                 continue;
             };
 
-            // Operand and accumulator dtypes, as the views are oriented.
-            let a_dtype = match self.at(a_src) {
-                Op::Param { dtype, .. } => *dtype,
-                Op::Storage { dtype, .. } => *dtype,
-                _ => continue,
-            };
-            let b_dtype = match self.at(b_src) {
-                Op::Param { dtype, .. } => *dtype,
-                Op::Storage { dtype, .. } => *dtype,
-                _ => continue,
-            };
+            // Operand and accumulator dtypes, as the views are oriented. A
+            // quantized operand's dtype is its chain's value (the dequantized
+            // f16 or the int8 code), never the packed storage's.
+            let a_dtype = self.dtype(a_val);
+            let b_dtype = self.dtype(b_val);
             let c_dtype = match self.at(acc) {
                 Op::Storage { dtype, .. } => *dtype,
                 _ => continue,
@@ -2245,7 +3426,22 @@ impl Kernel {
             // One config per device instruction this region fits: matching
             // operand/accumulator dtypes, and extents that are whole tiles
             // of that instruction (no padding yet).
+            //
+            // Both forms of a quantized operand are enumerated, and the search
+            // decides between them: the f16 form reads the dequantized value
+            // (the chain evaluated per element into an f16 tile), the int8 form
+            // reads the code and applies the group scale to the int32
+            // accumulator. The f16 form needs the operands' *values* to be f16;
+            // the int8 form needs both chains to expose a code and a per-group
+            // scale, and keeps the region's f32 accumulator as the scaled sum.
             for variant in &info.mma_variants {
+                let s8 = matches!(variant.dtype, MMADType::s8_s8_s32_s32);
+                if s8 {
+                    // The int8 form is emitted by the tiled (staged) form only:
+                    // its codes and group scales live in a staged tile, so there
+                    // is no single-warp region form for it.
+                    continue;
+                }
                 if variant.a_dtype != a_dtype || variant.b_dtype != b_dtype || variant.c_dtype != c_dtype {
                     continue;
                 }
@@ -2262,9 +3458,11 @@ impl Kernel {
                     update,
                     epilogue: epilogue.clone(),
                     a_src,
+                    a_cone: a_cone.clone(),
                     a_m: a_map[&m_range].1,
                     a_k: a_map[&k_loop].1,
                     b_src,
+                    b_cone: b_cone.clone(),
                     b_n: b_map[&n_range].1,
                     b_k: b_map[&k_loop].1,
                     c_m: c_map[&m_range].1,
@@ -2285,6 +3483,9 @@ impl Kernel {
         let has_unroll = self.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. }));
         let has_local = self.iter_unordered().any(|(_, op)| matches!(op, Op::Range { kind: RangeKind::Local(_), .. }));
         if has_unroll && !has_local {
+            if std::env::var("ZYX_TD").is_ok() {
+                eprintln!("TD tiled block entered");
+            }
             let mut order: Vec<OpId> = Vec::new();
             let mut id = self.head;
             while !id.is_null() {
@@ -2302,17 +3503,16 @@ impl Kernel {
                 let Op::Binary { x: la, y: lb, bop: BOp::Mul } = *self.at(v) else {
                     continue;
                 };
-                let (Op::Load { src: a_src, src_idx: a_idx }, Op::Load { src: b_src, src_idx: b_idx }) =
-                    (self.at(la), self.at(lb))
+                let (Some((a_src, a_cone, a_idx)), Some((b_src, b_cone, b_idx))) =
+                    (operand_view(self, la, true), operand_view(self, lb, true))
                 else {
+                    if std::env::var("ZYX_TD").is_ok() {
+                        let ka = Cone::at(self, la);
+                        let kb = Cone::at(self, lb);
+                        eprintln!("TD operand_view failed: la={:?} lb={:?} ca={:?} cb={:?}", self.at(la), self.at(lb), ka.map(|c| c.ops.len()), kb.map(|c| c.ops.len()));
+                    }
                     continue;
                 };
-                let (a_src, a_idx, b_src, b_idx) = (*a_src, *a_idx, *b_src, *b_idx);
-                if !matches!(self.at(a_src), Op::Param { kind: ParamKind::Global, .. })
-                    || !matches!(self.at(b_src), Op::Param { kind: ParamKind::Global, .. })
-                {
-                    continue;
-                }
                 let (Some(a_map), Some(b_map)) = (self.get_strides(a_idx), self.get_strides(b_idx)) else {
                     continue;
                 };
@@ -2475,20 +3675,34 @@ impl Kernel {
                 let (a_fixed, a_offset) = fixed_terms(&a_map, m_var, k_var);
                 let (b_fixed, b_offset) = fixed_terms(&b_map, n_var, k_var);
 
-                let a_dtype = match self.at(a_src) {
-                    Op::Param { dtype, .. } => *dtype,
-                    _ => continue,
-                };
-                let b_dtype = match self.at(b_src) {
-                    Op::Param { dtype, .. } => *dtype,
-                    _ => continue,
-                };
+                if std::env::var("ZYX_TD").is_ok() {
+                    eprintln!(
+                        "TD reached: a_map={:?} b_map={:?} m_var={:?} n_var={:?} k_var={:?} epi={}",
+                        a_map.keys().filter(|v| !v.is_null()).count(),
+                        b_map.keys().filter(|v| !v.is_null()).count(),
+                        m_var,
+                        n_var,
+                        k_var,
+                        epilogue.len()
+                    );
+                }
+                let a_dtype = self.dtype(la);
+                let b_dtype = self.dtype(lb);
                 let c_dtype = match self.at(acc) {
                     Op::Storage { dtype, .. } => *dtype,
                     _ => continue,
                 };
                 for variant in &info.mma_variants {
-                    if variant.a_dtype != a_dtype || variant.b_dtype != b_dtype || variant.c_dtype != c_dtype {
+                    let s8 = matches!(variant.dtype, MMADType::s8_s8_s32_s32);
+                    if s8 {
+                        // The int8 form consumes the codes and rescales their
+                        // int32 sums into the region's f32 accumulator; it is
+                        // emitted only staged (the staged tile is where the
+                        // codes and the group scales are laid out).
+                        if b_cone.is_none() || c_dtype != DType::F32 {
+                            continue;
+                        }
+                    } else if variant.a_dtype != a_dtype || variant.b_dtype != b_dtype || variant.c_dtype != c_dtype {
                         continue;
                     }
                     let (fm, fn_, fk) = {
@@ -2514,6 +3728,10 @@ impl Kernel {
                                 acc,
                                 a_src,
                                 b_src,
+                                a_cone: a_cone.clone(),
+                                b_cone: b_cone.clone(),
+                                a_quant: a_cone.as_ref().and_then(|c| Quant::at(self, c)),
+                                b_quant: b_cone.as_ref().and_then(|c| Quant::at(self, c)),
                                 a_fixed: a_fixed.clone(),
                                 a_offset,
                                 a_m: a_map[&m_var].1,
@@ -2552,6 +3770,10 @@ impl Kernel {
                                 acc,
                                 a_src: b_src,
                                 b_src: a_src,
+                                a_cone: b_cone.clone(),
+                                b_cone: a_cone.clone(),
+                                a_quant: b_cone.as_ref().and_then(|c| Quant::at(self, c)),
+                                b_quant: a_cone.as_ref().and_then(|c| Quant::at(self, c)),
                                 a_fixed: b_fixed.clone(),
                                 a_offset: b_offset,
                                 a_m: b_map[&n_var].1,
@@ -2608,15 +3830,33 @@ impl Kernel {
                 };
                 (TileShape { mt: t.mt, nt: t.nt, kt: t.kt, fm, fn_: fn_, fk, a_k: t.a_k, b_k: t.b_k, slots: t.slots }, loop_len)
             });
+            let coned = region
+                .map(|r| regions[r].a_cone.is_some() || regions[r].b_cone.is_some())
+                .or_else(|| tiled_idx.map(|t| tiled[t].a_cone.is_some() || tiled[t].b_cone.is_some()))
+                .unwrap_or(false);
             for &layout in &layouts {
                 for staged in [false, true] {
                     if !staged && layout.2 > 1 {
                         continue;
                     }
-                    if let Some((shape, loop_len)) = &shape
-                        && tile_fit(shape, staged, layout, &info, |wk| self.is_sym_multiple(*loop_len, Dim::from(wk))).is_none()
-                    {
+                    // A dequant chain is staged: reading it per fragment
+                    // register re-evaluates the whole chain, and the device
+                    // epilogue then unfolds each chain per fragment lane, an IR
+                    // blowout that never runs faster than the staged tile.
+                    if coned && !staged {
                         continue;
+                    }
+                    if let (Some((shape, loop_len)), Some(ti)) = (&shape, tiled_idx) {
+                        let s8 = matches!(tiled[ti].variant.dtype, MMADType::s8_s8_s32_s32);
+                        let ok = if s8 {
+                            tile_fit_s8(shape, staged, layout, &info).is_some()
+                        } else {
+                            tile_fit(shape, staged, layout, &info, |wk| self.is_sym_multiple(*loop_len, Dim::from(wk)))
+                                .is_some()
+                        };
+                        if !ok {
+                            continue;
+                        }
                     }
                     plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged });
                 }
@@ -2646,24 +3886,19 @@ impl Kernel {
             /// this is not a candidate the search samples.
             const MAX_TILES: Dim = 2048;
 
-            // The operand element dtype behind a value: a param, a storage, or
-            // a load of either.
-            let elem_dtype = |k: &Kernel, o: OpId| -> Option<crate::DType> {
-                match k.at(o) {
-                    Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
-                    Op::Load { src, .. } => match k.at(*src) {
-                        Op::Param { dtype, .. } | Op::Storage { dtype, .. } => Some(*dtype),
-                        _ => None,
-                    },
-                    _ => None,
-                }
-            };
+            // The operand element dtype behind a value: a plain load's storage,
+            // or a fused dequant chain's value dtype.
+            let elem_dtype = |k: &Kernel, o: OpId| -> Option<crate::DType> { Some(k.dtype(o)) };
             let mut ranges: Vec<(OpId, u32, OpId)> = Vec::new();
             let mut loop_id = OpId::NULL;
             let mut loop_len = OpId::NULL;
             let mut operand_dtypes: Option<(crate::DType, crate::DType)> = None;
-            // The two views the contraction multiplies, when they are loads:
-            // their affine maps are what say which output axis each carries.
+            // The two operand *values* the contraction multiplies (a load or a
+            // fused dequant chain), and the chain's int8 split when it has one.
+            let mut product_values: Option<(OpId, OpId)> = None;
+            // The two views the contraction multiplies: their affine maps are
+            // what say which output axis each carries. A fused dequant names
+            // its view through the chain's root index, exactly like a load.
             let mut product_indices: Option<(OpId, OpId)> = None;
             let mut acc_dtype: Option<crate::DType> = None;
             let mut op_id = self.head;
@@ -2679,9 +3914,26 @@ impl Kernel {
                         loop_len = len;
                     }
                     Op::Binary { bop: BOp::Mul, x, y } if operand_dtypes.is_none() => {
-                        operand_dtypes = elem_dtype(self, x).zip(elem_dtype(self, y));
-                        if let (Op::Load { src_idx: xi, .. }, Op::Load { src_idx: yi, .. }) = (self.at(x), self.at(y)) {
-                            product_indices = Some((*xi, *yi));
+                        // The product multiplies two *different* views. A
+                        // dequant chain's own inner products (`code * scale`)
+                        // are rooted at the very same element index, so they
+                        // are never the contraction's product.
+                        if let (Some((_, _, xi)), Some((_, _, yi))) = (operand_view(self, x, true), operand_view(self, y, true))
+                            && xi != yi
+                            && let (Some(xm), Some(ym)) = (self.get_strides(xi), self.get_strides(yi))
+                            // The two views must split the output: each carries
+                            // an output range the other does not. A dequant
+                            // chain's own elements (a value and its group
+                            // scale) name the same range on both sides.
+                            && xm.keys().any(|&v| {
+                                !v.is_null()
+                                    && matches!(self.at(v), Op::Range { .. })
+                                    && !ym.contains_key(&v)
+                            })
+                        {
+                            operand_dtypes = elem_dtype(self, x).zip(elem_dtype(self, y));
+                            product_indices = Some((xi, yi));
+                            product_values = Some((x, y));
                         }
                     }
                     Op::Storage { scope: MemScope::Register, dtype, .. } => acc_dtype = Some(dtype),
@@ -2689,13 +3941,34 @@ impl Kernel {
                 }
                 op_id = self.next_op(op_id);
             }
+            if std::env::var("ZYX_GD").is_ok() {
+                eprintln!(
+                    "GD plain={plain} ranges={} loop={} dtypes={:?} pidx={:?} acc={:?}",
+                    ranges.len(),
+                    loop_id.is_null(),
+                    operand_dtypes,
+                    product_indices,
+                    acc_dtype
+                );
+            }
             if !ranges.is_empty()
                 && !loop_id.is_null()
                 && !loop_len.is_null()
                 && let (Some((x_dtype, y_dtype)), Some(acc_dtype), Some((a_idx, b_idx))) =
                     (operand_dtypes, acc_dtype, product_indices)
                 && let (Some(a_map), Some(b_map)) = (self.get_strides(a_idx), self.get_strides(b_idx))
+                && let Some((x_val, y_val)) = product_values
             {
+                // The int8 split of each operand, when it has one.
+                let quants = (cone_quant(self, x_val), cone_quant(self, y_val));
+                if std::env::var("ZYX_Q").is_ok() {
+                    eprintln!("Q: quants={} {} acc={acc_dtype:?}", quants.0.is_some(), quants.1.is_some());
+                }
+                // A dequant chain is staged: reading it per fragment register
+                // re-evaluates the whole chain and the device epilogue unfolds
+                // each chain per fragment lane.
+                let coned = operand_view(self, x_val, true).is_some_and(|(_, c, _)| c.is_some())
+                    || operand_view(self, y_val, true).is_some_and(|(_, c, _)| c.is_some());
                 // The two axes the instruction tiles are the ones each operand
                 // carries and the other does not. Every other output axis — a
                 // batch, a head — is in both views (or in neither), so it is a
@@ -2719,11 +3992,22 @@ impl Kernel {
                     for variant in &info.mma_variants {
                         // The orientation is decided by the accumulator's view, not
                         // by the multiply order, so either operand may be A.
-                        let dtypes_match = (variant.a_dtype == x_dtype && variant.b_dtype == y_dtype
-                            || variant.a_dtype == y_dtype && variant.b_dtype == x_dtype)
-                            && variant.c_dtype == acc_dtype;
-                        if !dtypes_match {
-                            continue;
+                        let s8 = matches!(variant.dtype, MMADType::s8_s8_s32_s32);
+                        if s8 {
+                            // The int8 form consumes both operands' codes and
+                            // rescales their int32 sums into the region's f32
+                            // accumulator: it needs both chains to expose a
+                            // code and a per-group scale.
+                            if quants.0.is_none() || quants.1.is_none() || acc_dtype != DType::F32 {
+                                continue;
+                            }
+                        } else {
+                            let dtypes_match = (variant.a_dtype == x_dtype && variant.b_dtype == y_dtype
+                                || variant.a_dtype == y_dtype && variant.b_dtype == x_dtype)
+                                && variant.c_dtype == acc_dtype;
+                            if !dtypes_match {
+                                continue;
+                            }
                         }
                         let (fm64, fn64, fk64) = variant.dims.decompose_mnk();
                         let (fm_u, fn_u, fk_u) = (fm64 as u16, fn64 as u16, fk64 as u16);
@@ -2805,6 +4089,12 @@ impl Kernel {
                                                 if !staged && layout.2 > 1 {
                                                     continue;
                                                 }
+                                                // A dequant chain is staged: reading
+                                                // it per fragment register
+                                                // re-evaluates the whole chain.
+                                                if coned && !staged {
+                                                    continue;
+                                                }
                                                 // A warp's accumulator is one register
                                                 // file's worth at most: a grid whose
                                                 // per-warp tile band needs more is not a
@@ -2819,7 +4109,11 @@ impl Kernel {
                                                 // `k_lanes`: a K-split warp count
                                                 // divides it when it divides the
                                                 // whole loop together with them.
-                                                if tile_fit(&shape, staged, layout, &info, |wk| {
+                                                if s8 {
+                                                    if tile_fit_s8(&shape, staged, layout, &info).is_none() {
+                                                        continue;
+                                                    }
+                                                } else if tile_fit(&shape, staged, layout, &info, |wk| {
                                                     self.is_sym_multiple(loop_len, Dim::from(k_lanes.saturating_mul(wk)))
                                                 })
                                                 .is_none()

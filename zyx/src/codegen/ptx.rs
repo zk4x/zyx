@@ -690,7 +690,11 @@ impl Kernel {
         }
         comp.header.pop();
         comp.header.pop();
-        _ = writeln!(comp.header, "\n) {{");
+        // The block size is part of the entry's declaration: `ptxas` sizes the
+        // register file for the threads the kernel is actually launched with,
+        // instead of the 1024-thread default that always leaves 255 registers
+        // (a 512-thread block cannot launch on that).
+        _ = writeln!(comp.header, "\n) .maxntid {}, {}, {} {{", lws[0], lws[1], lws[2]);
 
         let mut loop_id_label_map: Map<u8, u32> = Map::default();
         let mut label = 0;

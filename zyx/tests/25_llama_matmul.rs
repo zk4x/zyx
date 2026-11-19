@@ -28,14 +28,14 @@ use zyx::kernel::{Dev, Kernel, MemScope};
 use zyx::{DType, Tensor, ZyxError};
 
 /// The config of the reference kernel's shape in the tensorization space: the
-/// space lists the kernel's own region first (23 configs, one per layout and
+/// space lists the kernel's own region first (33 configs, one per layout and
 /// operand form), then one block per tile grid the device's instructions allow
 /// in each operand orientation, holding only the warp layouts and staging
 /// levels that grid can be emitted at — never a fallback, never a duplicate.
 /// This one is the direct orientation of `(m lanes 128, n lanes 128, k lanes
 /// 64)` (8 `m16n8k8` K steps per K chunk) at warp layout `(2, 2, 1)`, staged:
 /// four warps as a 2 x 2 grid, i.e. a 64 x 64 warp tile.
-const TORCH_TILE_4_WARPS: u64 = 32;
+const TORCH_TILE_4_WARPS: u64 = 50;
 
 #[test]
 fn llama_gate_proj() -> Result<(), ZyxError> {

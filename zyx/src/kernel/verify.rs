@@ -33,6 +33,12 @@ impl Kernel {
         if !cfg!(debug_assertions) {
             return;
         }
+        // A kernel carrying hand-written backend source is the renderer's own
+        // descriptor: the body is in the source, not in the ops, so the SSA
+        // and dataflow invariants below have nothing to describe.
+        if self.ops_in_order().any(|op| matches!(op, Op::Source(_))) {
+            return;
+        }
         // Past the Tenstorrent phase boundary the IR is native: a value is a
         // DST tile, a `[32]` vector is only a shape carrier, and row ops own
         // their results. None of the generic SSA/shape invariants below
@@ -118,11 +124,12 @@ impl Kernel {
                     | Op::Reduce { .. }
                     | Op::Stack { .. }
                     | Op::Select { .. } => {}
+                    // The descriptor of a kernel carrying hand-written
+                    // source: it has no IR body (the early return above).
+                    Op::Source(_) | Op::GPU(_) => {}
                     // Graph-only and post-render ops must never reach
                     // kernel IR at this (pre-render) stage.
-                    Op::Source(_)
-                | Op::GPU(_)
-                | Op::Spirv(_)
+                    Op::Spirv(_)
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
@@ -552,7 +559,7 @@ impl Kernel {
                         (DType::F16, DType::F32) | (DType::F32, DType::F16) => DType::F32,
                         (dx, dy) if dx == dy => dx,
                         _ => {
-                            println!("Binary dtype mismatch on op={op_id}.");
+                            println!("Binary dtype mismatch on op={op_id}: x={x:?} {:?} y={y:?} {:?} bop={bop:?}", dtypes[&x], dtypes[&y]);
                             self.debug();
                             panic!();
                         }

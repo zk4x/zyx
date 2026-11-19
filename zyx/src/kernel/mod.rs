@@ -678,7 +678,15 @@ impl Kernel {
                         // an unset (0) slot is none, so `[0, 8]` and `[8]`
                         // are the same rank.
                         let rank = |d: &[Dim]| d.iter().filter(|&&d| d != 0).count();
-                        debug_assert!(rank(&dtypes[&x].1) <= rank(&dtypes[&dst_idx].1), "store value rank exceeds access rank");
+                        if rank(&dtypes[&x].1) > rank(&dtypes[&dst_idx].1) {
+                            if std::env::var("ZYX_ST").is_ok() {
+                                eprintln!(
+                                    "ST op={:?} src={:?} dims={:?} idx_dims={:?} store={:?} srcop={:?} idxop={:?} dst={:?}",
+                                    op_id, x, dtypes[&x].1, dtypes[&dst_idx].1, self.ops[op_id].op, self.ops[x].op, self.ops[dst_idx].op, self.ops[dst].op
+                                );
+                            }
+                            panic!("store value rank exceeds access rank");
+                        }
                     }
                     dtypes.insert(op_id, dtypes[&x].clone());
                     *rcs.entry(dst).or_insert(0) += 1;
@@ -733,6 +741,19 @@ impl Kernel {
                     // the max; two differing concrete dims panic. Same
                     // rule as `Kernel::shape`, trailing unsets trimmed
                     // so ranks stay exact.
+                    if !dtypes.contains_key(&x) || !dtypes.contains_key(&y) {
+                        eprintln!("DT missing op={op_id:?} Binary x={x:?} y={y:?} has_x={} has_y={} bop={bop:?}", dtypes.contains_key(&x), dtypes.contains_key(&y));
+                        let mut it = self.head;
+                        let mut n = 0usize;
+                        while !it.is_null() {
+                            if it == x || it == y || it == op_id {
+                                eprintln!("DT   [{n}] {it:?} = {:?}", self.ops[it].op);
+                            }
+                            n += 1;
+                            it = self.next_op(it);
+                        }
+                        eprintln!("DT   total ops walked so far = {n}");
+                    }
                     let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x].0 };
                     let (xd, yd) = (dtypes[&x].1.clone(), dtypes[&y].1.clone());
                     let rank = xd.len().max(yd.len());
