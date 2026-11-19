@@ -45,7 +45,7 @@ use zyx::{DType, Tensor, ZyxError, f16};
 /// kernel is compared against, the way the llama test names the cuBLAS shape.
 /// `opt_tensorize` lists the kernel's own region first, then one block per tile
 /// grid in each operand orientation.
-const REFERENCE_TILE: u64 = 538;
+const REFERENCE_TILE: u64 = 654;
 
 /// Prefill width: the padded sequence length of a prefill chunk.
 const M: i64 = 128;

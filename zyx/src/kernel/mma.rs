@@ -2001,22 +2001,54 @@ fn tile_fit_s8(shape: &TileShape, staged: bool, layout: (u16, u16, u16), info: &
     Some(TileFit { mt_w, nt_w, warps, combine: false, staged: true, chunk, interleave: false })
 }
 
-/// Whether an int8 form can be emitted with both operands staged as packed
-/// words (the `mmq` shape): the block is the two 128-row bands by an
-/// eight-instruction K chunk, the warp grid owns four weight fragments and
-/// eight activation bands, and each code is a fixed-width field of one loaded
-/// word ([`Quant::code_word`]).
-fn words_fit(shape: &TileShape, layout: (u16, u16, u16), k: &Kernel, qa: &Quant, qb: &Quant) -> bool {
-    if layout != (4, 2, 1) {
+/// Whether the packed int8 form can be emitted at this layout. The
+/// instruction's own geometry (`m8n8k16` for int8, one `ldmatrix.x4` fragment
+/// pair per K group) is fixed; the tile grid, the K chunk and the warp grid are
+/// the shape's, so any shape whose fills divide the block's threads is a
+/// config.
+fn words_fit(shape: &TileShape, layout: (u16, u16, u16), info: &DeviceInfo, k: &Kernel, qa: &Quant, qb: &Quant) -> bool {
+    let TileShape { mt, nt, kt, fm, fn_, fk, a_k, b_k, slots } = *shape;
+    let (wm, wn, wk) = layout;
+    // One warp per output band, no split-K: the sums are scaled per group and
+    // a K split would have to sum scaled integer partials.
+    if wk > 1 || a_k != 1 || b_k != 1 {
         return false;
     }
-    if shape.a_k != 1 || shape.b_k != 1 {
+    if fm != Dim::from(8) || fn_ != Dim::from(8) || fk != Dim::from(16) {
         return false;
     }
-    if shape.mt != Dim::from(16) || shape.nt != Dim::from(16) || shape.kt != Dim::from(8) {
+    let wm = Dim::from(wm.max(1));
+    let wn = Dim::from(wn.max(1));
+    if mt % wm != 0 || nt % wn != 0 {
         return false;
     }
-    if shape.fm != Dim::from(8) || shape.fn_ != Dim::from(8) || shape.fk != Dim::from(16) {
+    let mt_w = mt / wm;
+    let nt_w = nt / wn;
+    // One `ldmatrix.x4` covers two n-fragments of the A tile.
+    if mt_w % Dim::from(2) != 0 {
+        return false;
+    }
+    let chunk = kt * fk;
+    let groups = chunk / Q8_1_GROUP;
+    if groups == 0 || chunk % Q8_1_GROUP != 0 {
+        return false;
+    }
+    let rows_a = mt * fm;
+    let rows_b = nt * fn_;
+    let payload = chunk / Dim::from(4);
+    let threads = wm * wn * Dim::from(info.warp_size);
+    // Every fill covers its tile exactly once: a thread past the end would
+    // store outside it.
+    if (rows_a * payload) % threads != 0 || (rows_b * groups) % threads != 0 {
+        return false;
+    }
+    // The fragment lane's registers, and the two staged tiles' shared memory.
+    if mt_w * nt_w * slots > Dim::from(128) {
+        return false;
+    }
+    let xs = packed_row_stride(payload, groups);
+    let ys = groups + payload;
+    if (rows_a * xs + rows_b * ys) * Dim::from(4) > Dim::from(info.local_mem_size) {
         return false;
     }
     for q in [qa, qb] {
@@ -2387,6 +2419,16 @@ fn tile_to_wmma_s8(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u
     kernel.verify();
 }
 
+/// The A row's stride in 32-bit words for the packed form: the payload words,
+/// then the group scales, padded up to a 16-byte boundary (every `ldmatrix`
+/// lane base must be 16-byte aligned) and one four-word tail so the rows of one
+/// `ldmatrix` land on different bank sets.
+fn packed_row_stride(payload: Dim, groups: Dim) -> Dim {
+    let used = payload + groups;
+    let aligned = (used + Dim::from(3)) / Dim::from(4) * Dim::from(4);
+    aligned + Dim::from(4)
+}
+
 /// Emit the int8 form with both operands staged as their packed words — the
 /// `mmq` shape. A's row holds its payload words first, then the group scales,
 /// then a four-word tail; B's row holds the scales first and the payload words
@@ -2417,7 +2459,7 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
     // a four-word tail that keeps the rows of one `ldmatrix` off one bank set;
     // B's scales, then B's payload.
     let payload = chunk / 4;
-    let xs = payload + groups + 4;
+    let xs = packed_row_stride(payload, groups);
     let ys = groups + payload;
     let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref()) else {
         panic!("the packed int8 form needs both operands split into a code and a group scale")
@@ -2486,6 +2528,15 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
         let s = put(kernel, Op::Const(Constant::idx(nt_w * fn_)));
         put(kernel, Op::Binary { x: band_n, y: s, bop: BOp::Mul })
     };
+    // A warp grid of one warp along an axis has no band offset: the band term
+    // is the identity, not a null operand.
+    let add_off = |kernel: &mut Kernel, base: OpId, off: OpId| -> OpId {
+        if off.is_null() {
+            base
+        } else {
+            kernel.insert_before(t.update, Op::Binary { x: base, y: off, bop: BOp::Add })
+        }
+    };
     // The lane's fragment geometry: `gid = lane/4` is its row, `tig = lane%4`
     // the four-int8 K group; the `ldmatrix` address is `lane%16` rows by
     // `lane/16` 16-byte halves.
@@ -2494,7 +2545,7 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
     let tig = put(kernel, Op::Binary { x: lane, y: four, bop: BOp::Mod });
     let two = put(kernel, Op::Const(Constant::idx(2i64)));
     let tig2 = put(kernel, Op::Binary { x: tig, y: two, bop: BOp::Mul });
-    let c16 = put(kernel, Op::Const(Constant::idx(16i64)));
+    let c16 = put(kernel, Op::Const(Constant::idx(2 * fm)));
     let lanerow = put(kernel, Op::Binary { x: lane, y: c16, bop: BOp::Mod });
     let lanehalf = put(kernel, Op::Binary { x: lane, y: c16, bop: BOp::Div });
 
@@ -2537,12 +2588,13 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
     for g in 0..n_groups {
         let gv = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(g).expect("K group"))));
         let g8 = {
-            let eight = kernel.insert_before(end, Op::Const(Constant::idx(8i64)));
-            kernel.insert_before(end, Op::Binary { x: gv, y: eight, bop: BOp::Mul })
+            // One group is `Q8_1_GROUP` elements, `Q8_1_GROUP / 4` words.
+            let gw = kernel.insert_before(end, Op::Const(Constant::idx(Q8_1_GROUP / 4)));
+            kernel.insert_before(end, Op::Binary { x: gv, y: gw, bop: BOp::Mul })
         };
         for sub in 0..n_sub {
-            let s16 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(sub * 2 * 8).expect("sub-tile"))));
-            let mut row = kernel.insert_before(end, Op::Binary { x: warp_off_m, y: s16, bop: BOp::Add });
+            let s16 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(sub * 2).expect("sub-tile") * fm)));
+            let mut row = add_off(kernel, s16, warp_off_m);
             row = kernel.insert_before(end, Op::Binary { x: row, y: lanerow, bop: BOp::Add });
             let mut addr = kernel.insert_before(end, Op::Binary { x: row, y: cxs, bop: BOp::Mul });
             addr = kernel.insert_before(end, Op::Binary { x: addr, y: g8, bop: BOp::Add });
@@ -2568,14 +2620,14 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
             let aw2 = kernel.insert_before(end, Op::Index { vec: frag, idx: 2 });
             let aw3 = kernel.insert_before(end, Op::Index { vec: frag, idx: 3 });
             let (da0, da1) = {
-                let mut crow = kernel.insert_before(end, Op::Binary { x: warp_off_m, y: s16, bop: BOp::Add });
+                let mut crow = add_off(kernel, s16, warp_off_m);
                 crow = kernel.insert_before(end, Op::Binary { x: crow, y: gid, bop: BOp::Add });
                 let mut i0 = kernel.insert_before(end, Op::Binary { x: crow, y: cxs, bop: BOp::Mul });
                 i0 = kernel.insert_before(end, Op::Binary { x: i0, y: cpay, bop: BOp::Add });
                 i0 = kernel.insert_before(end, Op::Binary { x: i0, y: gv, bop: BOp::Add });
                 let w0 = kernel.insert_before(end, Op::Load { src: xt, src_idx: i0 });
                 let d0 = kernel.insert_before(end, Op::Bitcast { x: w0, dtype: DType::F32 });
-                let eight = kernel.insert_before(end, Op::Const(Constant::idx(8i64)));
+                let eight = kernel.insert_before(end, Op::Const(Constant::idx(fm)));
                 let mut i1 = kernel.insert_before(end, Op::Binary { x: crow, y: eight, bop: BOp::Add });
                 i1 = kernel.insert_before(end, Op::Binary { x: i1, y: cxs, bop: BOp::Mul });
                 i1 = kernel.insert_before(end, Op::Binary { x: i1, y: cpay, bop: BOp::Add });
@@ -2585,8 +2637,8 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
                 (d0, d1)
             };
             for bj in 0..n_bands {
-                let bj8 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(bj * 8).expect("activation band"))));
-                let mut brow = kernel.insert_before(end, Op::Binary { x: warp_off_n, y: bj8, bop: BOp::Add });
+                let bj8 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(bj).expect("activation band") * fn_)));
+                let mut brow = add_off(kernel, bj8, warp_off_n);
                 brow = kernel.insert_before(end, Op::Binary { x: brow, y: gid, bop: BOp::Add });
                 let brow_base = kernel.insert_before(end, Op::Binary { x: brow, y: cys, bop: BOp::Mul });
                 let mut bcol = kernel.insert_before(end, Op::Binary { x: brow_base, y: cgrp, bop: BOp::Add });
@@ -2594,13 +2646,14 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
                 bcol = kernel.insert_before(end, Op::Binary { x: bcol, y: tig, bop: BOp::Add });
                 let b0 = kernel.insert_before(end, Op::Load { src: yt, src_idx: bcol });
                 let b1 = {
-                    let four = kernel.insert_before(end, Op::Const(Constant::idx(4i64)));
-                    let i = kernel.insert_before(end, Op::Binary { x: bcol, y: four, bop: BOp::Add });
+                    // The second half of the K step: `fk / 4` words on.
+                    let half = kernel.insert_before(end, Op::Const(Constant::idx(fk / 4)));
+                    let i = kernel.insert_before(end, Op::Binary { x: bcol, y: half, bop: BOp::Add });
                     kernel.insert_before(end, Op::Load { src: yt, src_idx: i })
                 };
                 // The two C columns' activation scales: rows `2*tig + word`.
                 let (db0, db1) = {
-                    let mut r0 = kernel.insert_before(end, Op::Binary { x: warp_off_n, y: bj8, bop: BOp::Add });
+                    let mut r0 = add_off(kernel, bj8, warp_off_n);
                     r0 = kernel.insert_before(end, Op::Binary { x: r0, y: tig2, bop: BOp::Add });
                     let i0 = kernel.insert_before(end, Op::Binary { x: r0, y: cys, bop: BOp::Mul });
                     let i0 = kernel.insert_before(end, Op::Binary { x: i0, y: gv, bop: BOp::Add });
@@ -4460,7 +4513,7 @@ impl Kernel {
                             }
                             if staged
                                 && let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref())
-                                && words_fit(shape, layout, self, qa, qb)
+                                && words_fit(shape, layout, &info, self, qa, qb)
                             {
                                 plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle: true });
                             }
@@ -4737,7 +4790,7 @@ impl Kernel {
                                                     }
                                                     if staged
                                                         && let (Some(qa), Some(qb)) = (quants.0.as_ref(), quants.1.as_ref())
-                                                        && words_fit(&shape, layout, self, qa, qb)
+                                                        && words_fit(&shape, layout, &info, self, qa, qb)
                                                     {
                                                         plans.push(Plan {
                                                             region: None,
