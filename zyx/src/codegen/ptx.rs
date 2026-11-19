@@ -1606,25 +1606,54 @@ impl Kernel {
                         }
                         comps
                     };
-                    let a_comps = fragment(comp.components_of(self, a, &dtypes)?, 4);
-                    let b_comps = fragment(comp.components_of(self, b, &dtypes)?, 2);
+                    let a_comps = comp.components_of(self, a, &dtypes)?;
+                    let b_comps = comp.components_of(self, b, &dtypes)?;
                     let c_comps = fragment(comp.components_of(self, c, &dtypes)?, 4);
-                    debug_assert_eq!(
-                        a_comps.len(),
-                        4,
-                        "PTX: mma A fragment must hold 4 f16 values: a={a:?} {:?}",
-                        self.ops[a].op
-                    );
-                    debug_assert_eq!(b_comps.len(), 2, "PTX: mma B fragment must hold 2 f16 values");
-                    debug_assert_eq!(c_comps.len(), 4, "PTX: mma C fragment must hold 4 f32 values");
-                    // Pack the f16 pairs into .b32 registers: a = {a01, a23},
-                    // b = {b01}.
-                    let a01 = comp.new_reg(DType::U32, Vec::new(), 1);
-                    let a23 = comp.new_reg(DType::U32, Vec::new(), 1);
-                    let b01 = comp.new_reg(DType::U32, Vec::new(), 1);
-                    _ = writeln!(comp.body, "{}mov.b32 %r{a01}, {{%r{}, %r{}}};", comp.indent, a_comps[0], a_comps[1]);
-                    _ = writeln!(comp.body, "{}mov.b32 %r{a23}, {{%r{}, %r{}}};", comp.indent, a_comps[2], a_comps[3]);
-                    _ = writeln!(comp.body, "{}mov.b32 %r{b01}, {{%r{}, %r{}}};", comp.indent, b_comps[0], b_comps[1]);
+                    // An operand is either its elements (f16 values that have
+                    // to be packed into `.b32` register pairs) or an
+                    // `ldmatrix` result, which is already the instruction's
+                    // destination list: one word per 8x8 matrix.
+                    let a_words = dtypes.get(&a).is_some_and(|(dtype, _)| *dtype == DType::U32);
+                    let b_words = dtypes.get(&b).is_some_and(|(dtype, _)| *dtype == DType::U32);
+                    let mut packed = Vec::new();
+                    let (a01, a23, b01) = if a_words && b_words {
+                        debug_assert_eq!(
+                            a_comps.len(),
+                            2,
+                            "PTX: mma A words, got {}: dims={dims:?} a={a:?} {:?} dt={:?}",
+                            a_comps.len(),
+                            self.ops[a].op,
+                            dtypes.get(&a)
+                        );
+                        debug_assert_eq!(
+                            b_comps.len(),
+                            1,
+                            "PTX: mma B word, got {}: b={b:?} {:?}",
+                            b_comps.len(),
+                            self.ops[b].op
+                        );
+                        (a_comps[0], a_comps[1], b_comps[0])
+                    } else {
+                        let a_comps = fragment(a_comps.clone(), 4);
+                        let b_comps = fragment(b_comps.clone(), 2);
+                        debug_assert_eq!(
+                            a_comps.len(),
+                            4,
+                            "PTX: mma A fragment must hold 4 f16 values: a={a:?} {:?}",
+                            self.ops[a].op
+                        );
+                        debug_assert_eq!(b_comps.len(), 2, "PTX: mma B fragment must hold 2 f16 values");
+                        // Pack the f16 pairs into .b32 registers: a = {a01, a23},
+                        // b = {b01}.
+                        let a01 = comp.new_reg(DType::U32, Vec::new(), 1);
+                        let a23 = comp.new_reg(DType::U32, Vec::new(), 1);
+                        let b01 = comp.new_reg(DType::U32, Vec::new(), 1);
+                        _ = writeln!(comp.body, "{}mov.b32 %r{a01}, {{%r{}, %r{}}};", comp.indent, a_comps[0], a_comps[1]);
+                        _ = writeln!(comp.body, "{}mov.b32 %r{a23}, {{%r{}, %r{}}};", comp.indent, a_comps[2], a_comps[3]);
+                        _ = writeln!(comp.body, "{}mov.b32 %r{b01}, {{%r{}, %r{}}};", comp.indent, b_comps[0], b_comps[1]);
+                        packed.extend([a01, a23, b01]);
+                        (a01, a23, b01)
+                    };
                     // Result: fresh 4-wide f32 vector, mma.sync writes D in place.
                     let rc = rcs[&op_id];
                     let reg = comp.new_var(op_id, DType::F32, vec![4], rc);
@@ -1640,32 +1669,46 @@ impl Kernel {
                         c_comps[2],
                         c_comps[3],
                     );
-                    comp.release_reg(a01);
-                    comp.release_reg(a23);
-                    comp.release_reg(b01);
+                    for r in packed {
+                        comp.release_reg(r);
+                    }
                 }
-                Op::Asm { .. } => todo!("PTX: inline asm not implemented"),
                 // One 32-bit word read from another lane of the warp, every
                 // lane naming its own source.
                 Op::PTX(ref p) => match p.as_ref() {
+                    PTXOp::Bytes(_) => todo!("PTX: assembled payload in kernel IR"),
                     PTXOp::Shfl { value, lane } => {
                         let vb = comp.get_var(*value);
                         let l = comp.get_var(*lane);
                         let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(2)], rcs[&op_id]);
                         _ = writeln!(comp.body, "{}shfl.sync.idx.b32 %r{reg}, %r{vb}, %r{l}, 0x1f, 0xffffffff;", comp.indent);
                     }
-                    PTXOp::Bytes(_) => todo!("PTX: assembled payload in kernel IR"),
+                    PTXOp::ShflXor { value, mask } => {
+                        let vb = comp.get_var(*value);
+                        let m = comp.get_var(*mask);
+                        let dtype = dtypes.get(value).map_or(DType::U32, |(dtype, _)| *dtype);
+                        let reg = comp.new_var(op_id, dtype, Vec::new(), rcs[&op_id]);
+                        _ = writeln!(comp.body, "{}shfl.sync.bfly.b32 %r{reg}, %r{vb}, %r{m}, 0x1f, 0xffffffff;", comp.indent);
+                    }
+                    PTXOp::Prmt { a, b, c } => {
+                        let av = comp.get_var(*a);
+                        let bv = comp.get_var(*b);
+                        let cv = comp.get_var(*c);
+                        let reg = comp.new_var(op_id, DType::U32, Vec::new(), rcs[&op_id]);
+                        _ = writeln!(comp.body, "{}prmt.b32 %r{reg}, %r{av}, %r{bv}, %r{cv};", comp.indent);
+                    }
                     // `ldmatrix` reads one 8x8 b16 tile per group of eight
                     // lanes into one register per tile, in lane order.
-                    PTXOp::VLdMatrix { frags, src, addr, trans } => {
+                    PTXOp::VLdMatrix { dims, num, trans, dtype, src, addr } => {
                         let idx = comp.get_var_addr(*addr);
-                        let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(i64::from(*frags) * 2)], rcs[&op_id]);
+                        let words = num.words();
+                        let reg = comp.new_var(op_id, DType::U32, vec![Dim::from(i64::from(words))], rcs[&op_id]);
                         // A shared variable's address is a 32-bit offset in the
-                        // shared window; the index is in f16 elements. One
-                        // register per load: the reference keeps a base per
-                        // tile row and reaches its sub-tiles with immediates, so
-                        // the address math is not a serial chain through one
-                        // scratch register.
+                        // shared window; the index is in elements of the tile's
+                        // own storage. One register per load: the reference
+                        // keeps a base per tile row and reaches its sub-tiles
+                        // with immediates, so the address math is not a serial
+                        // chain through one scratch register.
                         let saddr = comp.new_reg(DType::U32, Vec::new(), 1);
                         _ = writeln!(comp.body, "{}mov.u32 %r{saddr}, __ld{src};", comp.indent);
                         let off = comp.new_reg(DType::U32, Vec::new(), 1);
@@ -1674,7 +1717,11 @@ impl Kernel {
                         } else {
                             _ = writeln!(comp.body, "{}mov.b32 %r{off}, %r{idx};", comp.indent);
                         }
-                        _ = writeln!(comp.body, "{}shl.b32 %r{off}, %r{off}, 1;", comp.indent);
+                        // The index counts elements of `src`, so the byte
+                        // scale is that storage's element width.
+                        let elem_bytes = dtypes.get(src).map_or(2, |(dtype, _)| dtype.bit_size() / 8);
+                        let shift = u32::try_from(elem_bytes.ilog2()).expect("element size is a power of two");
+                        _ = writeln!(comp.body, "{}shl.b32 %r{off}, %r{off}, {shift};", comp.indent);
                         _ = writeln!(comp.body, "{}add.u32 %r{saddr}, %r{saddr}, %r{off};", comp.indent);
                         comp.release_reg(off);
                         // The instruction takes the generic address of the
@@ -1685,55 +1732,37 @@ impl Kernel {
                         _ = writeln!(comp.body, "{}cvt.u64.u32 %r{rd}, %r{saddr};", comp.indent);
                         _ = writeln!(comp.body, "{}cvta.shared.u64 %r{rd}, %r{rd};", comp.indent);
                         comp.release_reg(saddr);
-                        let t = comp.new_reg(DType::U32, vec![Dim::from(i64::from(*frags))], u32::from(*frags));
-                        let t_suffix = if *trans { ".trans" } else { "" };
-                        // `ldmatrix` writes one 32-bit word per 8x8 tile, so
-                        // the words land in temporaries and are split into the
-                        // fragment's two 16-bit halves (`ptxas` coalesces the
-                        // moves into the fragment's registers).
-                        let pattern = (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
+                        // The instruction writes its own destination list: one
+                        // 32-bit word per 8x8 matrix, straight into the
+                        // fragment's registers.
+                        let pattern = (0..words).map(|i| format!("%r{}", reg + u16::from(i))).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             comp.body,
-                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.b16 {{{pattern}}}, [%r{rd}];",
-                            comp.indent
+                            "{}ldmatrix.sync.aligned.{}.{}{}.{} {{{pattern}}}, [%r{rd}];",
+                            comp.indent,
+                            dims.name(),
+                            num.name(),
+                            trans.name(),
+                            dtype.name()
                         );
                         comp.release_reg(rd);
-                        for i in 0..u16::from(*frags) {
-                            _ = writeln!(
-                                comp.body,
-                                "{}mov.b32 {{%r{}, %r{}}}, %r{};",
-                                comp.indent,
-                                reg + 2 * i,
-                                reg + 2 * i + 1,
-                                t + i
-                            );
-                        }
-                        comp.release_reg(t);
                     }
                     // The hardware `ldmatrix` at an address the IR already
-                    // built: no window base, no `<<1`, no offset arithmetic.
-                    PTXOp::LdMatrix { frags, addr, trans } => {
+                    // built: no window base, no offset arithmetic.
+                    PTXOp::LdMatrix { dims, num, trans, dtype, addr } => {
                         let a = comp.get_var_addr(*addr);
-                        let reg = comp.new_var(op_id, DType::F16, vec![Dim::from(i64::from(*frags) * 2)], rcs[&op_id]);
-                        let t = comp.new_reg(DType::U32, vec![Dim::from(i64::from(*frags))], u32::from(*frags));
-                        let t_suffix = if *trans { ".trans" } else { "" };
-                        let pattern = (0..*frags).map(|i| format!("%r{}", t + u16::from(i))).collect::<Vec<_>>().join(", ");
+                        let words = num.words();
+                        let reg = comp.new_var(op_id, DType::U32, vec![Dim::from(i64::from(words))], rcs[&op_id]);
+                        let pattern = (0..words).map(|i| format!("%r{}", reg + u16::from(i))).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             comp.body,
-                            "{}ldmatrix.sync.aligned.m8n8.x{frags}{t_suffix}.shared.b16 {{{pattern}}}, [%r{a}];",
-                            comp.indent
+                            "{}ldmatrix.sync.aligned.{}.{}{}.shared.{} {{{pattern}}}, [%r{a}];",
+                            comp.indent,
+                            dims.name(),
+                            num.name(),
+                            trans.name(),
+                            dtype.name()
                         );
-                        for i in 0..u16::from(*frags) {
-                            _ = writeln!(
-                                comp.body,
-                                "{}mov.b32 {{%r{}, %r{}}}, %r{};",
-                                comp.indent,
-                                reg + 2 * i,
-                                reg + 2 * i + 1,
-                                t + i
-                            );
-                        }
-                        comp.release_reg(t);
                     }
                     // `cvta.shared.u64 %rd, %rs`.
                     PTXOp::CvtaShared { addr } => {

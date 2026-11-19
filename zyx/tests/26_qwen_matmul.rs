@@ -201,7 +201,10 @@ fn qwen_ffn_gate() -> Result<(), ZyxError> {
     let a_host: Vec<f32> = (0..usize::try_from(M * K).expect("activation fits usize"))
         .map(|i| {
             let row = i / usize::try_from(K).unwrap();
-            f16::from_f32(f32::from(q8_host[i]) * sa_host[row * usize::try_from(KGROUP).unwrap() + (i % usize::try_from(K).unwrap()) / 32]).to_f32()
+            f16::from_f32(
+                f32::from(q8_host[i]) * sa_host[row * usize::try_from(KGROUP).unwrap() + (i % usize::try_from(K).unwrap()) / 32],
+            )
+            .to_f32()
         })
         .collect();
 
@@ -446,295 +449,346 @@ fn quantize_q8_kernel(dev: Dev) -> Kernel {
 /// (`sum[l] += C.x[l]*dA*dB`): only the f32 sums stay live across the K loop,
 /// the integer fragment is the instruction's own transient result.
 fn gemm_s8_kernel(dev: Dev) -> Kernel {
-    // Activation rows per block (llama.cpp's `J`).
-    const MB: i64 = 128;
-    // Weight rows per block (llama.cpp's `I`).
-    const NB: i64 = 128;
-    // Warps per block: `mmq`'s PQ2_0 config is 256 threads.
+    // Weight rows per block (llama.cpp's `I`) and activation rows per block
+    // (`J`).
+    const IB: i64 = 128;
+    const JB: i64 = 128;
+    // `mmq`'s PQ2_0 block config: 256 threads as 32x8.
     const NW: u32 = 8;
-    // One warp's tile: 64 activation rows (eight `m8` fragments) by 32 weight
-    // rows (four `n8` fragments).
-    const WA: i64 = 64;
-    const WB: i64 = 32;
-    // Packed words in one row of a 128-element super-block.
-    const WORDS: i64 = BLOCK / 4;
+    // Words per row of the two shared tiles: the super-block's 32 payload
+    // words, the four words of scales, then the 4-word (16-byte) tail that
+    // keeps the rows of one `ldmatrix` off the same banks.
+    const XS: i64 = 40;
+    const YS: i64 = 36;
 
     let mut k = Kernel::new(dev);
-    let a8 = k.param(DType::I8);
+    // The q8_1 payload is read as words (four int8 each) and the PQ2_0
+    // super-block as 17 words (its f16 scale, then 32 code bytes) — the
+    // pointer casts `mmq`'s fills make.
+    let a8 = k.param(DType::U32);
     let sa = k.param(DType::F32);
-    let w = k.param(DType::U8);
+    let w = k.param(DType::U16);
     let out = k.param_mut(DType::F32);
 
-    let nb = k.group_range(0, N / NB);
+    let nb = k.group_range(0, N / IB);
     let lane = k.local_range(0, 32);
     let warp = k.local_range(1, NW);
     let tid = k.mad(warp, 32i64, lane);
     let c1 = k.const_val(1i64);
     let c2 = k.const_val(2i64);
+    let c3 = k.const_val(3i64);
     let c4 = k.const_val(4i64);
     let c8 = k.const_val(8i64);
     let c16 = k.const_val(16i64);
     let c32 = k.const_val(32i64);
-    // Warp split: `wa` picks the 64-row activation band (two bands), `wb` the
-    // 32-row weight band (four bands).
-    let wa = k.bit_and(warp, c1);
-    let wb = k.bit_shift_right(warp, c1);
-    let cwa = k.const_val(WA);
-    let cwb = k.const_val(WB);
-    let cnb = k.const_val(NB);
-    let c0 = k.const_val(0i64);
-    let abase = k.mul(wa, cwa);
-    let wbase = k.mul(wb, cwb);
-    let nbase = k.mul(nb, cnb);
-    // mma fragment geometry: `gid = lane/4` is the fragment row (A's row, the
-    // C row), `tig = lane%4` the four-word K group the lane holds.
-    let gid = k.div(lane, c4);
-    let tig = k.mod_(lane, c4);
-    let tig2 = k.mul(tig, c2);
-    // The warp's 32 fragment pairs are one lane — eight A fragments by four B
-    // fragments — so `devectorize` emits the 32 instructions of one K step.
-    let combo = k.unroll(3, u16::try_from((WA / 8) * (WB / 8)).expect("fragment lane"));
-    let af = k.div(combo, c4);
-    let bf = k.mod_(combo, c4);
+    let c64 = k.const_val(64i64);
+    let c256 = k.const_val(256i64);
+    let cxs = k.const_val(XS);
+    let cys = k.const_val(YS);
+    let c17 = k.const_val(17i64);
+    let cib = k.const_val(IB);
+    let ckb = k.const_val(KBLK);
+    let ckg = k.const_val(KGROUP);
+    let nstr = k.const_val(N);
+    let kw = k.const_val(K / 4);
+    let two = k.const_val(2u32);
 
-    // Shared tiles, both holding the int8 mma's own operand word: the 128
-    // activation rows' and the 128 weight rows' 32 packed words of the
-    // super-block (the activations' four bytes as their int8 payload words,
-    // the weights' code byte as four `code - 1` int8s). The row stride is
-    // padded by one word: at 32 words the eight fragment rows of one load all
-    // start on the same four banks, an eight-way conflict on every access.
-    const STRIDE: i64 = WORDS + 1;
-    let a_sh = k.storage(DType::U32, MemScope::Local, MB * STRIDE);
-    let w_sh = k.storage(DType::U32, MemScope::Local, NB * STRIDE);
-    let cstr = k.const_val(STRIDE);
-    // The activation's per-32 group scales of the super-block, staged with the
-    // tile: `mmq` keeps them inside the tile (`x_df`/`y_df`) for the same
-    // reason — the fold reads a scale per fragment per group, and a global load
-    // there is a long-latency stall in the middle of the mma chain.
-    let s_sh = k.storage(DType::F32, MemScope::Local, MB * (BLOCK / QG));
-    // The f32 sums: two C words per fragment pair — the only values live
-    // across the K loop.
-    let accf = k.storage(DType::F32, MemScope::Register, 2 * (WA / 8) * (WB / 8));
-    // The lane's weight scales for this super-block: four fragments x the two
-    // C words (the C column) each of them covers.
-    let swc = k.storage(DType::F32, MemScope::Register, 8);
+    // The two shared tiles, staged as `mmq` stages them: one row per row of
+    // the tile, the scales inside the row (`x_df` at word 32, `y_df` at word
+    // 0), the 16-byte tail as padding.
+    let xt = k.storage(DType::U32, MemScope::Local, IB * XS);
+    let yt = k.storage(DType::U32, MemScope::Local, JB * YS);
+    // `sum[64]`: two C words per fragment pair, live across the K loop.
+    let accf = k.storage(DType::F32, MemScope::Register, 64);
+
+    // Warp split and lane geometry: `warp/2` is the 32-row weight band,
+    // `warp%2` the 8-row activation band inside each 16, `lane/4` the
+    // fragment row, `lane%4` the four-int8 group of a 16-wide K step.
+    let warpl = k.bit_and(warp, c1);
+    let warph = k.bit_shift_right(warp, c1);
+    let i0 = k.mul(warph, c32);
+    let jo = k.mul(warpl, c8);
+    let gid = k.div(lane, c4);
+    let lanecol = k.mod_(lane, c4);
+    let tig2 = k.mul(lanecol, c2);
+    let lanerow = k.mod_(lane, c16);
+    let lanehalf = k.div(lane, c16);
+    // The in-place mma chain starts from zero and the sums from `0.0f`.
     let zero_i = k.const_val(0i32);
     let zero2 = k.stack(&[zero_i, zero_i]);
     let zero_f = k.const_val(0f32);
-    // Zeroing is parallel work: one store over a lane of all the sums.
-    let init = k.unroll(1, u16::try_from(2 * (WA / 8) * (WB / 8)).expect("sum lane"));
-    k.store(accf, zero_f, init);
+    let szero = k.unroll(7, 64);
+    k.store(accf, zero_f, szero);
 
-    let kgroup = k.const_val(KGROUP);
-    let kblk = k.const_val(KBLK);
-    let nstr = k.const_val(N);
-    let row = k.const_val(ROW);
-    let k128 = k.const_val(BLOCK);
-    let kstr = k.const_val(K);
-
-    k.loop_over(K / BLOCK, |k, c| {
-        // ---- fill both tiles for the 128-element super-block `c` ----
-        // Activations: 4096 packed words, sixteen per thread. Both parallel
-        // axes are lanes: the sixteen words a thread fills, and the four bytes
-        // of each word, folded into the operand word by a lane reduction (the
-        // bytes occupy disjoint bit fields, so the sum is the packed word).
-        let chunk = k.mul(c, k128);
+    k.loop_over(K / BLOCK, |k, kb| {
+        // ---- `ggml_cuda_mmq_load_tiles_pq2_0`: the weight tile ----
+        // `QI_PQ2_0 = QK_PQ2_0/32 = 4` threads per row, eight rows per warp,
+        // 64 rows per pass: a thread reads the four 16-bit halves at its own
+        // `kqsx * 4` (bytes `2 + kqsx*8`, inside the block's 32-byte `qs`) and
+        // writes the eight words at `kqsx * 8`, so the four of them cover the
+        // row's 32 words exactly. A thread turns each half into two int8 words
+        // with three `prmt`s.
         {
-            let w16 = k.unroll(1, 16);
-            let b4 = k.unroll(2, 4);
-            let tb = k.mul(tid, c16);
-            let off = k.add(tb, w16);
+            let it = k.unroll(0, 2);
+            let j = k.unroll(1, 4);
+            let lane4 = k.div(lane, c4);
+            let row0 = k.mad(warp, c8, lane4);
+            let step = k.mul(it, c64);
+            let row = k.add(row0, step);
+            let kq = k.mod_(lane, c4);
+            let wrow = k.mad(nb, cib, row);
+            let blk = k.mad(wrow, ckb, kb);
+            let b17 = k.mul(blk, c17);
+            let q0 = k.add(b17, c1);
+            let qk = k.mul(kq, c4);
+            let qbase = k.add(q0, qk);
+            let qi = k.add(qbase, j);
+            let qw = k.load(w, qi);
+            // `const short * qxi` / `const int q = qxi[j]`: the half is read
+            // signed (`cvt.s32.s16`), not zero-extended.
+            let qs16 = k.bitcast(qw, DType::I16);
+            let qi32 = k.cast(qs16, DType::I32);
+            let q = k.bitcast(qi32, DType::U32);
+            // `code -> code-1`: byte `i` of `0x020100FF` is `i-1`, and the
+            // pair of codes in a nibble selects it (the high bit sign-extends,
+            // which the table's bytes all survive).
+            let table = k.const_val(0x0201_00FFu32);
+            // `__byte_perm` has no sign-replicate mode, while `prmt`'s
+            // selector bit 3 is sign-replicate: the compiler masks it off
+            // (`and.b32 %r239, %r238, 30583`) before each inner `prmt`.
+            let mask = k.const_val(0x7777u32);
+            let qe_sel = k.bit_and(q, mask);
+            let qe = k.prmt(table, table, qe_sel);
+            let qsh = k.bit_shift_right(q, two);
+            let qo_sel = k.bit_and(qsh, mask);
+            let qo = k.prmt(table, table, qo_sel);
+            let sel = k.const_val(0x5140u32);
+            let qx = k.prmt(qe, qo, sel);
+            let sel = k.const_val(0x7362u32);
+            let qy = k.prmt(qe, qo, sel);
+            let k8 = k.mul(kq, c8);
+            let j2 = k.mul(j, c2);
+            let col = k.add(k8, j2);
+            let rowx = k.mul(row, cxs);
+            let dst = k.add(rowx, col);
+            k.store(xt, qx, dst);
+            let dst1 = k.add(dst, c1);
+            k.store(xt, qy, dst1);
+        }
+        // The block's f16 scale, one entry per row at word 32 of it.
+        {
+            let si = k.unroll(2, 16);
+            let nw = k.const_val(i64::from(NW));
+            let rows = k.mul(si, nw);
+            let row = k.add(warp, rows);
+            let wrow = k.mad(nb, cib, row);
+            let blk = k.mad(wrow, ckb, kb);
+            let b17 = k.mul(blk, c17);
+            let d = k.load(w, b17);
+            let d = k.bitcast(d, DType::F16);
+            let d = k.cast(d, DType::F32);
+            let d = k.bitcast(d, DType::U32);
+            let rowx = k.mul(row, cxs);
+            let at = k.add(rowx, c32);
+            let at = k.add(at, lanecol);
+            k.store(xt, d, at);
+        }
+        // ---- the y tile: `block_q8_1_mmq` is [four scales][32 words] ----
+        {
+            let w16 = k.unroll(3, 16);
+            let m256 = k.mul(w16, c256);
+            let off = k.add(tid, m256);
             let r = k.div(off, c32);
-            let cw = k.mod_(off, c32);
-            let cw4 = k.mul(cw, c4);
-            let gk = k.add(chunk, cw4);
-            let gi = k.mad(r, kstr, gk);
-            let bi = k.add(gi, b4);
-            let byte = k.load(a8, bi);
-            let byte32 = k.cast(byte, DType::U32);
-            let mask = k.const_val(0xffu32);
-            let byte32 = k.bit_and(byte32, mask);
-            let eight = k.const_val(8u32);
-            let b4u = k.cast(b4, DType::U32);
-            let sh = k.mul(b4u, eight);
-            let shifted = k.bit_shift_left(byte32, sh);
-            let word = k.reduce_sum(shifted, b4);
-            let sr = k.mul(r, cstr);
-            let si = k.add(sr, cw);
-            k.store(a_sh, word, si);
+            let c = k.mod_(off, c32);
+            let rw = k.mul(r, kw);
+            let k32 = k.mul(kb, c32);
+            let src = k.add(rw, k32);
+            let src = k.add(src, c);
+            let v = k.load(a8, src);
+            let dst = k.mad(r, cys, c);
+            let dst = k.add(dst, c4);
+            k.store(yt, v, dst);
         }
-        // Weights: the super-block's 32 code bytes per row, sixteen per thread.
-        // Each code byte is four int8 payloads (`code - 1`), so the tile holds
-        // the dequantized operand word, not the packed form. The unpacked
-        // address is the super-block's own: `(n*KBLK + c)*34 + 2 + code_byte`,
-        // the block's first two bytes being its f16 scale.
         {
-            let iw = k.unroll(1, 16);
-            let tb = k.mul(tid, c16);
-            let off = k.add(tb, iw);
-            let r = k.div(off, c32);
-            let cb = k.mod_(off, c32);
-            let wr = k.add(nbase, r);
-            let blk = k.mad(wr, kblk, c);
-            let bi = k.mul(blk, row);
-            let two = k.const_val(2i64);
-            let gi = k.add(bi, two);
-            let gi = k.add(gi, cb);
-            let byte = k.load(w, gi);
-            let mut word = k.const_val(0u32);
-            for lane_i in 0..4u32 {
-                let sh = k.const_val((2 * lane_i) as u8);
-                let t = k.bit_shift_right(byte, sh);
-                let mask = k.const_val(3u8);
-                let q = k.bit_and(t, mask);
-                let qw = k.cast(q, DType::U32);
-                let one = k.const_val(1u32);
-                let payload = k.sub(qw, one);
-                let bits = k.const_val(0xffu32);
-                let masked = k.bit_and(payload, bits);
-                let shr = k.const_val(8 * lane_i);
-                let shifted = k.bit_shift_left(masked, shr);
-                word = k.bit_or(word, shifted);
-            }
-            let sr = k.mul(r, cstr);
-            let si = k.add(sr, cb);
-            k.store(w_sh, word, si);
-        }
-        // The lane's weight scales for this super-block, hoisted out of the
-        // group loop: the super-block's first two bytes are its f16 scale, one
-        // per (weight fragment, C word) — eight of them, one lane.
-        {
-            let sc = k.unroll(1, 8);
-            let jj = k.div(sc, c2);
-            let cc = k.mod_(sc, c2);
-            let jo = k.mul(jj, c8);
-            let co = k.add(tig2, cc);
-            let wi = k.add(jo, co);
-            let nbase_w = k.add(nbase, wbase);
-            let n = k.add(nbase_w, wi);
-            let blk = k.mad(n, kblk, c);
-            let bi = k.mul(blk, row);
-            let lo = k.load(w, bi);
-            let bi1 = k.add(bi, c1);
-            let hi = k.load(w, bi1);
-            let lo16 = k.cast(lo, DType::U16);
-            let hi16 = k.cast(hi, DType::U16);
-            let eight = k.const_val(8u16);
-            let hs = k.bit_shift_left(hi16, eight);
-            let bits = k.bit_or(lo16, hs);
-            let bf16 = k.bitcast(bits, DType::F16);
-            let f = k.cast(bf16, DType::F32);
-            k.store(swc, f, sc);
-        }
-        // The super-block's activation group scales: 128 rows x four groups,
-        // two per thread, read once here and then once per fragment per group
-        // from shared memory.
-        {
-            let s2 = k.unroll(1, 2);
-            let tb2 = k.mul(tid, c2);
-            let e = k.add(tb2, s2);
+            let s2 = k.unroll(4, 2);
+            let m256 = k.mul(s2, c256);
+            let e = k.add(tid, m256);
             let r = k.div(e, c4);
-            let gq = k.mod_(e, c4);
-            let gi = k.mul(c, c4);
-            let gqg = k.add(gi, gq);
-            let si = k.mad(r, kgroup, gqg);
+            let g = k.mod_(e, c4);
+            let k4 = k.mul(kb, c4);
+            let gq = k.add(k4, g);
+            let si = k.mad(r, ckg, gq);
             let v = k.load(sa, si);
-            k.store(s_sh, v, e);
+            let v = k.bitcast(v, DType::U32);
+            let dst = k.mad(r, cys, g);
+            k.store(yt, v, dst);
         }
         k.barrier();
 
-        // ---- four 32-element groups of two 16-wide K steps ----
-        // The group is a real loop, not unrolled: it is the same body four
-        // times, and keeping it a loop is what leaves the register file to the
-        // sums instead of to four copies of the mma chain.
-        k.loop_over(BLOCK / QG, |k, g| {
-            // The pair's two K steps: a fresh fragment for the first, the
-            // first's result chained as the second's C operand, so the pair's
-            // int32 sum never leaves the instruction's own registers.
-            let ko = k.mul(g, c8);
-            let a1o = k.mul(af, c8);
-            let aro = k.add(abase, a1o);
-            let ar = k.add(aro, gid);
-            let arow = k.mul(ar, cstr);
-            let b1o = k.mul(bf, c8);
-            let bro = k.add(wbase, b1o);
-            let br = k.add(bro, gid);
-            let brow = k.mul(br, cstr);
-            let w0 = k.add(ko, tig);
-            let aw0 = k.add(arow, w0);
-            let a0 = k.load(a_sh, aw0);
-            let bw0 = k.add(brow, w0);
-            let b0 = k.load(w_sh, bw0);
-            let d0 = k.wmma(
-                zyx::kernel::MMADims::m8n8k16,
-                zyx::kernel::MMALayout::row_col,
-                zyx::kernel::MMADType::s8_s8_s32_s32,
-                a0,
-                b0,
-                zero2,
-            );
-            let ko4 = k.add(ko, c4);
-            let w1 = k.add(ko4, tig);
-            let aw1 = k.add(arow, w1);
-            let a1 = k.load(a_sh, aw1);
-            let bw1 = k.add(brow, w1);
-            let b1 = k.load(w_sh, bw1);
-            let d1 = k.wmma(
-                zyx::kernel::MMADims::m8n8k16,
-                zyx::kernel::MMALayout::row_col,
-                zyx::kernel::MMADType::s8_s8_s32_s32,
-                a1,
-                b1,
-                d0,
-            );
-            // `sum += C * sa[act, group] * sw[weight]`: the activation scale
-            // at the C row, the weight scale at the C column. The two C words
-            // are the fragment's own, so they are a constant loop, not a lane.
-            let cpg = k.const_val(BLOCK / QG);
-            let a1o = k.mul(af, c8);
-            let aro = k.add(abase, a1o);
-            let act = k.add(aro, gid);
-            let s4 = k.const_val(BLOCK / QG);
-            let srow = k.mul(act, s4);
-            let sai = k.add(srow, g);
-            let sav = k.load(s_sh, sai);
-            let bf2 = k.mul(bf, c2);
-            let pair = k.mul(combo, c2);
-            for word in 0..2u64 {
-                let cw_ = if word == 0 { c0 } else { c1 };
-                let swi = k.add(bf2, cw_);
-                let swv = k.load(swc, swi);
-                let scale = k.mul(sav, swv);
-                let raw = k.index(d1, word as usize);
-                let v = k.cast(raw, DType::F32);
-                let idx = k.add(pair, cw_);
-                let prev = k.load(accf, idx);
-                let sum = k.mad(v, scale, prev);
-                k.store(accf, sum, idx);
+        // ---- A, the mma and the fold ----
+        // The outer lane is one (sub-tile, K group): its `ldmatrix.x4` — four
+        // 8x8 b16 matrices, 16 rows by the group's 32 int8 — and the two
+        // weight scales of its C rows. The inner lane is the 16-row
+        // activation band, `j0`: the two B words of the 8x8 `n x k` view
+        // (`load_generic`), the two C columns' activation scales, the four
+        // in-place `m8n8k16` of `mma_16x8_8x8`, and the fold.
+        {
+            // The K groups are a sequential chain: each group's fold reads the
+            // sums the previous one wrote, so they are not a parallel lane.
+            // The two weight sub-tiles are the same: each writes its own C rows.
+            for gv in 0..4i64 {
+                let g = k.const_val(gv);
+                for nv in 0..2i64 {
+                    let n = k.const_val(nv);
+                    let n16 = k.mul(n, c16);
+                    let row = k.add(i0, n16);
+                    let row = k.add(row, lanerow);
+                    let g8 = k.mul(g, c8);
+                    let addr = k.mad(row, cxs, g8);
+                    let side = k.mul(lanehalf, c4);
+                    let addr = k.add(addr, side);
+                    let frag = k.ldmatrix(
+                        zyx::kernel::LdMatrixDims::m8n8,
+                        zyx::kernel::LdMatrixNum::X4,
+                        zyx::kernel::LdMatrixTrans::off,
+                        zyx::kernel::LdMatrixType::b16,
+                        xt,
+                        addr,
+                    );
+                    let aw0 = k.index(frag, 0);
+                    let aw1 = k.index(frag, 1);
+                    let aw2 = k.index(frag, 2);
+                    let aw3 = k.index(frag, 3);
+                    // `dA[n][h][g]`: word `32+g` of rows `i0 + n*16 + h*8 + lane/4`.
+                    let crow = k.add(i0, n16);
+                    let crow = k.add(crow, gid);
+                    let crowx = k.mul(crow, cxs);
+                    let da0i = k.add(crowx, c32);
+                    let da0i = k.add(da0i, g);
+                    let da0w = k.load(xt, da0i);
+                    let da0 = k.bitcast(da0w, DType::F32);
+                    let drow8 = k.add(crow, c8);
+                    let drow8x = k.mul(drow8, cxs);
+                    let da1j = k.add(drow8x, c32);
+                    let da1j = k.add(da1j, g);
+                    let da1w = k.load(xt, da1j);
+                    let da1 = k.bitcast(da1w, DType::F32);
+
+                    let jt = k.unroll(9, 8);
+                    let j0 = k.mul(jt, c16);
+                    let jb = k.add(jo, j0);
+                    let rowb = k.add(jb, gid);
+                    let rowbx = k.mul(rowb, cys);
+                    let colb = k.add(rowbx, c4);
+                    let bcol = k.add(colb, g8);
+                    let b0i = k.add(bcol, lanecol);
+                    let b0 = k.load(yt, b0i);
+                    let bcol4 = k.add(bcol, c4);
+                    let b1i = k.add(bcol4, lanecol);
+                    let b1 = k.load(yt, b1i);
+                    // `dB[l]`: the activation scale of the two C columns.
+                    let rd0 = k.add(jb, tig2);
+                    let rd1 = k.add(rd0, c1);
+                    let d0i = k.mad(rd0, cys, g);
+                    let d1i = k.mad(rd1, cys, g);
+                    let db0w = k.load(yt, d0i);
+                    let db0 = k.bitcast(db0w, DType::F32);
+                    let db1w = k.load(yt, d1i);
+                    let db1 = k.bitcast(db1w, DType::F32);
+                    let c00 = k.wmma(
+                        zyx::kernel::MMADims::m8n8k16,
+                        zyx::kernel::MMALayout::row_col,
+                        zyx::kernel::MMADType::s8_s8_s32_s32,
+                        aw0,
+                        b0,
+                        zero2,
+                    );
+                    let clo = k.wmma(
+                        zyx::kernel::MMADims::m8n8k16,
+                        zyx::kernel::MMALayout::row_col,
+                        zyx::kernel::MMADType::s8_s8_s32_s32,
+                        aw2,
+                        b1,
+                        c00,
+                    );
+                    let c10 = k.wmma(
+                        zyx::kernel::MMADims::m8n8k16,
+                        zyx::kernel::MMALayout::row_col,
+                        zyx::kernel::MMADType::s8_s8_s32_s32,
+                        aw1,
+                        b0,
+                        zero2,
+                    );
+                    let chi = k.wmma(
+                        zyx::kernel::MMADims::m8n8k16,
+                        zyx::kernel::MMALayout::row_col,
+                        zyx::kernel::MMADType::s8_s8_s32_s32,
+                        aw3,
+                        b1,
+                        c10,
+                    );
+                    // `sum[(j0/8 + n)*4 + l] += C.x[l] * dA[n][l/2][g] * dB[l%2]`.
+                    let jt2 = k.mul(jt, c2);
+                    let jn = k.add(jt2, n);
+                    let base = k.mul(jn, c4);
+                    let s1 = k.add(base, c1);
+                    let s2 = k.add(base, c2);
+                    let s3 = k.add(base, c3);
+                    let ic0 = k.index(clo, 0);
+                    let ic1 = k.index(clo, 1);
+                    let ic2 = k.index(chi, 0);
+                    let ic3 = k.index(chi, 1);
+                    let v0 = k.cast(ic0, DType::F32);
+                    let v1 = k.cast(ic1, DType::F32);
+                    let v2 = k.cast(ic2, DType::F32);
+                    let v3 = k.cast(ic3, DType::F32);
+                    let k0 = k.mul(da0, db0);
+                    let k1 = k.mul(da0, db1);
+                    let k2 = k.mul(da1, db0);
+                    let k3 = k.mul(da1, db1);
+                    let p0 = k.load(accf, base);
+                    let p1 = k.load(accf, s1);
+                    let p2 = k.load(accf, s2);
+                    let p3 = k.load(accf, s3);
+                    let t0 = k.mad(v0, k0, p0);
+                    let t1 = k.mad(v1, k1, p1);
+                    let t2 = k.mad(v2, k2, p2);
+                    let t3 = k.mad(v3, k3, p3);
+                    k.store(accf, t0, base);
+                    k.store(accf, t1, s1);
+                    k.store(accf, t2, s2);
+                    k.store(accf, t3, s3);
+                }
             }
-        });
+        }
         // The next super-block overwrites both tiles.
         k.barrier();
     });
 
-    // ---- scatter: C's two columns per lane, one weight fragment at a time ----
+    // ---- `ggml_cuda_mmq_write_back_mma`: C's two columns per lane ----
     {
-        let a1o = k.mul(af, c8);
-        let aro = k.add(abase, a1o);
-        let act = k.add(aro, gid);
-        let pair = k.mul(combo, c2);
-        for word in 0..2u64 {
-            let cw_ = if word == 0 { c0 } else { c1 };
-            let idx = k.add(pair, cw_);
-            let v = k.load(accf, idx);
-            let b1o = k.mul(bf, c8);
-            let co = k.add(b1o, tig2);
-            let co = k.add(co, cw_);
-            let wo = k.add(wbase, co);
-            let n = k.add(nbase, wo);
-            let oi = k.mad(act, nstr, n);
-            k.store(out, v, oi);
-        }
+        let s = k.unroll(10, 64);
+        let jt = k.div(s, c8);
+        let s4 = k.div(s, c4);
+        let n = k.mod_(s4, c2);
+        let l = k.mod_(s, c4);
+        let half = k.mul(warpl, c8);
+        let j0 = k.mul(jt, c16);
+        let col0 = k.add(j0, half);
+        let lmod = k.mod_(l, c2);
+        let cpart = k.add(tig2, lmod);
+        let col = k.add(col0, cpart);
+        let l2 = k.div(l, c2);
+        let n16 = k.mul(n, c16);
+        let row = k.add(i0, n16);
+        let l8 = k.mul(l2, c8);
+        let row = k.add(row, l8);
+        let row = k.add(row, gid);
+        let nbib = k.mul(nb, cib);
+        let wrow = k.add(nbib, row);
+        let v = k.load(accf, s);
+        let oi = k.mad(col, nstr, wrow);
+        k.store(out, v, oi);
     }
     k.verify();
     k
@@ -1084,7 +1138,14 @@ fn qwen_ffn_gate_s8() -> Result<(), ZyxError> {
 
     // ---- run the two kernels ----
     let a: Tensor = Tensor::from_vec(a_host.clone(), [M, K])?.to(dev)?;
-    let w: Tensor = Tensor::from_vec(raw, [N * K / BLOCK, ROW])?.to(dev)?;
+    // The IR kernel reads the same buffers with the widths `mmq` casts them
+    // to: the q8 payload as 32-bit words, the PQ2_0 super-block as 17 words.
+    let q8_words: Vec<u32> =
+        q8_host.chunks_exact(4).map(|c| u32::from_le_bytes([c[0] as u8, c[1] as u8, c[2] as u8, c[3] as u8])).collect();
+    let w_words_host: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let a8_words: Tensor = Tensor::from_vec(q8_words, [M, K / 4])?.to(dev)?;
+    let w_words: Tensor = Tensor::from_vec(w_words_host, [N * K / BLOCK, ROW / 2])?.to(dev)?;
+    let w: Tensor = Tensor::from_vec(raw.clone(), [N * K / BLOCK, ROW])?.to(dev)?;
     let out_t: Tensor = Tensor::from_vec(vec![0f32; usize::try_from(M * N).unwrap()], [M, N])?.to(dev)?;
     let a8_t: Tensor = Tensor::from_vec(q8_host.clone(), [M, K])?.to(dev)?;
     let sa_t: Tensor = Tensor::from_vec(sa_host.clone(), [M, KGROUP])?.to(dev)?;
@@ -1111,8 +1172,8 @@ fn qwen_ffn_gate_s8() -> Result<(), ZyxError> {
     }
 
     // ---- the kernels, and the one pass the IR one gets ------------------
-    // The IR kernel is the tensorized shape written by hand with unfold lanes:
-    // no tensorization, no recipe, and the only pass is the device epilogue's
+    // The IR kernel is the pasted dataflow written with the IR's own ops: no
+    // tensorization, no recipe, and the only pass is the device epilogue's
     // lane expansion, so what runs is exactly what was written. The pasted one
     // is llama.cpp's CUDA source as-is, launched through `push_source`.
     let ir = gemm_s8_kernel(dev);
@@ -1124,12 +1185,15 @@ fn qwen_ffn_gate_s8() -> Result<(), ZyxError> {
     // events. The values come from a copy compiled on its own.
     let scratch = Tensor::zeros([M, N], DType::F32).to(dev)?;
     let flop = 2.0 * (M * N * K) as f64;
-    for (name, gemm) in [("llama.cpp pasted", pasted), ("IR", ir)] {
+    for (name, gemm, ins) in [
+        ("llama.cpp pasted", pasted, [&a8_t, &sa_t, &w]),
+        ("IR", ir, [&a8_words, &sa_t, &w_words]),
+    ] {
         let values = gemm.clone();
-        let (_winner, nanos) = BeamSearch::new().run([gemm], &[&a8_t, &sa_t, &w, &scratch], &[], |_| {}, |_| 0)?;
+        let (_winner, nanos) = BeamSearch::new().run([gemm], &[ins[0], ins[1], ins[2], &scratch], &[], |_| {}, |_| 0)?;
         let gemm_nanos = nanos as f64;
         let compiled = values.compile()?;
-        let out = compiled.forward(&[&a8_t, &sa_t, &w], vec![[M, N]])?.pop().unwrap();
+        let out = compiled.forward(&[ins[0], ins[1], ins[2]], vec![[M, N]])?.pop().unwrap();
 
         // ---- the sampled outputs must match the reference ----
         let got: Vec<f32> = out.try_into()?;
@@ -1150,7 +1214,10 @@ fn qwen_ffn_gate_s8() -> Result<(), ZyxError> {
                 }
             }
         }
-        println!("ffn_gate s8 ({name}) matches the int8 reference, max |err| = {:.3e} at (m={}, n={})", worst.0, worst.1, worst.2);
+        println!(
+            "ffn_gate s8 ({name}) matches the int8 reference, max |err| = {:.3e} at (m={}, n={})",
+            worst.0, worst.1, worst.2
+        );
         println!(
             "qwen ffn_gate {M}x{K}x{N} int8 ({name}): q8_act {:.4} ms, gemm {:.4} ms, {:.2} TFLOP/s",
             quant_nanos * 1e-6,

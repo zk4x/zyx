@@ -1330,7 +1330,6 @@ impl Kernel {
                             context: "SPIR-V: Detach should be erased at kernelization".into(),
                         });
                     }
-                    Op::Asm { .. } => todo!(),
                     Op::Stack { ref ops } => {
                         let (dt, shape) = dtypes[&op_id].clone();
                         let result_type =

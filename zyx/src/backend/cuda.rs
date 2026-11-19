@@ -1839,17 +1839,8 @@ impl CUDADevice {
             *unsafe { cudartc.get(b"nvrtcDestroyProgram\0") }.unwrap();
 
         let mut program = ptr::null_mut();
-        unsafe {
-            nvrtcCreateProgram(
-                &raw mut program,
-                source_c.as_ptr(),
-                name_c.as_ptr(),
-                0,
-                ptr::null_mut(),
-                ptr::null_mut(),
-            )
-        }
-        .check(ErrorStatus::KernelCompilation)?;
+        unsafe { nvrtcCreateProgram(&raw mut program, source_c.as_ptr(), name_c.as_ptr(), 0, ptr::null_mut(), ptr::null_mut()) }
+            .check(ErrorStatus::KernelCompilation)?;
 
         let mut opts = vec![
             "--use_fast_math".into(),
@@ -1898,6 +1889,10 @@ impl CUDADevice {
         let mut ptx_vec: Vec<u8> = vec![0; ptx_size];
         unsafe { nvrtcGetPTX(program, ptx_vec.as_mut_ptr().cast()) }.check(ErrorStatus::KernelCompilation)?;
         unsafe { nvrtcDestroyProgram(&raw mut program) }.check(ErrorStatus::KernelCompilation)?;
+        if debug_asm {
+            println!();
+            println!("{}", String::from_utf8_lossy(&ptx_vec));
+        }
 
         name += "\0";
         let (reply, reply_rx) = channel();

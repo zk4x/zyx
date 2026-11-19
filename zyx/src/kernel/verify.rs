@@ -103,8 +103,7 @@ impl Kernel {
                     | Op::Unroll { .. }
                     | Op::Barrier
                     | Op::Wmma { .. }
-                    | Op::TT(_)
-                    | Op::Asm { .. } => has_post_linearize_ops = true,
+                    | Op::TT(_) => has_post_linearize_ops = true,
                     Op::Permute { .. }
                     | Op::Expand { .. }
                     | Op::Reshape { .. }
@@ -142,7 +141,11 @@ impl Kernel {
                 // passes see); assembled payloads never reach this stage.
                 Op::PTX(p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload in kernel IR"),
-                    PTXOp::VLdMatrix { .. } | PTXOp::WarpSync | PTXOp::Shfl { .. } => {}
+                    PTXOp::VLdMatrix { .. }
+                    | PTXOp::WarpSync
+                    | PTXOp::Shfl { .. }
+                    | PTXOp::ShflXor { .. }
+                    | PTXOp::Prmt { .. } => {}
                     // Device-lowered PTX: its operands are ordinary values and
                     // its addresses are not element indices, so the generic
                     // index/shape rules do not apply. Verification is for
@@ -559,7 +562,10 @@ impl Kernel {
                         (DType::F16, DType::F32) | (DType::F32, DType::F16) => DType::F32,
                         (dx, dy) if dx == dy => dx,
                         _ => {
-                            println!("Binary dtype mismatch on op={op_id}: x={x:?} {:?} y={y:?} {:?} bop={bop:?}", dtypes[&x], dtypes[&y]);
+                            println!(
+                                "Binary dtype mismatch on op={op_id}: x={x:?} {:?} y={y:?} {:?} bop={bop:?}",
+                                dtypes[&x], dtypes[&y]
+                            );
                             self.debug();
                             panic!();
                         }
@@ -594,20 +600,6 @@ impl Kernel {
                         panic!();
                     }
                     dtypes.insert(op_id, dtypes[&if_true]);
-                }
-                Op::Asm { ref ops, .. } => {
-                    if ops.is_empty() {
-                        // Operand-free Asm is an effect-only call (e.g. a
-                        // TT LLK init): nothing to check, no value.
-                    } else {
-                        let dtype = dtypes[&ops[0]];
-                        for &x in ops.iter() {
-                            check(op_id, x, &stack);
-                        }
-                        // Asm may mix dtypes (e.g. U32 qs, I64 intra, F16 scale/min) — like CUDA C mixed arithmetic.
-                        // Result dtype is ops[0]'s dtype (e.g. F16 scale), no cross-check.
-                        dtypes.insert(op_id, dtype);
-                    }
                 }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes[&ops[0]];
@@ -758,10 +750,10 @@ impl Kernel {
                     todo!()
                 }
                 // PTX-level instruction: `ldmatrix` reads a shared storage at
-                // an index and yields `frags` 32-bit fragment registers.
+                // an index and yields `num` 32-bit fragment registers.
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!(),
-                    PTXOp::VLdMatrix { frags, src, addr, .. } => {
+                    PTXOp::VLdMatrix { src, addr, .. } => {
                         if !matches!(self.at(*src), Op::Storage { scope: MemScope::Local, .. }) {
                             println!("ldmatrix={op_id} source is not local storage");
                             self.debug();
@@ -769,8 +761,7 @@ impl Kernel {
                         }
                         check(op_id, *src, &stack);
                         check(op_id, *addr, &stack);
-                        dtypes.insert(op_id, DType::F16);
-                        let _ = frags;
+                        dtypes.insert(op_id, DType::U32);
                     }
                     // Effect only: no operands to check, no result value.
                     PTXOp::WarpSync => {}
@@ -780,7 +771,7 @@ impl Kernel {
                     // what its users are verified against.
                     PTXOp::LdMatrix { addr, .. } => {
                         check(op_id, *addr, &stack);
-                        dtypes.insert(op_id, DType::F16);
+                        dtypes.insert(op_id, DType::U32);
                     }
                     PTXOp::CvtaShared { addr } => {
                         check(op_id, *addr, &stack);
@@ -806,6 +797,18 @@ impl Kernel {
                         check(op_id, *value, &stack);
                         check(op_id, *lane, &stack);
                         dtypes.insert(op_id, DType::F16);
+                    }
+                    PTXOp::ShflXor { value, mask } => {
+                        check(op_id, *value, &stack);
+                        check(op_id, *mask, &stack);
+                        let dtype = dtypes[&value];
+                        dtypes.insert(op_id, dtype);
+                    }
+                    PTXOp::Prmt { a, b, c } => {
+                        for x in [*a, *b, *c] {
+                            check(op_id, x, &stack);
+                        }
+                        dtypes.insert(op_id, DType::U32);
                     }
                 },
                 // Graph-only marker, erased at kernelization: never present.
@@ -940,20 +943,6 @@ impl Kernel {
                     // rather than fabricate a range.
                     if len > 0 {
                         bounds.insert(op_id, (0, Dim::from(len - 1)));
-                    }
-                }
-                Op::Asm { ref ops, .. } => {
-                    let mut r = None;
-                    for x in ops.iter() {
-                        if let Some(&(xl, xu)) = bounds.get(x) {
-                            r = Some(match r {
-                                Some((l, u)) => (xl.min(l), xu.max(u)),
-                                None => (xl, xu),
-                            });
-                        }
-                    }
-                    if let Some((xl, xu)) = r {
-                        bounds.insert(op_id, (xl, xu));
                     }
                 }
                 Op::TT(TTOp::Unpacr { src, .. }) => {

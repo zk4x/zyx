@@ -294,7 +294,7 @@ impl Kernel {
                 Op::GPU(_) => todo!(),
                 Op::Spirv(_) => todo!(),
                 Op::PTX(ref p) => match p.as_ref() {
-                    PTXOp::VLdMatrix { frags, src, addr, trans } => {
+                    PTXOp::VLdMatrix { dims, num, trans, dtype: _, src, addr } => {
                         let dtype = dtypes[&op_id].clone();
                         let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
                         let idx = get_var_addr(*addr, &constants, &indices, &reg_map, loop_id, &var_params)?;
@@ -303,13 +303,16 @@ impl Kernel {
                         // faults on the `__cvta_generic_to_shared` + `"r"`
                         // form, and the instruction accepts the generic
                         // shared address directly (llama.cpp does the same).
-                        let t = if *trans { ".trans" } else { "" };
-                        let pattern = (0..*frags).map(|i| format!("%{i}")).collect::<Vec<_>>().join(",");
+                        let words = num.words();
+                        let pattern = (0..words).map(|i| format!("%{i}")).collect::<Vec<_>>().join(",");
                         let outs =
-                            (0..*frags).map(|i| format!("\"=r\"(((unsigned*)&r{reg})[{i}])")).collect::<Vec<_>>().join(", ");
+                            (0..words).map(|i| format!("\"=r\"(((unsigned*)&r{reg})[{i}])")).collect::<Vec<_>>().join(", ");
                         _ = writeln!(
                             source,
-                            "{indent}asm volatile(\"ldmatrix.sync.aligned.m8n8.x{frags}{t}.b16 {{{pattern}}}, [%{frags}];\" : {outs} : \"l\"(&p{src}[{idx}]));"
+                            "{indent}asm volatile(\"ldmatrix.sync.aligned.{}.{}{}.b16 {{{pattern}}}, [%{words}];\" : {outs} : \"l\"(&p{src}[{idx}]));",
+                            dims.name(),
+                            num.name(),
+                            trans.name(),
                         );
                     }
                     // Full-mask warp barrier: the lanes of one warp wait for
@@ -348,6 +351,26 @@ impl Kernel {
                             source,
                             "{indent}*(unsigned*)&r{reg} = __shfl_sync(0xffffffffu, *(const unsigned*)&{src}, (int){l});"
                         );
+                    }
+                    // One word read from the lane xor'ed with the mask.
+                    PTXOp::ShflXor { value, mask } => {
+                        let dtype = dtypes[&op_id].clone();
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                        let src = get_var(*value, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let m = get_var(*mask, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        _ = writeln!(
+                            source,
+                            "{indent}*(unsigned*)&r{reg} = __shfl_xor_sync(0xffffffffu, *(const unsigned*)&{src}, (int){m});"
+                        );
+                    }
+                    // `prmt.b32`: the TCC byte permute, spelled `__byte_perm`.
+                    PTXOp::Prmt { a, b, c } => {
+                        let dtype = dtypes[&op_id].clone();
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                        let av = get_var(*a, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let bv = get_var(*b, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let cv = get_var(*c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        _ = writeln!(source, "{indent}r{reg} = __byte_perm((unsigned){av}, (unsigned){bv}, (unsigned){cv});");
                     }
                 },
                 // An address lane the device supports: the load/store covers
@@ -415,19 +438,6 @@ impl Kernel {
                 }
                 Op::Copy { .. } => {
                     todo!("Copy lowering for CUDA (tenstorrent phase)");
-                }
-                Op::Asm { ref asm, ref ops } => {
-                    // Inline expression template: `{i}` is substituted with
-                    // the C expression of ops[i]. Result dtype/layout comes
-                    // from ops[0] (see compute_dtypes_and_rcs).
-                    let (dtype, layout) = dtypes[&op_id].clone();
-                    let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, layout), rcs[&op_id], loop_id);
-                    let mut rendered: String = asm.as_str().into();
-                    for (i, &operand) in ops.iter().enumerate() {
-                        let var = get_var(operand, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
-                        rendered = rendered.replace(&format!("{{{i}}}"), &var);
-                    }
-                    _ = writeln!(source, "{indent}r{reg} = {rendered};");
                 }
                 Op::Const(x) => {
                     constants.insert(op_id, x);

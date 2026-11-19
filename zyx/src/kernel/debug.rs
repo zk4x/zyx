@@ -594,15 +594,6 @@ impl Kernel {
                     }
                     writeln!(f, "{indent}}}").unwrap();
                 }
-                Op::Asm { ref asm, ref ops } => {
-                    // Operand-free Asm is an effect-only call: U8 is a
-                    // display placeholder, never a value dtype.
-                    let dtype = ops.iter().next().and_then(|x| dtypes.get(x)).copied().unwrap_or(DType::U8);
-                    dtypes.insert(op_id, dtype);
-                    let shp = self.shape_suffix(op_id, &shapes);
-                    let ops: Vec<OpId> = ops.iter().map(|x| id_map.get(x).copied().unwrap_or(OpId::NULL)).collect();
-                    writeln!(f, "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {orange}asm{reset} {asm} {ops:?}").unwrap();
-                }
                 Op::Stack { ref ops } => {
                     let dtype = dtypes.get(&ops[0]).copied().unwrap_or(DType::U8);
                     dtypes.insert(op_id, dtype);
@@ -721,22 +712,27 @@ impl Kernel {
                     }
                     // Destination first, source second: the result is the
                     // register group this op fills.
-                    PTXOp::VLdMatrix { frags, src, addr, trans } => {
-                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::F16);
+                    PTXOp::VLdMatrix { num, src, addr, trans, .. } => {
+                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::U32);
                         let shp = self.shape_suffix(op_id, &shapes);
                         writeln!(
                             f,
-                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}ldmatrix{reset} x{frags} trans={trans} src r{}, slot r{}",
-                            src.0, addr.0
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}ldmatrix{reset} {}{} src r{}, slot r{}",
+                            num.name(),
+                            trans.name(),
+                            src.0,
+                            addr.0
                         )
                         .unwrap();
                     }
-                    PTXOp::LdMatrix { frags, addr, trans } => {
-                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::F16);
+                    PTXOp::LdMatrix { num, addr, trans, .. } => {
+                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::U32);
                         let shp = self.shape_suffix(op_id, &shapes);
                         writeln!(
                             f,
-                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}ldmatrix{reset} x{frags} trans={trans} addr r{}",
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}ldmatrix{reset} {}{} addr r{}",
+                            num.name(),
+                            trans.name(),
                             addr.0
                         )
                         .unwrap();
@@ -761,6 +757,19 @@ impl Kernel {
                             value.0, lane.0
                         )
                         .unwrap();
+                    }
+                    PTXOp::ShflXor { value, mask } => {
+                        let dtype = dtypes.get(&op_id).copied().unwrap_or(DType::U32);
+                        let shp = self.shape_suffix(op_id, &shapes);
+                        writeln!(
+                            f,
+                            "{indent}r{out_id}{grey}: {dtype}{shp}{reset} = {green}shfl.bfly{reset} of r{} mask r{}",
+                            value.0, mask.0
+                        )
+                        .unwrap();
+                    }
+                    PTXOp::Prmt { a, b, c } => {
+                        writeln!(f, "{indent}r{out_id}{reset} = {green}prmt{reset} r{}, r{}, r{}", a.0, b.0, c.0).unwrap()
                     }
                 },
             }

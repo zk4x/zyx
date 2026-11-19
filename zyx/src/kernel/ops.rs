@@ -9,7 +9,7 @@ use crate::dtype::Constant;
 use crate::kernel::MemScope;
 use crate::shape::{Dim, UAxis};
 use crate::slab::SlabId;
-use crate::types::{TinyString, TinyVec};
+use crate::types::TinyVec;
 use crate::{DType, Map};
 
 /// Kernel parameter kind
@@ -279,16 +279,6 @@ pub enum Op {
         /// Accumulator fragment.
         c: OpId,
     },
-    // For backend specific assembly
-    /// Backend-specific assembly template: emitted verbatim with
-    /// operands substituted.
-    Asm {
-        /// Template text (`{i}` substitutes the i-th operand).
-        asm: TinyString,
-        /// Operands.
-        ops: TinyVec<OpId>,
-    },
-
     // ops that exist before linearize and linearize converts them into these ops: index, loop and load
     /// Reshape to a new shape.
     Reshape {
@@ -473,38 +463,156 @@ pub enum SpirvOp {
     PushConstants(u32),
 }
 
+/// `ldmatrix` instance shape: `m8n8` is the only one the ISA defines.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum LdMatrixDims {
+    /// 8x8 matrix of 16-bit elements.
+    m8n8,
+}
+
+impl LdMatrixDims {
+    /// The PTX mnemonic's shape field.
+    pub const fn name(self) -> &'static str {
+        match self {
+            LdMatrixDims::m8n8 => "m8n8",
+        }
+    }
+}
+
+/// `ldmatrix`'s `.num`: how many 8x8 matrices one instruction loads, and
+/// therefore how many 32-bit destination registers it writes per lane.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum LdMatrixNum {
+    /// `.x1`: one matrix, one word.
+    X1,
+    /// `.x2`: two matrices, two words.
+    X2,
+    /// `.x4`: four matrices, four words.
+    X4,
+}
+
+impl LdMatrixNum {
+    /// Destination registers per lane: one 32-bit word per 8x8 matrix.
+    pub const fn words(self) -> u8 {
+        match self {
+            LdMatrixNum::X1 => 1,
+            LdMatrixNum::X2 => 2,
+            LdMatrixNum::X4 => 4,
+        }
+    }
+
+    /// The PTX mnemonic's `.num` field.
+    pub const fn name(self) -> &'static str {
+        match self {
+            LdMatrixNum::X1 => "x1",
+            LdMatrixNum::X2 => "x2",
+            LdMatrixNum::X4 => "x4",
+        }
+    }
+
+    /// The `.num` that loads `words` 32-bit destination words per lane.
+    pub const fn from_words(words: u8) -> LdMatrixNum {
+        match words {
+            1 => LdMatrixNum::X1,
+            2 => LdMatrixNum::X2,
+            4 => LdMatrixNum::X4,
+            _ => panic!("ldmatrix: .num is one, two or four words"),
+        }
+    }
+}
+
+/// `ldmatrix`'s `.type`: the element width the instruction moves. `.b16` is
+/// the only type the instruction has; an int8 tile is that same bit pattern.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum LdMatrixType {
+    /// 16-bit elements.
+    b16,
+}
+
+impl LdMatrixType {
+    /// The PTX mnemonic's `.type` field.
+    pub const fn name(self) -> &'static str {
+        match self {
+            LdMatrixType::b16 => "b16",
+        }
+    }
+}
+
+/// `ldmatrix`'s optional `.trans`: whether the fragment is loaded in the
+/// transposed element order.
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+pub enum LdMatrixTrans {
+    /// The tile's own row order.
+    off,
+    /// Transposed element order (`.trans`).
+    trans,
+}
+
+impl LdMatrixTrans {
+    /// The PTX mnemonic's optional `.trans` field (empty when not set).
+    pub const fn name(self) -> &'static str {
+        match self {
+            LdMatrixTrans::off => "",
+            LdMatrixTrans::trans => ".trans",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// PTX backend meta op: assembled PTX bytes. Lives inside [`Op::PTX`].
 pub enum PTXOp {
     /// Assembled PTX assembly bytes, as handed to the driver (same shape
     /// as NVRTC output). Boxed to keep `Op` in budget.
     Bytes(Box<[u8]>),
-    /// Warp-level `ldmatrix.sync.aligned.m8n8` load: `frags` 8x8 b16 tiles
-    /// from shared memory into the fragment registers, i.e. `frags` 32-bit
-    /// words (2 f16 each) per lane. Non-portable by construction: it is a
-    /// PTX instruction family, like the tensor-core op it feeds.
+    /// Warp-level `ldmatrix.sync.aligned.<dims>.<num>.<type>` load: `num`
+    /// 8x8 tiles from shared memory into the fragment registers, i.e. `num`
+    /// 32-bit words per lane — the instruction's own destination list.
+    /// Non-portable by construction: it is a PTX instruction family, like
+    /// the tensor-core op it feeds.
     VLdMatrix {
-        /// Number of 8x8 tiles: 1, 2 or 4 (`.x1`, `.x2`, `.x4`).
-        frags: u8,
+        /// Instruction shape (`m8n8`).
+        dims: LdMatrixDims,
+        /// Matrices per instruction (`.x1`, `.x2`, `.x4`).
+        num: LdMatrixNum,
+        /// Element order (`.trans` or not).
+        trans: LdMatrixTrans,
+        /// Moved element width (`.b16`).
+        dtype: LdMatrixType,
         /// Shared-memory storage the tile is read from.
         src: OpId,
         /// Element index of the tile base inside `src`.
         addr: OpId,
-        /// Load the transposed element order (`.trans`).
-        trans: bool,
     },
-    /// The hardware instruction, `ldmatrix.sync.aligned.m8n8.x{frags}.b16`:
-    /// one iteration of the loop that `VLdMatrix` describes, with the
-    /// address already a *generic 64-bit address* value in the IR (the
-    /// window base, the `<<1` and every offset are ordinary ops). Emitted by
-    /// the device lowering, never by `tensorize`.
+    /// The hardware instruction: one iteration of the loop that `VLdMatrix`
+    /// describes, with the address already a *generic 64-bit address* value
+    /// in the IR (the window base, the `<<1` and every offset are ordinary
+    /// ops). Emitted by the device lowering, never by `tensorize`.
     LdMatrix {
-        /// Number of 8x8 tiles: 1, 2 or 4 (`.x1`, `.x2`, `.x4`).
-        frags: u8,
+        /// Instruction shape (`m8n8`).
+        dims: LdMatrixDims,
+        /// Matrices per instruction (`.x1`, `.x2`, `.x4`).
+        num: LdMatrixNum,
+        /// Element order (`.trans` or not).
+        trans: LdMatrixTrans,
+        /// Moved element width (`.b16`).
+        dtype: LdMatrixType,
         /// Generic 64-bit address of the tile base (`U64`).
         addr: OpId,
-        /// Load the transposed element order (`.trans`).
-        trans: bool,
+    },
+    /// `prmt.b32 d, a, b, c`: byte permute. The four selector nibbles in `c`
+    /// pick one of the eight bytes of `{a, b}` for each of `d`'s bytes, so a
+    /// nibble table in a register expands packed 2-bit codes into bytes.
+    Prmt {
+        /// Low source word (bytes 0..4).
+        a: OpId,
+        /// High source word (bytes 4..8).
+        b: OpId,
+        /// Byte selectors, four nibbles.
+        c: OpId,
     },
     /// `cvta.shared.u64 %rd, %rs`: a shared-window byte offset as a generic
     /// 64-bit address, because `ldmatrix` takes a generic address. `addr` is
@@ -553,6 +661,15 @@ pub enum PTXOp {
         value: OpId,
         /// Source lane, per destination lane.
         lane: OpId,
+    },
+    /// Warp-level `shfl.sync.bfly.b32`: every lane reads a 32-bit word from
+    /// the lane whose index is its own exclusive-or'ed with `mask`. The
+    /// butterfly a warp sum is built from: five of them, mask 16 down to 1.
+    ShflXor {
+        /// The word to move; one 32-bit value.
+        value: OpId,
+        /// Lane xor mask, one bit (`16`, `8`, ... `1`).
+        mask: OpId,
     },
 }
 
@@ -1076,7 +1193,6 @@ impl Op {
             Op::Wmma { .. } => 18,
             Op::TT(_) => 19,
             Op::Source { .. } => 20,
-            Op::Asm { .. } => 23,
             Op::Reduce { .. } => 25,
             Op::After { .. } => 26,
             Op::ToDevice { .. } => 27,
@@ -1140,7 +1256,6 @@ impl PartialEq for Op {
             (Op::GPU(a), Op::GPU(b)) => a == b,
             (Op::Spirv(a), Op::Spirv(b)) => a == b,
             (Op::PTX(a), Op::PTX(b)) => a == b,
-            (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => aa == ba && ao == bo,
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 a == b && ar == br && aa == ba
             }
@@ -1258,10 +1373,6 @@ impl Hash for Op {
             Op::GPU(g) => g.hash(state),
             Op::Spirv(s) => s.hash(state),
             Op::PTX(p) => p.hash(state),
-            Op::Asm { asm, ops } => {
-                asm.hash(state);
-                ops.hash(state);
-            }
             Op::Reduce { x, rop, reduce_axis } => {
                 x.hash(state);
                 rop.hash(state);
@@ -1367,7 +1478,6 @@ impl Ord for Op {
                 Op::Wmma { dims: bd, layout: bl, dtype: bt, a: ba, b: bb, c: bc },
             ) => (ad, al, at, a, ab, ac).cmp(&(bd, bl, bt, ba, bb, bc)),
             (Op::TT(a), Op::TT(b)) => a.cmp(b),
-            (Op::Asm { asm: aa, ops: ao }, Op::Asm { asm: ba, ops: bo }) => (aa, ao).cmp(&(ba, bo)),
             (Op::Reduce { x: a, rop: ar, reduce_axis: aa }, Op::Reduce { x: b, rop: br, reduce_axis: ba }) => {
                 (a, ar, aa).cmp(&(b, br, ba))
             }
@@ -1774,7 +1884,6 @@ impl Op {
                 ParamsMut::Three(std::iter::once(cond).chain(std::iter::once(if_true)).chain(std::iter::once(if_false)))
             }
             Op::Load { src, src_idx } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(src_idx))),
-            Op::Asm { ops, .. } => ParamsMut::Slice(ops.iter_mut()),
             Op::Stack { ops } => ParamsMut::Slice(ops.iter_mut()),
             Op::Index { vec, .. } => ParamsMut::One(std::iter::once(vec)),
             Op::Wmma { a, b, c, .. } => ParamsMut::Three(std::iter::once(a).chain(std::iter::once(b)).chain(std::iter::once(c))),
@@ -1802,6 +1911,10 @@ impl Op {
                 PTXOp::Bytes(_) | PTXOp::WarpSync => ParamsMut::Empty,
                 PTXOp::VLdMatrix { src, addr, .. } => ParamsMut::Two(std::iter::once(src).chain(std::iter::once(addr))),
                 PTXOp::Shfl { value, lane, .. } => ParamsMut::Two(std::iter::once(value).chain(std::iter::once(lane))),
+                PTXOp::ShflXor { value, mask } => ParamsMut::Two(std::iter::once(value).chain(std::iter::once(mask))),
+                PTXOp::Prmt { a, b, c } => {
+                    ParamsMut::Three(std::iter::once(a).chain(std::iter::once(b)).chain(std::iter::once(c)))
+                }
                 // The hardware form names an address, not a storage; the
                 // shared accesses name the storage and the address.
                 PTXOp::LdMatrix { addr, .. } | PTXOp::CvtaShared { addr } | PTXOp::SharedBase { buf: addr } => {
@@ -1898,7 +2011,6 @@ impl Op {
             Op::Binary { x, y, .. } => [*x, *y].get(i).copied(),
             Op::Select { cond, if_true, if_false } => [*cond, *if_true, *if_false].get(i).copied(),
             Op::Load { src, src_idx } => [*src, *src_idx].get(i).copied(),
-            Op::Asm { ops, .. } => ops.get(i).copied(),
             Op::Stack { ops } => ops.get(i).copied(),
             Op::Index { vec, .. } => [*vec].get(i).copied(),
             Op::Wmma { a, b, c, .. } => [*a, *b, *c].get(i).copied(),
@@ -1924,6 +2036,8 @@ impl Op {
                 PTXOp::Bytes(_) | PTXOp::WarpSync => None,
                 PTXOp::VLdMatrix { src, addr, .. } => [*src, *addr].get(i).copied(),
                 PTXOp::Shfl { value, lane, .. } => [*value, *lane].get(i).copied(),
+                PTXOp::ShflXor { value, mask } => [*value, *mask].get(i).copied(),
+                PTXOp::Prmt { a, b, c } => [*a, *b, *c].get(i).copied(),
                 PTXOp::LdMatrix { addr, .. } | PTXOp::CvtaShared { addr } | PTXOp::SharedBase { buf: addr } => {
                     [*addr].get(i).copied()
                 }
@@ -2131,12 +2245,14 @@ impl SerBin for PTXOp {
                 0u8.ser_bin(out);
                 ser_slice(bytes, out);
             }
-            PTXOp::VLdMatrix { frags, src, addr, trans } => {
+            PTXOp::VLdMatrix { dims, num, trans, dtype, src, addr } => {
                 1u8.ser_bin(out);
-                frags.ser_bin(out);
+                dims.ser_bin(out);
+                num.ser_bin(out);
+                trans.ser_bin(out);
+                dtype.ser_bin(out);
                 src.ser_bin(out);
                 addr.ser_bin(out);
-                trans.ser_bin(out);
             }
             PTXOp::WarpSync => 2u8.ser_bin(out),
             PTXOp::Shfl { value, lane } => {
@@ -2144,11 +2260,13 @@ impl SerBin for PTXOp {
                 value.ser_bin(out);
                 lane.ser_bin(out);
             }
-            PTXOp::LdMatrix { frags, addr, trans } => {
+            PTXOp::LdMatrix { dims, num, trans, dtype, addr } => {
                 4u8.ser_bin(out);
-                frags.ser_bin(out);
-                addr.ser_bin(out);
+                dims.ser_bin(out);
+                num.ser_bin(out);
                 trans.ser_bin(out);
+                dtype.ser_bin(out);
+                addr.ser_bin(out);
             }
             PTXOp::CvtaShared { addr } => {
                 5u8.ser_bin(out);
@@ -2169,6 +2287,17 @@ impl SerBin for PTXOp {
                 addr.ser_bin(out);
                 src.ser_bin(out);
             }
+            PTXOp::Prmt { a, b, c } => {
+                9u8.ser_bin(out);
+                a.ser_bin(out);
+                b.ser_bin(out);
+                c.ser_bin(out);
+            }
+            PTXOp::ShflXor { value, mask } => {
+                10u8.ser_bin(out);
+                value.ser_bin(out);
+                mask.ser_bin(out);
+            }
         }
     }
 }
@@ -2179,17 +2308,21 @@ impl DeBin for PTXOp {
         let op = match tag {
             0 => PTXOp::Bytes(de_slice(offset, bytes)?),
             1 => PTXOp::VLdMatrix {
-                frags: DeBin::de_bin(offset, bytes)?,
+                dims: DeBin::de_bin(offset, bytes)?,
+                num: DeBin::de_bin(offset, bytes)?,
+                trans: DeBin::de_bin(offset, bytes)?,
+                dtype: DeBin::de_bin(offset, bytes)?,
                 src: DeBin::de_bin(offset, bytes)?,
                 addr: DeBin::de_bin(offset, bytes)?,
-                trans: DeBin::de_bin(offset, bytes)?,
             },
             2 => PTXOp::WarpSync,
             3 => PTXOp::Shfl { value: DeBin::de_bin(offset, bytes)?, lane: DeBin::de_bin(offset, bytes)? },
             4 => PTXOp::LdMatrix {
-                frags: DeBin::de_bin(offset, bytes)?,
-                addr: DeBin::de_bin(offset, bytes)?,
+                dims: DeBin::de_bin(offset, bytes)?,
+                num: DeBin::de_bin(offset, bytes)?,
                 trans: DeBin::de_bin(offset, bytes)?,
+                dtype: DeBin::de_bin(offset, bytes)?,
+                addr: DeBin::de_bin(offset, bytes)?,
             },
             5 => PTXOp::CvtaShared { addr: DeBin::de_bin(offset, bytes)? },
             6 => PTXOp::SharedBase { buf: DeBin::de_bin(offset, bytes)? },
@@ -2199,6 +2332,12 @@ impl DeBin for PTXOp {
                 addr: DeBin::de_bin(offset, bytes)?,
                 src: DeBin::de_bin(offset, bytes)?,
             },
+            9 => PTXOp::Prmt {
+                a: DeBin::de_bin(offset, bytes)?,
+                b: DeBin::de_bin(offset, bytes)?,
+                c: DeBin::de_bin(offset, bytes)?,
+            },
+            10 => PTXOp::ShflXor { value: DeBin::de_bin(offset, bytes)?, mask: DeBin::de_bin(offset, bytes)? },
             _ => return Err(bad_tag(tag, *offset)),
         };
         Ok(op)
@@ -2391,11 +2530,6 @@ impl SerBin for Op {
                 b.ser_bin(out);
                 c.ser_bin(out);
             }
-            Op::Asm { asm, ops } => {
-                18u8.ser_bin(out);
-                asm.ser_bin(out);
-                ops.ser_bin(out);
-            }
             Op::Reshape { x, shape } => {
                 19u8.ser_bin(out);
                 x.ser_bin(out);
@@ -2550,7 +2684,6 @@ impl DeBin for Op {
                 b: DeBin::de_bin(offset, bytes)?,
                 c: DeBin::de_bin(offset, bytes)?,
             },
-            18 => Op::Asm { asm: DeBin::de_bin(offset, bytes)?, ops: DeBin::de_bin(offset, bytes)? },
             19 => Op::Reshape { x: DeBin::de_bin(offset, bytes)?, shape: DeBin::de_bin(offset, bytes)? },
             20 => Op::Expand { x: DeBin::de_bin(offset, bytes)?, shape: DeBin::de_bin(offset, bytes)? },
             21 => Op::Permute { x: DeBin::de_bin(offset, bytes)?, axes: DeBin::de_bin(offset, bytes)? },

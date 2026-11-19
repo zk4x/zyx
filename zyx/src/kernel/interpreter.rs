@@ -368,23 +368,41 @@ impl Kernel {
                 }
             }
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::VLdMatrix { frags, src, addr, trans } => {
-                    assert!(!*trans, "interpret: transposed ldmatrix");
-                    let frags = usize::from(*frags);
-                    let dtype = self.mem_dtype(*src);
+                PTXOp::VLdMatrix { num, src, addr, trans, .. } => {
+                    assert_eq!(*trans, crate::kernel::LdMatrixTrans::off, "interpret: transposed ldmatrix");
+                    let words = usize::from(num.words());
+                    let width = self.mem_dtype(*src).bit_size() / 8;
+                    // The 16-bit element `at` of the tile: a whole element of
+                    // a 2-byte storage, half of a 4-byte one.
+                    let b16 = |mem: &Map<OpId, Mem>, t: usize, at: i64| -> u16 {
+                        match width {
+                            2 => match read(mem, globals, *src, t, usize::try_from(at).expect("shared index")) {
+                                Constant::F16(b) => u16::from_le_bytes(b),
+                                other => to_i64(other) as u16,
+                            },
+                            4 => {
+                                let w = to_i64(read(mem, globals, *src, t, usize::try_from(at / 2).expect("shared index")));
+                                ((w as u32) >> (16 * (at % 2))) as u16
+                            }
+                            other => todo!("interpret: ldmatrix from {other}-byte elements"),
+                        }
+                    };
                     let per_thread = (0..nthreads)
                         .map(|t| {
                             let base = t / warp * warp;
                             let lane = t % warp;
-                            let mut data = Vec::with_capacity(frags * 2);
-                            for m in 0..frags {
+                            // One 32-bit word per 8x8 matrix: two 16-bit
+                            // elements of the matrix row the lane's group
+                            // names.
+                            let mut data = Vec::with_capacity(words);
+                            for m in 0..words {
                                 let row = to_i64(val(*addr, base + m * 8 + lane / 4).data[0]);
-                                for j in 0..2 {
-                                    let at = usize::try_from(row + (2 * (lane % 4) + j) as i64).expect("shared index");
-                                    data.push(read(mem, globals, *src, t, at));
-                                }
+                                let at = row + (2 * (lane % 4)) as i64;
+                                let lo = b16(mem, t, at);
+                                let hi = b16(mem, t, at + 1);
+                                data.push(Constant::U32(u32::from(lo) | (u32::from(hi) << 16)));
                             }
-                            Value { dtype, shape: vec![Dim::from(data.len() as i64)], data }
+                            Value { dtype: DType::U32, shape: vec![Dim::from(words as i64)], data }
                         })
                         .collect();
                     values.insert(id, per_thread);
@@ -406,6 +424,39 @@ impl Kernel {
                         .collect();
                     values.insert(id, per_thread);
                 }
+                PTXOp::ShflXor { value, mask } => {
+                    let per_thread = (0..nthreads)
+                        .map(|t| {
+                            let base = t / warp * warp;
+                            let lane = t % warp;
+                            let m = usize::try_from(to_i64(val(*mask, t).data[0])).expect("mask fits usize");
+                            val(*value, base + (lane ^ m))
+                        })
+                        .collect();
+                    values.insert(id, per_thread);
+                }
+                PTXOp::Prmt { a, b, c } => {
+                    let per_thread = (0..nthreads)
+                        .map(|t| {
+                            let av = to_i64(val(*a, t).data[0]) as u32;
+                            let bv = to_i64(val(*b, t).data[0]) as u32;
+                            let sel = to_i64(val(*c, t).data[0]) as u32;
+                            let bytes = [av, bv];
+                            let mut out = 0u32;
+                            for i in 0..4 {
+                                let nib = (sel >> (4 * i)) & 0xf;
+                                let byte = if nib < 4 {
+                                    (bytes[0] >> (8 * nib)) & 0xff
+                                } else {
+                                    (bytes[1] >> (8 * (nib - 4))) & 0xff
+                                };
+                                out |= byte << (8 * i);
+                            }
+                            Value::scalar(DType::U32, Constant::U32(out))
+                        })
+                        .collect();
+                    values.insert(id, per_thread);
+                }
                 PTXOp::WarpSync => {
                     values.insert(id, vec![Value::scalar(DType::U32, Constant::new(0u32)); nthreads]);
                 }
@@ -419,16 +470,34 @@ impl Kernel {
                     .map(|t| {
                         let base = t / warp * warp;
                         let lane = t % warp;
+                        // A fragment operand is either its elements (f16
+                        // halves, e.g. a `Stack` of loads) or an `ldmatrix`
+                        // result: 32-bit words of two halves each.
+                        let expand = |v: &Value| -> Vec<f64> {
+                            match v.dtype {
+                                DType::U32 => v
+                                    .data
+                                    .iter()
+                                    .flat_map(|w| {
+                                        let w = to_i64(*w) as u32;
+                                        [f16((w & 0xffff) as u16).to_f64(), f16((w >> 16) as u16).to_f64()]
+                                    })
+                                    .collect(),
+                                _ => v.data.iter().map(|c| to_f64(*c)).collect(),
+                            }
+                        };
                         // Gather the warp's fragments: A is 16x8, B is 8x8, C is 16x8.
                         let mut af = [[0f32; 8]; 16];
                         let mut bf = [[0f32; 8]; 8];
                         for l in 0..warp {
-                            let (av, bv) = (val(*a, base + l), val(*b, base + l));
+                            let av = val(*a, base + l);
+                            let bv = val(*b, base + l);
+                            let (ae, be) = (expand(&av), expand(&bv));
                             let (row, k) = (l / 4, 2 * (l % 4));
                             for j in 0..2 {
-                                af[row][k + j] = to_f64(av.data[j]) as f32;
-                                af[row + 8][k + j] = to_f64(av.data[2 + j]) as f32;
-                                bf[k + j][l / 4] = to_f64(bv.data[j]) as f32;
+                                af[row][k + j] = ae[j] as f32;
+                                af[row + 8][k + j] = ae[2 + j] as f32;
+                                bf[k + j][l / 4] = be[j] as f32;
                             }
                         }
                         let cv = val(*c, t);

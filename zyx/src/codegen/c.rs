@@ -506,7 +506,6 @@ impl Kernel {
                     _ = writeln!(source, "{indent}{} p{op_id}[{len}] __attribute__((aligned));", dtype.c_type(),);
                 }
                 Op::Barrier => {}
-                Op::Asm { .. } => todo!(),
                 Op::Copy { .. } => {
                     todo!("Copy lowering for C (tenstorrent phase)");
                 }

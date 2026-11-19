@@ -35,7 +35,10 @@ use crate::{
     DType, Map, Set,
     backend::{DeviceInfo, FragAxis, FragMap, MMAVariant},
     dtype::Constant,
-    kernel::{BOp, Kernel, MemScope, MMADType, Op, OpId, PTXOp, ParamKind, RangeKind, autotune::Optimization, split::SplitMode},
+    kernel::{
+        BOp, Kernel, LdMatrixDims, LdMatrixNum, LdMatrixTrans, LdMatrixType, MMADType, MemScope, Op, OpId, PTXOp, ParamKind,
+        RangeKind, autotune::Optimization, split::SplitMode,
+    },
     shape::Dim,
 };
 
@@ -141,11 +144,7 @@ impl Cone {
             }
             return None;
         }
-        let vars = |id: OpId| -> usize {
-            k.get_strides(id)
-                .map(|m| m.keys().filter(|v| !v.is_null()).count())
-                .unwrap_or(0)
-        };
+        let vars = |id: OpId| -> usize { k.get_strides(id).map(|m| m.keys().filter(|v| !v.is_null()).count()).unwrap_or(0) };
         let maxv = cands.iter().map(|&c| vars(c)).max()?;
         let top: Vec<OpId> = cands.iter().copied().filter(|&c| vars(c) == maxv).collect();
         if top.len() != 1 {
@@ -375,14 +374,8 @@ impl Quant {
             if !scale_ops.iter().any(|(id, _)| *id == s) {
                 continue;
             }
-            let scale = Cone {
-                value: s,
-                root: cone.root,
-                ops: scale_ops,
-                mn: cone.mn,
-                k_leaf: cone.k_leaf,
-                k_extent: cone.k_extent,
-            };
+            let scale =
+                Cone { value: s, root: cone.root, ops: scale_ops, mn: cone.mn, k_leaf: cone.k_leaf, k_extent: cone.k_extent };
             return Some(Quant { code, scale, scale_period: p });
         }
         None
@@ -639,10 +632,8 @@ impl Optimization for Tensorize {
         let _timer = crate::Timer::new("opt_tensorize apply");
         if std::env::var("ZYX_PLANS").is_ok() {
             for (i, p) in self.plans.iter().enumerate() {
-                let form = p
-                    .region
-                    .map(|r| self.regions[r].variant.dtype)
-                    .or_else(|| p.tiled.map(|t| self.tiled[t].variant.dtype));
+                let form =
+                    p.region.map(|r| self.regions[r].variant.dtype).or_else(|| p.tiled.map(|t| self.tiled[t].variant.dtype));
                 eprintln!(
                     "PLAN {i}: region={:?} tiled={:?} grid={:?} layout={:?} staged={} dtype={form:?}",
                     p.region, p.tiled, p.grid, p.layout, p.staged
@@ -660,10 +651,25 @@ impl Optimization for Tensorize {
             // touching the kernel; the candidate is then the valid
             // partially-split kernel, not a tiling this plan promised.
             let sm = kernel.split(m, SplitMode::Unroll, m_lanes);
-            let sn = if sm.is_null() { OpId::NULL } else { kernel.split(n, SplitMode::Unroll, n_lanes) };
-            let sk = if sn.is_null() { OpId::NULL } else { kernel.split(k, SplitMode::Unroll, k_lanes) };
+            let sn = if sm.is_null() {
+                OpId::NULL
+            } else {
+                kernel.split(n, SplitMode::Unroll, n_lanes)
+            };
+            let sk = if sn.is_null() {
+                OpId::NULL
+            } else {
+                kernel.split(k, SplitMode::Unroll, k_lanes)
+            };
             if std::env::var("ZYX_KP").is_ok() {
-                eprintln!("SPLIT cfg={config} ops={} m={m_lanes} sm={} sn={} sk={} ops_after={}", kernel.ops.len(), !sm.is_null(), !sn.is_null(), !sk.is_null(), kernel.ops.len());
+                eprintln!(
+                    "SPLIT cfg={config} ops={} m={m_lanes} sm={} sn={} sk={} ops_after={}",
+                    kernel.ops.len(),
+                    !sm.is_null(),
+                    !sn.is_null(),
+                    !sk.is_null(),
+                    kernel.ops.len()
+                );
             }
             if sm.is_null() || sn.is_null() || sk.is_null() {
                 return;
@@ -677,7 +683,13 @@ impl Optimization for Tensorize {
             };
             let (_, forms) = kernel.tensor_forms();
             if std::env::var("ZYX_MT").is_ok() {
-                eprintln!("ZYX_MT want={want:?} forms={:?}", forms.iter().map(|t| (t.mt, t.nt, t.kt, t.variant.dtype, t.a_cone.is_some(), t.b_cone.is_some())).collect::<Vec<_>>());
+                eprintln!(
+                    "ZYX_MT want={want:?} forms={:?}",
+                    forms
+                        .iter()
+                        .map(|t| (t.mt, t.nt, t.kt, t.variant.dtype, t.a_cone.is_some(), t.b_cone.is_some()))
+                        .collect::<Vec<_>>()
+                );
             }
             // The form those extents name. The matcher labels the extents by
             // the *product's* operand order, so for a seed whose product is
@@ -695,7 +707,15 @@ impl Optimization for Tensorize {
             };
             tile_to_wmma_form(kernel, chosen, plan.staged, plan.layout);
             if std::env::var("ZYX_KP").is_ok() {
-                eprintln!("ZYX_KP cfg={config} m_lanes={} n_lanes={} k_lanes={} layout={:?} staged={} ops={}", m_lanes, n_lanes, k_lanes, plan.layout, plan.staged, kernel.ops.len());
+                eprintln!(
+                    "ZYX_KP cfg={config} m_lanes={} n_lanes={} k_lanes={} layout={:?} staged={} ops={}",
+                    m_lanes,
+                    n_lanes,
+                    k_lanes,
+                    plan.layout,
+                    plan.staged,
+                    kernel.ops.len()
+                );
             }
             kernel.verify();
             return;
@@ -1518,7 +1538,17 @@ fn coop_ldmatrix(
     let key = put(kernel, Op::Binary { x: key, y: kmask, bop: BOp::BitAnd });
     let swz = put(kernel, Op::Binary { x: key, y: eight, bop: BOp::Mul });
     let addr = put(kernel, Op::Binary { x: addr, y: swz, bop: BOp::BitXor });
-    put(kernel, Op::PTX(Box::new(PTXOp::VLdMatrix { frags, src: tile, addr, trans: false })))
+    put(
+        kernel,
+        Op::PTX(Box::new(PTXOp::VLdMatrix {
+            dims: LdMatrixDims::m8n8,
+            num: LdMatrixNum::from_words(frags),
+            trans: LdMatrixTrans::off,
+            dtype: LdMatrixType::b16,
+            src: tile,
+            addr,
+        })),
+    )
 }
 
 fn acc_frag_index(
@@ -1693,14 +1723,20 @@ fn tile_fit_s8(shape: &TileShape, staged: bool, layout: (u16, u16, u16), info: &
         return None;
     }
     if (wm > 1 && mt % Dim::from(wm) != 0) || (wn > 1 && nt % Dim::from(wn) != 0) {
-        { dbg("reject"); return None; }
+        {
+            dbg("reject");
+            return None;
+        }
     }
     let mt_w = mt / Dim::from(if wm > 1 { wm } else { 1 });
     let nt_w = nt / Dim::from(if wn > 1 { wn } else { 1 });
     let warps = u32::from(wm) * u32::from(wn);
     let chunk = kt * fk;
     if chunk % Q8_1_GROUP != 0 || chunk % Dim::from(4) != 0 {
-        { dbg("reject"); return None; }
+        {
+            dbg("reject");
+            return None;
+        }
     }
     let a_rows = mt * fm;
     let b_rows = nt * fn_;
@@ -1714,11 +1750,17 @@ fn tile_fit_s8(shape: &TileShape, staged: bool, layout: (u16, u16, u16), info: &
     // int32 tile is the sum's own size: the same register budget as the f16
     // form's.
     if mt_w * nt_w * slots > Dim::from(128) {
-        { dbg("reject"); return None; }
+        {
+            dbg("reject");
+            return None;
+        }
     }
     let bytes = (a_rows + b_rows) * chunk + (a_rows + b_rows) * groups * Dim::from(4);
     if bytes > info.local_mem_size {
-        { dbg("reject"); return None; }
+        {
+            dbg("reject");
+            return None;
+        }
     }
     dbg("ok");
     Some(TileFit { mt_w, nt_w, warps, combine: false, staged: true, chunk, interleave: false })
@@ -2002,10 +2044,8 @@ fn tile_to_wmma_s8(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u
             let a_w = kernel.insert_before(end, Op::Load { src: a_tile, src_idx: a_i });
             let b_w = kernel.insert_before(end, Op::Load { src: b_tile, src_idx: b_i });
             let c_reg = kernel.insert_before(end, Op::Load { src: accs, src_idx: slot });
-            let d = kernel.insert_before(
-                end,
-                Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_w, b: b_w, c: c_reg },
-            );
+            let d =
+                kernel.insert_before(end, Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_w, b: b_w, c: c_reg });
             kernel.insert_before(end, Op::Store { dst: accs, dst_idx: slot, src: d });
         }
         // `sum(f32) += int32 * sa[row, g] * sb[col, g]`, then clear the int
@@ -2070,7 +2110,8 @@ fn tile_to_wmma_s8(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u
         let prod = kernel.insert_before(end, Op::Binary { x: fv, y: scale, bop: BOp::Mul });
         let sum = kernel.insert_before(end, Op::Binary { x: prod, y: prev, bop: BOp::Add });
         kernel.insert_before(end, Op::Store { dst: t.acc, dst_idx: slot_r, src: sum });
-        kernel.insert_before(end, Op::Store { dst: accs, dst_idx: clear_lane, src: zero_i });    }
+        kernel.insert_before(end, Op::Store { dst: accs, dst_idx: clear_lane, src: zero_i });
+    }
     kernel.insert_before(end, Op::Barrier);
 
     scatter_epilogue(kernel, t, combo, sl, gid, tig, nt_w, slots, fm, fn_, warp_off_m, warp_off_n);
@@ -2352,6 +2393,11 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
         };
         let a_slots = v.a.slots.len();
         let b_slots = v.b.slots.len();
+        // `ldmatrix` returns the instruction's destination list: one 32-bit
+        // word per 8x8 matrix, so an operand of `slots` f16 values is
+        // `slots / 2` words of the load.
+        let a_words = a_slots / 2;
+        let b_words = b_slots / 2;
         let mut a_frags = vec![vec![OpId::NULL; kt]; mt];
         // The `slots` halves of a `ldmatrix` result that start at `base`: one
         // instruction operand out of a load that covers several.
@@ -2375,7 +2421,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let sb = a_slot;
                 sync(kernel);
                 let (asl, av) = match &t.a_cone {
-                    Some(cone) => coop_fill_cone(kernel, t.update, fill_lane, cone, a_base, t.a_m, t.a_k, fm, chunk, fill_threads),
+                    Some(cone) => {
+                        coop_fill_cone(kernel, t.update, fill_lane, cone, a_base, t.a_m, t.a_k, fm, chunk, fill_threads)
+                    }
                     None => coop_fill_load(kernel, t.update, fill_lane, t.a_src, a_base, t.a_m, t.a_k, fm, chunk, fill_threads),
                 };
                 coop_fill_store(kernel, t.update, a_tile, sb, asl, av);
@@ -2396,8 +2444,8 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                             sb,
                             OpId::NULL,
                         );
-                        a_frags[tm][tk] = slice(kernel, t.update, value, false, a_slots);
-                        a_frags[tm][tk + 1] = slice(kernel, t.update, value, true, a_slots);
+                        a_frags[tm][tk] = slice(kernel, t.update, value, false, a_words);
+                        a_frags[tm][tk + 1] = slice(kernel, t.update, value, true, a_words);
                         tk += 2;
                     } else {
                         a_frags[tm][tk] =
@@ -2412,7 +2460,9 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let sb = b_slot;
                 sync(kernel);
                 let (bsl, bv) = match &t.b_cone {
-                    Some(cone) => coop_fill_cone(kernel, t.update, fill_lane, cone, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads),
+                    Some(cone) => {
+                        coop_fill_cone(kernel, t.update, fill_lane, cone, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads)
+                    }
                     None => coop_fill_load(kernel, t.update, fill_lane, t.b_src, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads),
                 };
                 coop_fill_store(kernel, t.update, b_tile, sb, bsl, bv);
@@ -2448,8 +2498,8 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                             OpId::NULL,
                         );
                         for (step, frag) in [
-                            (tk, slice(kernel, t.update, value, false, b_slots)),
-                            (tk + 1, slice(kernel, t.update, value, true, b_slots)),
+                            (tk, slice(kernel, t.update, value, false, b_words)),
+                            (tk + 1, slice(kernel, t.update, value, true, b_words)),
                         ] {
                             for tm in 0..mt {
                                 acc[tm] = kernel.insert_before(
@@ -2536,12 +2586,16 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let a0 = base_expr(kernel, t.loop_id, &a_rest, t.a_offset, 0);
                 let b0 = base_expr(kernel, t.loop_id, &b_rest, t.b_offset, 0);
                 let (asl, av) = match &t.a_cone {
-                    Some(cone) => coop_fill_cone(kernel, t.loop_id, fill_lane, cone, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads),
+                    Some(cone) => {
+                        coop_fill_cone(kernel, t.loop_id, fill_lane, cone, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads)
+                    }
                     None => coop_fill_load(kernel, t.loop_id, fill_lane, t.a_src, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads),
                 };
                 coop_fill_store(kernel, t.loop_id, ab_buf, OpId::NULL, asl, av);
                 let (bsl, bv) = match &t.b_cone {
-                    Some(cone) => coop_fill_cone(kernel, t.loop_id, fill_lane, cone, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads),
+                    Some(cone) => {
+                        coop_fill_cone(kernel, t.loop_id, fill_lane, cone, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads)
+                    }
                     None => coop_fill_load(kernel, t.loop_id, fill_lane, t.b_src, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads),
                 };
                 coop_fill_store(kernel, t.loop_id, ab_buf, a_win_c, bsl, bv);
@@ -2690,9 +2744,14 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 debug_assert_eq!(a_rows, b_rows, "one tile for both operands needs one row count");
                 debug_assert_eq!(mt, nt / 2, "one tile lane for both operands needs one tile count");
                 let width = a_slots * if paired { 2 } else { 1 };
+                // `width` counts the fragment's f16 slots; the `ldmatrix` result
+                // and the staged section are 32-bit words, two slots each.
+                let wwidth = width / 2;
+                let a_w = a_slots / 2;
+                let b_w = b_slots / 2;
                 let nlanes = 2 * npairs;
                 let ab_st =
-                    insert_scoped_storage(kernel, DType::F16, MemScope::Register, Dim::from((nlanes * mt * width) as i64));
+                    insert_scoped_storage(kernel, DType::U32, MemScope::Register, Dim::from((nlanes * mt * wwidth) as i64));
                 let obl =
                     kernel.insert_before(end, Op::Unroll { axis: 3, len: u16::try_from(nlanes).expect("operand-pair lane") });
                 let tlane = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(mt).expect("tile count") });
@@ -2743,13 +2802,13 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     );
                     // `[lane][tile][half]`: one contiguous run per tile, so one
                     // store per lane writes the whole `ldmatrix` result.
-                    let sect = kernel.insert_const_idx_before(end, Dim::from((mt * width) as i64));
+                    let sect = kernel.insert_const_idx_before(end, Dim::from((mt * wwidth) as i64));
                     let base = kernel.insert_before(end, Op::Binary { x: obl, y: sect, bop: BOp::Mul });
-                    let ws = kernel.insert_const_idx_before(end, Dim::from(width as i64));
+                    let ws = kernel.insert_const_idx_before(end, Dim::from(wwidth as i64));
                     let tb = kernel.insert_before(end, Op::Binary { x: tlane, y: ws, bop: BOp::Mul });
                     let base = kernel.insert_before(end, Op::Binary { x: base, y: tb, bop: BOp::Add });
                     let wl =
-                        kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(width).expect("fragment width") });
+                        kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(wwidth).expect("fragment width") });
                     let idx = kernel.insert_before(end, Op::Binary { x: base, y: wl, bop: BOp::Add });
                     kernel.insert_before(end, Op::Store { dst: ab_st, dst_idx: idx, src: value });
                 }
@@ -2767,19 +2826,19 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     // runs through the instruction's `c`.
                     for sl in 0..steps_here {
                         // A: `[operand][pair][tile][step][slot]`, operand 0.
-                        let asec = kernel.insert_const_idx_before(end, Dim::from((pi * mt * width) as i64));
-                        let ws = kernel.insert_const_idx_before(end, Dim::from(width as i64));
+                        let asec = kernel.insert_const_idx_before(end, Dim::from((pi * mt * wwidth) as i64));
+                        let ws = kernel.insert_const_idx_before(end, Dim::from(wwidth as i64));
                         let abase = kernel.insert_before(end, Op::Binary { x: tml, y: ws, bop: BOp::Mul });
                         let abase = kernel.insert_before(end, Op::Binary { x: abase, y: asec, bop: BOp::Add });
-                        let am = kernel.insert_const_idx_before(end, Dim::from((sl * a_slots) as i64));
+                        let am = kernel.insert_const_idx_before(end, Dim::from((sl * a_w) as i64));
                         let abase = kernel.insert_before(end, Op::Binary { x: abase, y: am, bop: BOp::Add });
-                        let alane = kernel
-                            .insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(a_slots).expect("a fragment slots") });
+                        let alane =
+                            kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(a_w).expect("a fragment slots") });
                         let aidx = kernel.insert_before(end, Op::Binary { x: abase, y: alane, bop: BOp::Add });
                         let a_frag = kernel.insert_before(end, Op::Load { src: ab_st, src_idx: aidx });
                         // B: operand 1, the `ldmatrix`'s own word order:
                         // `(tile-in-pair) + 2 * K step`, one `b_slots` each.
-                        let bsec = kernel.insert_const_idx_before(end, Dim::from(((npairs + pi) * mt * width) as i64));
+                        let bsec = kernel.insert_const_idx_before(end, Dim::from(((npairs + pi) * mt * wwidth) as i64));
                         let two = kernel.insert_const_idx_before(end, Dim::from(2i64));
                         let tpair = kernel.insert_before(end, Op::Binary { x: tnl, y: two, bop: BOp::Div });
                         let bbase = kernel.insert_before(end, Op::Binary { x: tpair, y: ws, bop: BOp::Mul });
@@ -2787,11 +2846,11 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                         let trem = kernel.insert_before(end, Op::Binary { x: tnl, y: two, bop: BOp::Mod });
                         let tmn = kernel.insert_const_idx_before(end, Dim::from(2 * sl as i64));
                         let tidx = kernel.insert_before(end, Op::Binary { x: trem, y: tmn, bop: BOp::Add });
-                        let bsl = kernel.insert_const_idx_before(end, Dim::from(b_slots as i64));
+                        let bsl = kernel.insert_const_idx_before(end, Dim::from(b_w as i64));
                         let bmid = kernel.insert_before(end, Op::Binary { x: tidx, y: bsl, bop: BOp::Mul });
                         let bbase = kernel.insert_before(end, Op::Binary { x: bbase, y: bmid, bop: BOp::Add });
-                        let blane = kernel
-                            .insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(b_slots).expect("b fragment slots") });
+                        let blane =
+                            kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(b_w).expect("b fragment slots") });
                         let bidx = kernel.insert_before(end, Op::Binary { x: bbase, y: blane, bop: BOp::Add });
                         let b_frag = kernel.insert_before(end, Op::Load { src: ab_st, src_idx: bidx });
                         acc = kernel.insert_before(
@@ -2825,9 +2884,11 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                     let a_base = shift(kernel, t.update, a_base, [warp_off_a, a_band]);
                     let b_base = base_expr(kernel, t.update, &b_fixed, t.b_offset, tn * fn_ * t.b_n + tk * fk * t.b_k);
                     let b_base = shift(kernel, t.update, b_base, [warp_off_b, b_band]);
-                    let a_elems = frag_elems(kernel, t.update, lane, &v.a, t.a_src, t.a_cone.as_ref(), a_base, t.a_m, t.a_k, warp);
+                    let a_elems =
+                        frag_elems(kernel, t.update, lane, &v.a, t.a_src, t.a_cone.as_ref(), a_base, t.a_m, t.a_k, warp);
                     let a_frag = kernel.insert_before(t.update, Op::Stack { ops: a_elems.into() });
-                    let b_elems = frag_elems(kernel, t.update, lane, &v.b, t.b_src, t.b_cone.as_ref(), b_base, t.b_n, t.b_k, warp);
+                    let b_elems =
+                        frag_elems(kernel, t.update, lane, &v.b, t.b_src, t.b_cone.as_ref(), b_base, t.b_n, t.b_k, warp);
                     let b_frag = kernel.insert_before(t.update, Op::Stack { ops: b_elems.into() });
                     acc = kernel.insert_before(
                         t.update,
@@ -3354,15 +3415,14 @@ impl Kernel {
             if m_range == n_range {
                 continue;
             }
-            let (a_map, b_map, a_src, b_src, a_cone, b_cone, a_val, b_val) = if map_la.contains_key(&m_range)
-                && map_lb.contains_key(&n_range)
-            {
-                (map_la, map_lb, a_src, b_src, a_cone, b_cone, la, lb)
-            } else if map_la.contains_key(&n_range) && map_lb.contains_key(&m_range) {
-                (map_lb, map_la, b_src, a_src, b_cone, a_cone, lb, la)
-            } else {
-                continue;
-            };
+            let (a_map, b_map, a_src, b_src, a_cone, b_cone, a_val, b_val) =
+                if map_la.contains_key(&m_range) && map_lb.contains_key(&n_range) {
+                    (map_la, map_lb, a_src, b_src, a_cone, b_cone, la, lb)
+                } else if map_la.contains_key(&n_range) && map_lb.contains_key(&m_range) {
+                    (map_lb, map_la, b_src, a_src, b_cone, a_cone, lb, la)
+                } else {
+                    continue;
+                };
 
             // Operand and accumulator dtypes, as the views are oriented. A
             // quantized operand's dtype is its chain's value (the dequantized
@@ -3509,7 +3569,13 @@ impl Kernel {
                     if std::env::var("ZYX_TD").is_ok() {
                         let ka = Cone::at(self, la);
                         let kb = Cone::at(self, lb);
-                        eprintln!("TD operand_view failed: la={:?} lb={:?} ca={:?} cb={:?}", self.at(la), self.at(lb), ka.map(|c| c.ops.len()), kb.map(|c| c.ops.len()));
+                        eprintln!(
+                            "TD operand_view failed: la={:?} lb={:?} ca={:?} cb={:?}",
+                            self.at(la),
+                            self.at(lb),
+                            ka.map(|c| c.ops.len()),
+                            kb.map(|c| c.ops.len())
+                        );
                     }
                     continue;
                 };
@@ -3851,8 +3917,7 @@ impl Kernel {
                         let ok = if s8 {
                             tile_fit_s8(shape, staged, layout, &info).is_some()
                         } else {
-                            tile_fit(shape, staged, layout, &info, |wk| self.is_sym_multiple(*loop_len, Dim::from(wk)))
-                                .is_some()
+                            tile_fit(shape, staged, layout, &info, |wk| self.is_sym_multiple(*loop_len, Dim::from(wk))).is_some()
                         };
                         if !ok {
                             continue;

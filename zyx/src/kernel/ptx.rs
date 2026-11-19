@@ -55,9 +55,9 @@ impl Kernel {
                     // its own and no immediates at all. Any other PTX op (the
                     // warp sync) has no shared address and is left alone; the
                     // walk must still advance past it.
-                    if let PTXOp::VLdMatrix { frags, src, addr, trans } = **p {
+                    if let PTXOp::VLdMatrix { dims, num, trans: order, dtype, src, addr } = **p {
                         let addr = self.shared_byte_addr(op_id, src, addr);
-                        self.ops[op_id].op = Op::PTX(Box::new(PTXOp::LdMatrix { frags, addr, trans }));
+                        self.ops[op_id].op = Op::PTX(Box::new(PTXOp::LdMatrix { dims, num, trans: order, dtype, addr }));
                     }
                 }
                 _ => {}

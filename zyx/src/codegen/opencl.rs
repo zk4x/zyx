@@ -164,7 +164,6 @@ impl Kernel {
                         context: "OpenCL codegen: Detach should be erased at kernelization".into(),
                     });
                 }
-                Op::Asm { .. } => todo!(),
                 Op::Copy { .. } => {
                     todo!("Copy lowering for OpenCL (tenstorrent phase)");
                 }

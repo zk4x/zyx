@@ -19,9 +19,9 @@
 //! operand-substitution arm covers every op).
 
 use crate::{
-    Map, Set, ZyxError,
+    DType, Map, Set, ZyxError,
     dtype::Constant,
-    kernel::{BOp, Kernel, MemScope, Op, OpId, PTXOp},
+    kernel::{BOp, Kernel, MMADType, MemScope, Op, OpId, PTXOp},
     shape::Dim,
 };
 
@@ -152,12 +152,9 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.at(op_id) {
-                Op::Loop { .. }
-                | Op::EndLoop
-                | Op::Barrier
-                | Op::Asm { .. }
-                | Op::Copy { .. }
-                | Op::TT(crate::kernel::TTOp::Copy { .. }) => origin.clear(),
+                Op::Loop { .. } | Op::EndLoop | Op::Barrier | Op::Copy { .. } | Op::TT(crate::kernel::TTOp::Copy { .. }) => {
+                    origin.clear()
+                }
                 Op::PTX(p) if matches!(**p, PTXOp::WarpSync) => origin.clear(),
                 Op::Store { dst, dst_idx, src } => {
                     let dst = *dst;
@@ -350,7 +347,11 @@ impl Kernel {
                         }
                     }
                     if lane_cond {
-                        eprintln!("DEVRED reduce={reduce_id:?} inner={walk_id:?} op={:?} params={:?}", self.ops[walk_id].op, self.ops[walk_id].op.parameters().collect::<Vec<_>>());
+                        eprintln!(
+                            "DEVRED reduce={reduce_id:?} inner={walk_id:?} op={:?} params={:?}",
+                            self.ops[walk_id].op,
+                            self.ops[walk_id].op.parameters().collect::<Vec<_>>()
+                        );
                         eprintln!("DEVRED reduce op={:?} nodes={:?}", self.ops[reduce_id].op, reduce_nodes);
                         for id in [OpId(171), OpId(214), OpId(292), OpId(210), OpId(288), OpId(213)] {
                             eprintln!("DEVRED   {id:?} = {:?}", self.ops[id].op);
@@ -746,14 +747,28 @@ impl Kernel {
         };
         let info = self.device_info();
         let v = info.mma_variants.iter().find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype)?;
-        if operand == a {
-            Some(v.a.slots.len() as Dim)
+        let operand_slots = if operand == a {
+            v.a.slots.len() as Dim
         } else if operand == b {
-            Some(v.b.slots.len() as Dim)
+            v.b.slots.len() as Dim
         } else if operand == c {
-            Some(v.c.slots.len() as Dim)
+            v.c.slots.len() as Dim
         } else {
-            None
+            return None;
+        };
+        // `slots` counts the instruction's own elements. An `ldmatrix`
+        // destination word carries several of them (two f16, four int8), so a
+        // word-valued operand is `slots / elements-per-word` wide.
+        let per_word = match dtype {
+            MMADType::f16_f16_f16_f16 | MMADType::f16_f16_f16_f32 => 2,
+            MMADType::s8_s8_s32_s32 => 4,
+            MMADType::s4_s4_s32_s32 => 8,
+            MMADType::b1_b1_s32_xor_popc | MMADType::b1_b1_s32_and_popc => 32,
+        };
+        if self.dtype(operand) == DType::U32 {
+            Some(operand_slots / per_word)
+        } else {
+            Some(operand_slots)
         }
     }
 
@@ -966,13 +981,13 @@ impl Kernel {
         }
     }
 
-    /// Element count of a store's value: an `ldmatrix` result is its
-    /// fragment halves (`frags` 32-bit words, two halves each) and has no
-    /// lane shape of its own. The lowered form is the same fragment.
+    /// Element count of a store's value: an `ldmatrix` result is the
+    /// instruction's destination list (`num` 32-bit words) and has no lane
+    /// shape of its own. The lowered form is the same fragment.
     fn value_elements(&self, op: OpId) -> Dim {
         match self.at(op) {
             Op::PTX(p) => match p.as_ref() {
-                PTXOp::VLdMatrix { frags, .. } | PTXOp::LdMatrix { frags, .. } => Dim::from(i64::from(*frags) * 2),
+                PTXOp::VLdMatrix { num, .. } | PTXOp::LdMatrix { num, .. } => Dim::from(i64::from(num.words())),
                 _ => Dim::from(2),
             },
             _ => self.elements(op),

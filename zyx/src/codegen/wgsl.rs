@@ -293,7 +293,7 @@ impl Kernel {
             }
             let ind = "  ".repeat(depth);
             match self.ops[op_id].op {
-                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) | Op::Asm { .. } => {
+                Op::Source(_) | Op::GPU(_) | Op::Spirv(_) | Op::PTX(_) => {
                     return Err(wgsl_err("WGSL: unexpected meta op in kernel body".into()));
                 }
                 Op::Unroll { .. } => {

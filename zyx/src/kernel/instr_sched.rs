@@ -177,13 +177,9 @@ impl Kernel {
                     structural[i] = true;
                     latency[i] = 1;
                 }
-                // Opaque side effect (inline asm, TT LLK call):
-                // program-ordered like a barrier for placement (never
-                // crosses one), but not a barrier itself.
-                Op::Asm { .. } => {
-                    structural[i] = true;
-                    latency[i] = 1;
-                }
+                // Opaque side effect (TT LLK call): program-ordered like a
+                // barrier for placement (never crosses one), but not a barrier
+                // itself.
                 Op::TT(TTOp::Sfpu { .. })
                 | Op::TT(TTOp::SfpLoad(_))
                 | Op::TT(TTOp::SfpStore(_))
@@ -235,7 +231,7 @@ impl Kernel {
                     }
                     // A shuffle reads two registers and writes one: no shared
                     // state to order against.
-                    PTXOp::Shfl { .. } => latency[i] = 20,
+                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } => latency[i] = 20,
                     // The shared window base and its generic-address form: one
                     // definition each, carrying no state of their own.
                     PTXOp::CvtaShared { .. } | PTXOp::SharedBase { .. } => latency[i] = 1,
@@ -373,6 +369,15 @@ impl Kernel {
                         add_param!(value);
                         add_param!(lane);
                     }
+                    PTXOp::ShflXor { value, mask } => {
+                        add_param!(value);
+                        add_param!(mask);
+                    }
+                    PTXOp::Prmt { a, b, c } => {
+                        add_param!(a);
+                        add_param!(b);
+                        add_param!(c);
+                    }
                     PTXOp::LdMatrix { addr, .. } => add_param!(addr),
                     PTXOp::CvtaShared { addr } => add_param!(addr),
                     PTXOp::SharedBase { buf } => add_param!(buf),
@@ -420,11 +425,6 @@ impl Kernel {
                     add_param!(a);
                     add_param!(b);
                     add_param!(c);
-                }
-                Op::Asm { ops, .. } => {
-                    for &p in ops.iter() {
-                        add_param!(p);
-                    }
                 }
                 Op::TT(TTOp::Unpacr { src, .. }) => {
                     add_param!(*src);
@@ -741,6 +741,8 @@ impl Kernel {
                     PTXOp::Bytes(_)
                     | PTXOp::WarpSync
                     | PTXOp::Shfl { .. }
+                    | PTXOp::ShflXor { .. }
+                    | PTXOp::Prmt { .. }
                     | PTXOp::CvtaShared { .. }
                     | PTXOp::SharedBase { .. }
                     | PTXOp::StShared { .. } => continue,
@@ -810,25 +812,6 @@ impl Kernel {
                 continue;
             }
             for &j in &barrier_positions {
-                if i < j {
-                    edges.push((i, j));
-                    in_degree[j] += 1;
-                } else {
-                    edges.push((j, i));
-                    in_degree[i] += 1;
-                }
-            }
-        }
-
-        // Loads keep their original order with inline asm: asm is an
-        // opaque side effect (e.g. datapath setup must precede the
-        // first copy), so traffic must not float across it.
-        let asm_positions: Vec<usize> = (0..n).filter(|&i| matches!(self.at(rest[i]), Op::Asm { .. })).collect();
-        for i in 0..n {
-            if !load[i] {
-                continue;
-            }
-            for &j in &asm_positions {
                 if i < j {
                     edges.push((i, j));
                     in_degree[j] += 1;

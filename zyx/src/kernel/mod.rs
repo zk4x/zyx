@@ -99,8 +99,9 @@ pub use crate::error::BackendError;
 pub use autotune::BeamSearch;
 pub use custom::{Acc, CompiledKernel, LocalPartition, Partition};
 pub use ops::{
-    BOp, GPUOp, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind, SourceBlock, SpirvOp, TTDmRead, TTDmTileRead,
-    TTDmWrite, TTOp, TTRoleProgram, TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore, TileDim,
+    BOp, GPUOp, LdMatrixDims, LdMatrixNum, LdMatrixTrans, LdMatrixType, MMADType, MMADims, MMALayout, Op, OpId, PTXOp, ParamKind,
+    SourceBlock, SpirvOp, TTDmRead, TTDmTileRead, TTDmWrite, TTOp, TTRoleProgram, TTSfpConst, TTSfpInsn, TTSfpLoad, TTSfpStore,
+    TileDim,
 };
 pub(crate) use ops::{OpLinked, RangeKind, UOp};
 pub use pat::{Bindings, CoverGroup, DtypeClass, PMatch, Pat, VExpr};
@@ -427,7 +428,6 @@ impl Kernel {
                 | Op::Loop { .. }
                 | Op::EndLoop
                 | Op::Barrier
-                | Op::Asm { .. }
                 | Op::Source(_)
                 | Op::Program { .. }
                 | Op::Kernel(_)
@@ -520,19 +520,19 @@ impl Kernel {
                 // address's lane shape in front of the fragment's own.
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => {}
-                    PTXOp::VLdMatrix { frags, src, addr, .. } => {
+                    PTXOp::VLdMatrix { num, src, addr, .. } => {
                         let mut dims = dtypes.get(addr).map(|(_, dims)| dims.clone()).unwrap_or_default();
-                        dims.push(Dim::from(i64::from(*frags) * 2));
-                        dtypes.insert(op_id, (DType::F16, dims));
+                        dims.push(Dim::from(i64::from(num.words())));
+                        dtypes.insert(op_id, (DType::U32, dims));
                         *rcs.entry(*src).or_insert(0) += 1;
                         *rcs.entry(*addr).or_insert(0) += 1;
                     }
                     // The hardware form: same fragment shape, an address
                     // that is already a 64-bit value.
-                    PTXOp::LdMatrix { frags, addr, .. } => {
+                    PTXOp::LdMatrix { num, addr, .. } => {
                         let mut dims = dtypes.get(addr).map(|(_, dims)| dims.clone()).unwrap_or_default();
-                        dims.push(Dim::from(i64::from(*frags) * 2));
-                        dtypes.insert(op_id, (DType::F16, dims));
+                        dims.push(Dim::from(i64::from(num.words())));
+                        dtypes.insert(op_id, (DType::U32, dims));
                         *rcs.entry(*addr).or_insert(0) += 1;
                     }
                     // `cvta.shared`: a 32-bit window offset as a 64-bit
@@ -570,6 +570,21 @@ impl Kernel {
                         dtypes.insert(op_id, (DType::F16, dims));
                         *rcs.entry(*value).or_insert(0) += 1;
                         *rcs.entry(*lane).or_insert(0) += 1;
+                    }
+                    // `shfl.sync.bfly.b32` moves one 32-bit word unchanged:
+                    // the result has the moved value's own dtype and shape.
+                    PTXOp::ShflXor { value, mask } => {
+                        let dtype = dtypes.get(value).map(|(dtype, _)| *dtype).unwrap_or(DType::U32);
+                        dtypes.insert(op_id, (dtype, Vec::new()));
+                        *rcs.entry(*value).or_insert(0) += 1;
+                        *rcs.entry(*mask).or_insert(0) += 1;
+                    }
+                    // `prmt.b32`'s result is the permuted 32-bit word.
+                    PTXOp::Prmt { a, b, c } => {
+                        dtypes.insert(op_id, (DType::U32, Vec::new()));
+                        for &x in [a, b, c] {
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
                     }
                 },
                 // Graph-only marker, erased at kernelization: never present.
@@ -682,7 +697,14 @@ impl Kernel {
                             if std::env::var("ZYX_ST").is_ok() {
                                 eprintln!(
                                     "ST op={:?} src={:?} dims={:?} idx_dims={:?} store={:?} srcop={:?} idxop={:?} dst={:?}",
-                                    op_id, x, dtypes[&x].1, dtypes[&dst_idx].1, self.ops[op_id].op, self.ops[x].op, self.ops[dst_idx].op, self.ops[dst].op
+                                    op_id,
+                                    x,
+                                    dtypes[&x].1,
+                                    dtypes[&dst_idx].1,
+                                    self.ops[op_id].op,
+                                    self.ops[x].op,
+                                    self.ops[dst_idx].op,
+                                    self.ops[dst].op
                                 );
                             }
                             panic!("store value rank exceeds access rank");
@@ -742,7 +764,11 @@ impl Kernel {
                     // rule as `Kernel::shape`, trailing unsets trimmed
                     // so ranks stay exact.
                     if !dtypes.contains_key(&x) || !dtypes.contains_key(&y) {
-                        eprintln!("DT missing op={op_id:?} Binary x={x:?} y={y:?} has_x={} has_y={} bop={bop:?}", dtypes.contains_key(&x), dtypes.contains_key(&y));
+                        eprintln!(
+                            "DT missing op={op_id:?} Binary x={x:?} y={y:?} has_x={} has_y={} bop={bop:?}",
+                            dtypes.contains_key(&x),
+                            dtypes.contains_key(&y)
+                        );
                         let mut it = self.head;
                         let mut n = 0usize;
                         while !it.is_null() {
@@ -812,19 +838,6 @@ impl Kernel {
                     *rcs.entry(cond).or_insert(0) += 1;
                     *rcs.entry(if_true).or_insert(0) += 1;
                     *rcs.entry(if_false).or_insert(0) += 1;
-                }
-                Op::Asm { ref ops, .. } => {
-                    // Result takes ops[0]'s dtype/layout; the template's
-                    // `{i}` placeholders substitute the operand expressions.
-                    // Operand-free Asm is an effect-only call: produces no
-                    // value, takes no entry.
-                    if !ops.is_empty() {
-                        let dtype = dtypes[&ops[0]].clone();
-                        dtypes.insert(op_id, dtype);
-                        for &x in ops.iter() {
-                            *rcs.entry(x).or_insert(0) += 1;
-                        }
-                    }
                 }
                 Op::TT(TTOp::Unpacr { src, .. }) => {
                     // Native unpack: the source CB's dtype, one tile out.
@@ -959,12 +972,16 @@ impl Kernel {
                 Op::Spirv(_) => todo!(),
                 Op::PTX(ref p) => match p.as_ref() {
                     PTXOp::Bytes(_) => todo!("assembled PTX payload has no dtype"),
-                    PTXOp::VLdMatrix { .. } | PTXOp::LdMatrix { .. } => return DType::F16,
+                    // `ldmatrix`'s destination list: one 32-bit word per 8x8
+                    // matrix, whatever the tile's own element type is.
+                    PTXOp::VLdMatrix { .. } | PTXOp::LdMatrix { .. } => return DType::U32,
                     PTXOp::CvtaShared { .. } => return DType::U64,
                     PTXOp::SharedBase { .. } => return DType::U32,
                     PTXOp::LdShared { buf, .. } => op_id = *buf,
                     PTXOp::StShared { src, .. } => op_id = *src,
                     PTXOp::Shfl { .. } => return DType::F16,
+                    PTXOp::ShflXor { value, .. } => op_id = *value,
+                    PTXOp::Prmt { .. } => return DType::U32,
                     PTXOp::WarpSync => todo!("warp sync has no result dtype"),
                 },
                 Op::Const(c) => return c.dtype(),
@@ -998,12 +1015,6 @@ impl Kernel {
                     | MMADType::b1_b1_s32_and_popc => return DType::I32,
                 },
                 Op::Stack { ref ops } => op_id = ops[0],
-                Op::Asm { ref ops, .. } => {
-                    if ops.is_empty() {
-                        todo!("dtype: operand-free Asm produces no value")
-                    }
-                    op_id = ops[0]
-                }
                 Op::TT(TTOp::Unpacr { .. }) => return IDX_T,
                 // The accumulator pointer carries the tile the Matrix Unit
                 // filled: its value is the DST storage it names, so the
@@ -1911,23 +1922,6 @@ impl Kernel {
                 Op::TT(TTOp::Unpacr { .. }) | Op::TT(TTOp::Sfpu { .. }) => {
                     visited.insert(op_id, Vec::new());
                 }
-                Op::Asm { ref ops, .. } => {
-                    if ops.is_empty() {
-                        todo!("shape: operand-free Asm produces no value")
-                    }
-                    match visited.get(&ops[0]) {
-                        Some(dims) => {
-                            visited.insert(op_id, dims.clone());
-                            if let Some(a) = axes.get(&ops[0]).cloned() {
-                                axes.insert(op_id, a);
-                            }
-                        }
-                        None => {
-                            stack.push(op_id);
-                            stack.push(ops[0]);
-                        }
-                    }
-                }
                 // Lane extraction drops the leading dim: scalar from a
                 // vector, row vector from a tile. Lane reduction yields
                 // a scalar. The leading axis goes with the leading dim.
@@ -2315,23 +2309,6 @@ impl Kernel {
                         stack.push(store.slot);
                     }
                 },
-                Op::Asm { ref ops, .. } => {
-                    if ops.is_empty() {
-                        // Operand-free Asm is an effect-only call:
-                        // no value, scalar shape.
-                        visited.insert(id, [0; 8]);
-                    } else {
-                        match visited.get(&ops[0]) {
-                            Some(dims) => {
-                                visited.insert(id, *dims);
-                            }
-                            None => {
-                                stack.push(id);
-                                stack.push(ops[0]);
-                            }
-                        }
-                    }
-                }
                 // Lane extraction drops slot 0, shifting the rest down.
                 Op::Index { vec: x, .. } => match visited.get(&x).cloned() {
                     Some(dims) => {

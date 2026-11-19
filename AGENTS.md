@@ -240,6 +240,12 @@ zyx/src/kernel/   kernel IR, codegen, ALL optimization passes
   there is no `Kernel::resolve_dim`.
 
 ## Style
+- Rust `for`/`while` loops are ONLY for SEQUENTIAL work in IR generation —
+  a chain where each step depends on the previous one. `Op::Unroll` is not
+  suitable for sequential things, and a Rust loop is never suitable for
+  parallel ones: anything parallel is `Op::Unroll`, and a Rust loop over
+  lanes, tiles, fragments or steps bakes today's shape into the kernel and
+  hides a parallel axis from the passes.
 - Debuggability > "clean". Duplicate first, abstract later. Enums, not dyn.
   ~1000 LOC/module. Imports: `crate::` -> `super::` -> external.
 - `todo!()` beats silent failure. New op variant = CORRECT arm in EVERY

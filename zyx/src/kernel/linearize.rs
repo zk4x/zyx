@@ -440,7 +440,7 @@ impl Kernel {
                     | Op::Detach { .. } => slot == 0,
                     Op::Binary { .. } => slot < 2,
                     Op::Select { .. } | Op::Wmma { .. } => slot < 3,
-                    Op::Asm { .. } | Op::Stack { .. } => true,
+                    Op::Stack { .. } => true,
                     // Every remaining op carries no value operand: leaves,
                     // storages, control flow, lane metadata and kernel
                     // boundaries.

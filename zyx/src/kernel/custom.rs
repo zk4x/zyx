@@ -24,15 +24,15 @@ use crate::dtype::Constant;
 use crate::error::BackendError;
 use crate::graph::OpNode;
 use crate::kernel::{
-    BOp, GPUOp, IDX_T, Kernel, MMADType, MMADims, MMALayout, MemScope, Op, OpId, PTXOp, ParamKind, RangeKind, SourceBlock, UOp,
-    ops::TileDim,
+    BOp, GPUOp, IDX_T, Kernel, LdMatrixDims, LdMatrixNum, LdMatrixTrans, LdMatrixType, MMADType, MMADims, MMALayout, MemScope,
+    Op, OpId, PTXOp, ParamKind, RangeKind, SourceBlock, UOp, ops::TileDim,
 };
 use crate::runtime::{Runtime, TensorData};
 use crate::shape::UAxis;
 use crate::slab::Slab;
 use crate::symbolic::{Expr, ExprId};
 use crate::tensor::TensorId;
-use crate::types::{TinyString, TinyVec};
+use crate::types::TinyVec;
 use crate::{DType, Tensor, ZyxError, bf16, f16, shape::Dim};
 use crate::{Dev, Map, Scalar, Set};
 
@@ -224,7 +224,11 @@ impl Kernel {
             }
             op_id = self.next_op(op_id);
         }
-        let mut gws = [GwsDim::Const(Dim::from(1u32)), GwsDim::Const(Dim::from(1u32)), GwsDim::Const(Dim::from(1u32))];
+        let mut gws = [
+            GwsDim::Const(Dim::from(1u32)),
+            GwsDim::Const(Dim::from(1u32)),
+            GwsDim::Const(Dim::from(1u32)),
+        ];
         for (slot, g) in gws.iter_mut().zip(grid) {
             *slot = GwsDim::Const(Dim::from(g));
         }
@@ -1121,13 +1125,21 @@ impl Kernel {
         self.push_back(Op::Wmma { dims, layout, dtype, a, b, c })
     }
 
-    /// Warp-level `ldmatrix`: load `frags` 8x8 b16 tiles from local storage
+    /// Warp-level `ldmatrix`: load `num` 8x8 `.b16` matrices from local storage
     /// `src` at element index `addr` into the fragment layout `mma.sync`
-    /// expects. `frags` is 1, 2 or 4; `trans` selects `.trans`. A PTX
-    /// instruction, so it is CUDA-only by construction.
-    pub fn ldmatrix(&mut self, frags: u8, src: OpId, addr: impl IntoOp, trans: bool) -> OpId {
+    /// expects, one 32-bit word per matrix per lane. A PTX instruction, so it
+    /// is CUDA-only by construction.
+    pub fn ldmatrix(
+        &mut self,
+        dims: LdMatrixDims,
+        num: LdMatrixNum,
+        transposed: LdMatrixTrans,
+        dtype: LdMatrixType,
+        src: OpId,
+        addr: impl IntoOp,
+    ) -> OpId {
         let addr = addr.into_op(self);
-        self.push_back(Op::PTX(Box::new(PTXOp::VLdMatrix { frags, src, addr, trans })))
+        self.push_back(Op::PTX(Box::new(PTXOp::VLdMatrix { dims, num, trans: transposed, dtype, src, addr })))
     }
 
     /// Hardware tile matmul: `x @ y` over 32x32 tiles, result in a DST
@@ -1161,19 +1173,19 @@ impl Kernel {
         todo!("reduce_tile builder pending redesign")
     }
 
-    /// Backend-specific assembly instruction applied to `ops`.
-    pub fn asm(&mut self, asm: &str, ops: &[OpId]) -> OpId {
-        let asm = TinyString::new(asm);
-        let ops = TinyVec::new(ops);
-        self.push_back(Op::Asm { asm, ops })
+    /// `prmt.b32 d, a, b, c`: byte permute. Each nibble of `c` picks one of
+    /// the eight bytes of `{a, b}` for one byte of the result.
+    pub fn prmt(&mut self, a: OpId, b: OpId, c: OpId) -> OpId {
+        self.push_back(Op::PTX(Box::new(PTXOp::Prmt { a, b, c })))
     }
 
     /// Warp-wide xor-butterfly sum reduction over `x` (all 32 lanes of the
-    /// warp must participate; every lane ends with the sum). CUDA C syntax:
-    /// `__shfl_xor_sync` — the caller targets the CUDA backend.
+    /// warp must participate; every lane ends with the sum): five
+    /// `shfl.sync.bfly.b32` exchanges, mask 16 down to 1.
     pub fn warp_reduce(&mut self, mut x: OpId) -> OpId {
-        for mask in [16u32, 8, 4, 2, 1] {
-            let sh = self.asm(&format!("__shfl_xor_sync(0xffffffff, {{0}}, {mask})"), &[x]);
+        for m in [16u32, 8, 4, 2, 1] {
+            let mask = self.const_val(m);
+            let sh = self.push_back(Op::PTX(Box::new(PTXOp::ShflXor { value: x, mask })));
             x = self.add(x, sh);
         }
         x

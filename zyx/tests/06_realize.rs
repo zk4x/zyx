@@ -1,7 +1,9 @@
 // Copyright (C) 2025 zk4x
 // SPDX-License-Identifier: LGPL-3.0-only WITH Classpath-exception-2.0
 
-use zyx::kernel::{Dev, Kernel, MMADType, MMADims, MMALayout, MemScope, OpId};
+use zyx::kernel::{
+    Dev, Kernel, LdMatrixDims, LdMatrixNum, LdMatrixTrans, LdMatrixType, MMADType, MMADims, MMALayout, MemScope, OpId,
+};
 use zyx::{DType, DTypeCapability, Reduction, Scalar, Tensor, ZyxError, f16};
 
 /// Tensor-core matmul: C = A @ B where A(M×K, FP16), B(K×N, FP16), C(M×N, FP32).
@@ -568,11 +570,11 @@ fn ldmatrix_matmul() -> Result<(), ZyxError> {
     let c16 = kernel.const_idx(16u32);
     let row_a = kernel.mod_(tid, c16);
     let a_addr = kernel.mad(row_a, c8, c0);
-    let a_frag = kernel.ldmatrix(2, sa, a_addr, false);
+    let a_frag = kernel.ldmatrix(LdMatrixDims::m8n8, LdMatrixNum::X2, LdMatrixTrans::off, LdMatrixType::b16, sa, a_addr);
     // B: 8 rows of the [n,k] view (.x1 = one 8x8 tile).
     let row_b = kernel.mod_(tid, c8);
     let b_off = kernel.mad(row_b, c8, c128);
-    let b_frag = kernel.ldmatrix(1, sa, b_off, false);
+    let b_frag = kernel.ldmatrix(LdMatrixDims::m8n8, LdMatrixNum::X1, LdMatrixTrans::off, LdMatrixType::b16, sa, b_off);
 
     let acc = kernel.zeros(DType::F32, 4);
     let c_elems: Vec<OpId> = (0..4)

@@ -1221,8 +1221,7 @@ impl Graph {
             | Op::Barrier
             | Op::Wmma { .. }
             | Op::TT { .. }
-            | Op::Unroll { .. }
-            | Op::Asm { .. } => unreachable!("shape: kernel-internal op never appears in graph classes"),
+            | Op::Unroll { .. } => unreachable!("shape: kernel-internal op never appears in graph classes"),
         }
     }
 
@@ -1434,8 +1433,7 @@ impl Graph {
             | Op::Barrier
             | Op::Wmma { .. }
             | Op::TT { .. }
-            | Op::Unroll { .. }
-            | Op::Asm { .. } => unreachable!("dtype: kernel-internal op never appears in graph classes"),
+            | Op::Unroll { .. } => unreachable!("dtype: kernel-internal op never appears in graph classes"),
         }
     }
 
@@ -1504,7 +1502,6 @@ impl Graph {
                 | Op::Wmma { .. }
                 | Op::TT(_)
                 | Op::Unroll { .. }
-                | Op::Asm { .. }
                 | Op::After { .. }
                 | Op::ToDevice { .. }
                 | Op::Contiguous { .. }
@@ -1842,7 +1839,6 @@ impl Runtime {
                     | Op::Loop { .. }
                     | Op::Load { .. }
                     | Op::Copy { .. }
-                    | Op::Asm { .. }
                     | Op::Index { .. }
                     | Op::Wmma { .. }
                     | Op::TT { .. }
@@ -2007,7 +2003,6 @@ impl Runtime {
                                     | Op::Store { .. }
                                     | Op::Load { .. }
                                     | Op::Copy { .. }
-                                    | Op::Asm { .. }
                                     | Op::Index { .. }
                                     | Op::Wmma { .. }
                                     | Op::TT { .. }

@@ -79,8 +79,7 @@ impl Kernel {
         while !op_id.is_null() {
             let next = self.next_op(op_id);
             match self.ops[op_id].op {
-                Op::Asm { .. }
-                | Op::Source { .. }
+                Op::Source { .. }
                 | Op::GPU { .. }
                 | Op::Spirv { .. }
                 | Op::PTX { .. }
@@ -677,14 +676,7 @@ impl Kernel {
         for (op_id, op) in self.iter_unordered() {
             if matches!(
                 op,
-                Op::Store { .. }
-                    | Op::Copy { .. }
-                    | Op::TT(_)
-                    | Op::Param { .. }
-                    | Op::Asm { .. }
-                    | Op::Barrier
-                    | Op::Loop { .. }
-                    | Op::EndLoop
+                Op::Store { .. } | Op::Copy { .. } | Op::TT(_) | Op::Param { .. } | Op::Barrier | Op::Loop { .. } | Op::EndLoop
             ) {
                 params.push(op_id);
                 continue;

@@ -76,7 +76,9 @@ impl Kernel {
                     // Pinned where it is: a sync orders its own loop's body.
                     crate::kernel::PTXOp::VLdMatrix { .. } | crate::kernel::PTXOp::WarpSync => loop_depth,
                     // A register move inside the loop stays there.
-                    crate::kernel::PTXOp::Shfl { .. } => loop_depth,
+                    crate::kernel::PTXOp::Shfl { .. }
+                    | crate::kernel::PTXOp::ShflXor { .. }
+                    | crate::kernel::PTXOp::Prmt { .. } => loop_depth,
                     // Device-lowered PTX: a shared access orders against the
                     // loop like a load/store; the address ops are pinned with
                     // the access they feed (`loop_invariant_code_motion` never
@@ -92,7 +94,7 @@ impl Kernel {
                     unreachable!()
                 }
                 Op::TT(_) => loop_depth,
-                Op::Asm { .. } | Op::Index { .. } | Op::Stack { .. } => loop_depth,
+                Op::Index { .. } | Op::Stack { .. } => loop_depth,
                 // A pure value like any other: its depth is its operands'.
                 Op::Wmma { a, b, c, .. } => loop_dep[&a].max(loop_dep[&b]).max(loop_dep[&c]),
                 Op::Loop { .. } => {
@@ -176,6 +178,8 @@ impl Kernel {
                     PTXOp::VLdMatrix { src, addr, .. } => loop_dep[src].max(loop_dep[addr]),
                     PTXOp::WarpSync => loop_depth,
                     PTXOp::Shfl { value, lane } => loop_dep[value].max(loop_dep[lane]),
+                    PTXOp::ShflXor { value, mask } => loop_dep[value].max(loop_dep[mask]),
+                    PTXOp::Prmt { a, b, c } => loop_dep[a].max(loop_dep[b]).max(loop_dep[c]),
                     // Device-lowered PTX is pinned with the loop it feeds.
                     PTXOp::LdMatrix { .. }
                     | PTXOp::CvtaShared { .. }
@@ -183,13 +187,6 @@ impl Kernel {
                     | PTXOp::LdShared { .. }
                     | PTXOp::StShared { .. } => loop_depth,
                 },
-                Op::Asm { ops, .. } => {
-                    let mut max = 0;
-                    for op in ops.iter() {
-                        max = max.max(loop_dep[op]);
-                    }
-                    max
-                }
                 Op::Stack { ops } => {
                     let mut max = 0;
                     for op in ops.iter() {

@@ -104,10 +104,8 @@ impl Kernel {
         while !op_id.is_null() {
             // Register allocation: allocate if this op produces a value
             let produces = match self.ops[op_id].op {
-                // Value-producing Asm takes ops[0]'s dtype (see the
-                // first pass above); operand-free Asm is an
-                // effect-only call and produces no register.
-                Op::Asm { ref ops, .. } => !ops.is_empty(),
+                // Value-producing ops take the dtype the first pass above
+                // resolved; storage only when it is a register.
                 Op::Storage { scope: MemScope::Register, .. } => true,
                 Op::Load { .. }
                 | Op::Cast { .. }
@@ -141,7 +139,7 @@ impl Kernel {
                     // Effect only.
                     PTXOp::WarpSync => false,
                     // A register move, no memory.
-                    PTXOp::Shfl { .. } => false,
+                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } => false,
                     // The cost model runs before the device lowering: these
                     // are never priced.
                     PTXOp::LdMatrix { .. }
@@ -266,8 +264,7 @@ impl Kernel {
                 | Op::Narrow { .. }
                 | Op::Reshape { .. }
                 | Op::Pad { .. }
-                | Op::TT { .. }
-                | Op::Asm { .. } => {}
+                | Op::TT { .. } => {}
                 Op::Load { src, src_idx: index, .. } => {
                     let access_shape = dtypes[&op_id].1.clone();
                     wi_ops += loop_mult;
@@ -540,7 +537,7 @@ impl Kernel {
                         wi_barriers += loop_mult;
                     }
                     // One shuffle instruction.
-                    PTXOp::Shfl { .. } => {
+                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } => {
                         wi_ops += loop_mult;
                         wi_compute_ops += loop_mult;
                     }
