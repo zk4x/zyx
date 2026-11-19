@@ -712,15 +712,26 @@ impl Kernel {
         self.apply_remaps(&remaps);
     }
 
-    /// Try to recognize an expression as `root << K + constant` where the
-    /// expression extracts disjoint bit slices of `root` via div/mod/shr,
-    /// shifts each to a new position via mul/shl, and sums them (a round-trip
-    /// after merge + constant folding).
+    /// Try to recognize an expression as `root * weight + constant` where the
+    /// expression extracts disjoint mixed-radix digits of `root` via
+    /// div/mod/shr, scales each digit via mul/shl, and sums them (a
+    /// round-trip after merge + constant folding). A power-of-two radix makes
+    /// the digits bit slices and the weight a shift, but no radix has to be a
+    /// power of two.
     fn simplify_demux_roundtrip(&mut self, bounds: &Map<OpId, (Dim, Dim)>) {
         #[cfg(feature = "time")]
         let _timer = crate::Timer::new("simplify_demux_roundtrip");
         let mut remaps: Map<OpId, OpId> = Map::default();
-        /// A slice of a variable extracted via div/mod/shr then shifted back.
+        /// One field of a variable: `((root / lo) % width) * shift`, for
+        /// non-negative integers, where all three are positive multipliers.
+        ///
+        /// The fields of a round trip are the mixed-radix digits of `root`:
+        /// `lo` is the product of the lower radices, `width` the digit's
+        /// radix, and `shift` the weight the digit was multiplied by on the
+        /// way back. A power-of-two radix makes this the old bit-slice model
+        /// (`lo = 2^l`, `width = 2^w`), but nothing here needs a radix to be
+        /// a power of two; `width == Dim::MAX` means "to the top of `root`",
+        /// filled in from the bounds.
         #[derive(Clone)]
         struct Slice {
             root: OpId,
@@ -778,8 +789,13 @@ impl Kernel {
                         None => return (vec![], None),
                     };
                     let (mut slices, constant) = collect_slices_inner(k, x);
+                    let factor = if (0..64).contains(&c) {
+                        Dim::from(1i64) << c
+                    } else {
+                        return (vec![], Some(op_id));
+                    };
                     for s in &mut slices {
-                        s.shift += c;
+                        s.shift = s.shift.saturating_mul(factor);
                     }
                     // (S + C) << k distributes exactly: the carried constant
                     // shifts with the slices.
@@ -791,26 +807,30 @@ impl Kernel {
                     };
                     (slices, constant)
                 }
-                Op::Binary { x, y, bop: BOp::Mul } if is_const(k, y) => {
-                    let c = match const_u64(k, y) {
+                Op::Binary { x, y, bop: BOp::Mul } if is_const(k, x) || is_const(k, y) => {
+                    let (term, cy) = if is_const(k, y) { (x, y) } else { (y, x) };
+                    let c = match const_u64(k, cy) {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
                     };
-                    if !(c > 0 && c & (c - 1) == 0) {
-                        // Not a slice-changing multiply — keep the term as a
-                        // non-derived constant so it survives the roundtrip.
+                    if c == 0 {
                         return (vec![], Some(op_id));
                     }
-                    let kk = c.ilog2() as i64;
-                    let (mut slices, constant) = collect_slices_inner(k, x);
-                    for s in &mut slices {
-                        s.shift += kk;
+                    let (mut slices, constant) = collect_slices_inner(k, term);
+                    if slices.is_empty() {
+                        return (vec![], Some(op_id));
                     }
-                    // (S + C) * c distributes exactly: the carried constant
+                    for s in &mut slices {
+                        s.shift = s.shift.saturating_mul(c);
+                    }
+                    // `(S + C) * c` distributes exactly: the carried constant
                     // scales with the multiply (keeping it unscaled would
-                    // silently drop the factor).
+                    // silently drop the factor). Any positive `c` is a digit
+                    // weight, not just a power of two.
                     let constant = match constant {
-                        Some(cc) if !is_zero_const(k, cc) => Some(k.insert_before(op_id, Op::Binary { x: cc, y, bop: BOp::Mul })),
+                        Some(cc) if !is_zero_const(k, cc) => {
+                            Some(k.insert_before(op_id, Op::Binary { x: cc, y: cy, bop: BOp::Mul }))
+                        }
                         c => c,
                     };
                     (slices, constant)
@@ -820,19 +840,24 @@ impl Kernel {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
                     };
-                    if !(c > 0 && c & (c - 1) == 0) {
+                    if c == 0 {
                         return (vec![], Some(op_id));
                     }
-                    let kk = c.ilog2() as i64;
-                    let (mut slices, constant) = collect_slices_inner(k, x);
+                    let (slices, constant) = collect_slices_inner(k, x);
+                    // A digit only exists when the whole operand is the digit
+                    // source. With a carried additive constant (or nothing to
+                    // slice at all) the operand becomes the root itself: the
+                    // identity is `d*(A + x/d) + (B + x%d) = d*A + B + x` for
+                    // any `A`, `B`, which is what makes a stride that neither
+                    // divides the root nor is a power of two — `k / 5120` —
+                    // a digit at all.
+                    let carries_const = matches!(constant, Some(cc) if !is_zero_const(k, cc));
+                    if carries_const || slices.is_empty() {
+                        return (vec![root_slice(x, c, Dim::MAX)], None);
+                    }
+                    let mut slices = slices;
                     for s in &mut slices {
-                        s.lo += kk;
-                    }
-                    // Div does not distribute over addition: a carried
-                    // nonzero constant would leak into the quotient, so the
-                    // whole op demotes to an opaque constant term.
-                    if matches!(constant, Some(cc) if !is_zero_const(k, cc)) {
-                        return (vec![], Some(op_id));
+                        s.lo = s.lo.saturating_mul(c);
                     }
                     (slices, constant)
                 }
@@ -841,9 +866,21 @@ impl Kernel {
                         Some(c) => c,
                         None => return (vec![], None),
                     };
+                    let factor = if (0..64).contains(&c) {
+                        Dim::from(1i64) << c
+                    } else {
+                        return (vec![], Some(op_id));
+                    };
                     let (mut slices, constant) = collect_slices_inner(k, x);
+                    if slices.is_empty() {
+                        // An opaque operand keeps its shift: `C >> k` is a
+                        // constant term of its own, not `C`.
+                        let constant =
+                            constant.map(|cc| k.insert_before(op_id, Op::Binary { x: cc, y, bop: BOp::BitShiftRight }));
+                        return (vec![], constant);
+                    }
                     for s in &mut slices {
-                        s.lo += c;
+                        s.lo = s.lo.saturating_mul(factor);
                     }
                     (slices, constant)
                 }
@@ -852,20 +889,21 @@ impl Kernel {
                         Some(c) => c,
                         None => return (vec![], Some(op_id)),
                     };
-                    if !(c > 0 && c & (c - 1) == 0) {
+                    if c == 0 {
                         return (vec![], Some(op_id));
                     }
-                    let width = c.ilog2() as i64;
-                    let (mut slices, constant) = collect_slices_inner(k, x);
+                    let (slices, constant) = collect_slices_inner(k, x);
+                    let carries_const = matches!(constant, Some(cc) if !is_zero_const(k, cc));
+                    if carries_const || slices.is_empty() {
+                        return (vec![root_slice(x, 1, c)], None);
+                    }
+                    let mut slices = slices;
                     for s in &mut slices {
-                        s.width = s.width.min(width);
+                        s.width = s.width.min(c);
                     }
                     // Mod does not distribute over addition: a carried
                     // nonzero constant would leak into the residue, so the
-                    // whole op demotes to an opaque constant term.
-                    if matches!(constant, Some(cc) if !is_zero_const(k, cc)) {
-                        return (vec![], Some(op_id));
-                    }
+                    // operand becomes the root for its residue digit.
                     (slices, constant)
                 }
                 _ => {
@@ -893,6 +931,10 @@ impl Kernel {
         /// demote and mul/shl scaling below leave it untouched.
         fn is_zero_const(k: &Kernel, op_id: OpId) -> bool {
             matches!(k.at(op_id), Op::Const(c) if c.is_zero())
+        }
+        /// The operand itself as a one-slice root, `((x / lo) % width) * 1`.
+        fn root_slice(root: OpId, lo: Dim, width: Dim) -> Slice {
+            Slice { root, lo, width, shift: 1 }
         }
 
         let mut op_id = self.head;
@@ -961,31 +1003,54 @@ impl Kernel {
                 op_id = next;
                 continue;
             }
-
-            let k_val = slices[0].shift.wrapping_sub(slices[0].lo);
-            if slices.iter().any(|s| s.shift.wrapping_sub(s.lo) != k_val) {
+            // Below zero, `x / d` truncates toward zero and `x % d` carries the
+            // sign: the digits are no longer a radix partition, so only fold a
+            // root the bounds prove non-negative.
+            if !bounds.get(&root).is_some_and(|&(lo, _)| lo >= 0) {
                 op_id = next;
                 continue;
             }
 
-            let root_width = bounds.get(&root).map_or(64, |&(_, max)| if max == 0 { 1 } else { (max.ilog2() + 1) as i64 });
+            // A digit is only a digit at its own radix position: the weight
+            // `shift / lo` must be the same exact multiplier for every slice.
+            let weight = |s: &Slice| (s.lo != 0 && s.shift % s.lo == 0).then(|| s.shift / s.lo);
+            let Some(k_val) = weight(&slices[0]) else {
+                op_id = next;
+                continue;
+            };
+            if slices.iter().any(|s| weight(s) != Some(k_val)) {
+                op_id = next;
+                continue;
+            }
 
-            // Filter zero-width slices (e.g. x%1 == 0) — they are constant 0, not a partition piece.
-            slices.retain(|s| s.width != 0);
+            // The value span of `root` (bounds are conservative, so the span
+            // may over-cover; the radices only have to reach it).
+            let Some(&(_, max_root)) = bounds.get(&root) else {
+                op_id = next;
+                continue;
+            };
+            let span = max_root.saturating_add(1);
+
+            // Filter radix-1 slices (e.g. x%1 == 0) — they are constant 0, not a partition piece.
+            slices.retain(|s| s.width != 1);
             if slices.is_empty() {
                 op_id = next;
                 continue;
             }
-            // Re-derive k_val after filtering (in case the zero-width slice was the first)
-            let k_val = slices[0].shift.wrapping_sub(slices[0].lo);
-            if slices.iter().any(|s| s.shift.wrapping_sub(s.lo) != k_val) {
+            // Re-derive k_val after filtering (in case the empty slice was the first)
+            let Some(k_val) = weight(&slices[0]) else {
+                op_id = next;
+                continue;
+            };
+            if slices.iter().any(|s| weight(s) != Some(k_val)) {
                 op_id = next;
                 continue;
             }
 
-            // Sort by lo, fill in MAX widths from bounds, verify partition
+            // Sort by lo, fill in MAX widths from the span, verify the radices
+            // tile: each slice starts where the previous radices end.
             slices.sort_by_key(|s| s.lo);
-            let mut cursor = 0i64;
+            let mut cursor = 1i64;
             let mut ok = true;
             for s in &slices {
                 if s.lo != cursor {
@@ -993,13 +1058,17 @@ impl Kernel {
                     break;
                 }
                 let w = if s.width == Dim::MAX {
-                    root_width.saturating_sub(s.lo)
+                    (span + s.lo - 1) / s.lo
                 } else {
                     s.width
                 };
-                cursor = cursor.saturating_add(w);
+                if w < 1 {
+                    ok = false;
+                    break;
+                }
+                cursor = s.lo.saturating_mul(w);
             }
-            if !ok || cursor < root_width {
+            if !ok || cursor < span {
                 op_id = next;
                 continue;
             }
@@ -1011,13 +1080,21 @@ impl Kernel {
                 continue;
             }
 
-            // Replace with root << k_val + constant
-            let shift_const = self.insert_before(op_id, Op::Const(Constant::idx(k_val)));
-            let shl = self.insert_before(op_id, Op::Binary { x: root, y: shift_const, bop: BOp::BitShiftLeft });
-            if !constant_term.is_null() {
-                self.ops[op_id].op = Op::Binary { x: shl, y: constant_term, bop: BOp::Add };
+            // Replace with root * k_val + constant (a shift when the weight is
+            // a power of two, nothing when it is one).
+            let scaled = if k_val == 1 {
+                root
+            } else if k_val > 0 && k_val & (k_val - 1) == 0 {
+                let shift_const = self.insert_before(op_id, Op::Const(Constant::idx(k_val.trailing_zeros() as i64)));
+                self.insert_before(op_id, Op::Binary { x: root, y: shift_const, bop: BOp::BitShiftLeft })
             } else {
-                record(&mut remaps, op_id, shl);
+                let weight_const = self.insert_before(op_id, Op::Const(Constant::idx(k_val)));
+                self.insert_before(op_id, Op::Binary { x: root, y: weight_const, bop: BOp::Mul })
+            };
+            if !constant_term.is_null() {
+                self.ops[op_id].op = Op::Binary { x: scaled, y: constant_term, bop: BOp::Add };
+            } else {
+                record(&mut remaps, op_id, scaled);
             }
 
             op_id = next;

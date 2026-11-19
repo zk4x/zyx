@@ -253,6 +253,20 @@ zyx/src/kernel/   kernel IR, codegen, ALL optimization passes
 - No autocasting. Dtype is caller's job; overflow fixed at call site.
 - New files: license header + docs + `#[track_caller]` errors.
 
+## Generalization
+- zyx is about generalization. When a pattern, op, layout, shape, dtype
+  or quantization format needs a new code path, extend the existing one to
+  cover both cases; a second path only for the new case is a bug report,
+  not a design.
+- A function that works for exactly one config, tile shape, dtype or
+  quant format is a specialization to be folded into the general one, not
+  a form to keep. Config options multiply the space; they never fork it.
+- Do one step of generalization at a time: the step is finished only when
+  the specialized path is gone, not when the general one sits beside it.
+- The same rule governs the config space: every axis the enumeration
+  crosses is a parameter of one lowering, and a config that cannot be
+  built must not be enumerated.
+
 ## TT safety (board irreplaceable; resets are the USER's alone, NEVER)
 - `cargo test` allowed. Failed init WEDGES board (0xffffffff reads):
   STOP, report, ASK. No retries, no further access.
