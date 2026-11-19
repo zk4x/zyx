@@ -112,12 +112,36 @@ impl Kernel {
                 }
                 Op::Stack { ref ops } => {
                     // vectorize[devec(v,0), devec(v,1), ..., devec(v,n-1)] → v
-                    // only when the stack rebuilds *every* lane of `v`; a
+                    // only when the stack rebuilds *every* element of `v`; a
                     // stack that takes a prefix (e.g. one K step of a
                     // two-step `ldmatrix` result) is a different value.
+                    //
+                    // The width comes from the shape walk where it models the
+                    // value, and from the instruction where it does not: an
+                    // `ldmatrix` hands back exactly its destination list, one
+                    // 32-bit word per 8x8 matrix, which is a value width like
+                    // any other. It is never the empty product — a value with
+                    // an unmodelled width is not one element wide, and reading
+                    // it that way folded a one-word slice of a two-word
+                    // fragment into the whole fragment.
                     if let Op::Index { vec, idx: 0 } = self.at(ops[0]) {
                         let vec = *vec;
-                        let all_lanes = self.shape(vec).iter().product::<Dim>() == Dim::from(ops.len() as i64);
+                        let width = match self.at(vec) {
+                            Op::PTX(p) => match p.as_ref() {
+                                PTXOp::VLdMatrix { num, .. } | PTXOp::LdMatrix { num, .. } => {
+                                    Some(Dim::from(i64::from(num.words())))
+                                }
+                                // The rest carry no fragment width: `WarpSync`
+                                // no value at all, and the single-word ops are
+                                // never the vector of an index sequence.
+                                _ => None,
+                            },
+                            _ => {
+                                let dims = self.shape(vec);
+                                (!dims.is_empty()).then(|| dims.iter().product::<Dim>())
+                            }
+                        };
+                        let all_lanes = width == Some(Dim::from(ops.len() as i64));
                         if all_lanes
                             && ops
                                 .iter()

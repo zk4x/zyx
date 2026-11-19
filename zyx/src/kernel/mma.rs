@@ -335,11 +335,6 @@ struct Quant {
     /// The scale's cone: the value cone restricted to what the scale reads, so
     /// it is rebuilt at a group's representative element.
     scale: Cone,
-    /// The run of elements over which the scale is constant. It is what says
-    /// whether the scale is a per-group value (a `q8_1` activation scale) or a
-    /// per-super-block one (a weight block scale), and so whether an emission
-    /// stages it once per K chunk or reads it once per group.
-    scale_period: Dim,
 }
 
 /// Elements per int8 group: llama.cpp's `q8_1` block, and the run the weight
@@ -383,7 +378,7 @@ impl Quant {
             }
             let scale =
                 Cone { value: s, root: cone.root, ops: scale_ops, mn: cone.mn, k_leaf: cone.k_leaf, k_extent: cone.k_extent };
-            return Some(Quant { code, scale, scale_period: p });
+            return Some(Quant { code, scale });
         }
         None
     }
@@ -524,30 +519,6 @@ fn element_leaves(k: &Kernel, root: OpId) -> Option<(OpId, OpId, Dim)> {
         (None, Some(k_extent)) => Some((x, xb, k_extent)),
         _ => None,
     }
-}
-
-/// Whether a code cone reads one element per index — an int8 code addressed
-/// like the operand itself, so four consecutive k are one vector load — rather
-/// than a packed word it has to shift and mask (a multi-bit code). A packed
-/// code's loads name a word index, not the element index, so it is folded in
-/// place instead of through a byte lane.
-fn byte_code(k: &Kernel, cone: &Cone) -> bool {
-    let Some(root) = k.get_strides(cone.root) else {
-        return false;
-    };
-    let mut any = false;
-    for (_, op) in &cone.ops {
-        if let Op::Load { src_idx, .. } = op {
-            any = true;
-            let Some(map) = k.get_strides(*src_idx) else {
-                return false;
-            };
-            if map.len() != root.len() || map.iter().any(|(v, s)| root.get(v) != Some(s)) {
-                return false;
-            }
-        }
-    }
-    any
 }
 
 /// The int8 split of an operand value, when its chain exposes one.
@@ -965,18 +936,18 @@ impl Optimization for Tensorize {
                 let b_k = k.mul(k_base, r.b_k);
                 let b_base = k.mad(n_base, r.b_n, b_k);
                 let (asl, av) = match &r.a_cone {
-                    Some(cone) => coop_fill_cone(k, OpId::NULL, lane, cone, a_base, r.a_m, r.a_k, fm, fk, threads),
-                    None => coop_fill_load(k, OpId::NULL, lane, r.a_src, a_base, r.a_m, r.a_k, fm, fk, threads),
+                    Some(cone) => coop_fill_cone(k, OpId::NULL, lane, cone, a_base, r.a_m, r.a_k, fm, fk, threads, plan.swizzle),
+                    None => coop_fill_load(k, OpId::NULL, lane, r.a_src, a_base, r.a_m, r.a_k, fm, fk, threads, plan.swizzle),
                 };
                 coop_fill_store(k, OpId::NULL, a_tile, OpId::NULL, asl, av);
                 let (bsl, bv) = match &r.b_cone {
-                    Some(cone) => coop_fill_cone(k, OpId::NULL, lane, cone, b_base, r.b_n, r.b_k, fn_, fk, threads),
-                    None => coop_fill_load(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, threads),
+                    Some(cone) => coop_fill_cone(k, OpId::NULL, lane, cone, b_base, r.b_n, r.b_k, fn_, fk, threads, plan.swizzle),
+                    None => coop_fill_load(k, OpId::NULL, lane, r.b_src, b_base, r.b_n, r.b_k, fn_, fk, threads, plan.swizzle),
                 };
                 coop_fill_store(k, OpId::NULL, b_tile, OpId::NULL, bsl, bv);
                 k.push_back(Op::Barrier);
-                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, fm, 0, fk / 8, OpId::NULL, OpId::NULL);
-                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, fn_, 0, fk / 8, OpId::NULL, OpId::NULL);
+                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, fm, 0, fk / 8, OpId::NULL, OpId::NULL, plan.swizzle);
+                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, fn_, 0, fk / 8, OpId::NULL, OpId::NULL, plan.swizzle);
                 (a, b)
             } else {
                 let mut a_elems = Vec::with_capacity(v.a.slots.len());
@@ -1225,8 +1196,9 @@ fn coop_fill_load(
     rows: Dim,
     chunk: Dim,
     threads: Dim,
+    swizzle: bool,
 ) -> (OpId, OpId) {
-    coop_fill_load_with(kernel, before, lane, src, None, base, sr, sc, rows, chunk, threads)
+    coop_fill_load_with(kernel, before, lane, src, None, base, sr, sc, rows, chunk, threads, swizzle)
 }
 
 /// [`coop_fill_load`] for an operand that is a fused dequant chain rather than
@@ -1246,8 +1218,9 @@ fn coop_fill_cone(
     rows: Dim,
     chunk: Dim,
     threads: Dim,
+    swizzle: bool,
 ) -> (OpId, OpId) {
-    coop_fill_load_with(kernel, before, lane, OpId::NULL, Some(cone), base, sr, sc, rows, chunk, threads)
+    coop_fill_load_with(kernel, before, lane, OpId::NULL, Some(cone), base, sr, sc, rows, chunk, threads, swizzle)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1263,6 +1236,7 @@ fn coop_fill_load_with(
     rows: Dim,
     chunk: Dim,
     threads: Dim,
+    swizzle: bool,
 ) -> (OpId, OpId) {
     // The widest vector access this tile can use: 16 bytes (`half8`) where
     // the row and the thread count divide into it, then 8 bytes (`half4`),
@@ -1379,10 +1353,16 @@ fn coop_fill_load_with(
     // of them lands on banks 0-3 (measured: 8-way conflict on each of the 16
     // fill stores, `mio_throttle` the top stall). XORing the row field with the
     // unit's k-block spreads them over the banks, and `coop_ldmatrix` mirrors it
-    // with the k-block of the unit it reads.
+    // with the k-block of the unit it reads. The plain layout is the same pack
+    // without the XOR: the two are the staged layout's axis, and every read of
+    // the tile takes the flag of the fill that wrote it.
     let mrow = put(kernel, Op::Binary { x: row, y: seven, bop: BOp::BitAnd });
-    let swz = put(kernel, Op::Binary { x: kblk, y: seven, bop: BOp::BitAnd });
-    let mrow = put(kernel, Op::Binary { x: mrow, y: swz, bop: BOp::BitXor });
+    let mrow = if swizzle {
+        let swz = put(kernel, Op::Binary { x: kblk, y: seven, bop: BOp::BitAnd });
+        put(kernel, Op::Binary { x: mrow, y: swz, bop: BOp::BitXor })
+    } else {
+        mrow
+    };
     let mrow = put(kernel, Op::Binary { x: mrow, y: three, bop: BOp::BitShiftLeft });
     // The column's offset inside its eight-half block: the slot is
     // `... + (k%8)`, and `vector` only covers the vector's own lanes. Without
@@ -1421,128 +1401,6 @@ fn coop_fill_store(kernel: &mut Kernel, before: OpId, tile: OpId, slot_base: OpI
     put(kernel, Op::Store { dst: tile, dst_idx: slot, src: value });
 }
 
-/// Fill a staged int8 word tile from an operand cone: `rows x chunk` int8
-/// values, four consecutive k packed into one 32-bit word (the `m8n8k16`
-/// operand word). The step lane is the run of words one thread fills, so the
-/// tile write is that thread's contiguous run.
-///
-/// `fold` picks how the four bytes of a word become one:
-///
-/// - `false` (a byte-addressed code, one int8 per element): the four bytes are
-///   one lane, and their disjoint bit fields fold with a word-wide sum. One
-///   load serves the four bytes.
-/// - `true` (a packed code, a word already holding the group's bits): each
-///   byte is read and shifted on its own, the decode being part of the cone.
-#[allow(clippy::too_many_arguments)]
-fn coop_fill_cone_i8(
-    kernel: &mut Kernel,
-    before: OpId,
-    tid: OpId,
-    cone: &Cone,
-    row_off: OpId,
-    k_off: OpId,
-    rows: Dim,
-    chunk: Dim,
-    threads: Dim,
-    fold: bool,
-    lane_axis: u32,
-) -> (OpId, OpId) {
-    let put = |kernel: &mut Kernel, op: Op| -> OpId {
-        if before.is_null() {
-            kernel.push_back(op)
-        } else {
-            kernel.insert_before(before, op)
-        }
-    };
-    let four = Dim::from(4);
-    let words = rows * (chunk / four);
-    // A tile smaller than the block would leave threads idle: every thread
-    // writes one entry per step anyway and repeats identically, which is the
-    // same value at the same address.
-    let steps = (words + threads - Dim::from(1)) / threads;
-    let step = put(kernel, Op::Unroll { axis: 1, len: u16::try_from(steps).expect("int8 fill step count") });
-    let cs = put(kernel, Op::Const(Constant::idx(steps)));
-    // The thread's own contiguous run of words: `tid * steps + step`.
-    let widx = put(kernel, Op::Binary { x: tid, y: cs, bop: BOp::Mul });
-    let widx = put(kernel, Op::Binary { x: widx, y: step, bop: BOp::Add });
-    let w_n = u32::try_from(words).expect("int8 fill: word count");
-    let widx = if w_n.is_power_of_two() {
-        let m = put(kernel, Op::Const(Constant::idx(i64::from(w_n) - 1)));
-        put(kernel, Op::Binary { x: widx, y: m, bop: BOp::BitAnd })
-    } else {
-        let cw = put(kernel, Op::Const(Constant::idx(words)));
-        put(kernel, Op::Binary { x: widx, y: cw, bop: BOp::Mod })
-    };
-    // The word's row and its word-column inside the tile: `chunk / 4` words per
-    // row, so `row = widx / wpr` and `wcol = widx % wpr`. Both are shifts when
-    // the row's word count is a power of two (it is: the chunk is a multiple of
-    // the group), and a signed 64-bit division otherwise, which lowers to a
-    // sequence and costs registers. Every byte of the word shares the row term,
-    // and the element column is `wcol * 4 + byte`.
-    let per_row = chunk / four;
-    let pr_n = u32::try_from(per_row).expect("int8 fill: words per row");
-    let (row, wcol) = if pr_n.is_power_of_two() {
-        let sh = put(kernel, Op::Const(Constant::idx(i64::from(pr_n.trailing_zeros()))));
-        let row = put(kernel, Op::Binary { x: widx, y: sh, bop: BOp::BitShiftRight });
-        let m = put(kernel, Op::Const(Constant::idx(i64::from(pr_n) - 1)));
-        let col = put(kernel, Op::Binary { x: widx, y: m, bop: BOp::BitAnd });
-        (row, col)
-    } else {
-        let wpr = put(kernel, Op::Const(Constant::idx(per_row)));
-        let row = put(kernel, Op::Binary { x: widx, y: wpr, bop: BOp::Div });
-        let col = put(kernel, Op::Binary { x: widx, y: wpr, bop: BOp::Mod });
-        (row, col)
-    };
-    let four_init = put(kernel, Op::Const(Constant::idx(4i64)));
-    let cbase = put(kernel, Op::Binary { x: wcol, y: four_init, bop: BOp::Mul });
-    // The element's coordinates in the operand's own index space: the tile's
-    // origin (which block, which K chunk) plus the tile-local row and column.
-    let cbase = put(kernel, Op::Binary { x: cbase, y: k_off, bop: BOp::Add });
-    let row = put(kernel, Op::Binary { x: row, y: row_off, bop: BOp::Add });
-    let mask = put(kernel, Op::Const(Constant::new(0xffu32)));
-    let mut word = OpId::NULL;
-    let lanes: Vec<u32> = if fold { (0..4u32).map(|b| b).collect() } else { vec![0] };
-    let b4 = if fold {
-        None
-    } else {
-        Some(put(kernel, Op::Unroll { axis: lane_axis, len: 4 }))
-    };
-    for (i, b) in lanes.iter().copied().enumerate() {
-        let c = match b4 {
-            Some(b4) => put(kernel, Op::Binary { x: cbase, y: b4, bop: BOp::Add }),
-            None => {
-                let off = put(kernel, Op::Const(Constant::idx(b)));
-                put(kernel, Op::Binary { x: cbase, y: off, bop: BOp::Add })
-            }
-        };
-        let v = cone.clone_at_coords(kernel, before, row, c);
-        let v = if kernel.dtype(v) == DType::I32 {
-            v
-        } else {
-            put(kernel, Op::Cast { x: v, dtype: DType::I32 })
-        };
-        let v = put(kernel, Op::Cast { x: v, dtype: DType::U32 });
-        let v = put(kernel, Op::Binary { x: v, y: mask, bop: BOp::BitAnd });
-        let sh = match b4 {
-            Some(b4) => {
-                let eight = put(kernel, Op::Const(Constant::new(8u32)));
-                let bu = put(kernel, Op::Cast { x: b4, dtype: DType::U32 });
-                put(kernel, Op::Binary { x: bu, y: eight, bop: BOp::Mul })
-            }
-            None => put(kernel, Op::Const(Constant::new(8u32 * b))),
-        };
-        let v = put(kernel, Op::Binary { x: v, y: sh, bop: BOp::BitShiftLeft });
-        if i == 0 && b4.is_some() {
-            word = put(kernel, Op::Reduce { x: v, rop: BOp::Add, reduce_axis: b4.unwrap() });
-        } else if i == 0 {
-            word = v;
-        } else {
-            word = put(kernel, Op::Binary { x: word, y: v, bop: BOp::Add });
-        }
-    }
-    (widx, word)
-}
-
 /// The `ldmatrix` that reads the `k_offset`-th instruction sub-tile of a
 /// staged `rows x chunk` tile in the fragment layout of the MMA: `frags` 8x8
 /// b16 tiles, one per group of eight lanes, each lane naming the row it
@@ -1560,13 +1418,63 @@ fn coop_fill_cone_i8(
 /// copy when the loaded element's bytes are the codes themselves
 /// ([`Quant::byte_word`]), otherwise the two-bit unpack, whose lookup table is
 /// the code's own centering.
+/// Stage one operand tile in the packed-word layout the `ldmatrix` mainloop
+/// reads: the payload words at `payload` and the per-group scales at
+/// `scale_col`, both inside a row of `stride` words.
+///
+/// The payload half has two shapes, chosen by what the cone offers: when the
+/// quantization packs a code into one loadable word (`word`), that word is
+/// loaded once per `codes` elements and expanded into `codes / 4` operand words
+/// — a copy when the loaded element's bytes are the codes themselves
+/// ([`Quant::byte_word`]), otherwise the two-bit unpack, whose lookup table is
+/// the code's own centering. When the cone has no such word, the four codes of
+/// an operand word are read one by one and packed by hand. Either way the tile,
+/// the row stride and the scale columns are the same: the staged layout does not
+/// depend on how the codes are fetched.
+/// The 32-bit operand word at `(row, k)`: four consecutive codes packed by hand,
+/// the byte an `m8n8k16` lane multiplies. `clone_at_coords` returns one element's
+/// code whatever the format, so a byte-addressed code and a packed multi-bit one
+/// build the same word — this is the form for a cone with no loadable code word,
+/// and the form every unstaged fragment read takes.
+fn cone_word4(kernel: &mut Kernel, before: OpId, quant: &Quant, row: OpId, k: OpId) -> OpId {
+    let put = |kernel: &mut Kernel, op: Op| -> OpId {
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
+    };
+    let mask = put(kernel, Op::Const(Constant::new(0xffu32)));
+    let mut packed = OpId::NULL;
+    for b in 0..4u32 {
+        let c = put(kernel, Op::Const(Constant::idx(i64::from(b))));
+        let c = put(kernel, Op::Binary { x: k, y: c, bop: BOp::Add });
+        let v = quant.code.clone_at_coords(kernel, before, row, c);
+        let v = if kernel.dtype(v) == DType::I32 {
+            v
+        } else {
+            put(kernel, Op::Cast { x: v, dtype: DType::I32 })
+        };
+        let v = put(kernel, Op::Cast { x: v, dtype: DType::U32 });
+        let v = put(kernel, Op::Binary { x: v, y: mask, bop: BOp::BitAnd });
+        let sh = put(kernel, Op::Const(Constant::new(8 * b)));
+        let v = put(kernel, Op::Binary { x: v, y: sh, bop: BOp::BitShiftLeft });
+        packed = if b == 0 {
+            v
+        } else {
+            put(kernel, Op::Binary { x: packed, y: v, bop: BOp::Add })
+        };
+    }
+    packed
+}
+
 #[allow(clippy::too_many_arguments)]
-fn coop_fill_word_tile(
+fn coop_fill_tile(
     kernel: &mut Kernel,
     before: OpId,
     tid: OpId,
     quant: &Quant,
-    word: &CodeWord,
+    word: Option<&CodeWord>,
     row_off: OpId,
     k_off: OpId,
     rows: Dim,
@@ -1586,24 +1494,33 @@ fn coop_fill_word_tile(
         }
     };
     // ---- the payload words ----
-    let per_row = chunk / Dim::from(word.codes);
+    // A fetched unit is one code word (`codes` elements) and covers
+    // `codes / 4` operand words; without a code word a unit is one operand word.
+    let unit = word.map_or(4, |w| w.codes);
+    let per_row = chunk / Dim::from(unit);
     let total = rows * per_row;
     let steps = (total + threads - 1) / threads;
     let step = put(kernel, Op::Unroll { axis, len: u16::try_from(steps).expect("word fill step count") });
     let th = put(kernel, Op::Const(Constant::idx(threads)));
     let st = put(kernel, Op::Binary { x: step, y: th, bop: BOp::Mul });
     let w = put(kernel, Op::Binary { x: tid, y: st, bop: BOp::Add });
+    // A tile smaller than the block leaves threads past its end: the last step
+    // wraps instead of overrunning, writing the same value at the same address
+    // (a repeat, not a race).
+    let w = if total % threads != 0 {
+        let ct = put(kernel, Op::Const(Constant::idx(total)));
+        put(kernel, Op::Binary { x: w, y: ct, bop: BOp::Mod })
+    } else {
+        w
+    };
     let prc = put(kernel, Op::Const(Constant::idx(per_row)));
     let r = put(kernel, Op::Binary { x: w, y: prc, bop: BOp::Div });
     let c = put(kernel, Op::Binary { x: w, y: prc, bop: BOp::Mod });
-    let cc = put(kernel, Op::Const(Constant::idx(Dim::from(word.codes))));
+    let cc = put(kernel, Op::Const(Constant::idx(Dim::from(unit))));
     let ck = put(kernel, Op::Binary { x: c, y: cc, bop: BOp::Mul });
     let row = put(kernel, Op::Binary { x: r, y: row_off, bop: BOp::Add });
     let kk = put(kernel, Op::Binary { x: ck, y: k_off, bop: BOp::Add });
-    // The cone's own word load at this element: the fill stages the packed
-    // operand without knowing the format, only its width.
-    let q = quant.code.clone_op_at_coords(kernel, before, row, kk, word.load);
-    let out_words = Dim::from(word.codes / 4);
+    let out_words = Dim::from(unit / 4);
     let ow = put(kernel, Op::Const(Constant::idx(out_words)));
     let cw = put(kernel, Op::Binary { x: c, y: ow, bop: BOp::Mul });
     let cpay = put(kernel, Op::Const(Constant::idx(payload)));
@@ -1611,6 +1528,15 @@ fn coop_fill_word_tile(
     let cst = put(kernel, Op::Const(Constant::idx(stride)));
     let mut base = put(kernel, Op::Binary { x: r, y: cst, bop: BOp::Mul });
     base = put(kernel, Op::Binary { x: base, y: cw, bop: BOp::Add });
+    let Some(word) = word else {
+        // No code word: pack the four codes of this operand word by hand.
+        let packed = cone_word4(kernel, before, quant, row, kk);
+        put(kernel, Op::Store { dst: tile, dst_idx: base, src: packed });
+        return coop_fill_scales(kernel, before, tid, quant, row_off, k_off, rows, chunk, threads, tile, stride, scale_col, axis);
+    };
+    // The cone's own word load at this element: the fill stages the packed
+    // operand without knowing the format, only its width.
+    let q = quant.code.clone_op_at_coords(kernel, before, row, kk, word.load);
     if quant.byte_word(word) {
         put(kernel, Op::Store { dst: tile, dst_idx: base, src: q });
     } else {
@@ -1645,6 +1571,36 @@ fn coop_fill_word_tile(
         put(kernel, Op::Store { dst: tile, dst_idx: base1, src: qy });
     }
     // ---- the per-group scales ----
+    coop_fill_scales(kernel, before, tid, quant, row_off, k_off, rows, chunk, threads, tile, stride, scale_col, axis);
+}
+
+/// The scale half of a staged packed tile: one f32 per (row, group), stored at
+/// `row * stride + scale_col + group`. Every operand of the packed layout keeps
+/// its scales inside its own row, so the mainloop reads them with the payload.
+#[allow(clippy::too_many_arguments)]
+fn coop_fill_scales(
+    kernel: &mut Kernel,
+    before: OpId,
+    tid: OpId,
+    quant: &Quant,
+    row_off: OpId,
+    k_off: OpId,
+    rows: Dim,
+    chunk: Dim,
+    threads: Dim,
+    tile: OpId,
+    stride: Dim,
+    scale_col: Dim,
+    axis: u32,
+) {
+    let put = |kernel: &mut Kernel, op: Op| -> OpId {
+        if before.is_null() {
+            kernel.push_back(op)
+        } else {
+            kernel.insert_before(before, op)
+        }
+    };
+    let cst = put(kernel, Op::Const(Constant::idx(stride)));
     let groups = chunk / Q8_1_GROUP;
     let stotal = rows * groups;
     let ssteps = (stotal + threads - 1) / threads;
@@ -1652,6 +1608,12 @@ fn coop_fill_word_tile(
     let sth = put(kernel, Op::Const(Constant::idx(threads)));
     let sst = put(kernel, Op::Binary { x: sstep, y: sth, bop: BOp::Mul });
     let e = put(kernel, Op::Binary { x: tid, y: sst, bop: BOp::Add });
+    let e = if stotal % threads != 0 {
+        let ct = put(kernel, Op::Const(Constant::idx(stotal)));
+        put(kernel, Op::Binary { x: e, y: ct, bop: BOp::Mod })
+    } else {
+        e
+    };
     let gc = put(kernel, Op::Const(Constant::idx(groups)));
     let sr = put(kernel, Op::Binary { x: e, y: gc, bop: BOp::Div });
     let sg = put(kernel, Op::Binary { x: e, y: gc, bop: BOp::Mod });
@@ -1716,6 +1678,7 @@ fn coop_ldmatrix(
     kblocks: Dim,
     slot_base: OpId,
     lane_base: OpId,
+    swizzle: bool,
 ) -> OpId {
     let put = |kernel: &mut Kernel, op: Op| -> OpId {
         if before.is_null() {
@@ -1758,21 +1721,35 @@ fn coop_ldmatrix(
     // key without either side restating the other's lane geometry — and since
     // every shared address here is loop-invariant, it is computed once, not per
     // iteration.
-    let one = put(kernel, Op::Const(Constant::idx(1i64)));
-    let eight = put(kernel, Op::Const(Constant::idx(8i64)));
-    let kbh = put(kernel, Op::Const(Constant::idx(tile_rows / 8 * 64)));
-    let key = put(kernel, Op::Binary { x: addr, y: kbh, bop: BOp::Div });
-    // The key must be the k-block *inside the operand's tile*, the way the fill
-    // writes it: the absolute address also carries the tile's base, so the key
-    // is folded to the same width as the store's. The fill XORs the low *three*
-    // bits of the k-block into the row field (bits 3..5 of the element index);
-    // a tile with more than eight k-blocks therefore has to fold the read key
-    // the same way, or the XOR reaches bit 6 and names the wrong k-block.
-    let nkb = put(kernel, Op::Const(Constant::idx(kblocks.clamp(1, 8))));
-    let kmask = put(kernel, Op::Binary { x: nkb, y: one, bop: BOp::Sub });
-    let key = put(kernel, Op::Binary { x: key, y: kmask, bop: BOp::BitAnd });
-    let swz = put(kernel, Op::Binary { x: key, y: eight, bop: BOp::Mul });
-    let addr = put(kernel, Op::Binary { x: addr, y: swz, bop: BOp::BitXor });
+    // Row swizzle, the read half. The fill XORs the row field with the k-block
+    // it wrote, so the read must address the row the element actually lives in:
+    // XOR the same field (8 halves per row, bits 3..5 of the element index) with
+    // the k-block of the unit being read. Reading it back off the index itself
+    // (`index / halves per k-block`) is what keeps this identical to the fill's
+    // key without either side restating the other's lane geometry — and since
+    // every shared address here is loop-invariant, it is computed once, not per
+    // iteration. A plain (unswizzled) tile was written row-linearly, so the
+    // address the lane base gives is already the slot the fill wrote.
+    let addr = if swizzle {
+        let one = put(kernel, Op::Const(Constant::idx(1i64)));
+        let eight = put(kernel, Op::Const(Constant::idx(8i64)));
+        let kbh = put(kernel, Op::Const(Constant::idx(tile_rows / 8 * 64)));
+        let key = put(kernel, Op::Binary { x: addr, y: kbh, bop: BOp::Div });
+        // The key must be the k-block *inside the operand's tile*, the way the
+        // fill writes it: the absolute address also carries the tile's base, so
+        // the key is folded to the same width as the store's. The fill XORs the
+        // low *three* bits of the k-block into the row field (bits 3..5 of the
+        // element index); a tile with more than eight k-blocks therefore has to
+        // fold the read key the same way, or the XOR reaches bit 6 and names the
+        // wrong k-block.
+        let nkb = put(kernel, Op::Const(Constant::idx(kblocks.clamp(1, 8))));
+        let kmask = put(kernel, Op::Binary { x: nkb, y: one, bop: BOp::Sub });
+        let key = put(kernel, Op::Binary { x: key, y: kmask, bop: BOp::BitAnd });
+        let swz = put(kernel, Op::Binary { x: key, y: eight, bop: BOp::Mul });
+        put(kernel, Op::Binary { x: addr, y: swz, bop: BOp::BitXor })
+    } else {
+        addr
+    };
     put(
         kernel,
         Op::PTX(Box::new(PTXOp::VLdMatrix {
@@ -1937,76 +1914,18 @@ fn tile_fit(
     Some(TileFit { mt_w, nt_w, warps, combine, staged, chunk, interleave })
 }
 
-/// Whether an int8 tile shape can be emitted at this warp layout, or `None`.
+/// Whether the int8 form can be emitted at this shape, staging level and
+/// layout. The instruction's own geometry (`m8n8k16` for int8, one
+/// `ldmatrix.x4` fragment pair per K group) is fixed; the tile grid, the K chunk
+/// and the warp grid are the shape's.
 ///
-/// The int8 form stages both operands' codes as `rows x chunk` int8 words plus
-/// their per-group f32 scales in shared memory, and each warp reads its band
-/// back with plain shared loads (the int8 instruction has no `ldmatrix`). Only
-/// the staged, warp-grid (no K split) form exists: a K split would have to sum
-/// scaled integer partials, which is a different kernel.
-fn tile_fit_s8(shape: &TileShape, staged: bool, layout: (u16, u16, u16), info: &DeviceInfo) -> Option<TileFit> {
-    let TileShape { mt, nt, kt, fm, fn_, fk, a_k, b_k, slots } = *shape;
-    let dbg = |why: &str| {
-        if std::env::var("ZYX_Q").is_ok() {
-            eprintln!("FIT8 {why}: mt={mt:?} nt={nt:?} kt={kt:?} layout={layout:?}");
-        }
-    };
-    let (wm, wn, wk) = layout;
-    // The staged byte tiles need contiguous K views; the warp grid owns
-    // disjoint output sub-tiles so nothing is summed across warps.
-    if !staged || wk > 1 || a_k != 1 || b_k != 1 {
-        return None;
-    }
-    if (wm > 1 && mt % Dim::from(wm) != 0) || (wn > 1 && nt % Dim::from(wn) != 0) {
-        {
-            dbg("reject");
-            return None;
-        }
-    }
-    let mt_w = mt / Dim::from(if wm > 1 { wm } else { 1 });
-    let nt_w = nt / Dim::from(if wn > 1 { wn } else { 1 });
-    let warps = u32::from(wm) * u32::from(wn);
-    let chunk = kt * fk;
-    if chunk % Q8_1_GROUP != 0 || chunk % Dim::from(4) != 0 {
-        {
-            dbg("reject");
-            return None;
-        }
-    }
-    let a_rows = mt * fm;
-    let b_rows = nt * fn_;
-    let groups = chunk / Q8_1_GROUP;
-    // Every fill covers the tile once, repeating entries when the block has
-    // more threads than the tile has entries (the same value at the same
-    // address, so the repeats are harmless).
-    let words = |rows: Dim| rows * (chunk / Dim::from(4));
-    let _ = words;
-    // A warp's accumulators are two int32 words per fragment, and the hardware
-    // int32 tile is the sum's own size: the same register budget as the f16
-    // form's.
-    if mt_w * nt_w * slots > Dim::from(128) {
-        {
-            dbg("reject");
-            return None;
-        }
-    }
-    let bytes = (a_rows + b_rows) * chunk + (a_rows + b_rows) * groups * Dim::from(4);
-    if bytes > info.local_mem_size {
-        {
-            dbg("reject");
-            return None;
-        }
-    }
-    dbg("ok");
-    Some(TileFit { mt_w, nt_w, warps, combine: false, staged: true, chunk, interleave: false })
-}
-
-/// Whether the packed int8 form can be emitted at this layout. The
-/// instruction's own geometry (`m8n8k16` for int8, one `ldmatrix.x4` fragment
-/// pair per K group) is fixed; the tile grid, the K chunk and the warp grid are
-/// the shape's, so any shape whose fills divide the block's threads is a
-/// config.
-fn words_fit(shape: &TileShape, layout: (u16, u16, u16), info: &DeviceInfo, k: &Kernel, qa: &Quant, qb: &Quant) -> bool {
+/// A staged form fills two packed tiles and reads them back: the tile grid, the
+/// K chunk and the warp grid must divide the fills over the block's threads
+/// exactly, the fragment lanes must fit the register file, and the two tiles the
+/// shared memory. An unstaged form has no tiles and no fill: it reads each
+/// fragment word straight from the operand's cone, so it is offered only where
+/// the per-lane word is cheap — a cone whose code is a field of one loaded word.
+fn s8_fit(shape: &TileShape, staged: bool, swizzle: bool, layout: (u16, u16, u16), info: &DeviceInfo) -> bool {
     let TileShape { mt, nt, kt, fm, fn_, fk, a_k, b_k, slots } = *shape;
     let (wm, wn, wk) = layout;
     // One warp per output band, no split-K: the sums are scaled per group and
@@ -2033,414 +1952,58 @@ fn words_fit(shape: &TileShape, layout: (u16, u16, u16), info: &DeviceInfo, k: &
     if groups == 0 || chunk % Q8_1_GROUP != 0 {
         return false;
     }
-    let rows_a = mt * fm;
-    let rows_b = nt * fn_;
-    let payload = chunk / Dim::from(4);
-    let threads = wm * wn * Dim::from(info.warp_size);
-    // Every fill covers its tile exactly once: a thread past the end would
-    // store outside it.
-    if (rows_a * payload) % threads != 0 || (rows_b * groups) % threads != 0 {
-        return false;
-    }
-    // The fragment lane's registers, and the two staged tiles' shared memory.
+    // The fragment lane's registers.
     if mt_w * nt_w * slots > Dim::from(128) {
         return false;
     }
-    let xs = packed_row_stride(payload, groups);
+    if !staged {
+        // Without a tile the lane builds each fragment word from four code
+        // reads, which every format can do (a packed code word is not needed).
+        return true;
+    }
+    let rows_a = mt * fm;
+    let rows_b = nt * fn_;
+    let payload = chunk / Dim::from(4);
+    let xs = packed_row_stride(payload, groups, swizzle);
     let ys = groups + payload;
     if (rows_a * xs + rows_b * ys) * Dim::from(4) > Dim::from(info.local_mem_size) {
         return false;
     }
-    for q in [qa, qb] {
-        let Some(w) = q.code_word(k) else {
-            return false;
-        };
-        if !q.byte_word(&w) && !(w.bits == 2 && w.codes == 8 && w.dtype == DType::U16) {
-            return false;
-        }
-    }
     true
 }
 
-/// Emit a matched tiled region as int8 wmmas: both operands' codes staged as
-/// `rows x chunk` int8 words, a warp's fragment sums kept in its own registers,
-/// two `m8n8k16` K steps per 32-element group, and the int32 sums scaled into
-/// the f32 accumulator once per group — llama.cpp's `mmq` mainloop, over
-/// whatever quantization the cones came from.
-///
-/// The block is `wm x wn` warps over the output, each owning `mt_w` m-fragments
-/// by `nt_w` n-fragments. A lane's fragment sums are `mt_w * nt_w * slots`
-/// int32 words, indexed by the flat fragment lane and the C word, and the f32
-/// they are scaled into; one `Wmma` per K step covers the whole fragment lane.
-/// The scale of each operand is where its quantization keeps it: constant over
-/// the K chunk means staged once per chunk in the lane's registers, otherwise
-/// read from its cone at each group's first element.
-fn tile_to_wmma_s8(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16, u16)) {
-    let v = &t.variant;
-    let (fm, fn_, fk) = {
-        let (m, n, k) = v.dims.decompose_mnk();
-        (m as Dim, n as Dim, k as Dim)
-    };
-    let info = kernel.device_info();
-    let warp = u32::from(info.warp_size);
-    let shape = TileShape { mt: t.mt, nt: t.nt, kt: t.kt, fm, fn_: fn_, fk, a_k: t.a_k, b_k: t.b_k, slots: t.slots };
-    let Some(fit) = tile_fit_s8(&shape, staged, layout, &info) else {
-        panic!(
-            "tile_to_wmma_s8: no form for tile {:?}x{:?}x{:?} at layout {layout:?} staged={staged}: the enumeration must not offer it",
-            t.mt, t.nt, t.kt
-        );
-    };
-    let TileFit { mt_w, nt_w, warps, chunk, .. } = fit;
-    let (wm, wn, _) = layout;
-    let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref()) else {
-        panic!("tile_to_wmma_s8: the int8 form needs both operands split into a code and a group scale");
-    };
-    let end = t.update;
-    let slots = t.slots;
-
-    // ---- the warp's place in the block ----
-    let lane = kernel.insert_before(t.loop_id, Op::Range { axis: 0, kind: RangeKind::Local(warp) });
-    let mut warp_var = OpId::NULL;
-    if warps > 1 {
-        warp_var = kernel.insert_before(t.loop_id, Op::Range { axis: 1, kind: RangeKind::Local(warps) });
-    }
-    // The block-wide thread id the fills index with.
-    let tid = if warp_var.is_null() {
-        lane
-    } else {
-        let w = kernel.insert_const_idx_before(t.loop_id, Dim::from(warp));
-        let base = kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: w, bop: BOp::Mul });
-        kernel.insert_before(t.loop_id, Op::Binary { x: base, y: lane, bop: BOp::Add })
-    };
-    // The warp's band of the block: the row band is `warp / wn`, the column
-    // band `warp % wn`.
-    let band_m = if wn > 1 {
-        let c = kernel.insert_const_idx_before(t.loop_id, Dim::from(wn));
-        kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: c, bop: BOp::Div })
-    } else if wm > 1 {
-        warp_var
-    } else {
-        OpId::NULL
-    };
-    let band_n = if wn > 1 {
-        let c = kernel.insert_const_idx_before(t.loop_id, Dim::from(wn));
-        kernel.insert_before(t.loop_id, Op::Binary { x: warp_var, y: c, bop: BOp::Mod })
-    } else {
-        OpId::NULL
-    };
-    let warp_off_m = if band_m.is_null() {
-        OpId::NULL
-    } else {
-        let s = kernel.insert_const_idx_before(t.loop_id, mt_w * fm);
-        kernel.insert_before(t.loop_id, Op::Binary { x: band_m, y: s, bop: BOp::Mul })
-    };
-    let warp_off_n = if band_n.is_null() {
-        OpId::NULL
-    } else {
-        let s = kernel.insert_const_idx_before(t.loop_id, nt_w * fn_);
-        kernel.insert_before(t.loop_id, Op::Binary { x: band_n, y: s, bop: BOp::Mul })
-    };
-    // The lane's own fragment geometry: `gid = lane/4` is its row, `tig =
-    // lane%4` the four-value K group it holds.
-    let four = kernel.insert_before(t.loop_id, Op::Const(Constant::idx(4i64)));
-    let gid = kernel.insert_before(t.loop_id, Op::Binary { x: lane, y: four, bop: BOp::Div });
-    let tig = kernel.insert_before(t.loop_id, Op::Binary { x: lane, y: four, bop: BOp::Mod });
-
-    // The accumulator words: one int32 sum and one f32 scaled sum per
-    // (fragment, C word). The fragment lane is flat (`combo = ai * nt_w + bj`)
-    // so the instruction count is a division and a remainder of it.
-    let len = mt_w * nt_w * slots;
-    if let Op::Storage { len: l, .. } = &mut kernel.ops[t.acc].op {
-        *l = len;
-    }
-    let zero_f = match kernel.at(t.init) {
-        Op::Store { src, .. } => *src,
-        _ => unreachable!("tiled tensorize: init is not a store"),
-    };
-    let zero_i = kernel.insert_before(t.init, Op::Const(Constant::new(0i32)));
-    // The per-group clear covers the whole accumulator through its own lane, not
-    // the instruction's slot expression: a store whose value is a broadcast is
-    // unfolded per lane, and unfolding the slot node would take the
-    // instruction's fragment load with it (the result is then written twice).
-    // A dedicated lane keeps that expression out of the clear's reach.
-    let clear_lane = kernel.insert_before(t.loop_id, Op::Unroll { axis: 0, len: u16::try_from(len).expect("accumulator words") });
-    let accs = insert_scoped_storage(kernel, DType::I32, MemScope::Register, len);
-    {
-        let words = kernel.insert_before(t.init, Op::Unroll { axis: 1, len: u16::try_from(len).expect("accumulator words") });
-        kernel.insert_before(t.init, Op::Store { dst: t.acc, dst_idx: words, src: zero_f });
-        kernel.insert_before(t.init, Op::Store { dst: accs, dst_idx: words, src: zero_i });
-    }
-    kernel.remove_op(t.init);
-
-    let grid = mt_w * nt_w;
-    // The warp's tile grid is one `Unroll` lane (`combo = ai * nt_w + bj`), the
-    // C words another: every parallel dimension of the mainloop is a lane, and
-    // `devectorize` turns each into its own instruction (the C words become the
-    // two-word fragment the instruction writes). Only the lane nodes are
-    // loop-invariant; every derived index is computed where it is used — the
-    // mainloop and the epilogue each rebuild their own — so nothing but the
-    // lanes themselves stays live across the K loop.
-    let anchor = t.loop_id;
-    let combo = kernel.insert_before(anchor, Op::Unroll { axis: 3, len: u16::try_from(grid).expect("fragment lane") });
-    let sl = kernel.insert_before(anchor, Op::Unroll { axis: 2, len: u16::try_from(slots).expect("C words") });
-    let ntw = kernel.insert_const_idx_before(anchor, nt_w);
-    let slots_c = kernel.insert_const_idx_before(anchor, slots);
-    let two = kernel.insert_const_idx_before(anchor, Dim::from(2));
-
-    // ---- stage the chunk's operand words ----
-    let a_rows = t.mt * fm;
-    let b_rows = t.nt * fn_;
-    let groups = chunk / Q8_1_GROUP;
-    let threads = Dim::from(warps) * Dim::from(warp);
-    let wpr = chunk / Dim::from(4);
-    let a_tile = insert_scoped_storage(kernel, DType::U32, MemScope::Local, a_rows * wpr);
-    let b_tile = insert_scoped_storage(kernel, DType::U32, MemScope::Local, b_rows * wpr);
-    // A scale that is constant over the whole K chunk is staged once per chunk
-    // in the lane's registers; every other one is read from its cone per group.
-    let a_stage = qa.scale_period >= chunk;
-    let b_stage = qb.scale_period >= chunk;
-    let a_scale = if a_stage {
-        Some(insert_scoped_storage(kernel, DType::F32, MemScope::Register, mt_w * slots))
-    } else {
-        None
-    };
-    let b_scale = if b_stage {
-        Some(insert_scoped_storage(kernel, DType::F32, MemScope::Register, nt_w * slots))
-    } else {
-        None
-    };
-    // The tile's origin for this K chunk: the same affine view the direct form
-    // addresses, evaluated on the loop's own iteration.
-    let a_base = base_expr(kernel, end, &t.a_fixed, t.a_offset, 0);
-    let b_base = base_expr(kernel, end, &t.b_fixed, t.b_offset, 0);
-
-    // The lane's fragment geometry for the mainloop.
-    let ai = kernel.insert_before(end, Op::Binary { x: combo, y: ntw, bop: BOp::Div });
-    let bj = kernel.insert_before(end, Op::Binary { x: combo, y: ntw, bop: BOp::Mod });
-    let slot = kernel.insert_before(end, Op::Binary { x: combo, y: slots_c, bop: BOp::Mul });
-    let slot = kernel.insert_before(end, Op::Binary { x: slot, y: sl, bop: BOp::Add });
-    // The rescale's own accumulator index, a separate expression: the pair of
-    // instructions that read and write the accumulator slots are the same
-    // address, but the group's rescale is a different access with its own
-    // lane shape, and sharing one node hands both its demotion.
-    let slot_r = kernel.insert_before(end, Op::Binary { x: combo, y: slots_c, bop: BOp::Mul });
-    let slot_r = kernel.insert_before(end, Op::Binary { x: slot_r, y: sl, bop: BOp::Add });
-    let tig2 = kernel.insert_before(end, Op::Binary { x: tig, y: two, bop: BOp::Mul });
-    let a_row = {
-        let f = kernel.insert_const_idx_before(end, fm);
-        let t = kernel.insert_before(end, Op::Binary { x: ai, y: f, bop: BOp::Mul });
-        let t = kernel.insert_before(end, Op::Binary { x: t, y: gid, bop: BOp::Add });
-        if warp_off_m.is_null() {
-            t
-        } else {
-            kernel.insert_before(end, Op::Binary { x: t, y: warp_off_m, bop: BOp::Add })
-        }
-    };
-    let b_row = {
-        let f = kernel.insert_const_idx_before(end, fn_);
-        let t = kernel.insert_before(end, Op::Binary { x: bj, y: f, bop: BOp::Mul });
-        let t = kernel.insert_before(end, Op::Binary { x: t, y: gid, bop: BOp::Add });
-        if warp_off_n.is_null() {
-            t
-        } else {
-            kernel.insert_before(end, Op::Binary { x: t, y: warp_off_n, bop: BOp::Add })
-        }
-    };
-    // The chunk's origin in each operand's own index space: its row (which
-    // output block) and K chunk. The fills hand the cone the element's
-    // coordinates, and the tile-local row and column do not carry it.
-    let a_roff = {
-        let ke = kernel.insert_const_idx_before(end, qa.code.k_extent);
-        kernel.insert_before(end, Op::Binary { x: a_base, y: ke, bop: BOp::Div })
-    };
-    let a_koff = {
-        let ke = kernel.insert_const_idx_before(end, qa.code.k_extent);
-        kernel.insert_before(end, Op::Binary { x: a_base, y: ke, bop: BOp::Mod })
-    };
-    let b_roff = {
-        let ke = kernel.insert_const_idx_before(end, qb.code.k_extent);
-        kernel.insert_before(end, Op::Binary { x: b_base, y: ke, bop: BOp::Div })
-    };
-    let b_koff = {
-        let ke = kernel.insert_const_idx_before(end, qb.code.k_extent);
-        kernel.insert_before(end, Op::Binary { x: b_base, y: ke, bop: BOp::Mod })
-    };
-    // A's words: one int8 per element, so four bytes are one lane and their
-    // disjoint fields fold with a word-wide sum; a packed code is folded in
-    // place instead.
-    let a_fold = !byte_code(kernel, &qa.code);
-    {
-        let (asl, av) = coop_fill_cone_i8(kernel, end, tid, &qa.code, a_roff, a_koff, a_rows, chunk, threads, a_fold, 2);
-        coop_fill_store(kernel, end, a_tile, OpId::NULL, asl, av);
-    }
-    // B's words, the same rule on the other operand.
-    let b_fold = !byte_code(kernel, &qb.code);
-    {
-        let (bsl, bv) = coop_fill_cone_i8(kernel, end, tid, &qb.code, b_roff, b_koff, b_rows, chunk, threads, b_fold, 3);
-        coop_fill_store(kernel, end, b_tile, OpId::NULL, bsl, bv);
-    }
-    // The staged scales: the value at the fragment's own row (m side: the row
-    // is `gid`, n side: the column is `2*tig + slot`), one per (fragment, C
-    // word), filled once per chunk from the chunk's first element.
-    if let Some(st) = a_scale {
-        let fl = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(mt_w).expect("m fragments") });
-        let slf = kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(slots).expect("C words") });
-        let sidx = kernel.insert_before(end, Op::Binary { x: fl, y: slots_c, bop: BOp::Mul });
-        let sidx = kernel.insert_before(end, Op::Binary { x: sidx, y: slf, bop: BOp::Add });
-        let f = kernel.insert_const_idx_before(end, fm);
-        let row = kernel.insert_before(end, Op::Binary { x: fl, y: f, bop: BOp::Mul });
-        let row = kernel.insert_before(end, Op::Binary { x: row, y: gid, bop: BOp::Add });
-        let row = if warp_off_m.is_null() {
-            row
-        } else {
-            kernel.insert_before(end, Op::Binary { x: row, y: warp_off_m, bop: BOp::Add })
-        };
-        // The chunk's first element of that row: the coordinates are already
-        // known, so the scale cone is rebuilt without splitting an index. The
-        // row carries the tile's own origin (which block of the output).
-        let row = kernel.insert_before(end, Op::Binary { x: row, y: a_roff, bop: BOp::Add });
-        let val = qa.scale.clone_at_coords(kernel, end, row, a_koff);
-        kernel.insert_before(end, Op::Store { dst: st, dst_idx: sidx, src: val });
-    }
-    if let Some(st) = b_scale {
-        let fl = kernel.insert_before(end, Op::Unroll { axis: 0, len: u16::try_from(nt_w).expect("n fragments") });
-        let slf = kernel.insert_before(end, Op::Unroll { axis: 1, len: u16::try_from(slots).expect("C words") });
-        let sidx = kernel.insert_before(end, Op::Binary { x: fl, y: slots_c, bop: BOp::Mul });
-        let sidx = kernel.insert_before(end, Op::Binary { x: sidx, y: slf, bop: BOp::Add });
-        let f = kernel.insert_const_idx_before(end, fn_);
-        let col = kernel.insert_before(end, Op::Binary { x: fl, y: f, bop: BOp::Mul });
-        let col = kernel.insert_before(end, Op::Binary { x: col, y: tig2, bop: BOp::Add });
-        let col = kernel.insert_before(end, Op::Binary { x: col, y: slf, bop: BOp::Add });
-        let col = if warp_off_n.is_null() {
-            col
-        } else {
-            kernel.insert_before(end, Op::Binary { x: col, y: warp_off_n, bop: BOp::Add })
-        };
-        let col = kernel.insert_before(end, Op::Binary { x: col, y: b_roff, bop: BOp::Add });
-        let val = qb.scale.clone_at_coords(kernel, end, col, b_koff);
-        kernel.insert_before(end, Op::Store { dst: st, dst_idx: sidx, src: val });
-    }
-    kernel.insert_before(end, Op::Barrier);
-
-    // ---- the mainloop: one group is `Q8_1_GROUP / fk` K steps, then the
-    // scaled sum and a clear of the integer sums ----
-    let group_steps = usize::try_from(Q8_1_GROUP / fk).expect("K steps per group");
-    let n_groups = usize::try_from(groups).expect("group count");
-    for g in 0..n_groups {
-        for s in 0..group_steps {
-            let step = g * group_steps + s;
-            // The step's word within its row: four words per step of 16.
-            let widx = kernel.insert_const_idx_before(end, Dim::from(i64::try_from(step).expect("K step") * Dim::from(4)));
-            let widx = kernel.insert_before(end, Op::Binary { x: widx, y: tig, bop: BOp::Add });
-            let wpr_c = kernel.insert_const_idx_before(end, wpr);
-            let a_i = kernel.insert_before(end, Op::Binary { x: a_row, y: wpr_c, bop: BOp::Mul });
-            let a_i = kernel.insert_before(end, Op::Binary { x: a_i, y: widx, bop: BOp::Add });
-            let b_i = kernel.insert_before(end, Op::Binary { x: b_row, y: wpr_c, bop: BOp::Mul });
-            let b_i = kernel.insert_before(end, Op::Binary { x: b_i, y: widx, bop: BOp::Add });
-            let a_w = kernel.insert_before(end, Op::Load { src: a_tile, src_idx: a_i });
-            let b_w = kernel.insert_before(end, Op::Load { src: b_tile, src_idx: b_i });
-            let c_reg = kernel.insert_before(end, Op::Load { src: accs, src_idx: slot });
-            let d =
-                kernel.insert_before(end, Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: a_w, b: b_w, c: c_reg });
-            kernel.insert_before(end, Op::Store { dst: accs, dst_idx: slot, src: d });
-        }
-        // `sum(f32) += int32 * sa[row, g] * sb[col, g]`, then clear the int
-        // sum for the next group — the operands' scales are the versions the
-        // dequant applies, so the product is the dequantized one exactly.
-        let sa_v = match a_scale {
-            Some(st) => {
-                let i = kernel.insert_before(end, Op::Binary { x: ai, y: slots_c, bop: BOp::Mul });
-                let i = kernel.insert_before(end, Op::Binary { x: i, y: sl, bop: BOp::Add });
-                kernel.insert_before(end, Op::Load { src: st, src_idx: i })
-            }
-            None => {
-                // The group's K origin is the chunk's plus `g` groups, and the
-                // row is the fragment's own plus the block's: both known here,
-                // so the scale cone is rebuilt without splitting an index.
-                let off = kernel.insert_const_idx_before(end, Dim::from(i64::try_from(g).expect("group") * Q8_1_GROUP));
-                let kk = kernel.insert_before(end, Op::Binary { x: off, y: a_koff, bop: BOp::Add });
-                let row = kernel.insert_before(end, Op::Binary { x: a_row, y: a_roff, bop: BOp::Add });
-                let val = qa.scale.clone_at_coords(kernel, end, row, kk);
-                if kernel.dtype(val) == DType::F32 {
-                    val
-                } else {
-                    kernel.insert_before(end, Op::Cast { x: val, dtype: DType::F32 })
-                }
-            }
-        };
-        let sb_v = match b_scale {
-            Some(st) => {
-                let i = kernel.insert_before(end, Op::Binary { x: bj, y: slots_c, bop: BOp::Mul });
-                let i = kernel.insert_before(end, Op::Binary { x: i, y: sl, bop: BOp::Add });
-                kernel.insert_before(end, Op::Load { src: st, src_idx: i })
-            }
-            None => {
-                // The C word's own output row: the instruction gathers its
-                // columns from the warp, and this lane's word sums the
-                // activation row `2*(lane%4) + slot`, not the row it staged.
-                let off = kernel.insert_const_idx_before(end, Dim::from(i64::try_from(g).expect("group") * Q8_1_GROUP));
-                let kk = kernel.insert_before(end, Op::Binary { x: off, y: b_koff, bop: BOp::Add });
-                let mut col = {
-                    let f = kernel.insert_const_idx_before(end, fn_);
-                    kernel.insert_before(end, Op::Binary { x: bj, y: f, bop: BOp::Mul })
-                };
-                let t2 = kernel.insert_before(end, Op::Binary { x: tig, y: two, bop: BOp::Mul });
-                col = kernel.insert_before(end, Op::Binary { x: col, y: t2, bop: BOp::Add });
-                col = kernel.insert_before(end, Op::Binary { x: col, y: sl, bop: BOp::Add });
-                if !warp_off_n.is_null() {
-                    col = kernel.insert_before(end, Op::Binary { x: col, y: warp_off_n, bop: BOp::Add });
-                }
-                let row = kernel.insert_before(end, Op::Binary { x: col, y: b_roff, bop: BOp::Add });
-                let val = qb.scale.clone_at_coords(kernel, end, row, kk);
-                if kernel.dtype(val) == DType::F32 {
-                    val
-                } else {
-                    kernel.insert_before(end, Op::Cast { x: val, dtype: DType::F32 })
-                }
-            }
-        };
-        let scale = kernel.insert_before(end, Op::Binary { x: sa_v, y: sb_v, bop: BOp::Mul });
-        let iv = kernel.insert_before(end, Op::Load { src: accs, src_idx: slot_r });
-        let fv = kernel.insert_before(end, Op::Cast { x: iv, dtype: DType::F32 });
-        let prev = kernel.insert_before(end, Op::Load { src: t.acc, src_idx: slot_r });
-        let prod = kernel.insert_before(end, Op::Binary { x: fv, y: scale, bop: BOp::Mul });
-        let sum = kernel.insert_before(end, Op::Binary { x: prod, y: prev, bop: BOp::Add });
-        kernel.insert_before(end, Op::Store { dst: t.acc, dst_idx: slot_r, src: sum });
-        kernel.insert_before(end, Op::Store { dst: accs, dst_idx: clear_lane, src: zero_i });
-    }
-    kernel.insert_before(end, Op::Barrier);
-
-    scatter_epilogue(kernel, t, combo, sl, gid, tig, nt_w, slots, fm, fn_, warp_off_m, warp_off_n);
-    let mut doomed: Vec<OpId> = vec![t.update];
-    doomed.extend(t.epilogue.iter().map(|e| e.store));
-    for id in doomed {
-        kernel.remove_op(id);
-    }
-    kernel.verify();
-}
-
 /// The A row's stride in 32-bit words for the packed form: the payload words,
-/// then the group scales, padded up to a 16-byte boundary (every `ldmatrix`
-/// lane base must be 16-byte aligned) and one four-word tail so the rows of one
-/// `ldmatrix` land on different bank sets.
-fn packed_row_stride(payload: Dim, groups: Dim) -> Dim {
+/// then the group scales. The swizzled layout pads that up to a 16-byte boundary
+/// (every `ldmatrix` lane base must be aligned) and one four-word tail so the
+/// rows of one `ldmatrix` land on different bank sets; the plain layout is just
+/// the aligned row, which the `ldmatrix` reads as a linear pack.
+fn packed_row_stride(payload: Dim, groups: Dim, swizzle: bool) -> Dim {
     let used = payload + groups;
     let aligned = (used + Dim::from(3)) / Dim::from(4) * Dim::from(4);
-    aligned + Dim::from(4)
+    if swizzle { aligned + Dim::from(4) } else { aligned }
 }
 
-/// Emit the int8 form with both operands staged as their packed words — the
-/// `mmq` shape. A's row holds its payload words first, then the group scales,
-/// then a four-word tail; B's row holds the scales first and the payload words
-/// after them. A is read with one `ldmatrix.x4.b16` per (two-fragment, K group)
-/// pair, B with two words per fragment, and the four int32 sums of a fragment
-/// pair are folded into the f32 accumulator once per group.
+/// Emit the int8 form: both operands' codes staged as their packed words — the
+/// `mmq` shape — read back by the fragment width the instruction consumes. A's
+/// row holds its payload words first, then the group scales, then (swizzled) a
+/// four-word tail; B's row holds the scales first and the payload words after
+/// them. A is read with one `ldmatrix.x4.b16` per (two-fragment, K group) pair,
+/// B with two words per fragment, and the four int32 sums of a fragment pair
+/// are folded into the f32 accumulator once per group.
 ///
-/// Both operands use the same staging routine: the code's word is loaded once
-/// per `codes` elements ([`coop_fill_word_tile`]), so a two-bit weight block and
-/// an already-int8 activation block cost one global load per word, not one per
-/// element.
-fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)) {
+/// Both operands use the same staging routine ([`coop_fill_tile`]): the code's
+/// word is loaded once per `codes` elements when the cone packs its codes into
+/// one loaded word, and packed element by element when it does not, so a
+/// two-bit weight block, an already-int8 activation block and a cone with no
+/// code word all cost one staging pass into the same tile.
+///
+/// An unstaged form (`staged == false`) skips the tiles entirely: each
+/// fragment's word is read straight from its operand's cone, which is why only a
+/// cone with a code word is offered there. Everything after the fragment feed —
+/// the instruction chain, the per-group scale, the write-back — is the same
+/// body for both, which is what makes the staging an axis of this lowering
+/// rather than a second lowering.
+fn tile_to_wmma_s8_cell(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, layout: (u16, u16, u16)) {
     let v = &t.variant;
     let (fm, fn_, fk) = {
         let (m, n, k) = v.dims.decompose_mnk();
@@ -2456,24 +2019,26 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
     let chunk = t.kt * fk;
     let groups = chunk / Q8_1_GROUP;
     // The row of each staged tile, in 32-bit words: A's payload, A's scales,
-    // a four-word tail that keeps the rows of one `ldmatrix` off one bank set;
-    // B's scales, then B's payload.
+    // (swizzled) a four-word tail that keeps the rows of one `ldmatrix` off one
+    // bank set; B's scales, then B's payload.
     let payload = chunk / 4;
-    let xs = packed_row_stride(payload, groups);
+    let xs = packed_row_stride(payload, groups, swizzle);
     let ys = groups + payload;
     let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref()) else {
-        panic!("the packed int8 form needs both operands split into a code and a group scale")
+        panic!("the int8 form needs both operands split into a code and a group scale")
     };
-    let Some(wa) = qa.code_word(kernel) else {
-        panic!("the packed int8 form needs each operand's code to be a field of one loaded word")
-    };
-    let Some(wb) = qb.code_word(kernel) else {
-        panic!("the packed int8 form needs each operand's code to be a field of one loaded word")
-    };
+    let wa = qa.code_word(kernel);
+    let wb = qb.code_word(kernel);
     let rows_a = t.mt * fm;
     let rows_b = t.nt * fn_;
-    let xt = insert_scoped_storage(kernel, DType::U32, MemScope::Local, rows_a * xs);
-    let yt = insert_scoped_storage(kernel, DType::U32, MemScope::Local, rows_b * ys);
+    let (xt, yt) = if staged {
+        (
+            insert_scoped_storage(kernel, DType::U32, MemScope::Local, rows_a * xs),
+            insert_scoped_storage(kernel, DType::U32, MemScope::Local, rows_b * ys),
+        )
+    } else {
+        (OpId::NULL, OpId::NULL)
+    };
 
     // ---- the accumulator: one f32 sum per (fragment, C word) ----
     let len = mt_w * nt_w * slots;
@@ -2574,9 +2139,11 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
     let cys = kernel.insert_before(end, Op::Const(Constant::idx(ys)));
     let cgrp = kernel.insert_before(end, Op::Const(Constant::idx(groups)));
     let cpay = kernel.insert_before(end, Op::Const(Constant::idx(payload)));
-    coop_fill_word_tile(kernel, end, tid, qa, &wa, a_roff, a_koff, rows_a, chunk, threads, xt, xs, 0, payload, 2);
-    coop_fill_word_tile(kernel, end, tid, qb, &wb, b_roff, b_koff, rows_b, chunk, threads, yt, ys, groups, 0, 3);
-    kernel.insert_before(end, Op::Barrier);
+    if staged {
+        coop_fill_tile(kernel, end, tid, qa, wa.as_ref(), a_roff, a_koff, rows_a, chunk, threads, xt, xs, 0, payload, 2);
+        coop_fill_tile(kernel, end, tid, qb, wb.as_ref(), b_roff, b_koff, rows_b, chunk, threads, yt, ys, groups, 0, 3);
+        kernel.insert_before(end, Op::Barrier);
+    }
 
     // ---- the mainloop: groups are a chain, the fragment pairs are emitted
     // one after the other because their `ldmatrix` words are registers ----
@@ -2594,32 +2161,64 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
         };
         for sub in 0..n_sub {
             let s16 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(sub * 2).expect("sub-tile") * fm)));
-            let mut row = add_off(kernel, s16, warp_off_m);
-            row = kernel.insert_before(end, Op::Binary { x: row, y: lanerow, bop: BOp::Add });
-            let mut addr = kernel.insert_before(end, Op::Binary { x: row, y: cxs, bop: BOp::Mul });
-            addr = kernel.insert_before(end, Op::Binary { x: addr, y: g8, bop: BOp::Add });
-            let side = {
-                let four = kernel.insert_before(end, Op::Const(Constant::idx(4i64)));
-                kernel.insert_before(end, Op::Binary { x: lanehalf, y: four, bop: BOp::Mul })
+            // The two A fragments' words, indexed `fragment + 2 * K step`: a
+            // staged tile hands all four back from one `ldmatrix.x4`, an
+            // unstaged form reads each fragment word straight from the cone.
+            let (aw0, aw1, aw2, aw3) = if staged {
+                let mut row = add_off(kernel, s16, warp_off_m);
+                row = kernel.insert_before(end, Op::Binary { x: row, y: lanerow, bop: BOp::Add });
+                let mut addr = kernel.insert_before(end, Op::Binary { x: row, y: cxs, bop: BOp::Mul });
+                addr = kernel.insert_before(end, Op::Binary { x: addr, y: g8, bop: BOp::Add });
+                let side = {
+                    let four = kernel.insert_before(end, Op::Const(Constant::idx(4i64)));
+                    kernel.insert_before(end, Op::Binary { x: lanehalf, y: four, bop: BOp::Mul })
+                };
+                addr = kernel.insert_before(end, Op::Binary { x: addr, y: side, bop: BOp::Add });
+                let frag = kernel.insert_before(
+                    end,
+                    Op::PTX(Box::new(PTXOp::VLdMatrix {
+                        dims: LdMatrixDims::m8n8,
+                        num: LdMatrixNum::X4,
+                        trans: LdMatrixTrans::off,
+                        dtype: LdMatrixType::b16,
+                        src: xt,
+                        addr,
+                    })),
+                );
+                let aw0 = kernel.insert_before(end, Op::Index { vec: frag, idx: 0 });
+                let aw1 = kernel.insert_before(end, Op::Index { vec: frag, idx: 1 });
+                let aw2 = kernel.insert_before(end, Op::Index { vec: frag, idx: 2 });
+                let aw3 = kernel.insert_before(end, Op::Index { vec: frag, idx: 3 });
+                (aw0, aw1, aw2, aw3)
+            } else {
+                let mut words = [OpId::NULL; 4];
+                for f in 0..2usize {
+                    // The fragment's row: this lane holds row `lane / 4` of it.
+                    for h in 0..2usize {
+                        let mut row = add_off(kernel, s16, warp_off_m);
+                        let foff = kernel.insert_const_idx_before(end, Dim::from(f as i64) * fm);
+                        row = kernel.insert_before(end, Op::Binary { x: row, y: foff, bop: BOp::Add });
+                        row = kernel.insert_before(end, Op::Binary { x: row, y: gid, bop: BOp::Add });
+                        let row = kernel.insert_before(end, Op::Binary { x: row, y: a_roff, bop: BOp::Add });
+                        // The word's K origin: the group's own start, the K
+                        // step, and this lane's four codes within it.
+                        let kg = kernel.insert_before(
+                            end,
+                            Op::Const(Constant::idx(
+                                Dim::from(i64::try_from(g).expect("group")) * Q8_1_GROUP + Dim::from(h as i64) * fk,
+                            )),
+                        );
+                        let mut k = kernel.insert_before(end, Op::Binary { x: kg, y: a_koff, bop: BOp::Add });
+                        let t4 = kernel.insert_before(end, Op::Const(Constant::idx(4i64)));
+                        let tigk = kernel.insert_before(end, Op::Binary { x: tig, y: t4, bop: BOp::Mul });
+                        k = kernel.insert_before(end, Op::Binary { x: k, y: tigk, bop: BOp::Add });
+                        words[f + 2 * h] = cone_word4(kernel, end, qa, row, k);
+                    }
+                }
+                (words[0], words[1], words[2], words[3])
             };
-            addr = kernel.insert_before(end, Op::Binary { x: addr, y: side, bop: BOp::Add });
-            let frag = kernel.insert_before(
-                end,
-                Op::PTX(Box::new(PTXOp::VLdMatrix {
-                    dims: LdMatrixDims::m8n8,
-                    num: LdMatrixNum::X4,
-                    trans: LdMatrixTrans::off,
-                    dtype: LdMatrixType::b16,
-                    src: xt,
-                    addr,
-                })),
-            );
-            // The two A fragments' group scales, words 32+g of their rows.
-            let aw0 = kernel.insert_before(end, Op::Index { vec: frag, idx: 0 });
-            let aw1 = kernel.insert_before(end, Op::Index { vec: frag, idx: 1 });
-            let aw2 = kernel.insert_before(end, Op::Index { vec: frag, idx: 2 });
-            let aw3 = kernel.insert_before(end, Op::Index { vec: frag, idx: 3 });
-            let (da0, da1) = {
+            // The two A fragments' group scales.
+            let (da0, da1) = if staged {
                 let mut crow = add_off(kernel, s16, warp_off_m);
                 crow = kernel.insert_before(end, Op::Binary { x: crow, y: gid, bop: BOp::Add });
                 let mut i0 = kernel.insert_before(end, Op::Binary { x: crow, y: cxs, bop: BOp::Mul });
@@ -2635,24 +2234,65 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
                 let w1 = kernel.insert_before(end, Op::Load { src: xt, src_idx: i1 });
                 let d1 = kernel.insert_before(end, Op::Bitcast { x: w1, dtype: DType::F32 });
                 (d0, d1)
+            } else {
+                let kg =
+                    kernel.insert_before(end, Op::Const(Constant::idx(Dim::from(i64::try_from(g).expect("group")) * Q8_1_GROUP)));
+                let k = kernel.insert_before(end, Op::Binary { x: kg, y: a_koff, bop: BOp::Add });
+                let mut s = [OpId::NULL; 2];
+                for (f, slot) in s.iter_mut().enumerate() {
+                    let mut row = add_off(kernel, s16, warp_off_m);
+                    let foff = kernel.insert_const_idx_before(end, Dim::from(f as i64) * fm);
+                    row = kernel.insert_before(end, Op::Binary { x: row, y: foff, bop: BOp::Add });
+                    row = kernel.insert_before(end, Op::Binary { x: row, y: gid, bop: BOp::Add });
+                    let row = kernel.insert_before(end, Op::Binary { x: row, y: a_roff, bop: BOp::Add });
+                    let v = qa.scale.clone_at_coords(kernel, end, row, k);
+                    *slot = if kernel.dtype(v) == DType::F32 {
+                        v
+                    } else {
+                        kernel.insert_before(end, Op::Cast { x: v, dtype: DType::F32 })
+                    };
+                }
+                (s[0], s[1])
             };
             for bj in 0..n_bands {
                 let bj8 = kernel.insert_before(end, Op::Const(Constant::idx(i64::try_from(bj).expect("activation band") * fn_)));
-                let mut brow = add_off(kernel, bj8, warp_off_n);
-                brow = kernel.insert_before(end, Op::Binary { x: brow, y: gid, bop: BOp::Add });
-                let brow_base = kernel.insert_before(end, Op::Binary { x: brow, y: cys, bop: BOp::Mul });
-                let mut bcol = kernel.insert_before(end, Op::Binary { x: brow_base, y: cgrp, bop: BOp::Add });
-                bcol = kernel.insert_before(end, Op::Binary { x: bcol, y: g8, bop: BOp::Add });
-                bcol = kernel.insert_before(end, Op::Binary { x: bcol, y: tig, bop: BOp::Add });
-                let b0 = kernel.insert_before(end, Op::Load { src: yt, src_idx: bcol });
-                let b1 = {
-                    // The second half of the K step: `fk / 4` words on.
-                    let half = kernel.insert_before(end, Op::Const(Constant::idx(fk / 4)));
-                    let i = kernel.insert_before(end, Op::Binary { x: bcol, y: half, bop: BOp::Add });
-                    kernel.insert_before(end, Op::Load { src: yt, src_idx: i })
+                let (b0, b1) = if staged {
+                    let mut brow = add_off(kernel, bj8, warp_off_n);
+                    brow = kernel.insert_before(end, Op::Binary { x: brow, y: gid, bop: BOp::Add });
+                    let brow_base = kernel.insert_before(end, Op::Binary { x: brow, y: cys, bop: BOp::Mul });
+                    let mut bcol = kernel.insert_before(end, Op::Binary { x: brow_base, y: cgrp, bop: BOp::Add });
+                    bcol = kernel.insert_before(end, Op::Binary { x: bcol, y: g8, bop: BOp::Add });
+                    bcol = kernel.insert_before(end, Op::Binary { x: bcol, y: tig, bop: BOp::Add });
+                    let b0 = kernel.insert_before(end, Op::Load { src: yt, src_idx: bcol });
+                    let b1 = {
+                        // The second half of the K step: `fk / 4` words on.
+                        let half = kernel.insert_before(end, Op::Const(Constant::idx(fk / 4)));
+                        let i = kernel.insert_before(end, Op::Binary { x: bcol, y: half, bop: BOp::Add });
+                        kernel.insert_before(end, Op::Load { src: yt, src_idx: i })
+                    };
+                    (b0, b1)
+                } else {
+                    let mut w = [OpId::NULL; 2];
+                    for (h, slot) in w.iter_mut().enumerate() {
+                        let mut row = add_off(kernel, bj8, warp_off_n);
+                        row = kernel.insert_before(end, Op::Binary { x: row, y: gid, bop: BOp::Add });
+                        let row = kernel.insert_before(end, Op::Binary { x: row, y: b_roff, bop: BOp::Add });
+                        let kg = kernel.insert_before(
+                            end,
+                            Op::Const(Constant::idx(
+                                Dim::from(i64::try_from(g).expect("group")) * Q8_1_GROUP + Dim::from(h as i64) * fk,
+                            )),
+                        );
+                        let mut k = kernel.insert_before(end, Op::Binary { x: kg, y: b_koff, bop: BOp::Add });
+                        let t4 = kernel.insert_before(end, Op::Const(Constant::idx(4i64)));
+                        let tigk = kernel.insert_before(end, Op::Binary { x: tig, y: t4, bop: BOp::Mul });
+                        k = kernel.insert_before(end, Op::Binary { x: k, y: tigk, bop: BOp::Add });
+                        *slot = cone_word4(kernel, end, qb, row, k);
+                    }
+                    (w[0], w[1])
                 };
                 // The two C columns' activation scales: rows `2*tig + word`.
-                let (db0, db1) = {
+                let (db0, db1) = if staged {
                     let mut r0 = add_off(kernel, bj8, warp_off_n);
                     r0 = kernel.insert_before(end, Op::Binary { x: r0, y: tig2, bop: BOp::Add });
                     let i0 = kernel.insert_before(end, Op::Binary { x: r0, y: cys, bop: BOp::Mul });
@@ -2666,6 +2306,27 @@ fn tile_to_wmma_s8_words(kernel: &mut Kernel, t: &Tiled, layout: (u16, u16, u16)
                     let w1 = kernel.insert_before(end, Op::Load { src: yt, src_idx: i1 });
                     let d1 = kernel.insert_before(end, Op::Bitcast { x: w1, dtype: DType::F32 });
                     (d0, d1)
+                } else {
+                    let kg = kernel
+                        .insert_before(end, Op::Const(Constant::idx(Dim::from(i64::try_from(g).expect("group")) * Q8_1_GROUP)));
+                    let k = kernel.insert_before(end, Op::Binary { x: kg, y: b_koff, bop: BOp::Add });
+                    let mut s = [OpId::NULL; 2];
+                    for (slot, s) in s.iter_mut().enumerate() {
+                        let mut r0 = add_off(kernel, bj8, warp_off_n);
+                        r0 = kernel.insert_before(end, Op::Binary { x: r0, y: tig2, bop: BOp::Add });
+                        if slot == 1 {
+                            let one = kernel.insert_before(end, Op::Const(Constant::idx(1i64)));
+                            r0 = kernel.insert_before(end, Op::Binary { x: r0, y: one, bop: BOp::Add });
+                        }
+                        let row = kernel.insert_before(end, Op::Binary { x: r0, y: b_roff, bop: BOp::Add });
+                        let v = qb.scale.clone_at_coords(kernel, end, row, k);
+                        *s = if kernel.dtype(v) == DType::F32 {
+                            v
+                        } else {
+                            kernel.insert_before(end, Op::Cast { x: v, dtype: DType::F32 })
+                        };
+                    }
+                    (s[0], s[1])
                 };
                 for par in 0..2usize {
                     let (aw, aw_next) = if par == 0 { (aw0, aw2) } else { (aw1, aw3) };
@@ -2784,13 +2445,9 @@ fn scatter_epilogue(
 /// per group), every f16 instruction the shared one.
 fn tile_to_wmma_form(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, layout: (u16, u16, u16)) {
     if matches!(t.variant.dtype, MMADType::s8_s8_s32_s32) {
-        if swizzle {
-            tile_to_wmma_s8_words(kernel, t, layout);
-        } else {
-            tile_to_wmma_s8(kernel, t, staged, layout);
-        }
+        tile_to_wmma_s8_cell(kernel, t, staged, swizzle, layout);
     } else {
-        tile_to_wmma(kernel, t, staged, layout);
+        tile_to_wmma(kernel, t, staged, swizzle, layout);
     }
 }
 
@@ -2798,7 +2455,7 @@ fn tile_to_wmma_form(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool
 /// accumulator storage keeps its identity, its accesses are rewritten in
 /// fragment order, and the split's reduce/update and the output stores are
 /// replaced (DCE drops their cones).
-fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16, u16)) {
+fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, layout: (u16, u16, u16)) {
     let v = &t.variant;
     let (fm, fn_, fk) = {
         let (m, n, k) = v.dims.decompose_mnk();
@@ -3015,9 +2672,21 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 sync(kernel);
                 let (asl, av) = match &t.a_cone {
                     Some(cone) => {
-                        coop_fill_cone(kernel, t.update, fill_lane, cone, a_base, t.a_m, t.a_k, fm, chunk, fill_threads)
+                        coop_fill_cone(kernel, t.update, fill_lane, cone, a_base, t.a_m, t.a_k, fm, chunk, fill_threads, swizzle)
                     }
-                    None => coop_fill_load(kernel, t.update, fill_lane, t.a_src, a_base, t.a_m, t.a_k, fm, chunk, fill_threads),
+                    None => coop_fill_load(
+                        kernel,
+                        t.update,
+                        fill_lane,
+                        t.a_src,
+                        a_base,
+                        t.a_m,
+                        t.a_k,
+                        fm,
+                        chunk,
+                        fill_threads,
+                        swizzle,
+                    ),
                 };
                 coop_fill_store(kernel, t.update, a_tile, sb, asl, av);
                 sync(kernel);
@@ -3036,13 +2705,26 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                             chunk / 8,
                             sb,
                             OpId::NULL,
+                            swizzle,
                         );
                         a_frags[tm][tk] = slice(kernel, t.update, value, false, a_words);
                         a_frags[tm][tk + 1] = slice(kernel, t.update, value, true, a_words);
                         tk += 2;
                     } else {
-                        a_frags[tm][tk] =
-                            coop_ldmatrix(kernel, t.update, lane, a_tile, fm, fk, fm, tk as Dim * fk, chunk / 8, sb, OpId::NULL);
+                        a_frags[tm][tk] = coop_ldmatrix(
+                            kernel,
+                            t.update,
+                            lane,
+                            a_tile,
+                            fm,
+                            fk,
+                            fm,
+                            tk as Dim * fk,
+                            chunk / 8,
+                            sb,
+                            OpId::NULL,
+                            swizzle,
+                        );
                         tk += 1;
                     }
                 }
@@ -3054,9 +2736,21 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 sync(kernel);
                 let (bsl, bv) = match &t.b_cone {
                     Some(cone) => {
-                        coop_fill_cone(kernel, t.update, fill_lane, cone, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads)
+                        coop_fill_cone(kernel, t.update, fill_lane, cone, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads, swizzle)
                     }
-                    None => coop_fill_load(kernel, t.update, fill_lane, t.b_src, b_base, t.b_n, t.b_k, fn_, chunk, fill_threads),
+                    None => coop_fill_load(
+                        kernel,
+                        t.update,
+                        fill_lane,
+                        t.b_src,
+                        b_base,
+                        t.b_n,
+                        t.b_k,
+                        fn_,
+                        chunk,
+                        fill_threads,
+                        swizzle,
+                    ),
                 };
                 coop_fill_store(kernel, t.update, b_tile, sb, bsl, bv);
                 sync(kernel);
@@ -3089,6 +2783,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                             chunk / 8,
                             sb,
                             OpId::NULL,
+                            swizzle,
                         );
                         for (step, frag) in [
                             (tk, slice(kernel, t.update, value, false, b_words)),
@@ -3122,6 +2817,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                             chunk / 8,
                             sb,
                             OpId::NULL,
+                            swizzle,
                         );
                         for tm in 0..mt {
                             acc[tm] = kernel.insert_before(
@@ -3180,16 +2876,40 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 let b0 = base_expr(kernel, t.loop_id, &b_rest, t.b_offset, 0);
                 let (asl, av) = match &t.a_cone {
                     Some(cone) => {
-                        coop_fill_cone(kernel, t.loop_id, fill_lane, cone, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads)
+                        coop_fill_cone(kernel, t.loop_id, fill_lane, cone, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads, swizzle)
                     }
-                    None => coop_fill_load(kernel, t.loop_id, fill_lane, t.a_src, a0, t.a_m, t.a_k, a_rows, win_k, fill_threads),
+                    None => coop_fill_load(
+                        kernel,
+                        t.loop_id,
+                        fill_lane,
+                        t.a_src,
+                        a0,
+                        t.a_m,
+                        t.a_k,
+                        a_rows,
+                        win_k,
+                        fill_threads,
+                        swizzle,
+                    ),
                 };
                 coop_fill_store(kernel, t.loop_id, ab_buf, OpId::NULL, asl, av);
                 let (bsl, bv) = match &t.b_cone {
                     Some(cone) => {
-                        coop_fill_cone(kernel, t.loop_id, fill_lane, cone, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads)
+                        coop_fill_cone(kernel, t.loop_id, fill_lane, cone, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads, swizzle)
                     }
-                    None => coop_fill_load(kernel, t.loop_id, fill_lane, t.b_src, b0, t.b_n, t.b_k, b_rows, win_k, fill_threads),
+                    None => coop_fill_load(
+                        kernel,
+                        t.loop_id,
+                        fill_lane,
+                        t.b_src,
+                        b0,
+                        t.b_n,
+                        t.b_k,
+                        b_rows,
+                        win_k,
+                        fill_threads,
+                        swizzle,
+                    ),
                 };
                 coop_fill_store(kernel, t.loop_id, ab_buf, a_win_c, bsl, bv);
                 // Every warp reads rows other threads wrote, so the prologue's
@@ -3293,12 +3013,40 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                 // this one; their stores follow it, so the global round trip is
                 // covered by the chunk's HMMAs.
                 let (asl, av) = match &t.a_cone {
-                    Some(cone) => coop_fill_cone(kernel, end, fill_lane, cone, a_fill, t.a_m, t.a_k, a_rows, win_k, fill_threads),
-                    None => coop_fill_load(kernel, end, fill_lane, t.a_src, a_fill, t.a_m, t.a_k, a_rows, win_k, fill_threads),
+                    Some(cone) => {
+                        coop_fill_cone(kernel, end, fill_lane, cone, a_fill, t.a_m, t.a_k, a_rows, win_k, fill_threads, swizzle)
+                    }
+                    None => coop_fill_load(
+                        kernel,
+                        end,
+                        fill_lane,
+                        t.a_src,
+                        a_fill,
+                        t.a_m,
+                        t.a_k,
+                        a_rows,
+                        win_k,
+                        fill_threads,
+                        swizzle,
+                    ),
                 };
                 let (bsl, bv) = match &t.b_cone {
-                    Some(cone) => coop_fill_cone(kernel, end, fill_lane, cone, b_fill, t.b_n, t.b_k, b_rows, win_k, fill_threads),
-                    None => coop_fill_load(kernel, end, fill_lane, t.b_src, b_fill, t.b_n, t.b_k, b_rows, win_k, fill_threads),
+                    Some(cone) => {
+                        coop_fill_cone(kernel, end, fill_lane, cone, b_fill, t.b_n, t.b_k, b_rows, win_k, fill_threads, swizzle)
+                    }
+                    None => coop_fill_load(
+                        kernel,
+                        end,
+                        fill_lane,
+                        t.b_src,
+                        b_fill,
+                        t.b_n,
+                        t.b_k,
+                        b_rows,
+                        win_k,
+                        fill_threads,
+                        swizzle,
+                    ),
                 };
                 // One lane base for the whole tile: every `ldmatrix` of every
                 // operand, pair and tile adds only its own offset to it — A's
@@ -3392,6 +3140,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, layout: (u16, u16,
                         win_k / 8,
                         sb,
                         a_lb,
+                        swizzle,
                     );
                     // `[lane][tile][half]`: one contiguous run per tile, so one
                     // store per lane writes the whole `ldmatrix` result.
@@ -4501,21 +4250,31 @@ impl Kernel {
                     // A dequant chain is staged: reading it per fragment
                     // register re-evaluates the whole chain, and the device
                     // epilogue then unfolds each chain per fragment lane, an IR
-                    // blowout that never runs faster than the staged tile.
-                    if coned && !staged {
+                    // blowout that never runs faster than the staged tile. The
+                    // int8 cell is the exception: its fragment operand *is* one
+                    // code word, so an unstaged form reads that word once per
+                    // instruction instead of unfolding the chain per element.
+                    let s8_tiled = tiled_idx.is_some_and(|t| matches!(tiled[t].variant.dtype, MMADType::s8_s8_s32_s32));
+                    if coned && !staged && !s8_tiled {
                         continue;
                     }
                     if let (Some((shape, loop_len)), Some(ti)) = (&shape, tiled_idx) {
                         let t = &tiled[ti];
                         if matches!(t.variant.dtype, MMADType::s8_s8_s32_s32) {
-                            if tile_fit_s8(shape, staged, layout, &info).is_some() {
-                                plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle: false });
-                            }
-                            if staged
-                                && let (Some(qa), Some(qb)) = (t.a_quant.as_ref(), t.b_quant.as_ref())
-                                && words_fit(shape, layout, &info, self, qa, qb)
-                            {
-                                plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle: true });
+                            // The same product as every other form: staging is
+                            // an axis, and the staged layout is an axis only
+                            // where there is a staged layout to choose.
+                            let stages: &[(bool, &[bool])] = if staged {
+                                &[(true, &[false, true])]
+                            } else {
+                                &[(false, &[false])]
+                            };
+                            for &(st, points) in stages {
+                                for &swizzle in points {
+                                    if s8_fit(shape, st, swizzle, layout, &info) {
+                                        plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged: st, swizzle });
+                                    }
+                                }
                             }
                             continue;
                         }
@@ -4523,7 +4282,22 @@ impl Kernel {
                             continue;
                         }
                     }
-                    plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle: true });
+                    // An int8 region has no lowering of its own: the codes are
+                    // read as packed words, which is the tiled cell's form, and
+                    // this branch emits only the generic element-wise wmma. A
+                    // region that matched an int8 form is therefore not a
+                    // candidate for it.
+                    if region.is_some_and(|r| matches!(regions[r].variant.dtype, MMADType::s8_s8_s32_s32)) {
+                        continue;
+                    }
+                    // A staged layout has two points: the swizzled pack (the
+                    // bank-conflict-free rows) and the plain one. An unstaged
+                    // form has no staged layout to choose, so it is one point —
+                    // an axis the lowering does not read is not enumerated.
+                    let points: &[bool] = if staged { &[false, true] } else { &[false] };
+                    for &swizzle in points {
+                        plans.push(Plan { region, tiled: tiled_idx, grid: None, layout, staged, swizzle });
+                    }
                 }
             }
         }
@@ -4757,7 +4531,11 @@ impl Kernel {
                                                 // A dequant chain is staged: reading
                                                 // it per fragment register
                                                 // re-evaluates the whole chain.
-                                                if coned && !staged {
+                                                // The int8 cell builds each
+                                                // fragment word from four code
+                                                // reads, so it has an unstaged
+                                                // form of its own.
+                                                if coned && !staged && !s8 {
                                                     continue;
                                                 }
                                                 // A warp's accumulator is one register
@@ -4775,34 +4553,27 @@ impl Kernel {
                                                 // divides it when it divides the
                                                 // whole loop together with them.
                                                 if s8 {
-                                                    if tile_fit_s8(&shape, staged, layout, &info).is_some() {
-                                                        plans.push(Plan {
-                                                            region: None,
-                                                            tiled: None,
-                                                            grid: Some((
-                                                                m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_,
-                                                                fk, transposed,
-                                                            )),
-                                                            layout,
-                                                            staged,
-                                                            swizzle: false,
-                                                        });
-                                                    }
-                                                    if staged
-                                                        && let (Some(qa), Some(qb)) = (quants.0.as_ref(), quants.1.as_ref())
-                                                        && words_fit(&shape, layout, &info, self, qa, qb)
-                                                    {
-                                                        plans.push(Plan {
-                                                            region: None,
-                                                            tiled: None,
-                                                            grid: Some((
-                                                                m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_,
-                                                                fk, transposed,
-                                                            )),
-                                                            layout,
-                                                            staged,
-                                                            swizzle: true,
-                                                        });
+                                                    let stages: &[(bool, &[bool])] = if staged {
+                                                        &[(true, &[false, true])]
+                                                    } else {
+                                                        &[(false, &[false])]
+                                                    };
+                                                    for &(st, points) in stages {
+                                                        for &swizzle in points {
+                                                            if s8_fit(&shape, st, swizzle, layout, &info) {
+                                                                plans.push(Plan {
+                                                                    region: None,
+                                                                    tiled: None,
+                                                                    grid: Some((
+                                                                        m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm,
+                                                                        fn_, fk, transposed,
+                                                                    )),
+                                                                    layout,
+                                                                    staged: st,
+                                                                    swizzle,
+                                                                });
+                                                            }
+                                                        }
                                                     }
                                                     continue;
                                                 } else if tile_fit(&shape, staged, layout, &info, |wk| {
@@ -4812,17 +4583,20 @@ impl Kernel {
                                                 {
                                                     continue;
                                                 }
-                                                plans.push(Plan {
-                                                    region: None,
-                                                    tiled: None,
-                                                    grid: Some((
-                                                        m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_, fk,
-                                                        transposed,
-                                                    )),
-                                                    layout,
-                                                    staged,
-                                                    swizzle: true,
-                                                });
+                                                let points: &[bool] = if staged { &[false, true] } else { &[false] };
+                                                for &swizzle in points {
+                                                    plans.push(Plan {
+                                                        region: None,
+                                                        tiled: None,
+                                                        grid: Some((
+                                                            m_range, n_range, loop_id, m_lanes, n_lanes, k_lanes, fm, fn_, fk,
+                                                            transposed,
+                                                        )),
+                                                        layout,
+                                                        staged,
+                                                        swizzle,
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -4965,8 +4739,8 @@ mod tests {
         let opt = k.opt_tensorize();
         assert_eq!(
             opt.nconfigs(),
-            23,
-            "one region, per layout and operand form: K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in"
+            51,
+            "one region, per layout and operand form: every layout at both staging levels, and the staged level at both layouts — K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in"
         );
         opt.apply(&mut k, 0);
         k.verify();
@@ -5013,8 +4787,8 @@ mod tests {
         let opt = k.opt_tensorize();
         assert_eq!(
             opt.nconfigs(),
-            23,
-            "one NT region, per layout and operand form: K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in"
+            51,
+            "one NT region, per layout and operand form: every layout at both staging levels, and the staged level at both layouts — K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in"
         );
         opt.apply(&mut k, 0);
         k.verify();
@@ -5266,7 +5040,7 @@ mod tests {
         let opt = k.opt_tensorize();
         assert_eq!(
             opt.nconfigs(),
-            15,
+            17,
             "both operand orientations of the tiled form, at the warp layouts and staging levels that can emit them"
         );
         opt.apply(&mut k, 0);
@@ -5427,7 +5201,7 @@ mod tests {
         k.verify();
         let scalar = k.clone();
         let opt = k.opt_tensorize();
-        assert_eq!(opt.nconfigs(), 16, "the tiled form matches, at the warp layouts and staging levels that can emit it");
+        assert_eq!(opt.nconfigs(), 20, "the tiled form matches, at the warp layouts and staging levels that can emit it");
         opt.apply(&mut k, 0);
         k.default_epilogue();
         k.verify();
@@ -5801,7 +5575,7 @@ mod tests {
         println!("tensorize nconfigs = {}", t.nconfigs());
         // One matched region, plus the tile grids the warp layouts and staging
         // levels can actually emit.
-        assert_eq!(t.nconfigs(), 26, "one region and the tile grids that fit, per layout and operand form");
+        assert_eq!(t.nconfigs(), 54, "one region and the tile grids that fit, per layout and operand form");
         t.apply(&mut k, 0);
         k.verify();
         println!("--- after tensorize ---");
@@ -5926,7 +5700,7 @@ mod tests {
         let opt = k.opt_tensorize();
         assert_eq!(
             opt.nconfigs(),
-            917,
+            1659,
             "one region per layout and operand form, plus the tile grids at the warp layouts and staging levels that can emit them: this seed's B is a transposed view, so the grids are the direct form (the staged form needs both operands K-contiguous) and the direct form fits more warp layouts"
         );
         opt.apply(&mut k, 0);
