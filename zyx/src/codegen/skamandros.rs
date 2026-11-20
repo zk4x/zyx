@@ -50,14 +50,7 @@ impl Constant {
                 let value = self.as_float().ok_or_else(|| tt_err("skamandros: non-float constant in a bf16 slot".into()))?;
                 format!("{value}")
             }
-            DType::I32
-            | DType::I64
-            | DType::U32
-            | DType::U64
-            | DType::I16
-            | DType::U16
-            | DType::I8
-            | DType::U8 => {
+            DType::I32 | DType::I64 | DType::U32 | DType::U64 | DType::I16 | DType::U16 | DType::I8 | DType::U8 => {
                 let value = self.as_integer().ok_or_else(|| tt_err("skamandros: non-integer constant in an i32 slot".into()))?;
                 format!("{value}")
             }
@@ -149,9 +142,7 @@ impl Compiler<'_> {
             [] => Ok([1, 1]),
             [.., 32] => Ok([1, 32]),
             [.., 1] => Ok([1, 1]),
-            _ => Err(tt_err(format!(
-                "skamandros: access {idx:?} of shape {shape:?} is neither a row nor a tile"
-            ))),
+            _ => Err(tt_err(format!("skamandros: access {idx:?} of shape {shape:?} is neither a row nor a tile"))),
         }
     }
 
@@ -200,10 +191,7 @@ impl Compiler<'_> {
         }
         let (ntr, ntc) = ((rows + 31) / 32, (cols + 31) / 32);
         let plane = rows * cols;
-        let strides = self
-            .k
-            .get_strides(idx)
-            .ok_or_else(|| tt_err(format!("skamandros: access {idx:?} has no stride form")))?;
+        let strides = self.k.get_strides(idx).ok_or_else(|| tt_err(format!("skamandros: access {idx:?} has no stride form")))?;
         let mut terms: Vec<(OpId, Dim)> = Vec::new();
         for (var, (_, stride)) in strides.iter() {
             let (var, s) = (*var, *stride);
@@ -239,9 +227,7 @@ impl Compiler<'_> {
         let row_c = (cst / cols) % rows;
         let col_c = cst % cols;
         if col_c % 32 != 0 || (units == 1 && row_c % 32 != 0) {
-            return Err(tt_err(format!(
-                "skamandros: access {idx:?} starts inside its unit (offset {cst})"
-            )));
+            return Err(tt_err(format!("skamandros: access {idx:?} starts inside its unit (offset {cst})")));
         }
         let page_c = (cst / plane) * ntr * ntc + row_c / 32 * ntc + col_c / 32;
         let page_c = page_c * units + row_c % 32;
@@ -405,9 +391,7 @@ impl Kernel {
                     // the candidate is refused: `tt_tile` owns filling that
                     // gap, and a search candidate that leaves it open is not a
                     // program this backend can render.
-                    return Err(tt_err(format!(
-                        "skamandros: local work axis {axis} has no Tensix form"
-                    )));
+                    return Err(tt_err(format!("skamandros: local work axis {axis} has no Tensix form")));
                 }
                 Op::Unroll { .. } => {
                     // A lane is the access unit's own dimension; the emitted

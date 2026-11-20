@@ -2743,7 +2743,9 @@ impl Runtime {
         // boundary — no allocation or liveness decisions are made here.
         fn dim_expr(graph: &Graph, dim: OpId) -> PlanDim {
             match graph.ops[dim].op {
-                Op::Const(c) => PlanDim::Const(c.as_dim().unwrap_or_else(|| panic!("dim class {dim:?} is not a constant"))),
+                Op::Const(c) => PlanDim::Const(
+                    c.as_integer().unwrap_or_else(|| panic!("dim class {dim:?} is not an integer constant: {c:?}")),
+                ),
                 Op::Param { .. } => PlanDim::Leaf(dim),
                 Op::Binary { x, y, bop } => {
                     PlanDim::Binary { x: Box::new(dim_expr(graph, x)), y: Box::new(dim_expr(graph, y)), bop }

@@ -529,6 +529,67 @@ pub(crate) fn eval_nodes(
                 };
                 values.insert(node.output[0].clone(), output);
             }
+            // Nearest-neighbour resize. Integer upscales are element
+            // replication: insert a unit axis after the resized one, expand
+            // it to the scale and fold it back. That is the same index
+            // mapping for every ONNX coordinate/nearest mode when the scale
+            // is a positive integer, so only such scales are accepted.
+            "Resize" => {
+                let x = get(&node.input[0]);
+                let mode = get_attr_opt::<str>(node, "mode")?.unwrap_or("nearest");
+                assert!(
+                    mode == "nearest",
+                    "Resize mode {mode:?} is not supported for {}",
+                    node.name
+                );
+                let rank = x.rank() as usize;
+                let scales: Vec<f64> = match get_opt(2) {
+                    Some(scales) => scales.clone().try_into()?,
+                    None => {
+                        let sizes: Vec<i64> = get_opt(3)
+                            .unwrap_or_else(|| panic!("Resize needs scales or sizes for {}", node.name))
+                            .clone()
+                            .try_into()?;
+                        let shape = x.resolve_shape();
+                        sizes
+                            .iter()
+                            .zip(shape.iter())
+                            .map(|(&out, &inn)| out as f64 / inn as f64)
+                            .collect()
+                    }
+                };
+                assert_eq!(
+                    scales.len(),
+                    rank,
+                    "Resize scales length for {}",
+                    node.name
+                );
+                let mut out = x.clone();
+                for (axis, &scale) in scales.iter().enumerate() {
+                    if (scale - 1.0).abs() < 1e-9 {
+                        continue;
+                    }
+                    let factor = scale.round() as i64;
+                    assert!(
+                        factor > 0 && (factor as f64 - scale).abs() < 1e-6,
+                        "Resize only supports integer nearest scales, got {scale} on axis {axis} for {}",
+                        node.name
+                    );
+                    assert!(
+                        axis + 2 >= rank,
+                        "Resize on non-spatial axis {axis} of rank {rank} for {}",
+                        node.name
+                    );
+                    let expanded = out
+                        .unsqueeze(axis as i32 + 1)?
+                        .expand_axis(axis as i32 + 1, factor)?;
+                    let mut shape = expanded.shape();
+                    shape[axis] = shape[axis].clone() * shape[axis + 1].clone();
+                    shape.remove(axis + 1);
+                    out = expanded.reshape(shape)?;
+                }
+                values.insert(node.output[0].clone(), out);
+            }
             "Dropout" => {
                 let input = get(&node.input[0]).clone();
                 values.insert(node.output[0].clone(), input.clone());
@@ -1440,8 +1501,11 @@ pub(crate) fn eval_nodes(
                 if ceil_mode != 0 {
                     panic!("MaxPool ceil_mode is not supported for {}", node.name);
                 }
-                let padding: Vec<(i64, i64)> =
-                    (0..spatial).map(|i| (pads[i], pads[i + spatial])).collect();
+                // `Tensor::max_pool` pads per dimension from dim 0, so the
+                // leading (batch, channel) dims need explicit zero padding.
+                let rank = x.rank() as usize;
+                let mut padding: Vec<(i64, i64)> = vec![(0, 0); rank - spatial];
+                padding.extend((0..spatial).map(|i| (pads[i], pads[i + spatial])));
                 let out = x.max_pool(kernel, strides, dilations, padding, false, false)?;
                 values.insert(node.output[0].clone(), out);
             }
@@ -1469,8 +1533,11 @@ pub(crate) fn eval_nodes(
                         node.name
                     );
                 }
-                let padding: Vec<(i64, i64)> =
-                    (0..spatial).map(|i| (pads[i], pads[i + spatial])).collect();
+                // `Tensor::pad` pads per dimension from dim 0; keep the
+                // leading (batch, channel) dims unpadded.
+                let rank = x.rank() as usize;
+                let mut padding: Vec<(i64, i64)> = vec![(0, 0); rank - spatial];
+                padding.extend((0..spatial).map(|i| (pads[i], pads[i + spatial])));
                 let padded = x.pad(padding, 0.0f32)?;
                 let pooled = padded.pool(kernel.clone(), strides, dilations)?;
                 let axes: Vec<i32> = (-(spatial as i32)..0).collect();

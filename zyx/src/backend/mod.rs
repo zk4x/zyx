@@ -110,13 +110,13 @@ impl PlanDim {
                 .unwrap_or_else(|| panic!("dynamic dim class {cid:?} is unbound at execution time")),
             PlanDim::Binary { x, y, bop } => {
                 Constant::binary(Constant::idx(x.eval(class_vars)), Constant::idx(y.eval(class_vars)), *bop)
-                    .as_dim()
-                    .unwrap_or_else(|| panic!("dim binary op {bop:?} did not produce a dim"))
+                    .as_integer()
+                    .unwrap_or_else(|| panic!("dim binary op {bop:?} did not produce an integer"))
             }
             PlanDim::Cast { x, dtype } => Constant::idx(x.eval(class_vars))
                 .cast(*dtype)
-                .as_dim()
-                .unwrap_or_else(|| panic!("dim cast to {dtype:?} did not produce a dim")),
+                .as_integer()
+                .unwrap_or_else(|| panic!("dim cast to {dtype:?} did not produce an integer")),
         }
     }
 }

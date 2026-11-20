@@ -11,14 +11,21 @@
 //! in the backend: a BF16 compute kernel is a loud codegen error, not a silent
 //! widen.
 
-
 use zyx::{DType, Dev, Tensor, ZyxError};
+
+/// The Tenstorrent device, if one initialized. A test returns `Ok(())` when it
+/// did not, so the file is runnable on machines without the simulator (the
+/// same guard `24_tt` uses).
+fn tt() -> Option<Dev> {
+    Dev::TT(0).info().ok().map(|_| Dev::TT(0))
+}
 
 #[test]
 fn sigmoid() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 256], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sigmoid().to(Dev::C)?;
+    let z = x.to(dev)?.sigmoid().to(Dev::C)?;
 
     // Host reference in F32. The SFPU `exp` is a fitted approximation, so
     // the gate is an absolute error, not bit equality.
@@ -57,8 +64,9 @@ fn activation_input() -> Tensor {
 
 #[test]
 fn tanh() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = activation_input();
-    let z = x.to(Dev::TT(0))?.tanh().to(Dev::C)?;
+    let z = x.to(dev)?.tanh().to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -79,9 +87,10 @@ fn tanh() -> Result<(), ZyxError> {
 
 #[test]
 fn silu() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // `x * sigmoid(x)`, the fork that makes `x` a two-use value.
     let x = activation_input();
-    let xs = x.to(Dev::TT(0))?;
+    let xs = x.to(dev)?;
     let z = (xs.clone() * xs.sigmoid()).to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
@@ -103,8 +112,9 @@ fn silu() -> Result<(), ZyxError> {
 
 #[test]
 fn gelu() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = activation_input();
-    let z = x.to(Dev::TT(0))?.gelu().to(Dev::C)?;
+    let z = x.to(dev)?.gelu().to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -127,10 +137,11 @@ fn gelu() -> Result<(), ZyxError> {
 
 #[test]
 fn elu() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // Goes through `relu` = `cmpgt(0) * x`, so this is also the comparison
     // tile's gate.
     let x = activation_input();
-    let z = x.to(Dev::TT(0))?.elu(1.0f32).to(Dev::C)?;
+    let z = x.to(dev)?.elu(1.0f32).to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -152,11 +163,12 @@ fn elu() -> Result<(), ZyxError> {
 
 #[test]
 fn add() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 256], DType::F32)?;
     let y = Tensor::rand([10, 256], DType::F32)?;
 
-    let xs = x.to(Dev::TT(0))?;
-    let ys = y.to(Dev::TT(0))?;
+    let xs = x.to(dev)?;
+    let ys = y.to(dev)?;
     let z = (xs + ys).to(Dev::C)?;
 
     // `SFPMAD` with the constant-one register is exact F32 addition, so the
@@ -190,6 +202,7 @@ fn add() -> Result<(), ZyxError> {
 
 #[test]
 fn unary_math() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // `SQRT`/`RSQRT` (`sqrt_program`), `RECIP` (`Program::recip`), `DIV`
     // (`scale_large_divisor` + `recip` + `divide`) are each within about a ulp
     // of the host's correctly rounded result; `FLOOR`/`TRUNC` (`round::body`)
@@ -199,9 +212,9 @@ fn unary_math() -> Result<(), ZyxError> {
     let x = Tensor::rand([10, 256], DType::F32)?;
     let y = Tensor::rand([10, 256], DType::F32)?;
     let n = Tensor::randn([10, 256], DType::F32)?;
-    let xs = x.to(Dev::TT(0))?;
-    let ys = y.to(Dev::TT(0))?;
-    let ns = n.to(Dev::TT(0))?;
+    let xs = x.to(dev)?;
+    let ys = y.to(dev)?;
+    let ns = n.to(dev)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let yv: Vec<f32> = y.try_into().unwrap();
@@ -248,10 +261,11 @@ fn unary_math() -> Result<(), ZyxError> {
 
 #[test]
 fn large_elementwise() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // A group range above the device max: `tt_tile` must split it into an
     // outer group and a loop, and the loop's traffic must stay canonical.
     let x = Tensor::rand([1024, 256], DType::F32)?;
-    let xs = x.to(Dev::TT(0))?;
+    let xs = x.to(dev)?;
     let neg: Vec<f32> = (-&xs).to(Dev::C)?.try_into().unwrap();
     let xv: Vec<f32> = x.try_into().unwrap();
     assert_eq!(neg.len(), xv.len());
@@ -264,6 +278,7 @@ fn large_elementwise() -> Result<(), ZyxError> {
 
 #[test]
 fn tiling() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // The shapes that exercise the forms `tt_tile` must finish (NOTES,
     // "Tiling: the search explores, `tt_tile` completes"):
     // - `[32, 32]` is already one tile: one 32-lane unroll over the rows and
@@ -278,7 +293,7 @@ fn tiling() -> Result<(), ZyxError> {
     // the gate is bit equality.
     for (r, c) in [(32i64, 32i64), (64, 64), (10, 32), (128, 128)] {
         let x = Tensor::rand([r, c], DType::F32)?;
-        let xs = x.to(Dev::TT(0))?;
+        let xs = x.to(dev)?;
 
         let xv: Vec<f32> = x.try_into().unwrap();
         let neg: Vec<f32> = (-&xs).to(Dev::C)?.try_into().unwrap();
@@ -296,6 +311,7 @@ fn tiling() -> Result<(), ZyxError> {
 
 #[test]
 fn neg_sub_mul() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // Three row ops of one SFPU instruction each: `NEG` is `SFPMOV` with the
     // negate modifier, `SUB` is `SFPMAD` with a negated addend, `MUL` is
     // `SFPMAD` with the negated zero register. Each is exact in F32 apart from
@@ -309,8 +325,8 @@ fn neg_sub_mul() -> Result<(), ZyxError> {
     // mis-tile for a bare unary (grid `[10, 1]`, one 4 KB page per row).
     let x = Tensor::rand([10, 256], DType::F32)?;
     let y = Tensor::rand([10, 256], DType::F32)?;
-    let xs = x.to(Dev::TT(0))?;
-    let ys = y.to(Dev::TT(0))?;
+    let xs = x.to(dev)?;
+    let ys = y.to(dev)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let yv: Vec<f32> = y.try_into().unwrap();
@@ -330,10 +346,11 @@ fn neg_sub_mul() -> Result<(), ZyxError> {
 
 #[test]
 fn matmul() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
     let y = Tensor::rand([20, 12], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.matmul(&y.to(Dev::TT(0))?)?.to(Dev::C)?;
+    let z = x.to(dev)?.matmul(&y.to(dev)?)?.to(Dev::C)?;
 
     // Host reference: F32 accumulation over K=20 on the Matrix Unit.
     let xv: Vec<f32> = x.try_into().unwrap();
@@ -371,9 +388,10 @@ fn matmul() -> Result<(), ZyxError> {
 
 #[test]
 fn sum() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sum_keepdim([1])?.to(Dev::C)?;
+    let z = x.to(dev)?.sum_keepdim([1])?.to(Dev::C)?;
 
     // Host reference: per-row sums over k=0..20. The transfer narrows the
     // physical tile to the logical [10, 1] shape.
@@ -410,9 +428,10 @@ fn sum() -> Result<(), ZyxError> {
 /// rank-dropping shape, not in the reduction.
 #[test]
 fn sum_drop() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sum([1])?.to(Dev::C)?;
+    let z = x.to(dev)?.sum([1])?.to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -440,9 +459,10 @@ fn sum_drop() -> Result<(), ZyxError> {
 /// `max([1])` drops the axis like `sum([1])`. Exact like the `max` gate.
 #[test]
 fn max_drop() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.max([1])?.to(Dev::C)?;
+    let z = x.to(dev)?.max([1])?.to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -469,9 +489,10 @@ fn max_drop() -> Result<(), ZyxError> {
 /// column, not per row.
 #[test]
 fn sum_drop_col() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sum([0])?.to(Dev::C)?;
+    let z = x.to(dev)?.sum([0])?.to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -500,9 +521,10 @@ fn sum_drop_col() -> Result<(), ZyxError> {
 /// is 8 tile iterations, and the output is a `[32]` vector.
 #[test]
 fn sum_drop_loop() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([32, 256], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sum([1])?.to(Dev::C)?;
+    let z = x.to(dev)?.sum([1])?.to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -532,9 +554,10 @@ fn sum_drop_loop() -> Result<(), ZyxError> {
 /// the tiling's `boundary offset ... is not a whole tile` path.
 #[test]
 fn sum_one_row() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([1, 256], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sum_all().to(Dev::C)?;
+    let z = x.to(dev)?.sum_all().to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -550,9 +573,10 @@ fn sum_one_row() -> Result<(), ZyxError> {
 
 #[test]
 fn sum_sigmoid() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sum_keepdim([1])?.sigmoid().to(Dev::C)?;
+    let z = x.to(dev)?.sum_keepdim([1])?.sigmoid().to(Dev::C)?;
 
     // Host reference: per-row sums over k=0..20, then sigmoid.
     let xv: Vec<f32> = x.try_into().unwrap();
@@ -585,9 +609,10 @@ fn sum_sigmoid() -> Result<(), ZyxError> {
 
 #[test]
 fn max() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.max_keepdim([1])?.to(Dev::C)?;
+    let z = x.to(dev)?.max_keepdim([1])?.to(Dev::C)?;
 
     // Host reference: per-row maxima over k=0..20. A `SFPGT` fold is exact,
     // so any real error is a wrong program, not rounding.
@@ -620,9 +645,10 @@ fn max() -> Result<(), ZyxError> {
 
 #[test]
 fn sum_scalar() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.sum([0, 1])?.to(Dev::C)?;
+    let z = x.to(dev)?.sum([0, 1])?.to(Dev::C)?;
 
     // Host reference: the total, left to right. The device folds the tile
     // row, then the rows in order, so the bound is the usual summation
@@ -644,9 +670,10 @@ fn sum_scalar() -> Result<(), ZyxError> {
 
 #[test]
 fn max_scalar() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.max([0, 1])?.to(Dev::C)?;
+    let z = x.to(dev)?.max([0, 1])?.to(Dev::C)?;
 
     // Host reference: the maximum over everything. Exact, like `max`.
     let xv: Vec<f32> = x.try_into().unwrap();
@@ -663,12 +690,13 @@ fn max_scalar() -> Result<(), ZyxError> {
 
 #[test]
 fn sum_all() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
 
     // The no-argument reduce (`axes = []` means every axis). It is the same
     // chain as `sum([0, 1])`: `reduce_axes` folds one axis at a time, so the
     // kernel is `Row` then `Col`, never `TileDim::Scalar`.
-    let z = x.to(Dev::TT(0))?.sum_all().to(Dev::C)?;
+    let z = x.to(dev)?.sum_all().to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -691,8 +719,9 @@ fn sum_all() -> Result<(), ZyxError> {
 /// above fit one tile and never enter a loop.)
 #[test]
 fn sum_loop() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([32, 256], DType::F32)?;
-    let z = x.to(Dev::TT(0))?.sum_all().to(Dev::C)?;
+    let z = x.to(dev)?.sum_all().to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -713,10 +742,11 @@ fn sum_loop() -> Result<(), ZyxError> {
 
 #[test]
 fn matmul_sigmoid() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
     let y = Tensor::rand([20, 12], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.matmul(&y.to(Dev::TT(0))?)?.sigmoid().to(Dev::C)?;
+    let z = x.to(dev)?.matmul(&y.to(dev)?)?.sigmoid().to(Dev::C)?;
 
     // Host reference: matmul accumulation, then sigmoid.
     let xv: Vec<f32> = x.try_into().unwrap();
@@ -754,6 +784,7 @@ fn matmul_sigmoid() -> Result<(), ZyxError> {
 
 #[test]
 fn matmul_add() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([10, 20], DType::F32)?;
     let y = Tensor::rand([20, 12], DType::F32)?;
     let a = Tensor::rand([10, 20], DType::F32)?;
@@ -765,8 +796,8 @@ fn matmul_add() -> Result<(), ZyxError> {
     // emits `ZEROACC CLR_ALL`, which would wipe the first accumulator, and
     // codegen refuses that loudly. Once the clear is scoped to the
     // accumulator's own rows, this test is the `SETRWC` gate.
-    let m1 = x.to(Dev::TT(0))?.matmul(&y.to(Dev::TT(0))?)?;
-    let m2 = a.to(Dev::TT(0))?.matmul(&b.to(Dev::TT(0))?)?;
+    let m1 = x.to(dev)?.matmul(&y.to(dev)?)?;
+    let m2 = a.to(dev)?.matmul(&b.to(dev)?)?;
     let z = (m1 + m2).to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
@@ -812,9 +843,10 @@ fn matmul_add() -> Result<(), ZyxError> {
 
 #[test]
 fn softmax() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     let x = Tensor::rand([256, 256], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.softmax([1])?.to(Dev::C)?;
+    let z = x.to(dev)?.softmax([1])?.to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -851,12 +883,13 @@ fn softmax() -> Result<(), ZyxError> {
 
 #[test]
 fn transfer_roundtrip() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // Transfer-only probe: tilize to TT and untilize back, no kernel in
     // between. Exact equality is expected (tilize is a permutation plus zero
     // halo; untilize narrows to the logical shape).
     let x = Tensor::rand([10, 20], DType::F32)?;
 
-    let z = x.to(Dev::TT(0))?.to(Dev::C)?;
+    let z = x.to(dev)?.to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -879,13 +912,14 @@ fn transfer_roundtrip() -> Result<(), ZyxError> {
 
 #[test]
 fn shared_input() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // The same value twice in one kernel: one CB, one replayed `MUL` sequence
     // whose two loads read the same DST tile. It exercises the reader-CB
     // unpack cache (`tt_resolve_dst`) and the `COMPUTED`/`UNPACKED` seams on a
     // chain that is not one linear value. `SFPMAD` with a negated zero addend
     // is an exact multiply, so the gate is bit equality.
     let x = Tensor::rand([32, 32], DType::F32)?;
-    let xs = x.to(Dev::TT(0))?;
+    let xs = x.to(dev)?;
     let z = (&xs * &xs).to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
@@ -901,6 +935,7 @@ fn shared_input() -> Result<(), ZyxError> {
 
 #[test]
 fn exp2() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // The smallest kernel that unpacks a multi-use value, replays several
     // sequences and puts the result through a select. It is the regression
     // for two bugs: the missing packer -> unpacker seam in `tt_reg_sync`
@@ -908,7 +943,7 @@ fn exp2() -> Result<(), ZyxError> {
     // `Add` lowering through the F32 arm (which halved every lane with
     // `|x| >= 0.5`).
     let x = Tensor::rand([32, 32], DType::F32)?;
-    let z = x.to(Dev::TT(0))?.exp2().to(Dev::C)?;
+    let z = x.to(dev)?.exp2().to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();
@@ -937,13 +972,14 @@ fn exp2() -> Result<(), ZyxError> {
 
 #[test]
 fn sin_cos() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // The SFPU has no sin/cos instruction: `tt_unfold` reduces the argument
     // (magic-constant round + a two-limb Cody-Waite pi/2) and evaluates the
     // Taylor core, so the gate is the host's tolerance, not bit equality.
     // `x` spans about [-100, 100]: enough for a two-digit quadrant with the
     // two-limb reduction still exact (the doc's limit is ~6400 rad).
     let x = &Tensor::rand([10, 256], DType::F32)? * 200.0f32 - 100.0f32;
-    let xs = x.to(Dev::TT(0))?;
+    let xs = x.to(dev)?;
     let xv: Vec<f32> = x.try_into().unwrap();
     let sin: Vec<f32> = xs.sin().to(Dev::C)?.try_into().unwrap();
     let cos: Vec<f32> = xs.cos().to(Dev::C)?.try_into().unwrap();
@@ -962,6 +998,7 @@ fn sin_cos() -> Result<(), ZyxError> {
 
 #[test]
 fn log2() -> Result<(), ZyxError> {
+    let Some(dev) = tt() else { return Ok(()) };
     // `tt_unfold`'s `tt_log2`: exponent and mantissa by the bit form of
     // `SFPEXEXP`/`SFPSETEXP`, `ln m` as `2 atanh(f/(2+f))`, times `log2 e`.
     // It is the regression for the integer `Sub` that had no arm: `e - 127`
@@ -969,7 +1006,7 @@ fn log2() -> Result<(), ZyxError> {
     // tile. `x` spans about [0.01, 100], so every exponent in `[-7, 7]` and a
     // mantissa above and below `sqrt 2` are covered.
     let x = &Tensor::rand([10, 256], DType::F32)? * 100.0f32 + 0.01f32;
-    let z = x.to(Dev::TT(0))?.log2().to(Dev::C)?;
+    let z = x.to(dev)?.log2().to(Dev::C)?;
 
     let xv: Vec<f32> = x.try_into().unwrap();
     let zv: Vec<f32> = z.try_into().unwrap();

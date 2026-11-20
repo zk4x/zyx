@@ -251,8 +251,8 @@ pub(crate) fn debug_mask() -> DebugMask {
 /// Whether on-disk caching is disabled (`ZYX_NO_CACHE`).
 ///
 /// Covers every disk cache: the compiled-object cache of the C backend and the
-/// autotune cache in [`runtime::get_or_autotune`]. Presence of the variable
-/// disables it, like [`ZYX_DRY_RUN`]; nothing is read and nothing is written.
+/// autotune cache in [`Runtime::get_or_autotune`]. Presence of the variable
+/// disables it, like `ZYX_DRY_RUN`; nothing is read and nothing is written.
 pub(crate) fn cache_disabled() -> bool {
     std::env::var_os("ZYX_NO_CACHE").is_some()
 }

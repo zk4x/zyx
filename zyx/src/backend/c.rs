@@ -43,6 +43,11 @@ const C_FLAGS: [&str; 7] = [
     "-fPIC",
     "-o",
 ];
+/// Bumped whenever the C renderer changes the source it emits. The disk cache
+/// keys on the kernel IR and the compiler flags, neither of which can see a
+/// codegen fix, so without this a cached `.so` from the old renderer would
+/// outlive the fix.
+const C_CODEGEN_VERSION: u32 = 4;
 
 #[derive(Debug, DeJson)]
 #[nserde(default)]
@@ -352,6 +357,7 @@ impl CDevice {
             use std::hash::{DefaultHasher, Hash as _, Hasher as _};
             let mut flags = DefaultHasher::new();
             C_FLAGS.hash(&mut flags);
+            C_CODEGEN_VERSION.hash(&mut flags);
             flags.finish() as u32
         };
 

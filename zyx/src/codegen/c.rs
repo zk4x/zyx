@@ -130,6 +130,27 @@ impl Kernel {
                 // old sel*a + (1-sel)*b decomposition).
                 Op::Select { cond, if_true, if_false } => {
                     let dtype = dtypes[&op_id].clone();
+                    // A scalar operand broadcasts into every lane: only a
+                    // vector-shaped, register-held value is lane-indexed.
+                    let cond_vec = !dtypes[&cond].1.is_empty()
+                        && !constants.contains_key(&cond)
+                        && !indices.contains_key(&cond)
+                        && !var_params.contains_key(&cond);
+                    let true_vec = !dtypes[&if_true].1.is_empty()
+                        && !constants.contains_key(&if_true)
+                        && !indices.contains_key(&if_true)
+                        && !var_params.contains_key(&if_true);
+                    let false_vec = !dtypes[&if_false].1.is_empty()
+                        && !constants.contains_key(&if_false)
+                        && !indices.contains_key(&if_false)
+                        && !var_params.contains_key(&if_false);
+                    // A lane node is its own index: the value of the vector it
+                    // shapes is `0, 1, ... len-1`, so a value operand that *is*
+                    // the lane takes the loop's lane, not the address-marker
+                    // zero `get_var` hands back.
+                    let cond_lane = matches!(self.ops[cond].op, Op::Unroll { .. });
+                    let true_lane = matches!(self.ops[if_true].op, Op::Unroll { .. });
+                    let false_lane = matches!(self.ops[if_false].op, Op::Unroll { .. });
                     let cond = get_var(cond, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let if_true = get_var(if_true, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let if_false = get_var(if_false, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
@@ -137,9 +158,27 @@ impl Kernel {
                     match dtype.1.as_slice() {
                         [n] => {
                             for i in 0..width(n) {
-                                let cl = lane_access(&cond, i as usize);
-                                let tl = lane_access(&if_true, i as usize);
-                                let fl = lane_access(&if_false, i as usize);
+                                let cl = if cond_lane {
+                                    format!("{i}l")
+                                } else if cond_vec {
+                                    lane_access(&cond, i as usize)
+                                } else {
+                                    cond.clone()
+                                };
+                                let tl = if true_lane {
+                                    format!("{i}l")
+                                } else if true_vec {
+                                    lane_access(&if_true, i as usize)
+                                } else {
+                                    if_true.clone()
+                                };
+                                let fl = if false_lane {
+                                    format!("{i}l")
+                                } else if false_vec {
+                                    lane_access(&if_false, i as usize)
+                                } else {
+                                    if_false.clone()
+                                };
                                 let dst = lane_access(&format!("r{reg}"), i as usize);
                                 _ = writeln!(source, "{indent}{dst} = {cl} ? {tl} : {fl};");
                             }
@@ -212,6 +251,20 @@ impl Kernel {
                             }
                         } else {
                             let idx = get_var_addr(src_idx, &constants, &indices, &reg_map, &var_params)?;
+                            // A vector access covers the lanes, so its address is
+                            // the lane-0 base: a lane-shaped index expression is a
+                            // vector register whose first lane names the first
+                            // element the access moves. A constant, index loop
+                            // variable or symbolic scalar already is that base.
+                            let idx = if !dtypes[&src_idx].1.is_empty()
+                                && !constants.contains_key(&src_idx)
+                                && !indices.contains_key(&src_idx)
+                                && !var_params.contains_key(&src_idx)
+                            {
+                                lane_access(&idx, 0)
+                            } else {
+                                idx
+                            };
                             match access_shape.as_slice() {
                                 [] => match dtypes[&x].0 {
                                     DType::F16 => {
@@ -271,8 +324,33 @@ impl Kernel {
                     }
                 }
                 Op::Store { dst: dst_buf, dst_idx, src } => {
-                    let access_shape = self.shape(op_id);
+                    // The access shape rides on the index arithmetic, not on
+                    // the stored value: an implicit broadcast stores a scalar
+                    // into every lane of a vector index. A whole-view store
+                    // (null index) has no index shape, so it covers the
+                    // value's own lanes.
+                    let access_shape = if dst_idx.is_null() {
+                        self.shape(op_id)
+                    } else {
+                        self.shape(dst_idx)
+                    };
                     let idx = get_var_addr(dst_idx, &constants, &indices, &reg_map, &var_params)?;
+                    // Same as the load: a vector access writes from its lane-0
+                    // base, so a lane-shaped store index uses its first lane.
+                    let idx = if !dtypes[&dst_idx].1.is_empty()
+                        && !constants.contains_key(&dst_idx)
+                        && !indices.contains_key(&dst_idx)
+                        && !var_params.contains_key(&dst_idx)
+                    {
+                        lane_access(&idx, 0)
+                    } else {
+                        idx
+                    };
+                    let x_vec = !dtypes[&src].1.is_empty()
+                        && !constants.contains_key(&src)
+                        && !indices.contains_key(&src)
+                        && !var_params.contains_key(&src);
+                    let x_lane = matches!(self.ops[src].op, Op::Unroll { .. });
                     let x = get_var(src, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     match access_shape.as_slice() {
                         [] => match dtypes[&dst_buf].0 {
@@ -289,30 +367,51 @@ impl Kernel {
                         [len] => match dtypes[&dst_buf].0 {
                             DType::F16 => {
                                 for i in 0..width(len) {
-                                    _ = writeln!(
-                                        source,
-                                        "{indent}p{dst_buf}[{idx} + {i}] = f32tof16({});",
+                                    let xl = if x_lane {
+                                        format!("{i}l")
+                                    } else if x_vec {
                                         lane_access(&x, i as usize)
-                                    );
+                                    } else {
+                                        x.clone()
+                                    };
+                                    _ = writeln!(source, "{indent}p{dst_buf}[{idx} + {i}] = f32tof16({xl});");
                                 }
                             }
                             DType::BF16 => {
                                 for i in 0..width(len) {
-                                    _ = writeln!(
-                                        source,
-                                        "{indent}p{dst_buf}[{idx} + {i}] = f32tobf16({});",
+                                    let xl = if x_lane {
+                                        format!("{i}l")
+                                    } else if x_vec {
                                         lane_access(&x, i as usize)
-                                    );
+                                    } else {
+                                        x.clone()
+                                    };
+                                    _ = writeln!(source, "{indent}p{dst_buf}[{idx} + {i}] = f32tobf16({xl});");
                                 }
                             }
                             _ if !self.dev_info().supported_vec_lens.is_empty() => {
                                 let ocl_type = dtypes[&dst_buf].0.c_type();
                                 let len = width(len);
-                                _ = writeln!(source, "{indent}*(({ocl_type}{len}*)(p{dst_buf} + {idx})) = {x};");
+                                if !x_vec && !x_lane {
+                                    // Implicit broadcast: the value is one
+                                    // scalar, the access many lanes.
+                                    for i in 0..len {
+                                        _ = writeln!(source, "{indent}p{dst_buf}[{idx} + {i}] = {x};");
+                                    }
+                                } else {
+                                    _ = writeln!(source, "{indent}*(({ocl_type}{len}*)(p{dst_buf} + {idx})) = {x};");
+                                }
                             }
                             _ => {
                                 for i in 0..width(len) {
-                                    _ = writeln!(source, "{indent}p{dst_buf}[{idx} + {i}] = {};", lane_access(&x, i as usize));
+                                    let xl = if x_lane {
+                                        format!("{i}l")
+                                    } else if x_vec {
+                                        lane_access(&x, i as usize)
+                                    } else {
+                                        x.clone()
+                                    };
+                                    _ = writeln!(source, "{indent}p{dst_buf}[{idx} + {i}] = {xl};");
                                 }
                             }
                         },
@@ -327,6 +426,13 @@ impl Kernel {
                 Op::Cast { x, dtype } => {
                     let vlen = dtypes[&x].1.clone();
                     let src_dt = dtypes[&x].0;
+                    // A scalar source broadcasts; only a vector register is
+                    // lane-indexed.
+                    let x_vec = !vlen.is_empty()
+                        && !constants.contains_key(&x)
+                        && !indices.contains_key(&x)
+                        && !var_params.contains_key(&x);
+                    let x_lane = matches!(self.ops[x].op, Op::Unroll { .. });
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen.clone()), rcs[&op_id], loop_id);
                     // F8 needs real encode/decode: a plain C cast would
@@ -346,11 +452,18 @@ impl Kernel {
                     match vlen.as_slice() {
                         [n] => {
                             for i in 0..width(n) {
+                                let xl = if x_lane {
+                                    format!("{i}l")
+                                } else if x_vec {
+                                    lane_access(&x, i as usize)
+                                } else {
+                                    x.clone()
+                                };
                                 _ = writeln!(
                                     source,
                                     "{indent}{} = {};",
                                     lane_access(&format!("r{reg}"), i as usize),
-                                    cast_expr(&lane_access(&x, i as usize)),
+                                    cast_expr(&xl),
                                 );
                             }
                         }
@@ -360,6 +473,11 @@ impl Kernel {
                 Op::Bitcast { x, dtype } => {
                     let src_dtype = dtypes[&x].0;
                     let vlen = dtypes[&x].1.clone();
+                    let x_vec = !vlen.is_empty()
+                        && !constants.contains_key(&x)
+                        && !indices.contains_key(&x)
+                        && !var_params.contains_key(&x);
+                    let x_lane = matches!(self.ops[x].op, Op::Unroll { .. });
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, (dtype, vlen.clone()), rcs[&op_id], loop_id);
                     // F16/BF16 compute regs are float, so a raw memcpy is only
@@ -393,10 +511,17 @@ impl Kernel {
                     match vlen.as_slice() {
                         [n] => {
                             for i in 0..width(n) {
+                                let xl = if x_lane {
+                                    format!("{i}l")
+                                } else if x_vec {
+                                    lane_access(&x, i as usize)
+                                } else {
+                                    x.clone()
+                                };
                                 _ = writeln!(
                                     source,
                                     "{indent}{}",
-                                    bitcast_expr(&lane_access(&format!("r{reg}"), i as usize), &lane_access(&x, i as usize))
+                                    bitcast_expr(&lane_access(&format!("r{reg}"), i as usize), &xl)
                                 );
                             }
                         }
@@ -405,12 +530,23 @@ impl Kernel {
                 }
                 Op::Unary { x, uop } => {
                     let dtype = dtypes[&x].clone();
+                    let x_vec = !dtype.1.is_empty()
+                        && !constants.contains_key(&x)
+                        && !indices.contains_key(&x)
+                        && !var_params.contains_key(&x);
+                    let x_lane = matches!(self.ops[x].op, Op::Unroll { .. });
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
                     match dtype.1.as_slice() {
                         [n] => {
                             for i in 0..width(n) {
-                                let lane = lane_access(&x, i as usize);
+                                let lane = if x_lane {
+                                    format!("{i}l")
+                                } else if x_vec {
+                                    lane_access(&x, i as usize)
+                                } else {
+                                    x.clone()
+                                };
                                 let dst = lane_access(&format!("r{reg}"), i as usize);
                                 match uop {
                                     UOp::BitNot => _ = writeln!(source, "{indent}{dst} = ~{lane};"),
@@ -480,20 +616,49 @@ impl Kernel {
                 }
                 Op::Index { vec, idx } => {
                     let dtype = dtypes[&op_id].clone();
-                    let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                    // An extract of a lane node names the lane's own index; the
+                    // node itself is the address marker `get_var` renders as 0.
+                    let x = if matches!(self.ops[vec].op, Op::Unroll { .. }) {
+                        format!("{idx}l")
+                    } else {
+                        let vec = get_var(vec, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        lane_access(&vec, idx)
+                    };
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
-                    _ = writeln!(source, "{indent}r{reg} = {};", lane_access(&vec, idx));
+                    _ = writeln!(source, "{indent}r{reg} = {x};");
                 }
                 Op::Binary { x, y, bop } => {
                     let dtype = dtypes[&op_id].clone();
+                    let x_vec = !dtypes[&x].1.is_empty()
+                        && !constants.contains_key(&x)
+                        && !indices.contains_key(&x)
+                        && !var_params.contains_key(&x);
+                    let y_vec = !dtypes[&y].1.is_empty()
+                        && !constants.contains_key(&y)
+                        && !indices.contains_key(&y)
+                        && !var_params.contains_key(&y);
+                    let x_lane = matches!(self.ops[x].op, Op::Unroll { .. });
+                    let y_lane = matches!(self.ops[y].op, Op::Unroll { .. });
                     let x = get_var(x, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let y = get_var(y, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                     let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype.clone(), rcs[&op_id], loop_id);
                     match dtype.1.as_slice() {
                         [n] => {
                             for i in 0..width(n) {
-                                let xl = lane_access(&x, i as usize);
-                                let yl = lane_access(&y, i as usize);
+                                let xl = if x_lane {
+                                    format!("{i}l")
+                                } else if x_vec {
+                                    lane_access(&x, i as usize)
+                                } else {
+                                    x.clone()
+                                };
+                                let yl = if y_lane {
+                                    format!("{i}l")
+                                } else if y_vec {
+                                    lane_access(&y, i as usize)
+                                } else {
+                                    y.clone()
+                                };
                                 emit_binary_op(&mut source, &indent, reg, i as usize, &xl, &yl, bop);
                             }
                         }
@@ -752,7 +917,18 @@ static inline unsigned char f32_to_f8e5m2(float v) {
                 let len = width(len);
                 let name = dt.0.vec_type_name(len);
                 if !vec_types.contains(&format!("\ntypedef {} {name}", dt.0.c_type())) {
-                    _ = writeln!(vec_types, "typedef {} {name} __attribute__((ext_vector_type({len})));", dt.0.c_type());
+                    // A vector access is a pointer cast (`*((int32_t4*)(p + idx))`),
+                    // and its lane-0 index is not necessarily aligned to the
+                    // vector width (a cumsum window starts at an arbitrary
+                    // offset). `ext_vector_type` alone assumes natural
+                    // alignment, and clang then emits aligned SSE moves
+                    // (`movdqa`/`paddd mem`) that fault on such an address.
+                    // `aligned(1)` makes every vector access unaligned-safe.
+                    _ = writeln!(
+                        vec_types,
+                        "typedef {} {name} __attribute__((ext_vector_type({len}))) __attribute__((aligned(1)));",
+                        dt.0.c_type()
+                    );
                 }
             }
         }

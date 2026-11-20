@@ -13,6 +13,7 @@ members = [
     "qwen3.8-27b",
     "bonsai-27b",
     "tt_gemm",
+    "onnx-resnet",
 ]
 
 [profile.release]

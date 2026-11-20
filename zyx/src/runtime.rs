@@ -228,7 +228,7 @@ use crate::{
     backend::{Cmd, CmdQueue, DTypeCapability, DeviceProgramId, LaunchArg, Placement, Plan, PlanDim, Pool, ProgramId, Shard},
     dtype::Constant,
     graph::{Graph, GraphId},
-    kernel::{BOp, Kernel, Op, OpId, ParamKind, UOp},
+    kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind, UOp},
     rng::Rng,
     scalar::{bf16, f8e4m3, f8e5m2, f16},
     shape::{Dim, UAxis},
@@ -3591,9 +3591,9 @@ impl Runtime {
                     .into(),
             ));
         }
-        for op in self.kernels[dst_kid].kernel.ops.values() {
-            if !matches!(
-                op.op,
+        for (op_id, op) in self.kernels[dst_kid].kernel.iter_unordered() {
+            if matches!(
+                op,
                 Op::Param { .. }
                     | Op::Reshape { .. }
                     | Op::Permute { .. }
@@ -3604,10 +3604,18 @@ impl Runtime {
                     | Op::Const(_)
                     | Op::Stack { .. }
             ) {
-                return Err(ZyxError::ShapeError(
-                    format!("assign: dst kernel {dst_kid:?} has unsupported op {:?}, only movement ops allowed", op.op).into(),
-                ));
+                continue;
             }
+            // A movement view carries its own address and shape arithmetic: the
+            // slice/pad length, a narrow's start, an expand's strides. Those are
+            // integer scalars, not values — only a value-typed op would mean the
+            // dst kernel computes more than a movement of its base.
+            if matches!(self.kernels[dst_kid].kernel.dtype(op_id), IDX_T | DType::Bool) {
+                continue;
+            }
+            return Err(ZyxError::ShapeError(
+                format!("assign: dst kernel {dst_kid:?} has unsupported op {op:?}, only movement ops allowed").into(),
+            ));
         }
         if src_kid == dst_kid {
             return Err(ZyxError::ShapeError(
@@ -3934,7 +3942,7 @@ impl Runtime {
 ///
 /// A record from another layout, backend, device or compute capability is
 /// ignored, never reinterpreted.
-const TUNING_CACHE_VERSION: u8 = 1;
+const TUNING_CACHE_VERSION: u8 = 2;
 
 /// Directory of the on-disk autotune cache: `$XDG_CONFIG_HOME/zyx/cache/kernel`,
 /// else `~/.config/zyx/cache/kernel` — the same root the C backend uses for its
@@ -5292,3 +5300,4 @@ mod leak_tests {
         Ok(())
     }
 }*/
+

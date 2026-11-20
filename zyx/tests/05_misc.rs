@@ -416,7 +416,12 @@ fn cumsum_result_keeps_its_shape() -> Result<(), ZyxError> {
     let row: Vec<f32> = g.narrow(0, 0i64, 1i64)?.narrow(1, 0i64, 1i64)?.reshape([64])?.to_vec()?;
     for (got, &x) in first.iter().zip(row.iter()) {
         expected += x;
-        assert_eq!(*got, expected);
+        // `cumsum` lowers to pad + pool + sum, so a window is summed in the
+        // reduce kernel's order, not strictly left to right: the values can
+        // differ from this sequential f32 accumulation by a few ULP. That
+        // order is not part of the contract; what this test pins is that the
+        // reshape of the reduce result did not change the values.
+        assert!((got - expected).abs() <= 1e-5 * expected.abs().max(1.0), "cumsum[{got}] vs sequential[{expected}]");
     }
     Ok(())
 }
