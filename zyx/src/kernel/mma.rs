@@ -42,6 +42,15 @@ use crate::{
     shape::Dim,
 };
 
+/// `ldmatrix`'s own geometry: an `m8n8` matrix is an eight-by-eight element
+/// block, and the staged tile packs k-blocks of exactly that many elements
+/// (`LDMATRIX_BLOCK`). The address arithmetic below shifts and masks by
+/// `LDMATRIX_LOG2` / `LDMATRIX_EDGE - 1` because the instruction's shape says
+/// so, never because the matmul shape does.
+const LDMATRIX_EDGE: Dim = 8;
+const LDMATRIX_LOG2: i64 = 3;
+const LDMATRIX_BLOCK: Dim = LDMATRIX_EDGE * LDMATRIX_EDGE;
+
 /// The value of one product operand, as the tensorization sees it.
 ///
 /// A plain operand is a single `Load` of its storage. A *quantized* operand is
@@ -946,8 +955,34 @@ impl Optimization for Tensorize {
                 };
                 coop_fill_store(k, OpId::NULL, b_tile, OpId::NULL, bsl, bv);
                 k.push_back(Op::Barrier);
-                let a = coop_ldmatrix(k, OpId::NULL, lane, a_tile, fm, fk, fm, 0, fk / 8, OpId::NULL, OpId::NULL, plan.swizzle);
-                let b = coop_ldmatrix(k, OpId::NULL, lane, b_tile, fn_, fk, fn_, 0, fk / 8, OpId::NULL, OpId::NULL, plan.swizzle);
+                let a = coop_ldmatrix(
+                    k,
+                    OpId::NULL,
+                    lane,
+                    a_tile,
+                    fm,
+                    fk,
+                    fm,
+                    0,
+                    fk / LDMATRIX_EDGE,
+                    OpId::NULL,
+                    OpId::NULL,
+                    plan.swizzle,
+                );
+                let b = coop_ldmatrix(
+                    k,
+                    OpId::NULL,
+                    lane,
+                    b_tile,
+                    fn_,
+                    fk,
+                    fn_,
+                    0,
+                    fk / LDMATRIX_EDGE,
+                    OpId::NULL,
+                    OpId::NULL,
+                    plan.swizzle,
+                );
                 (a, b)
             } else {
                 let mut a_elems = Vec::with_capacity(v.a.slots.len());
@@ -1108,9 +1143,23 @@ fn frag_elems(
     sc: Dim,
     warp: u32,
 ) -> Vec<OpId> {
-    /// f16 halves per vector access: 8 bytes, the `ldg8` the reference's
-    /// direct (unstage) kernel loads fragments with.
-    const VEC: usize = 4;
+    // One direct fragment load carries 8 bytes — the `ldg8` the reference's
+    // unstage kernel issues — so the element count follows the operand's own
+    // width and is capped by the widest width the device renders. A cone has
+    // no contiguous view to load: its value's dtype owns the element width,
+    // and the run only groups its per-slot chains.
+    const ACCESS_BYTES: u32 = 8;
+    let dtype = match cone {
+        Some(cone) => kernel.dtype(cone.value),
+        None => {
+            debug_assert!(!src.is_null(), "frag_elems: neither a source nor a cone");
+            kernel.dtype(src)
+        }
+    };
+    let per_access = ACCESS_BYTES * 8 / u32::from(dtype.bit_size());
+    let max_vec = usize::from(
+        kernel.device_info().supported_vec_lens.iter().copied().filter(|&v| u32::from(v) <= per_access).max().unwrap_or(1),
+    );
     let slots = &map.slots;
     let mut out = Vec::with_capacity(slots.len());
     let mut i = 0;
@@ -1120,7 +1169,7 @@ fn frag_elems(
         // `devectorize` keeps it and the backend renders one vector load,
         // which the `Stack` then reads lane by lane through `Index`.
         let mut n = 1;
-        while i + n < slots.len() && n < VEC {
+        while i + n < slots.len() && n < max_vec {
             let a = slots[i + n - 1];
             let b = slots[i + n];
             let delta = Dim::from(b.0 - a.0) * sr + Dim::from(b.1 - a.1) * sc;
@@ -1344,8 +1393,8 @@ fn coop_fill_load_with(
     // term is a shift or a mask, and the tile packs to `rows * chunk` halves
     // with no padding: the reference's 16 KB per operand, and the 32 KB that
     // keeps two blocks resident per SM.
-    let three = put(kernel, Op::Const(Constant::idx(3i64)));
-    let seven = put(kernel, Op::Const(Constant::idx(7i64)));
+    let three = put(kernel, Op::Const(Constant::idx(LDMATRIX_LOG2)));
+    let seven = put(kernel, Op::Const(Constant::idx(LDMATRIX_EDGE - 1)));
     let mblk = put(kernel, Op::Binary { x: row, y: three, bop: BOp::BitShiftRight });
     let kblk = put(kernel, Op::Binary { x: cterm, y: three, bop: BOp::BitShiftRight });
     // Row swizzle: the eight lanes of a store share a row of their 128-byte
@@ -1369,10 +1418,10 @@ fn coop_fill_load_with(
     // this term every thread of a row writes the same eight halves, so a tile
     // holds one vector per row instead of the whole window.
     let kin = put(kernel, Op::Binary { x: cterm, y: seven, bop: BOp::BitAnd });
-    let rblk = put(kernel, Op::Const(Constant::idx(rows / 8)));
+    let rblk = put(kernel, Op::Const(Constant::idx(rows / LDMATRIX_EDGE)));
     let kblk = put(kernel, Op::Binary { x: kblk, y: rblk, bop: BOp::Mul });
     let blk = put(kernel, Op::Binary { x: kblk, y: mblk, bop: BOp::Add });
-    let pack = put(kernel, Op::Const(Constant::idx(64i64)));
+    let pack = put(kernel, Op::Const(Constant::idx(LDMATRIX_BLOCK)));
     let slot = put(kernel, Op::Binary { x: blk, y: pack, bop: BOp::Mul });
     let slot = put(kernel, Op::Binary { x: slot, y: mrow, bop: BOp::Add });
     let slot = put(kernel, Op::Binary { x: slot, y: kin, bop: BOp::Add });
@@ -1648,17 +1697,17 @@ fn ldmatrix_lane_base(kernel: &mut Kernel, before: OpId, lane: OpId, rows: Dim, 
     let rconst = put(kernel, Op::Const(Constant::idx(rows)));
     let row = put(kernel, Op::Binary { x: lane, y: rconst, bop: BOp::Mod });
     // k-block-major: the row's block is `(m/8)`, its eight-half row `m%8`.
-    let three = put(kernel, Op::Const(Constant::idx(3i64)));
-    let seven = put(kernel, Op::Const(Constant::idx(7i64)));
+    let three = put(kernel, Op::Const(Constant::idx(LDMATRIX_LOG2)));
+    let seven = put(kernel, Op::Const(Constant::idx(LDMATRIX_EDGE - 1)));
     let mblk = put(kernel, Op::Binary { x: row, y: three, bop: BOp::BitShiftRight });
     let mrow = put(kernel, Op::Binary { x: row, y: seven, bop: BOp::BitAnd });
     let mrow = put(kernel, Op::Binary { x: mrow, y: three, bop: BOp::BitShiftLeft });
-    let pack = put(kernel, Op::Const(Constant::idx(64i64)));
+    let pack = put(kernel, Op::Const(Constant::idx(LDMATRIX_BLOCK)));
     let mut addr = put(kernel, Op::Binary { x: mblk, y: pack, bop: BOp::Mul });
     addr = put(kernel, Op::Binary { x: addr, y: mrow, bop: BOp::Add });
-    if k / 8 > 1 {
+    if k / LDMATRIX_EDGE > 1 {
         let seg = put(kernel, Op::Binary { x: lane, y: rconst, bop: BOp::Div });
-        let kstride = put(kernel, Op::Const(Constant::idx(tile_rows / 8 * 64)));
+        let kstride = put(kernel, Op::Const(Constant::idx(tile_rows / LDMATRIX_EDGE * LDMATRIX_BLOCK)));
         let ko = put(kernel, Op::Binary { x: seg, y: kstride, bop: BOp::Mul });
         addr = put(kernel, Op::Binary { x: addr, y: ko, bop: BOp::Add });
     }
@@ -1687,7 +1736,7 @@ fn coop_ldmatrix(
             kernel.insert_before(before, op)
         }
     };
-    let frags = u8::try_from(rows / 8 * (k / 8)).expect("ldmatrix: too many fragments");
+    let frags = u8::try_from(rows / LDMATRIX_EDGE * (k / LDMATRIX_EDGE)).expect("ldmatrix: too many fragments");
     // The lane's own row/column offset is the same for every sub-tile of the
     // tile: reuse the caller's (one per tile) instead of rebuilding it per
     // load. `OpId::NULL` computes it here for a single-use load.
@@ -1711,7 +1760,7 @@ fn coop_ldmatrix(
     // `tile_rows / 8 * 64`. It is folded in before the swizzle: the row an
     // element lives in is chosen by the k-block of *this* unit, so the key has
     // to see the sub-tile's offset, not just the tile's base.
-    let off = put(kernel, Op::Const(Constant::idx(k_offset * (tile_rows / 8 * 8))));
+    let off = put(kernel, Op::Const(Constant::idx(k_offset * (tile_rows / LDMATRIX_EDGE * LDMATRIX_EDGE))));
     let addr = put(kernel, Op::Binary { x: addr, y: off, bop: BOp::Add });
     // Row swizzle, the read half. The fill XORs the row field with the k-block
     // it wrote, so the read must address the row the element actually lives in:
@@ -1732,8 +1781,8 @@ fn coop_ldmatrix(
     // address the lane base gives is already the slot the fill wrote.
     let addr = if swizzle {
         let one = put(kernel, Op::Const(Constant::idx(1i64)));
-        let eight = put(kernel, Op::Const(Constant::idx(8i64)));
-        let kbh = put(kernel, Op::Const(Constant::idx(tile_rows / 8 * 64)));
+        let eight = put(kernel, Op::Const(Constant::idx(LDMATRIX_EDGE)));
+        let kbh = put(kernel, Op::Const(Constant::idx(tile_rows / LDMATRIX_EDGE * LDMATRIX_BLOCK)));
         let key = put(kernel, Op::Binary { x: addr, y: kbh, bop: BOp::Div });
         // The key must be the k-block *inside the operand's tile*, the way the
         // fill writes it: the absolute address also carries the tile's base, so
@@ -1742,7 +1791,7 @@ fn coop_ldmatrix(
         // element index); a tile with more than eight k-blocks therefore has to
         // fold the read key the same way, or the XOR reaches bit 6 and names the
         // wrong k-block.
-        let nkb = put(kernel, Op::Const(Constant::idx(kblocks.clamp(1, 8))));
+        let nkb = put(kernel, Op::Const(Constant::idx(kblocks.clamp(1, LDMATRIX_EDGE))));
         let kmask = put(kernel, Op::Binary { x: nkb, y: one, bop: BOp::Sub });
         let key = put(kernel, Op::Binary { x: key, y: kmask, bop: BOp::BitAnd });
         let swz = put(kernel, Op::Binary { x: key, y: eight, bop: BOp::Mul });
@@ -2147,8 +2196,9 @@ fn tile_to_wmma_s8_cell(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: b
 
     // ---- the mainloop: groups are a chain, the fragment pairs are emitted
     // one after the other because their `ldmatrix` words are registers ----
-    let zero_i = kernel.insert_before(end, Op::Const(Constant::new(0i32)));
-    let zero2 = kernel.insert_before(end, Op::Stack { ops: [zero_i, zero_i].to_vec().into() });
+    // The instruction broadcasts a one-component accumulator into both of its
+    // C words, so the zero is a bare scalar, not a packed fragment.
+    let zero = kernel.insert_before(end, Op::Const(Constant::new(0i32)));
     let n_groups = usize::try_from(groups).expect("K groups per chunk");
     let n_sub = usize::try_from(mt_w / 2).expect("fragment pairs per warp");
     let n_bands = usize::try_from(nt_w).expect("activation bands per warp");
@@ -2331,7 +2381,7 @@ fn tile_to_wmma_s8_cell(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: b
                 for par in 0..2usize {
                     let (aw, aw_next) = if par == 0 { (aw0, aw2) } else { (aw1, aw3) };
                     let c0 = kernel
-                        .insert_before(end, Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: aw, b: b0, c: zero2 });
+                        .insert_before(end, Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: aw, b: b0, c: zero });
                     let c1 = kernel.insert_before(
                         end,
                         Op::Wmma { dims: v.dims, layout: v.layout, dtype: v.dtype, a: aw_next, b: b1, c: c0 },
@@ -2644,10 +2694,13 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, lay
         let a_slots = v.a.slots.len();
         let b_slots = v.b.slots.len();
         // `ldmatrix` returns the instruction's destination list: one 32-bit
-        // word per 8x8 matrix, so an operand of `slots` f16 values is
-        // `slots / 2` words of the load.
-        let a_words = a_slots / 2;
-        let b_words = b_slots / 2;
+        // word per 8x8 matrix, so an operand of `slots` elements is
+        // `slots / elements-per-word` words of the load. The operand dtype
+        // owns the word width.
+        let a_per_word = usize::from(32 / v.a_dtype.bit_size());
+        let b_per_word = usize::from(32 / v.b_dtype.bit_size());
+        let a_words = a_slots / a_per_word;
+        let b_words = b_slots / b_per_word;
         let mut a_frags = vec![vec![OpId::NULL; kt]; mt];
         // The `slots` halves of a `ldmatrix` result that start at `base`: one
         // instruction operand out of a load that covers several.
@@ -2702,7 +2755,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, lay
                             fk * 2,
                             fm,
                             tk as Dim * fk,
-                            chunk / 8,
+                            chunk / LDMATRIX_EDGE,
                             sb,
                             OpId::NULL,
                             swizzle,
@@ -2720,7 +2773,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, lay
                             fk,
                             fm,
                             tk as Dim * fk,
-                            chunk / 8,
+                            chunk / LDMATRIX_EDGE,
                             sb,
                             OpId::NULL,
                             swizzle,
@@ -2780,7 +2833,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, lay
                             fk * 2,
                             fn_,
                             tk as Dim * fk,
-                            chunk / 8,
+                            chunk / LDMATRIX_EDGE,
                             sb,
                             OpId::NULL,
                             swizzle,
@@ -2814,7 +2867,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, lay
                             fk,
                             fn_,
                             tk as Dim * fk,
-                            chunk / 8,
+                            chunk / LDMATRIX_EDGE,
                             sb,
                             OpId::NULL,
                             swizzle,
@@ -3085,11 +3138,14 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, lay
                 debug_assert_eq!(a_rows, b_rows, "one tile for both operands needs one row count");
                 debug_assert_eq!(mt, nt / 2, "one tile lane for both operands needs one tile count");
                 let width = a_slots * if paired { 2 } else { 1 };
-                // `width` counts the fragment's f16 slots; the `ldmatrix` result
-                // and the staged section are 32-bit words, two slots each.
-                let wwidth = width / 2;
-                let a_w = a_slots / 2;
-                let b_w = b_slots / 2;
+                // `width` counts the fragment's elements; the `ldmatrix` result
+                // and the staged section are 32-bit words, one word per
+                // `elements-per-word` of the operand dtype.
+                let a_per_word = usize::from(32 / v.a_dtype.bit_size());
+                let b_per_word = usize::from(32 / v.b_dtype.bit_size());
+                let wwidth = width / a_per_word;
+                let a_w = a_slots / a_per_word;
+                let b_w = b_slots / b_per_word;
                 let nlanes = 2 * npairs;
                 let ab_st =
                     insert_scoped_storage(kernel, DType::U32, MemScope::Register, Dim::from((nlanes * mt * wwidth) as i64));
@@ -3137,7 +3193,7 @@ fn tile_to_wmma(kernel: &mut Kernel, t: &Tiled, staged: bool, swizzle: bool, lay
                         // The tile's k-block count: the read key is the k-block
                         // *inside* the tile, so B's base (a whole tile further
                         // in) must not shift it.
-                        win_k / 8,
+                        win_k / LDMATRIX_EDGE,
                         sb,
                         a_lb,
                         swizzle,
