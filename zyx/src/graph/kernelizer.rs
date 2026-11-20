@@ -1000,7 +1000,15 @@ impl Graph {
                             (kid, op)
                         } else {
                             let (mut kid, mut op_id) = visited[&x];
-                            let force_store = self.jit_kernels[kid].kernel.is_preceded_by_compute(op_id);
+                            // The expanded operand is the consumer's reduce
+                            // axis, so a pointwise producer is evaluated once
+                            // per reduction step — inline it instead of paying
+                            // a launch and a global round-trip. A producer that
+                            // already contains a `Reduce` is still
+                            // materialised: two reduces in one kernel share one
+                            // storage-register accumulator, and the second one
+                            // would recompute the first inside its own loop.
+                            let force_store = self.jit_kernels[kid].kernel.is_preceded_by_reduce(op_id);
                             (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, force_store);
                             self.consume(x, kid, &mut visited, &mut rcs);
                             (kid, op_id)
