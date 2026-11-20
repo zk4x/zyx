@@ -1598,14 +1598,11 @@ fn assign_src_with_remaining_consumer() -> Result<(), ZyxError> {
     Ok(())
 }
 
-/// BUG (ignored until fixed): assigning into a bare Leaf dst makes it a
-/// PendingLeaf whose store kernel only launches on materialization. If the
-/// tensor is never read, release hits the debug_assert
-/// "PendingLeaf dies with a kept buffer — its store kernel never launched"
-/// (runtime.rs). assign must either force-materialize before returning or
-/// release must drain the pending store.
+/// An assign into a bare Leaf dst whose result is never read must not leave a
+/// pending store behind: release would hit the debug_assert "PendingLeaf dies
+/// with a kept buffer — its store kernel never launched" (runtime.rs). The
+/// store is either materialized by `assign` or drained by release.
 #[test]
-#[ignore]
 fn assign_never_read_panics_on_drop() {
     let a = Tensor::from([1.0f32]);
     let b = Tensor::from([1.0f32]);

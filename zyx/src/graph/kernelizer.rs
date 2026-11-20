@@ -476,18 +476,42 @@ impl Graph {
                                         (false, false) => {}
                                     }
 
-                                    // Restore of the original Binary merge rule
-                                    // (commit 7786c15): the reduce kernel must be the
-                                    // merge DESTINATION — a reduce's output grid is
-                                    // smaller than its input's, so pulling plain
-                                    // compute ops into it is safe, while merging a
-                                    // reduce into a plain compute kernel corrupts the
-                                    // gws. If x's kernel reduces and y's does not,
-                                    // swap the two slots so `merge_kernels` below pulls
-                                    // the non-reduce side into the reduce kernel.
+                                    // One reduce tree per kernel (tinygrad's
+                                    // `recursive_group`: "max one reduceop per
+                                    // kernel"). Two reduce kernels may merge only
+                                    // when one of them is an arange chain — a
+                                    // reduce over constants (tinygrad's
+                                    // FUSE_ARANGE) — because that tree folds
+                                    // into arithmetic and never reaches
+                                    // `linearize` as a loop. Otherwise the merged
+                                    // kernel would hold two independent loop
+                                    // trees, which `linearize` cannot scope as
+                                    // sibling regions.
+                                    let arange = |k: &Kernel| {
+                                        k.iter_unordered()
+                                            .any(|(id, op)| matches!(op, Op::Reduce { .. }) && !k.is_preceded_by_reduce(id))
+                                    };
+                                    if self.jit_kernels[kid].kernel.is_reduce()
+                                        && self.jit_kernels[kidy].kernel.is_reduce()
+                                        && !arange(&self.jit_kernels[kid].kernel)
+                                        && !arange(&self.jit_kernels[kidy].kernel)
+                                    {
+                                        (kidy, op_idy) = self.add_store(y, kidy, op_idy, &mut visited, &rcs);
+                                    }
+
+                                    // The reduce kernel must be the merge
+                                    // DESTINATION (commit 7786c15): a reduce's
+                                    // output grid is smaller than its input's,
+                                    // so pulling plain compute ops into it is
+                                    // safe, while merging a reduce into a plain
+                                    // compute kernel corrupts the gws. If the
+                                    // SOURCE kernel reduces and the destination
+                                    // does not, swap the two slots so
+                                    // `merge_kernels` below pulls the
+                                    // non-reduce side into the reduce kernel.
                                     // Operand order is preserved: both op ids are
                                     // re-read from `visited` after the merge.
-                                    if self.jit_kernels[kid].kernel.is_reduce() && !self.jit_kernels[kidy].kernel.is_reduce() {
+                                    if self.jit_kernels[kidy].kernel.is_reduce() && !self.jit_kernels[kid].kernel.is_reduce() {
                                         std::mem::swap(&mut kid, &mut kidy);
                                         std::mem::swap(&mut op_id, &mut op_idy);
                                     }
@@ -511,11 +535,30 @@ impl Graph {
                     }
                     Op::Reduce { x, rop, .. } => {
                         // Last axis is already trailing: single reduce, no permute.
-                        let (mut kid, mut op_id) = match visited.get(&x) {
+                        let (kid, op_id) = match visited.get(&x) {
                             Some(&kv) => kv,
                             None => todo!("reduce_last of symbolic scalar operand {x:?}"),
                         };
-                        (kid, op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, false);
+                        // One reduce tree per kernel (tinygrad's `recursive_group`:
+                        // "max one reduceop per kernel"). Two shapes continue the
+                        // tree that is already here: a direct chain (the operand
+                        // is the tree's own reduce result, as in the successive
+                        // trailing-axis reduces of a multi-axis reduction), and an
+                        // arange chain (a reduce over constants, tinygrad's
+                        // FUSE_ARANGE, whose value the consumer folds back into
+                        // arithmetic). Any other reduce is a second tree — two
+                        // matmul reductions added together, or a reduce over
+                        // another reduce's elementwise output as in softmax or a
+                        // batchnorm's mean/variance pair — and is materialised so
+                        // it starts its own kernel instead of nesting a sibling
+                        // loop tree that `linearize` would have to scope as
+                        // independent regions.
+                        let direct = matches!(self.jit_kernels[kid].kernel.at(op_id), Op::Reduce { .. });
+                        let arange = self.jit_kernels[kid].kernel.iter_unordered().any(|(id, op)| {
+                            matches!(op, Op::Reduce { .. }) && !self.jit_kernels[kid].kernel.is_preceded_by_reduce(id)
+                        });
+                        let split = !direct && !arange && self.jit_kernels[kid].kernel.is_reduce();
+                        let (kid, mut op_id) = self.duplicate_or_store_class(x, kid, op_id, &mut visited, &rcs, split);
                         let kernel = &mut self.jit_kernels[kid].kernel;
                         let dims = kernel.shape_ids(op_id);
                         debug_assert!(!dims.is_empty(), "reduce_last of scalar");
@@ -1319,11 +1362,26 @@ impl Graph {
                                     (false, false) => {}
                                 }
 
-                                // Same reduce rule as Binary (commit 7786c15):
-                                // the reduce kernel must be the merge
-                                // destination — pulling plain compute ops into
-                                // it is safe, the reverse corrupts the gws.
-                                if self.jit_kernels[kid].kernel.is_reduce() && !self.jit_kernels[skid].kernel.is_reduce() {
+                                // Same reduce rules as Binary (commit 7786c15
+                                // and the one-tree-per-kernel rule): two reduce
+                                // kernels may merge only when one of them is an
+                                // arange chain, whose tree folds into arithmetic.
+                                // Otherwise materialise one side; then the reduce
+                                // kernel must be the merge destination — pulling
+                                // plain compute ops into it is safe, the reverse
+                                // corrupts the gws.
+                                let arange = |k: &Kernel| {
+                                    k.iter_unordered()
+                                        .any(|(id, op)| matches!(op, Op::Reduce { .. }) && !k.is_preceded_by_reduce(id))
+                                };
+                                if self.jit_kernels[kid].kernel.is_reduce()
+                                    && self.jit_kernels[skid].kernel.is_reduce()
+                                    && !arange(&self.jit_kernels[kid].kernel)
+                                    && !arange(&self.jit_kernels[skid].kernel)
+                                {
+                                    (skid, _) = self.add_store(scid, skid, sop, &mut visited, &rcs);
+                                }
+                                if self.jit_kernels[skid].kernel.is_reduce() && !self.jit_kernels[kid].kernel.is_reduce() {
                                     std::mem::swap(&mut kid, &mut skid);
                                     std::mem::swap(&mut dop, &mut sop);
                                 }
