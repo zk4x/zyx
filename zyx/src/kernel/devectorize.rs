@@ -3,13 +3,15 @@
 
 //! Devectorize: unfold lane bundles left by `split` back to scalar IR.
 //!
-//! One pass, running in the device epilogue right before codegen, with
-//! two mechanisms under a joint fixpoint: [`Kernel::devectorize`] expands
-//! each lane-space reduce ([`Op::Reduce`] whose `reduce_axis` mentions
-//! unroll nodes) into the reduce chain over its lanes, and unfolds every
-//! remaining [`Op::Unroll`] node (a vector of constants `0..len`) into
-//! one scalar statement per element. Every transport backend only ever
-//! sees scalar IR.
+//! One pass, running in the device epilogue right before codegen. A
+//! lane-space reduce ([`Op::Reduce`] whose `reduce_axis` mentions unroll
+//! nodes) is expanded first into the reduce chain over its lanes, because it
+//! collapses the lane instead of repeating it. Then every remaining
+//! [`Op::Unroll`] node is decided once: it stays a vector width where the
+//! accesses it shapes are contiguous runs the device renders, and the
+//! dependents that cannot carry it that way are unfolded into one scalar
+//! statement per element. Every transport backend only ever sees scalar or
+//! vector IR, never a work bundle.
 //!
 //! The unfolding walk is the duplication walk the old duplicating
 //! `coarsen` ran, with the lane constants (`0..len`) in place of its
@@ -21,9 +23,21 @@
 use crate::{
     DType, Map, Set, ZyxError,
     dtype::Constant,
-    kernel::{BOp, Kernel, MMADType, MemScope, Op, OpId, PTXOp},
+    kernel::{BOp, Kernel, MemScope, Op, OpId, PTXOp},
     shape::Dim,
 };
+
+/// Which expansion is duplicating lanes, and what it needs on top of the
+/// generic substitution.
+#[derive(Clone, Copy)]
+enum DupMode<'a> {
+    /// One split lane: only the decided `dup` set unfolds, a lane extract is
+    /// repointed at the lane's own copy, and a fragment operand packs its
+    /// per-lane pieces into one instruction.
+    Unroll { dup: &'a Set<OpId> },
+    /// Every lane of a reduce's axis space; the caller folds the result.
+    Reduce { reduce_id: OpId },
+}
 
 impl Kernel {
     /// Expand every lane-space reduce into the reduce chain over its lanes,
@@ -33,32 +47,17 @@ impl Kernel {
     /// leave lane-conditional ops behind (axes the reduce does not
     /// consume), and the unroll mechanism unfolds those next rounds.
     ///
-    /// The expansion creates fresh copies for each reduce lane; nothing
-    /// runs after this joint with per-phase cleanups, so the reduced
-    /// duplicates are cleaned once at the end: constant folding turns
-    /// per-lane index expressions into literals, CSE merges the
-    /// identical forms, DCE removes what is dead.
+    /// The expansion creates fresh copies for each reduce lane; nothing runs
+    /// after it with per-phase cleanups, so the duplicates are cleaned once at
+    /// the end: constant folding turns per-lane index expressions into
+    /// literals, CSE merges the identical forms, DCE removes what is dead.
     pub fn devectorize(&mut self) -> Result<(), ZyxError> {
         if std::env::var_os("ZYX_DV").is_some() {
             self.debug();
         }
-        let mut kept: Set<OpId> = Set::default();
-        for _ in 0..10000 {
-            // The expansion multiplies the IR by the lane count. Stop at the
-            // render ceiling instead of handing the next pass a state it
-            // cannot finish: constant folding is superlinear in op count, so
-            // an oversized kernel turns the epilogue into minutes of host work
-            // rather than a failure.
-            let n_ops = self.ops.len().0;
-            if n_ops > crate::kernel::MAX_OPS {
-                return Err(ZyxError::kernel_error(
-                    format!("devectorize: kernel IR has {n_ops} ops, above the {} -op limit", crate::kernel::MAX_OPS).into(),
-                ));
-            }
-            // Upstream first (IR order, not unordered): expanding an inner
-            // reduce before its consumers keeps nested reduces out of each
-            // other's cones. Disjoint reduces don't care about order; a
-            // genuinely shared lane space still halts loud in the walk.
+        // A lane reduce collapses its lane; it is not a repeat.
+        loop {
+            self.check_op_limit()?;
             let mut found = OpId::NULL;
             let mut walk_id = self.head;
             while !walk_id.is_null() {
@@ -68,28 +67,25 @@ impl Kernel {
                 }
                 walk_id = self.next_op(walk_id);
             }
-            if !found.is_null() {
-                self.devectorize_reduce_one(found);
-                continue;
+            if found.is_null() {
+                break;
             }
-            let found =
-                self.iter_unordered().find_map(|(op, x)| (matches!(x, Op::Unroll { .. }) && !kept.contains(&op)).then_some(op));
-            let Some(unroll_id) = found else { break };
-            // A lane is a vector width wherever the access it shapes is
-            // contiguous and the device supports the width; only the
-            // dependents that cannot carry it that way are unfolded. So one
-            // lane may stay in the IR for its vector accesses while the same
-            // lane's scalar consumers are expanded.
-            let dup = self.lane_expansion(unroll_id);
+            self.devectorize_reduce_one(found);
+        }
+        // One decision for every lane, then one pass per lane. The decision is
+        // recomputed per lane: expanding an earlier lane inserts clones that
+        // consume the later lanes too, so a decision taken before them would
+        // miss the clones. The lane ids themselves are stable — the unfolding
+        // never inserts an `Unroll`, and only a lane's own round removes it.
+        let lanes: Vec<OpId> =
+            self.iter_unordered().filter_map(|(id, op)| matches!(op, Op::Unroll { .. }).then_some(id)).collect();
+        for lane in lanes {
+            self.check_op_limit()?;
+            let dup = self.lane_expansion(lane);
             if dup.is_empty() {
-                kept.insert(unroll_id);
                 continue;
             }
-            if !self.devectorize_unroll_one(unroll_id, &dup) {
-                // The lane is still read as a vector width somewhere: it stays
-                // in the IR, its scalar consumers are expanded.
-                kept.insert(unroll_id);
-            }
+            self.devectorize_unroll_one(lane, &dup);
         }
         self.constant_folding();
         self.forward_register_stores();
@@ -100,6 +96,29 @@ impl Kernel {
         }
         self.verify();
         Ok(())
+    }
+
+    /// The render ceiling: the expansion multiplies the IR by the lane
+    /// count, and the constant folding after it is superlinear.
+    fn check_op_limit(&self) -> Result<(), ZyxError> {
+        let n_ops = self.ops.len().0;
+        if n_ops > crate::kernel::MAX_OPS {
+            return Err(ZyxError::kernel_error(
+                format!("devectorize: kernel IR has {n_ops} ops, above the {} -op limit", crate::kernel::MAX_OPS).into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Whether `Index(vec, k)` names lane `k` of `vec`: the value's lane is
+    /// the innermost unit-stride term of its address, so one lane is one
+    /// element. An instruction result or a `Stack` has component dims, and a
+    /// strided lane has pieces; neither is a lane extract.
+    fn lane_extract(&self, vec: OpId, lane: OpId) -> bool {
+        match self.at(vec) {
+            Op::Load { src_idx, .. } | Op::Copy { src_idx, .. } => !src_idx.is_null() && self.unit_lane_term(*src_idx, lane),
+            _ => false,
+        }
     }
 
     /// The slot run an index op names: `(base, count)`.
@@ -273,150 +292,16 @@ impl Kernel {
             todo!("devectorize: reduce over no lane space");
         }
         ordered.sort_by_key(|&(_, _, axis)| axis);
-        let reduce_nodes: Vec<(OpId, u16)> = ordered.into_iter().map(|(id, len, _)| (id, len)).collect();
-        let mut strides: Vec<u64> = Vec::with_capacity(reduce_nodes.len());
-        let reduce_len: u64 = reduce_nodes.iter().map(|&(_, l)| u64::from(l)).product();
-        for i in 0..reduce_nodes.len() {
-            let mut st = 1u64;
-            for &(_, l) in &reduce_nodes[i + 1..] {
-                st *= u64::from(l);
-            }
-            strides.push(st);
-        }
+        let space: Vec<(OpId, u16)> = ordered.into_iter().map(|(id, len, _)| (id, len)).collect();
+        let reduce_len: u64 = space.iter().map(|&(_, l)| u64::from(l)).product();
 
-        // Per-node lane constants; flat index `i` maps to node k's lane
-        // `(i / stride_k) % len_k`, lane 0 first (the originals are
-        // rewritten in place with lane 0).
-        let mut lane_consts: Vec<Vec<OpId>> = Vec::with_capacity(reduce_nodes.len());
-        for &(node_id, len) in &reduce_nodes {
-            let mut consts = Vec::with_capacity(len as usize);
-            for lane in 0..len {
-                consts.push(self.insert_before(node_id, Op::Const(Constant::idx(lane))));
-            }
-            lane_consts.push(consts);
-        }
-        let lane_of = |flat: u64, k: usize| -> OpId {
-            let len = lane_consts[k].len() as u64;
-            let idx = (flat / strides[k]) % len;
-            lane_consts[k][idx as usize]
-        };
-
-        // For remapping parameters: the per-op clones for flat lanes
-        // 1..reduce_len (lane 0 rewrites the originals in place).
-        let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
-
-        // Duplicate every reduce-conditional op once per remaining reduce
-        // lane: ops directly naming the reduce's unroll nodes, and ops
-        // consuming earlier-rewritten (remapped) ones. The reduce's own
-        // x-chain and everything downstream of it are covered by this
-        // generic arm; the unroll nodes themselves are substituted away.
-        // The walk is linear in IR order so a producer's clones are
-        // registered in `remaps` before its consumers are checked; the
-        // clones insert after the current op, so the pointer `next`
-        // (its original successor) never re-visits them.
-        let mut walk_id = self.head;
-        while !walk_id.is_null() {
-            let next = self.next_op(walk_id);
-            if walk_id == reduce_id {
-                // The reduce being expanded never reduces through itself;
-                // other reduces in its cone would need their own expansion
-                // first.
-                walk_id = next;
-                continue;
-            }
-            match self.ops[walk_id].op.clone() {
-                Op::Storage { .. }
-                | Op::Range { .. }
-                | Op::Unroll { .. }
-                | Op::Loop { .. }
-                | Op::EndLoop
-                | Op::Barrier
-                | Op::Param { .. }
-                | Op::Const(_) => {}
-                Op::Reduce { .. } => {
-                    // Another reduce: independent of this lane space (neither
-                    // naming its nodes nor consuming its clones) expands on
-                    // its own round. A lane-conditional one shares the space
-                    // in a way split cannot produce; that needs joint expansion
-                    // and stays loud.
-                    let mut lane_cond = false;
-                    for param in self.ops[walk_id].op.parameters() {
-                        if reduce_nodes.iter().any(|&(f, _)| f == param) || remaps.contains_key(&param) {
-                            lane_cond = true;
-                            break;
-                        }
-                    }
-                    if lane_cond {
-                        eprintln!(
-                            "DEVRED reduce={reduce_id:?} inner={walk_id:?} op={:?} params={:?}",
-                            self.ops[walk_id].op,
-                            self.ops[walk_id].op.parameters().collect::<Vec<_>>()
-                        );
-                        eprintln!("DEVRED reduce op={:?} nodes={:?}", self.ops[reduce_id].op, reduce_nodes);
-                        for id in [OpId(171), OpId(214), OpId(292), OpId(210), OpId(288), OpId(213)] {
-                            eprintln!("DEVRED   {id:?} = {:?}", self.ops[id].op);
-                        }
-                        let mut it = self.head;
-                        while !it.is_null() {
-                            match &self.ops[it].op {
-                                Op::Unroll { axis: 1, len: 4 } | Op::Reduce { .. } => {
-                                    eprintln!("DEVRED  list {it:?} = {:?}", self.ops[it].op);
-                                }
-                                _ => {}
-                            }
-                            it = self.next_op(it);
-                        }
-                        todo!("devectorize: reduce cone containing another reduce {walk_id}");
-                    }
-                }
-                ref op => {
-                    let mut lane_cond = false;
-                    for param in op.parameters() {
-                        if reduce_nodes.iter().any(|&(f, _)| f == param) || remaps.contains_key(&param) {
-                            lane_cond = true;
-                            break;
-                        }
-                    }
-                    if !lane_cond {
-                        walk_id = next;
-                        continue;
-                    }
-                    let mut ids = Vec::with_capacity(reduce_len as usize - 1);
-                    let mut at_id = walk_id;
-                    for flat in 1..reduce_len {
-                        let mut lane_op = op.clone();
-                        // Reindex the op.
-                        for param in lane_op.parameters_mut() {
-                            if let Some(ix) = reduce_nodes.iter().position(|&(f, _)| f == *param) {
-                                *param = lane_of(flat, ix);
-                            } else if let Some(remap) = remaps.get(param) {
-                                *param = remap[flat as usize - 1];
-                            }
-                        }
-                        at_id = self.insert_after(at_id, lane_op);
-                        ids.push(at_id);
-                    }
-                    // Lane 0 rewrites the original in place.
-                    for param in self.ops[walk_id].op.parameters_mut() {
-                        if let Some(ix) = reduce_nodes.iter().position(|&(f, _)| f == *param) {
-                            *param = lane_of(0, ix);
-                        }
-                    }
-                    // Store which remaps will be used in the future.
-                    remaps.insert(walk_id, ids);
-                }
-            }
-            walk_id = next;
-        }
+        let (remaps, _) = self.duplicate_lanes(&space, DupMode::Reduce { reduce_id });
 
         // The reduce chain over per-lane values: the original (lane-0)
         // partial reduces with every later lane's clone of the value.
         let mut acc = x;
         for flat in 1..reduce_len {
-            let lane_val = match remaps.get(&x) {
-                Some(ids) => ids[flat as usize - 1],
-                None => x,
-            };
+            let lane_val = remaps.get(&x).map_or(x, |ids| ids[flat as usize - 1]);
             acc = self.insert_before(reduce_id, Op::Binary { x: acc, y: lane_val, bop: rop });
         }
 
@@ -432,134 +317,56 @@ impl Kernel {
         self.remove_op(reduce_id);
     }
 
-    /// Whether `p` is the index expression of the access `op`: the operand a
-    /// kept access owns a private copy of (see [`Self::own_indices`]).
-    fn owns_index(op: &Op, p: OpId) -> bool {
-        match op {
-            Op::Load { src_idx, .. } => p == *src_idx,
-            Op::Store { dst_idx, .. } => p == *dst_idx,
-            Op::Copy { src_idx, dst_idx, .. } => p == *src_idx || p == *dst_idx,
-            _ => false,
-        }
-    }
-
-    /// Every access that keeps `lane` gets a private copy of the index
-    /// expression the unfolding is about to rewrite: `dup` is unfolded in
-    /// place (element 0 rewrites the original node, one clone per other
-    /// element), so an index node shared between a kept access and an unfolded
-    /// consumer cannot serve both. The index is pure arithmetic, so copying it
-    /// changes nothing but the ids.
-    fn own_indices(&mut self, lane: OpId, dup: &Set<OpId>) {
-        let ids: Vec<OpId> = self.iter_unordered().map(|(id, _)| id).collect();
-        for id in ids {
-            if dup.contains(&id) {
-                continue;
+    /// Duplicate the ops that name one lane space, one clone per lane.
+    ///
+    /// `space` is `(node, len)` per axis, least-significant last: the unroll
+    /// round passes one node, a lane reduce passes its axis expression's
+    /// nodes. Lane 0 rewrites the originals in place, lanes `1..len` insert as
+    /// clones after their producer. Returns the clones per op (the reduce's
+    /// fold reads them) and the lane extracts repointed at a lane's copy.
+    fn duplicate_lanes(&mut self, space: &[(OpId, u16)], mode: DupMode<'_>) -> (Map<OpId, Vec<OpId>>, Map<OpId, OpId>) {
+        debug_assert!(!space.is_empty(), "devectorize: empty lane space");
+        let total: u64 = space.iter().map(|&(_, len)| u64::from(len)).product();
+        let mut strides: Vec<u64> = Vec::with_capacity(space.len());
+        for i in 0..space.len() {
+            let mut st = 1u64;
+            for &(_, len) in &space[i + 1..] {
+                st *= u64::from(len);
             }
-            match self.at(id).clone() {
-                Op::Load { src, src_idx } => {
-                    if self.shares_dup(src_idx, dup) {
-                        let mut remap: Map<OpId, OpId> = Map::default();
-                        let new = self.own_index(src_idx, lane, id, &mut remap);
-                        self.ops[id].op = Op::Load { src, src_idx: new };
-                    }
-                }
-                Op::Store { dst, dst_idx, src } => {
-                    if self.shares_dup(dst_idx, dup) {
-                        let mut remap: Map<OpId, OpId> = Map::default();
-                        let new = self.own_index(dst_idx, lane, id, &mut remap);
-                        self.ops[id].op = Op::Store { dst, dst_idx: new, src };
-                    }
-                }
-                Op::Copy { src, src_idx, dst, dst_idx } => {
-                    let mut moved = false;
-                    let mut remap: Map<OpId, OpId> = Map::default();
-                    let src_idx = if self.shares_dup(src_idx, dup) {
-                        moved = true;
-                        self.own_index(src_idx, lane, id, &mut remap)
-                    } else {
-                        src_idx
-                    };
-                    let mut remap: Map<OpId, OpId> = Map::default();
-                    let dst_idx = if self.shares_dup(dst_idx, dup) {
-                        moved = true;
-                        self.own_index(dst_idx, lane, id, &mut remap)
-                    } else {
-                        dst_idx
-                    };
-                    if moved {
-                        self.ops[id].op = Op::Copy { src, src_idx, dst, dst_idx };
-                    }
-                }
-                _ => {}
-            }
+            strides.push(st);
         }
-    }
-
-    /// Whether anything in `index`' dependency cone is about to be unfolded.
-    fn shares_dup(&self, index: OpId, dup: &Set<OpId>) -> bool {
-        let mut stack = vec![index];
-        let mut seen = Set::default();
-        while let Some(x) = stack.pop() {
-            if !seen.insert(x) {
-                continue;
+        // One constant per lane per axis, inserted before its node so the
+        // substitution can name it.
+        let mut lane_consts: Vec<Vec<OpId>> = Vec::with_capacity(space.len());
+        for &(node, len) in space {
+            let mut consts = Vec::with_capacity(len as usize);
+            for lane in 0..len {
+                consts.push(self.insert_before(node, Op::Const(Constant::idx(lane))));
             }
-            if dup.contains(&x) {
-                return true;
-            }
-            for p in self.at(x).parameters() {
-                if !p.is_null() {
-                    stack.push(p);
-                }
-            }
+            lane_consts.push(consts);
         }
-        false
-    }
-
-    /// Copy `id` and the lane-dependent cone under it, inserting the copy
-    /// before `before` (the access that reads it) and returning the copy's id.
-    /// Lane-independent nodes stay shared: the unfolding does not touch them.
-    fn own_index(&mut self, id: OpId, lane: OpId, before: OpId, remap: &mut Map<OpId, OpId>) -> OpId {
-        if let Some(&new) = remap.get(&id) {
-            return new;
-        }
-        if id == lane || !self.depends_on(id, lane, &mut Set::default()) {
-            return id;
-        }
-        let mut op = self.at(id).clone();
-        for p in op.parameters_mut() {
-            if !p.is_null() {
-                *p = self.own_index(*p, lane, before, remap);
-            }
-        }
-        let new = self.insert_before(before, op);
-        remap.insert(id, new);
-        new
-    }
-
-    /// Unfold the dependent ops in `dup` per element: recreate each one once
-    /// per element with the node substituted by that element's constant,
-    /// rewrite element 0 in place, then drop the node when nothing reads it
-    /// any more. Returns false when the node is still a vector width for the
-    /// dependents outside `dup`.
-    /// A `Reduce` here is a driver bug: the joint loop expands reduces
-    /// first, so none survive to the unroll rounds.
-    fn devectorize_unroll_one(&mut self, unroll_id: OpId, dup: &Set<OpId>) -> bool {
-        let len = match self.at(unroll_id) {
-            Op::Unroll { len, .. } => u64::from(*len),
-            _ => unreachable!("devectorize: not an unroll node"),
+        let lane_of = |flat: u64, k: usize| -> OpId {
+            let len = u64::from(space[k].1);
+            lane_consts[k][((flat / strides[k]) % len) as usize]
         };
-        // An access that keeps this lane as a vector width owns its index
-        // expression: the unfolding rewrites every unfolded node in place to
-        // its element 0, so a node shared with a kept access would silently
-        // make that access read lane 0 for every lane.
-        self.own_indices(unroll_id, dup);
-
-        // Element constants, element 0 first (element 0 rewrites the originals).
-        let elem0 = self.insert_before(unroll_id, Op::Const(Constant::idx(0u64)));
-        let mut elems = Vec::with_capacity((len - 1) as usize);
-        for i in 1..len {
-            elems.push(self.insert_before(unroll_id, Op::Const(Constant::idx(i))));
+        // The single node an unroll round splits, if this is one; and the
+        // reduce being expanded, which never reduces through itself.
+        let unroll = match mode {
+            DupMode::Unroll { dup } => Some(dup),
+            DupMode::Reduce { .. } => None,
+        };
+        let reduce_id = match mode {
+            DupMode::Reduce { reduce_id } => reduce_id,
+            DupMode::Unroll { .. } => OpId::NULL,
+        };
+        if unroll.is_some() {
+            debug_assert_eq!(space.len(), 1, "devectorize: an unroll round splits one node");
         }
+
+        // The per-op clones for lanes `1..total` (lane 0 rewrites the original).
+        let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
+        // Lane extracts replaced by the lane's own copy.
+        let mut aliases: Map<OpId, OpId> = Map::default();
 
         // First skip ops that don't need duplication.
         let mut walk_id = self.head;
@@ -572,26 +379,34 @@ impl Kernel {
             walk_id = self.next_op(walk_id);
         }
 
-        // For remapping parameters.
-        let mut remaps: Map<OpId, Vec<OpId>> = Map::default();
-        // Component extracts replaced by one lane's copy (see the `Op::Index`
-        // arm below): every consumer reads that copy, not the extract.
-        let mut aliases: Map<OpId, OpId> = Map::default();
-
-        // Now loop over remaining ops and duplicate element-conditional ones.
-        // The walk is linear in IR order so a producer's clones are
-        // registered in `remaps` before its consumers are checked; the
-        // clones insert after the current op, so the pointer `next` (its
-        // original successor) never re-visits them.
+        // The walk is linear in IR order so a producer's clones are registered
+        // in `remaps` before its consumers are checked; the clones insert
+        // after the current op, so the pointer `next` (its original successor)
+        // never re-visits them.
         while !walk_id.is_null() {
             let next = self.next_op(walk_id);
-            if !dup.contains(&walk_id) {
-                // Kept: the lane is a vector width here (or nothing of this
-                // lane survives), so the op reads the lane unchanged.
+            if walk_id == reduce_id {
+                // Another reduce in the cone expands on its own round.
                 walk_id = next;
                 continue;
             }
-            match self.ops[walk_id].op.clone() {
+            if unroll.is_some_and(|dup| !dup.contains(&walk_id)) {
+                // Kept: the lane is a vector width here (or nothing of this
+                // lane survives), so the op reads the lane unchanged. A
+                // repointed extract is not the lane, so it is substituted
+                // wherever it is read.
+                if !aliases.is_empty() {
+                    for param in self.ops[walk_id].op.parameters_mut() {
+                        if let Some(&target) = aliases.get(param) {
+                            *param = target;
+                        }
+                    }
+                }
+                walk_id = next;
+                continue;
+            }
+            let op = self.ops[walk_id].op.clone();
+            match op {
                 Op::Storage { .. }
                 | Op::Range { .. }
                 | Op::Unroll { .. }
@@ -600,111 +415,123 @@ impl Kernel {
                 | Op::Barrier
                 | Op::Param { .. }
                 | Op::Const(_) => {}
-                Op::Reduce { .. } => unreachable!("reduce not devectorized before the unroll pass"),
+                Op::Reduce { .. } => {
+                    if unroll.is_some() {
+                        unreachable!("reduce not devectorized before the unroll pass");
+                    }
+                    // Another reduce: independent of this lane space (neither
+                    // naming its nodes nor consuming its clones) expands on
+                    // its own round. A lane-conditional one shares the space
+                    // in a way split cannot produce; that needs joint expansion
+                    // and stays loud.
+                    let lane_cond = self.ops[walk_id]
+                        .op
+                        .parameters()
+                        .any(|p| space.iter().any(|&(node, _)| node == p) || remaps.contains_key(&p));
+                    if lane_cond {
+                        todo!("devectorize: reduce cone containing another reduce {walk_id}");
+                    }
+                }
                 ref op => {
-                    // A component extract of a value the lane is unfolding.
-                    // When the value's element count *is* the lane width, its
-                    // only dimension is the lane, so a constant index selects
-                    // one lane's copy: every consumer reads that copy and the
-                    // extract is dropped. When the value carries a real
-                    // component dimension on top of the lane (a 4-byte vector
-                    // load under a fill lane, shape `[4, len]`), the index
-                    // picks a *component* of each lane, which is a per-lane op
-                    // like any other — it falls through to the duplication
-                    // below and each clone reads its own lane's copy of the
-                    // vector.
-                    if let Op::Index { vec, idx } = *op
-                        && let Some(clones) = remaps.get(&vec)
-                        && self.elements(vec) == i64::try_from(len).unwrap_or(0)
-                    {
-                        let lane_op = if idx == 0 { Some(vec) } else { clones.get(idx - 1).copied() };
-                        if let Some(lane_op) = lane_op {
-                            remaps.insert(walk_id, vec![lane_op; (len - 1) as usize]);
-                            aliases.insert(walk_id, lane_op);
-                            walk_id = next;
-                            continue;
+                    if unroll.is_some() {
+                        // A lane extract of a value the lane is unfolding,
+                        // when the source's lane is the innermost unit-stride
+                        // term of its address: one element per lane. An
+                        // instruction result or a `Stack` has component dims,
+                        // never a lane, and a strided lane has pieces, not
+                        // lanes. The extract names one fixed lane, so every
+                        // read takes that lane's copy and the extract is
+                        // dropped.
+                        if let Op::Index { vec, idx } = *op
+                            && let Some(clones) = remaps.get(&vec)
+                            && self.lane_extract(vec, space[0].0)
+                        {
+                            let lane_op = if idx == 0 { Some(vec) } else { clones.get(idx - 1).copied() };
+                            if let Some(lane_op) = lane_op {
+                                remaps.insert(walk_id, vec![lane_op; total as usize - 1]);
+                                aliases.insert(walk_id, lane_op);
+                                walk_id = next;
+                                continue;
+                            }
+                        }
+                        // An mma fragment that the lane splits *into its
+                        // slots* is one packed operand, not a work bundle:
+                        // unfolding it hands each clone a single element where
+                        // the instruction reads the packed slots (a `half2`
+                        // operand becomes two `half` variables and the
+                        // instruction reads the neighbour of the first). Pack
+                        // the per-lane values back into the `Stack` the
+                        // tensorizer emits and keep one instruction. A lane-
+                        // shaped accumulator means the lane selects a whole
+                        // instruction instead (one output tile per lane), so
+                        // that case falls through and duplicates, each clone
+                        // carrying its own fragment.
+                        //
+                        // The C operand is a fragment in every case: either
+                        // its lanes *are* its slots (then they pack into one
+                        // operand), or it already holds a whole fragment (a
+                        // chained instruction's result, or the fragment after
+                        // its tile axis was unrolled). Only a C that spans
+                        // several instructions — one output tile per lane —
+                        // means the lane selects instructions and the
+                        // instruction duplicates.
+                        if let Op::Wmma { dims, layout, dtype, c, a, b } = *op {
+                            let conditional = |p: OpId| p == space[0].0 || remaps.contains_key(&p);
+                            let len_dim: Dim = i64::try_from(total).expect("devectorize: lane count exceeds Dim");
+                            let one_fragment = |k: &Self, p: OpId| {
+                                k.wmma_operand_slots(walk_id, p).is_some_and(|slots| len_dim * k.elements(p) == slots)
+                            };
+                            let c_slots = self.wmma_operand_slots(walk_id, c);
+                            let c_pack = conditional(c) && c_slots.is_some_and(|s| len_dim * self.elements(c) == s);
+                            let c_whole = c_slots.is_some_and(|s| self.elements(c) == s);
+                            let slots_packed = (!conditional(a) || one_fragment(self, a))
+                                && (!conditional(b) || one_fragment(self, b))
+                                && (!conditional(c) || c_pack || c_whole);
+                            if slots_packed && (c_pack || conditional(a) || conditional(b) || (conditional(c) && c_whole)) {
+                                let pack = |k: &mut Self, operand: OpId| {
+                                    let mut ops = Vec::with_capacity(total as usize);
+                                    ops.push(operand);
+                                    if let Some(clones) = remaps.get(&operand) {
+                                        ops.extend(clones.iter().copied());
+                                    }
+                                    debug_assert_eq!(ops.len() as u64, total, "devectorize: fragment lane count");
+                                    k.insert_before(walk_id, Op::Stack { ops: ops.into() })
+                                };
+                                let a = if conditional(a) { pack(self, a) } else { a };
+                                let b = if conditional(b) { pack(self, b) } else { b };
+                                let c = if c_pack { pack(self, c) } else { c };
+                                self.ops[walk_id].op = Op::Wmma { dims, layout, dtype, c, a, b };
+                                walk_id = next;
+                                continue;
+                            }
                         }
                     }
-                    let mut elem_cond = false;
-                    for param in op.parameters() {
-                        if param == unroll_id || remaps.contains_key(&param) {
-                            elem_cond = true;
-                            break;
-                        }
-                    }
+                    let elem_cond = op.parameters().any(|p| space.iter().any(|&(node, _)| node == p) || remaps.contains_key(&p));
                     if !elem_cond {
                         walk_id = next;
                         continue;
                     }
-                    // An mma fragment that the lane splits *into its slots* is
-                    // one packed operand, not a work bundle: unfolding it hands
-                    // each clone a single element where the instruction reads
-                    // the packed slots (a `half2` operand becomes two `half`
-                    // variables and the instruction reads the neighbour of the
-                    // first). Pack the per-lane values back into the `Stack`
-                    // the tensorizer emits and keep one instruction. A lane-
-                    // shaped accumulator means the lane selects a whole
-                    // instruction instead (one output tile per lane), so that
-                    // case falls through and duplicates, each clone carrying
-                    // its own fragment.
-                    //
-                    // The C operand is a fragment in every case: either its
-                    // lanes *are* its slots (then they pack into one operand),
-                    // or it already holds a whole fragment (a chained
-                    // instruction's result, or the fragment after its tile axis
-                    // was unrolled). Only a C that spans several instructions —
-                    // one output tile per lane — means the lane selects
-                    // instructions and the instruction duplicates.
-                    if let Op::Wmma { dims, layout, dtype, c, a, b } = *op {
-                        let conditional = |p: OpId| p == unroll_id || remaps.contains_key(&p);
-                        let len_dim: Dim = i64::try_from(len).expect("devectorize: unroll length exceeds Dim");
-                        let one_fragment = |k: &Self, p: OpId| {
-                            k.wmma_operand_slots(walk_id, p).is_some_and(|slots| len_dim * k.elements(p) == slots)
-                        };
-                        let c_slots = self.wmma_operand_slots(walk_id, c);
-                        let c_pack = conditional(c) && c_slots.is_some_and(|s| len_dim * self.elements(c) == s);
-                        let c_whole = c_slots.is_some_and(|s| self.elements(c) == s);
-                        let slots_packed = (!conditional(a) || one_fragment(self, a))
-                            && (!conditional(b) || one_fragment(self, b))
-                            && (!conditional(c) || c_pack || c_whole);
-                        if slots_packed && (c_pack || conditional(a) || conditional(b) || (conditional(c) && c_whole)) {
-                            let pack = |k: &mut Self, operand: OpId| {
-                                let mut ops = Vec::with_capacity(len as usize);
-                                ops.push(operand);
-                                if let Some(clones) = remaps.get(&operand) {
-                                    ops.extend(clones.iter().copied());
-                                }
-                                debug_assert_eq!(ops.len() as u64, len, "devectorize: fragment lane count");
-                                k.insert_before(walk_id, Op::Stack { ops: ops.into() })
-                            };
-                            let a = if conditional(a) { pack(self, a) } else { a };
-                            let b = if conditional(b) { pack(self, b) } else { b };
-                            let c = if c_pack { pack(self, c) } else { c };
-                            self.ops[walk_id].op = Op::Wmma { dims, layout, dtype, c, a, b };
-                            walk_id = next;
-                            continue;
-                        }
-                    }
-                    let mut ids = Vec::with_capacity((len - 1) as usize);
+                    let mut ids = Vec::with_capacity(total as usize - 1);
                     let mut at_id = walk_id;
-                    for i in 0..(len - 1) as usize {
-                        let mut elem_op = op.clone();
+                    for flat in 1..total {
+                        let mut lane_op = op.clone();
                         // Reindex the op.
-                        for param in elem_op.parameters_mut() {
-                            if *param == unroll_id {
-                                *param = elems[i];
+                        for param in lane_op.parameters_mut() {
+                            if let Some(k) = space.iter().position(|&(node, _)| node == *param) {
+                                *param = lane_of(flat, k);
                             } else if let Some(remap) = remaps.get(param) {
-                                *param = remap[i];
+                                *param = remap[flat as usize - 1];
                             }
                         }
-                        at_id = self.insert_after(at_id, elem_op);
+                        at_id = self.insert_after(at_id, lane_op);
                         ids.push(at_id);
                     }
-                    // Element 0 rewrites the original in place (the unroll
-                    // node has no inherent element-0 meaning to inherit).
+                    // Lane 0 rewrites the original in place.
                     for param in self.ops[walk_id].op.parameters_mut() {
-                        if *param == unroll_id {
-                            *param = elem0;
+                        if let Some(k) = space.iter().position(|&(node, _)| node == *param) {
+                            *param = lane_of(0, k);
+                        } else if let Some(&target) = aliases.get(param) {
+                            *param = target;
                         }
                     }
                     // Store which remaps will be used in the future.
@@ -713,29 +540,31 @@ impl Kernel {
             }
             walk_id = next;
         }
+        (remaps, aliases)
+    }
 
-        // Extracts replaced by a lane's copy: point every read (including the
-        // lane-0 originals, which never consult `remaps`) at the copy and drop
-        // the extract.
-        for (index_op, lane_op) in aliases {
-            let mut scan = self.head;
-            while !scan.is_null() {
-                for p in self.ops[scan].op.parameters_mut() {
-                    if *p == index_op {
-                        *p = lane_op;
-                    }
-                }
-                scan = self.next_op(scan);
-            }
-            self.remove_op(index_op);
+    /// Unfold the dependent ops in `dup` per element: recreate each one once
+    /// per element with the node substituted by that element's constant, and
+    /// rewrite element 0 in place. The node stays when a kept op still reads
+    /// it as a vector width; otherwise it is removed.
+    /// A `Reduce` here is a driver bug: the joint loop expands reduces
+    /// first, so none survive to the unroll rounds.
+    fn devectorize_unroll_one(&mut self, unroll_id: OpId, dup: &Set<OpId>) {
+        let len = match self.at(unroll_id) {
+            Op::Unroll { len, .. } => *len,
+            _ => unreachable!("devectorize: not an unroll node"),
+        };
+        let (_, aliases) = self.duplicate_lanes(&[(unroll_id, len)], DupMode::Unroll { dup });
+        // The repointed extracts have no reader left.
+        let extracts: Vec<OpId> = aliases.keys().copied().collect();
+        for extract in extracts {
+            self.remove_op(extract);
         }
-
         if self.iter_unordered().any(|(_, op)| op.parameters().any(|p| p == unroll_id)) {
             // Still a vector width for the kept dependents.
-            return false;
+            return;
         }
         self.remove_op(unroll_id);
-        true
     }
 }
 
@@ -747,25 +576,23 @@ impl Kernel {
         };
         let info = self.device_info();
         let v = info.mma_variants.iter().find(|v| v.dims == dims && v.layout == layout && v.dtype == dtype)?;
-        let operand_slots = if operand == a {
-            v.a.slots.len() as Dim
+        // The operand's element dtype and the instruction's own slot count.
+        // The device table owns both: the pass never knows what the elements
+        // are, only that a word-valued operand packs `32 / bit size` of them.
+        let (elem_dtype, operand_slots) = if operand == a {
+            (v.a_dtype, v.a.slots.len() as Dim)
         } else if operand == b {
-            v.b.slots.len() as Dim
+            (v.b_dtype, v.b.slots.len() as Dim)
         } else if operand == c {
-            v.c.slots.len() as Dim
+            (v.c_dtype, v.c.slots.len() as Dim)
         } else {
             return None;
         };
         // `slots` counts the instruction's own elements. An `ldmatrix`
         // destination word carries several of them (two f16, four int8), so a
         // word-valued operand is `slots / elements-per-word` wide.
-        let per_word = match dtype {
-            MMADType::f16_f16_f16_f16 | MMADType::f16_f16_f16_f32 => 2,
-            MMADType::s8_s8_s32_s32 => 4,
-            MMADType::s4_s4_s32_s32 => 8,
-            MMADType::b1_b1_s32_xor_popc | MMADType::b1_b1_s32_and_popc => 32,
-        };
         if self.dtype(operand) == DType::U32 {
+            let per_word = Dim::from(i64::from(32 / elem_dtype.bit_size()));
             Some(operand_slots / per_word)
         } else {
             Some(operand_slots)
@@ -845,12 +672,16 @@ impl Kernel {
 
     /// The ops to unfold when lane `id` leaves the IR as scalars.
     ///
-    /// The lane is a *vector width* where the access it shapes is contiguous
-    /// and the device supports the width, and a *work bundle* everywhere
-    /// else. An op survives only when its own access carries the lane as a
-    /// vector width and every op consuming it survives too; the rest of the
-    /// lane's dependents are unfolded, together with the index math that
-    /// feeds them (it would otherwise hand them a vector).
+    /// Three clauses. (1) A value renders the lane when it is an access whose
+    /// address names the lane as its one innermost unit-stride run the device
+    /// supports (or whose address does not carry this lane at all, so it only
+    /// carries the value through), with the store's value covering the width;
+    /// everything else with no address renders. (2) A value is kept when it
+    /// renders and its lane reaches an access through its consumers: a chain
+    /// that ends in no memory traffic has no form to render. (3) Repetition is
+    /// the connected component of everything that fails (2) — a kept value
+    /// reads and is read by kept values only, because an unfolded neighbour
+    /// hands it one element instead of the vector.
     ///
     /// Empty when the lane is a vector width throughout, i.e. when nothing
     /// needs unfolding.
@@ -884,13 +715,13 @@ impl Kernel {
         if !supported {
             return dep;
         }
-        // An op can stay only if its value still reaches an access: a chain
+        // Clause 2: a lane is kept only where it reaches an access. A chain
         // that ends in no memory traffic has nowhere to render the lane.
         let mut reaches: Set<OpId> = Set::default();
         loop {
             let mut changed = false;
             for &op in dep.iter() {
-                if reaches.contains(&op) {
+                if reaches.contains(&op) || !self.renders(op, id, width) {
                     continue;
                 }
                 let downstream =
@@ -904,91 +735,88 @@ impl Kernel {
                 break;
             }
         }
-        let mut keep: Map<OpId, bool> = Map::default();
-        for &op in dep.iter() {
-            keep.insert(op, reaches.contains(&op) && self.lane_access_ok(op, id, width));
-        }
-        // The two invariants below are one fixpoint, not two: demoting a kept
-        // op has to demote its producers as well, and a second pass that only
-        // handled consumers would leave `a == b` kept while the `select` that
-        // reads it is unfolded around it — a store then keeps the vector index
-        // of a value that is already per-lane.
-        //
-        // 1. A kept op must have only kept consumers: an unfolded consumer
-        //    reads one lane of a vector.
-        // 2. And a kept op must read only kept operands: an unfolded operand
-        //    hands it element 0, not the vector. Instructions are exempt — the
-        //    unroll pass repacks their per-lane operands into a `Stack`.
-        loop {
-            let mut changed = false;
-            for &op in dep.iter() {
-                if !keep[&op] {
-                    continue;
-                }
-                let survives = consumers.get(&op).is_none_or(|cs| cs.iter().all(|c| keep[&c]));
-                let at = self.at(op).clone();
-                // An access' index is pure arithmetic, and [`Self::own_indices`]
-                // gives every kept access its own copy of it: a demoted index
-                // does not force the access that reads it to unfold.
-                let operands_kept = matches!(at, Op::Wmma { .. })
-                    || at.parameters().all(|p| p == id || !dep.contains(&p) || keep[&p] || Self::owns_index(&at, p));
-                if !survives || !operands_kept {
-                    keep.insert(op, false);
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
+        // Repetition is the connected component of everything that does not
+        // reach an access. A kept value reads and is read by kept values
+        // only, because an unfolded neighbour hands it one element instead of
+        // the vector.
+        let mut repeat: Set<OpId> = Set::default();
+        let mut stack: Vec<OpId> = Vec::new();
+        for &op in &dep {
+            if !reaches.contains(&op) {
+                repeat.insert(op);
+                stack.push(op);
             }
         }
-        dep.iter().filter(|op| !keep[*op]).copied().collect()
+        while let Some(x) = stack.pop() {
+            for &c in consumers.get(&x).map_or(&[][..], |v| v.as_slice()) {
+                if dep.contains(&c) && repeat.insert(c) {
+                    stack.push(c);
+                }
+            }
+            for p in self.at(x).parameters() {
+                if !p.is_null() && dep.contains(&p) && repeat.insert(p) {
+                    stack.push(p);
+                }
+            }
+        }
+        repeat
     }
-    /// Whether `op` can render as one access of width `width` in lane `id`:
-    /// the lane is the innermost contiguous term of the address, and the
-    /// value side carries exactly that width (a broadcast scalar or a wider
-    /// value is a work bundle, not a vector). An operand the lane does not
-    /// shape at all is not this access' business.
-    fn lane_access_ok(&self, op: OpId, id: OpId, width: Dim) -> bool {
-        match self.at(op) {
-            Op::Load { src_idx, .. } => {
-                if !self.depends_on(*src_idx, id, &mut Set::default()) {
-                    return true;
-                }
-                self.vector_lane(*src_idx, id) && self.lane_load_consumers_ok(op, width)
-            }
+
+    /// Whether the device renders `width` as one vector access or vector op.
+    fn supported(&self, width: Dim) -> bool {
+        self.device_info().supported_vec_lens.iter().any(|&v| Dim::from(v) == width)
+    }
+
+    /// The width of the vector access `idx` names for lane `id`: `id` is the
+    /// innermost unit-stride term, no other lane competes for that role, and
+    /// the device renders the width.
+    fn vector_access(&self, idx: OpId, id: OpId) -> Option<Dim> {
+        if idx.is_null() {
+            return None;
+        }
+        let Op::Unroll { len, .. } = *self.at(id) else {
+            return None;
+        };
+        let width = Dim::from(len);
+        (self.supported(width) && self.vector_lane(idx, id)).then_some(width)
+    }
+
+    /// Whether `op` renders this lane as one vector width by itself.
+    ///
+    /// An access whose address does not depend on the lane is not addressing
+    /// this lane: it carries the lane's value through, and renders.
+    fn renders(&self, op_id: OpId, id: OpId, width: Dim) -> bool {
+        let carries = |addr: OpId| self.depends_on(addr, id, &mut Set::default());
+        match self.at(op_id) {
+            Op::Load { src_idx, .. } => !carries(*src_idx) || self.vector_access(*src_idx, id) == Some(width),
             Op::Store { dst_idx, src, .. } => {
-                if !self.depends_on(*dst_idx, id, &mut Set::default()) {
-                    return true;
-                }
-                // The value carries this lane's width, or the whole access'
-                // elements. The first is the single-lane case; the second is a
-                // multi-lane access whose *other* lanes name addresses (a fill's
-                // step lane over a vector width), where the value is one vector
-                // covering the access and the backend splits it per address.
-                // Comparing only against `width` refused every multi-lane
-                // access, which is how a two-lane fill ended up scalarised.
-                self.vector_lane(*dst_idx, id)
-                    && (self.value_elements(*src) == width || self.value_elements(*src) == self.elements(*dst_idx))
+                !carries(*dst_idx)
+                    || (self.vector_access(*dst_idx, id) == Some(width)
+                        && (self.value_elements(*src) == width || self.value_elements(*src) == self.elements(*dst_idx)))
             }
             Op::PTX(p) => match p.as_ref() {
-                // The lowered form carries the same address, in bytes.
                 PTXOp::VLdMatrix { addr, .. } | PTXOp::LdMatrix { addr, .. } => {
-                    !self.depends_on(*addr, id, &mut Set::default()) || self.vector_lane(*addr, id)
+                    !carries(*addr) || self.vector_access(*addr, id) == Some(width)
                 }
                 _ => false,
             },
+            // One scalar already; the unfolding gives it a clone per element.
+            Op::Index { .. } => true,
+            // A value with no address is a register value: codegen renders it
+            // as a scalar, a vector or a tile.
             _ => true,
         }
     }
 
     /// Element count of a store's value: an `ldmatrix` result is the
     /// instruction's destination list (`num` 32-bit words) and has no lane
-    /// shape of its own. The lowered form is the same fragment.
+    /// shape of its own. The lowered form is the same fragment. Every other
+    /// value carries its own shape.
     fn value_elements(&self, op: OpId) -> Dim {
         match self.at(op) {
             Op::PTX(p) => match p.as_ref() {
                 PTXOp::VLdMatrix { num, .. } | PTXOp::LdMatrix { num, .. } => Dim::from(i64::from(num.words())),
-                _ => Dim::from(2),
+                _ => self.elements(op),
             },
             _ => self.elements(op),
         }
@@ -1017,40 +845,6 @@ impl Kernel {
                 if !p.is_null() {
                     stack.push(p);
                 }
-            }
-        }
-        true
-    }
-
-    /// Every consumer of a vector load must take the whole width: a
-    /// per-element extract (`Index`), a copy (`Store`) or an instruction
-    /// whose slot count is exactly the width (`Wmma`, through the `Stack`
-    /// that packs its operand).
-    fn lane_load_consumers_ok(&self, load: OpId, width: Dim) -> bool {
-        for (cid, cop) in self.iter_unordered() {
-            if !cop.parameters().any(|p| p == load) {
-                continue;
-            }
-            match *cop {
-                Op::Index { vec, .. } if vec == load => {}
-                Op::Store { src, .. } if src == load => {}
-                Op::Wmma { .. } => {
-                    if self.wmma_operand_slots(cid, load) != Some(width) {
-                        return false;
-                    }
-                }
-                Op::Stack { ref ops } => {
-                    let total: Dim = ops.iter().map(|&o| self.elements(o)).sum();
-                    let fragment = self.iter_unordered().any(|(wid, wop)| {
-                        matches!(wop, Op::Wmma { a, b, .. }
-                            if (*a == cid || *b == cid)
-                                && self.wmma_operand_slots(wid, cid) == Some(total))
-                    });
-                    if !fragment {
-                        return false;
-                    }
-                }
-                _ => return false,
             }
         }
         true
@@ -1128,6 +922,89 @@ mod tests {
 
         assert!(!k.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. })));
         assert!(!k.iter_unordered().any(|(_, op)| matches!(op, Op::Reduce { .. })));
+        k.verify();
+    }
+
+    fn unroll_kernel(len: u16) -> (Kernel, OpId, OpId, OpId, OpId) {
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cpu()));
+        let inp = k.param(DType::F32);
+        let out = k.param_mut(DType::F32);
+        let lane = k.unroll(0, len);
+        let stride = k.const_idx(4i64);
+        (k, inp, out, lane, stride)
+    }
+
+    fn loads(k: &Kernel) -> usize {
+        k.iter_unordered().filter(|(_, op)| matches!(op, Op::Load { .. })).count()
+    }
+
+    /// The lane is a work bundle, not a vector width, when the access walks it
+    /// by its own step: every dependent unfolds to one scalar per lane.
+    #[test]
+    fn devectorize_repeats_a_strided_lane() {
+        let (mut k, inp, out, lane, stride) = unroll_kernel(4);
+        let off = k.mul(lane, stride);
+        let v = k.load(inp, off);
+        k.store(out, v, off);
+
+        k.devectorize().expect("strided lane devectorizes");
+        assert!(!k.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. })));
+        assert_eq!(loads(&k), 4, "one scalar load per lane");
+        k.verify();
+    }
+
+    /// The lane is a vector width when the access names it as the innermost
+    /// unit-stride term and the device renders that width: it stays.
+    #[test]
+    fn devectorize_keeps_a_unit_stride_lane() {
+        let (mut k, inp, out, lane, _) = unroll_kernel(4);
+        let v = k.load(inp, lane);
+        k.store(out, v, lane);
+
+        k.devectorize().expect("unit-stride lane devectorizes");
+        assert!(k.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. })), "the lane stays a vector width");
+        assert_eq!(loads(&k), 1, "the access stays one vector load");
+        k.verify();
+    }
+
+    /// Repetition is the connected component: a value that must repeat drags
+    /// its producers and consumers with it, even those that would render
+    /// alone. Here `unit` has a unit-stride address and the store does too,
+    /// but both feed/consume the lane-strided `strided`, so all of it repeats.
+    #[test]
+    fn devectorize_repeats_the_connected_component() {
+        let (mut k, inp, out, lane, stride) = unroll_kernel(4);
+        let unit = k.load(inp, lane);
+        let off = k.mul(lane, stride);
+        let strided = k.load(inp, off);
+        let sum = k.add(unit, strided);
+        k.store(out, sum, lane);
+
+        k.devectorize().expect("mixed lane devectorizes");
+        assert!(!k.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. })));
+        // 4 lanes x 2 loads, minus the lane-0 pair: both name address 0, and
+        // the epilogue's CSE merges them.
+        assert_eq!(loads(&k), 7, "both accesses unfold, one merged");
+        let stores = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Store { .. })).count();
+        assert_eq!(stores, 4, "the store is part of the component");
+        k.verify();
+    }
+
+    /// A lane whose consumers reach no access has no form to render: it
+    /// repeats too.
+    #[test]
+    fn devectorize_repeats_a_lane_with_no_access() {
+        let (mut k, inp, out, lane, _) = unroll_kernel(4);
+        let zero = k.const_val(0.0f32);
+        k.store(out, zero, 0i64);
+        let v = k.load(inp, lane);
+        let one = k.const_val(1.0f32);
+        let _dead = k.add(v, one);
+
+        k.devectorize().expect("access-free lane devectorizes");
+        assert!(!k.iter_unordered().any(|(_, op)| matches!(op, Op::Unroll { .. })));
+        assert_eq!(loads(&k), 0, "the whole dead chain is gone");
         k.verify();
     }
 }

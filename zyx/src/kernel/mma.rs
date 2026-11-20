@@ -4950,6 +4950,10 @@ mod tests {
         // The real seed reaches the search already linearized; match it in the
         // same form the autotuner sees.
         k.linearize();
+        // The seed's own scalar kernel is the reference for the register
+        // block below: it carries the same f16 output rounding, so a difference
+        // is the tensorized form's, not the output cast's.
+        let scalar = k.clone();
         let opt = k.opt_tensorize();
         assert!(opt.nconfigs() >= 23, "the llama prefill seed selects one region, per layout and operand form");
         opt.apply(&mut k, 0);
@@ -4978,7 +4982,19 @@ mod tests {
         let a = Tensor::rand([M, K], DType::F16).unwrap().to(dev).unwrap();
         let b = Tensor::rand([N, K], DType::F16).unwrap().to(dev).unwrap();
         let shapes = || vec![[M, N], [M, N]];
-        compiled.forward(&[&a, &b], shapes()).unwrap();
+
+        // Every register-block tile must actually read its own lane's operand:
+        // the lanes are what makes the block 16 instructions, and a lane that
+        // only reaches the accumulator store leaves all 16 reading lane 0.
+        let scalar = scalar.compile().expect("the scalar seed compiles");
+        let want: Vec<f32> = scalar.forward(&[&a, &b], shapes()).unwrap()[1].clone().try_into().unwrap();
+        let got: Vec<f32> = compiled.forward(&[&a, &b], shapes()).unwrap()[1].clone().try_into().unwrap();
+        let worst = got.iter().zip(want.iter()).map(|(g, w)| (g - w).abs()).fold(0.0f32, f32::max);
+        // The block sums in a different order, so the outputs differ by a few
+        // f16 quanta of the result magnitude (~2^-11 relative).
+        println!("split register block vs scalar seed: max |err| = {worst}");
+        assert!(worst < 2.0, "the 4x4 register block disagrees with the scalar seed: {worst}");
+
         dev.synchronize().unwrap();
         let iters = 20;
         let t = std::time::Instant::now();

@@ -68,6 +68,41 @@
   as many times as needed (ASK ASK ASK). Never shrink the task, never pick
   a "minimal" or "strategic" subset, never substitute a plan for a
   question, and never guess.
+- NEVER ASK A YES/NO QUESTION, AND NEVER OFFER OPTIONS. A menu ("A, B or
+  C?"), a "correct?", a "should I …?", a "does X stay?" hands the agent's
+  own work back to the user, and the user cannot answer design with a
+  tick. The agent's failures are never "picked the wrong option out of
+  three": they are "never enumerated the right option in the first
+  place". The agent cannot conjure the right option by guessing; when it
+  cannot derive it, it says so instead of guessing. Know the limit.
+- ASK THE DESIGN QUESTION. Ask "how should X be designed, given these
+  constraints and requirements", and enumerate every constraint and
+  requirement the code, the IR, the device and the goal impose — the
+  shapes the IR actually carries, the invariants the pass must leave,
+  the op-count and time budgets, the tests that must stay green, the
+  device table it may read. One design question with the full constraint
+  list lets the user design the thing in one go; a sequence of small
+  confirmations never does.
+- WHEN THE USER'S DESIGN IS UNCLEAR OR UNTHOUGHT-THROUGH, KEEP ASKING
+  AND NAME ITS FAILURE MODES: the IR shape it cannot express, the case
+  it would silently miscompile, the test it would break, the budget it
+  blows. Never answer an unclear design by picking one of its variants,
+  and never by proposing three fixes.
+- WHEN THE DESIGN STOPS SHORT OF THE CODE, SAY SO AND ASK. The design is
+  given at the level the user stated it: it answers the question it
+  names, not every op, shape and use the IR happens to contain. When
+  carrying it into the code reaches something the design never mentions —
+  an op it never names, a use it never names, a shape it never names —
+  that case is not covered, and inventing a rule for it, or stretching
+  their sentence until it fits, is a design decision taken without them.
+  Name the case, say plainly that it is outside what was stated, and ask
+  how the case is decided.
+- NEVER STOP WHILE CERTAIN. When the next step is fully certain — the
+  code determines it, the tests decide it, no design question is open —
+  keep going until the task is finished. Do not stop to report progress,
+  do not ask for confirmation, do not hand back a half-finished tree.
+  The only two stops are: the task is done, or something is uncertain,
+  and then the uncertainty is asked in full before any further edit.
 - THE USER HAS NO DISLIKE OF QUESTIONS. Never infer reluctance, cost,
   annoyance or impatience from tone, frustration, insults, a prior
   answer, or a long session. There is no social cost to asking, so it is
