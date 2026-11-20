@@ -957,7 +957,11 @@ impl Graph {
                             visited.remove(&dst);
                         }
 
-                        self.push_outputs(kid, src, rcs[&src]);
+                        // `src`'s remaining output slots are already registered
+                        // in `kid` (its producer pushed one per consumer edge,
+                        // and `consume` above removed the store's own). Pushing
+                        // them again here would leave more output entries than
+                        // `rcs[src]` and break invariant 1.
                         if rcs[&src] > 0 {
                             visited.insert(src, (kid, value_op));
                         }

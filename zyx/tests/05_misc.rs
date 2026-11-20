@@ -1569,6 +1569,35 @@ fn assign_movement_dst() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// An assign whose `src` keeps a consumer besides the store. The store
+/// consumes one edge of `src` and fuses into the kernel that already holds
+/// it, so the class's remaining output slots are exactly what its producer
+/// registered; the store must not push them again, or the class ends with
+/// more `outputs` entries than its reference count and the kernelizer trips
+/// `output != rcs`.
+#[test]
+fn assign_src_with_remaining_consumer() -> Result<(), ZyxError> {
+    // The gated-delta-rule decode step in miniature: the new state is written
+    // back in place *and* read once more for `core`, so the store's `src`
+    // keeps a second consumer besides the store. `core` is built before the
+    // assign, and both meet again in `out`, so the region orders the store
+    // ahead of the reader.
+    let dst = Tensor::from([1f32, 2.0, 3.0, 4.0]);
+    let tape = zyx::Tape::new([&dst])?;
+    let src = (&dst * 2.0f32) + 1.0f32;
+    let core = (&src * 3.0f32).sum([0])?;
+    dst.clone().assign(&src)?;
+    let out = &dst + &core;
+    tape.realize([&out])?;
+    let stored: Vec<f32> = dst.try_into()?;
+    assert_eq!(stored, vec![3.0, 5.0, 7.0, 9.0]);
+    // `core` is 72 (sum of the new state times 3), added elementwise here so a
+    // single realize carries both the store and its reader.
+    let out: Vec<f32> = out.try_into()?;
+    assert_eq!(out, vec![75.0, 77.0, 79.0, 81.0]);
+    Ok(())
+}
+
 /// BUG (ignored until fixed): assigning into a bare Leaf dst makes it a
 /// PendingLeaf whose store kernel only launches on materialization. If the
 /// tensor is never read, release hits the debug_assert
