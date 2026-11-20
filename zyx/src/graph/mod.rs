@@ -251,6 +251,46 @@ impl Graph {
         self.class_nodes(class_id).any(|nid| matches!(&self.ops[nid].op, Op::After { .. }))
     }
 
+    /// Rebuild `view`'s movement chain over `new_base` instead of `base`.
+    ///
+    /// `view` must be a single-input movement chain bottoming at `base` — the
+    /// exact shape an assign target may take (`has_base` walks the same set).
+    /// An in-place assign uses this to give the view the post-store value
+    /// without a second `After`: `Narrow(After(base, store))`, the shape
+    /// tinygrad builds with `t.uop.substitute({ib: target.after(store)})`.
+    pub(crate) fn replay_view_over(&mut self, view: OpId, base: OpId, new_base: OpId) -> OpId {
+        let mut chain: Vec<Op> = Vec::new();
+        let mut cur = view;
+        while cur != base {
+            let op = self.ops[cur].op.clone();
+            let next = match &op {
+                Op::Reshape { x, .. }
+                | Op::Permute { x, .. }
+                | Op::Pad { x, .. }
+                | Op::Expand { x, .. }
+                | Op::Flip { x, .. }
+                | Op::Narrow { x, .. } => *x,
+                ref op => panic!("assign: view class {cur:?} is not a movement op: {op:?}"),
+            };
+            chain.push(op);
+            cur = next;
+        }
+        let mut out = new_base;
+        while let Some(mut op) = chain.pop() {
+            match &mut op {
+                Op::Reshape { x, .. }
+                | Op::Permute { x, .. }
+                | Op::Pad { x, .. }
+                | Op::Expand { x, .. }
+                | Op::Flip { x, .. }
+                | Op::Narrow { x, .. } => *x = out,
+                _ => unreachable!(),
+            }
+            out = self.push_op(op);
+        }
+        out
+    }
+
     pub fn push_to_device(&mut self, x: OpId, device: Dev, time: u64) -> OpId {
         let node = Op::ToDevice { x, device, time };
         if let Some(&nid) = self.hashcons.get(&node) {

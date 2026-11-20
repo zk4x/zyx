@@ -193,7 +193,29 @@ impl Tape {
         debug_assert!(rt.graphs.contains_id(graph_id));
         rt.debug_assert_pre_realize(graph_id);
 
-        let output_set: BTreeSet<OpId> = output_classes.iter().copied().collect();
+        // An in-place assign re-points its target tensors at the `After`
+        // class holding the post-store value (tinygrad's
+        // `uop = uop.after(uop.store(..))`). That value lives in the plan's
+        // placement for the class, so the class must be returned by this
+        // realize and the tensors re-pointed at it below: a target read
+        // straight after realize must never observe its pre-assign buffer.
+        // Only classes a live tensor still names are added — an assign no
+        // tensor can read stays lazy.
+        let mut assign_targets: Vec<(TensorId, OpId)> = Vec::new();
+        for (tid, td) in rt.tensors.iter() {
+            let (class_id, gid) = match td {
+                TensorData::Graph { class_id, graph_id: g, .. }
+                | TensorData::GraphLeaf { class_id, graph_id: g, .. }
+                | TensorData::Promoted { class_id, graph_id: g, .. } => (*class_id, *g),
+                _ => continue,
+            };
+            if gid == graph_id && !output_tids.contains(&tid) && rt.graphs[graph_id].is_after(class_id) {
+                assign_targets.push((tid, class_id));
+            }
+        }
+
+        let output_set: BTreeSet<OpId> =
+            output_classes.iter().copied().chain(assign_targets.iter().map(|&(_, cid)| cid)).collect();
         let cache_key = rt.plan_cache_key(graph_id, &output_set);
 
         if !rt.plan_cache.contains_key(&cache_key) {
@@ -222,6 +244,9 @@ impl Tape {
         // `Arc` clone below — the chunk returns to the free list when
         // the last owner dies.
         for (&tid, &cid) in output_tids.iter().zip(output_classes.iter()) {
+            rt.eagerify(tid, Some(Arc::clone(&out[&cid])));
+        }
+        for &(tid, cid) in &assign_targets {
             rt.eagerify(tid, Some(Arc::clone(&out[&cid])));
         }
         rt.debug_assert_no_stray_buffers(graph_id, &output_tids);

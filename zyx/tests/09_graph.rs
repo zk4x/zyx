@@ -219,6 +219,28 @@ fn assign_graph_movement_dst() -> Result<(), ZyxError> {
     Ok(())
 }
 
+/// An assign into a movement view whose **base** is read after realize
+/// without being realized itself. The store lands on the view's class, so
+/// the base's post-assign class must expose the same value — including when
+/// the store runs in a different pool from the base's buffer.
+#[test]
+fn assign_movement_dst_base_read() -> Result<(), ZyxError> {
+    let base = Tensor::from([1.6f32, 0f32, 0f32, 2.3f32, 4.7f32]);
+    let src = Tensor::from([7f32, 8f32, 9f32]);
+    let tape = Tape::new([&base])?;
+    let dst = base.slice(1..4)?;
+    dst.clone().assign(&src)?;
+    // Realize a value computed from the base, so the base itself is not one
+    // of the tensors handed to realize.
+    let out = &base * 2.0f32;
+    tape.realize([&out])?;
+    let out: Vec<f32> = out.try_into()?;
+    assert_eq!(out, vec![3.2f32, 14.0, 16.0, 18.0, 9.4]);
+    let stored: Vec<f32> = base.try_into()?;
+    assert_eq!(stored, vec![1.6f32, 7.0, 8.0, 9.0, 4.7]);
+    Ok(())
+}
+
 #[test]
 fn assign_multiple_same_root() -> Result<(), ZyxError> {
     let base = Tensor::from([0f32, 0f32, 0f32, 0f32, 0f32, 0f32]);

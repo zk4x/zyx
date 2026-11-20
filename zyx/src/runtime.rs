@@ -3474,7 +3474,12 @@ impl Runtime {
                 };
                 let assign_cid = self.push_op(graph_id, Op::Store { dst: dst_cid, dst_idx: OpId::NULL, src: src_cid });
                 let leaf_class = self.push_op(graph_id, Op::After { x: dst_leaf_cid, dep: assign_cid });
-                let dst_class = self.push_op(graph_id, Op::After { x: dst_cid, dep: assign_cid });
+                // One `After` per assign, over the base storage (tinygrad's
+                // `target.after(store)`): a movement view's post-assign value
+                // is its chain re-applied over that `After`, never a second
+                // `After` — a second one has no store of its own and would
+                // register a store target with no `GlobalMut` param.
+                let dst_class = self.graphs[graph_id].replay_view_over(dst_cid, dst_leaf_cid, leaf_class);
                 for (tid, class_id) in [(dst_leaf, leaf_class), (dst, dst_class)] {
                     match &mut self.tensors[tid] {
                         TensorData::Graph { class_id: c, .. }
