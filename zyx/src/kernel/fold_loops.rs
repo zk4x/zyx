@@ -692,19 +692,25 @@ impl Kernel {
 
             if let Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(*x) {
                 let gidx = if *add_x == loop_id {
-                    *add_y
+                    Some(*add_y)
                 } else if *add_y == loop_id {
-                    *add_x
+                    Some(*add_x)
                 } else {
-                    return None;
+                    // The operand need not name the loop directly: `linearize`
+                    // splits a flattened lane index back into its high and low
+                    // parts (`(flat >> k) + (flat & (2^k - 1))`) before the
+                    // comparison, so recover `loop + gidx` from that split.
+                    self.trace_flattened_index(*x, loop_id)
                 };
-                // We need to check gidx is declared before loop
-                let mut x = gidx;
-                while x != op_id {
-                    if x == loop_id {
-                        return Some((1, 1, c, mul_const, gidx, inclusive));
+                if let Some(gidx) = gidx {
+                    // We need to check gidx is declared before loop
+                    let mut x = gidx;
+                    while x != op_id {
+                        if x == loop_id {
+                            return Some((1, 1, c, mul_const, gidx, inclusive));
+                        }
+                        x = self.next_op(x);
                     }
-                    x = self.next_op(x);
                 }
             }
             // Fallback: the comparison may be a ceil-style mask
@@ -715,6 +721,81 @@ impl Kernel {
             }
         }
         None
+    }
+
+    /// Recovers `loop + gidx` from a flattened lane index split back into its
+    /// parts: `(flat >> k) + (flat & (2^k - 1))` with `flat = low + 2^k * loop`
+    /// (either addend order; the multiple spelled as a multiply or a shift).
+    ///
+    /// For `low < 2^k` the split is exact: `flat >> k == loop` and
+    /// `flat & (2^k - 1) == low`, so the compared value is `loop + low` — the
+    /// same shape as the direct `Add` case in [`Self::trace_cmpgt`]. Returns
+    /// the part that is not the loop; the bounds prove `low < 2^k`.
+    fn trace_flattened_index(&self, op_id: OpId, loop_id: OpId) -> Option<OpId> {
+        let &Op::Binary { x, y, bop: BOp::Add } = self.at(op_id) else {
+            return None;
+        };
+        // One arm shifts, the other masks; both read the same flattened index.
+        let (shift_arm, mask_arm) = match (self.at(x), self.at(y)) {
+            (Op::Binary { bop: BOp::BitShiftRight, .. }, _) => (x, y),
+            (_, Op::Binary { bop: BOp::BitShiftRight, .. }) => (y, x),
+            _ => return None,
+        };
+        let &Op::Binary { x: flat, y: shift, bop: BOp::BitShiftRight } = self.at(shift_arm) else {
+            return None;
+        };
+        let k = self.resolve_const(shift).and_then(|c| c.as_dim())?;
+        if !(1..63).contains(&k) {
+            return None;
+        }
+        let bits = 1i64 << k;
+        let &Op::Binary { x: mask_x, y: mask_y, bop: BOp::BitAnd } = self.at(mask_arm) else {
+            return None;
+        };
+        let (mask, mask_flat) = match (self.at(mask_x), self.at(mask_y)) {
+            (Op::Const(c), _) => (c.as_dim(), mask_y),
+            (_, Op::Const(c)) => (c.as_dim(), mask_x),
+            _ => return None,
+        };
+        if mask != Some(bits - 1) || mask_flat != flat {
+            return None;
+        }
+        // `flat = low + 2^k * high`; the multiple is a multiply or a shift.
+        let scaled = |t: OpId| -> Option<OpId> {
+            match self.at(t) {
+                &Op::Binary { x, y, bop: BOp::Mul } => {
+                    let (c, other) = match (self.at(x), self.at(y)) {
+                        (Op::Const(c), _) => (c.as_dim(), y),
+                        (_, Op::Const(c)) => (c.as_dim(), x),
+                        _ => return None,
+                    };
+                    (c == Some(bits)).then_some(other)
+                }
+                &Op::Binary { x, y, bop: BOp::BitShiftLeft } => {
+                    (self.resolve_const(y).and_then(|c| c.as_dim()) == Some(k)).then_some(x)
+                }
+                _ => None,
+            }
+        };
+        let &Op::Binary { x: add_x, y: add_y, bop: BOp::Add } = self.at(flat) else {
+            return None;
+        };
+        let (low, high) = match scaled(add_y) {
+            Some(high) => (add_x, high),
+            None => (add_y, scaled(add_x)?),
+        };
+        // The split is only exact when the low part fits below the mask.
+        let low = self.peel_casts(low);
+        let high = self.peel_casts(high);
+        let bounds = self.compute_bounds();
+        let fits = |t: OpId| bounds.get(&t).is_some_and(|&(_, hi)| hi < bits);
+        if high == loop_id && fits(low) {
+            Some(low)
+        } else if low == loop_id && fits(low) {
+            Some(high)
+        } else {
+            None
+        }
     }
 
     /// Matches a ceil-style mask: `((k + gidx + coeff*loop) >> 1) > 0`.
@@ -963,6 +1044,65 @@ mod tests {
         let (mut k, loop_id) = make_interleaved_gather_kernel(10);
         k.simplify_accumulating_loop();
         assert_eq!(k.at(loop_id), &Op::Const(Constant::idx(0)), "loop should fold");
+    }
+
+    /// The arange (`cumsum(ones)`) mask exactly as `linearize` leaves it: the
+    /// loop-variant lane index is split back into its high and low parts, so
+    /// neither comparison arm names the loop variable directly.
+    ///
+    /// ```c
+    /// acc = 0
+    /// for (r = 0; r < 128; r++) {
+    ///     flat = pos + 128*r
+    ///     x    = (flat >> 7) + (flat & 127)      // == pos + r
+    ///     acc += x >= 127 ? 1 : 0                // == pos + 1
+    /// }
+    /// ```
+    ///
+    /// The count over the loop is `pos + 1`, the arange value at index `pos`.
+    fn make_flattened_index_arange_kernel(pos: i64) -> (Kernel, OpId, OpId) {
+        let mut k = Kernel::new(Dev::Auto);
+        let out = k.param_mut(DType::I64);
+        let acc = k.storage(DType::I64, MemScope::Register, 1);
+
+        let zi = k.const_idx(0u32);
+        let zero = k.const_idx(0);
+        k.store(acc, zero, zi);
+
+        let p = k.const_idx(pos);
+        let bits = k.const_idx(128);
+        let shift = k.const_idx(7);
+        let mask = k.const_idx(127);
+        let threshold = k.const_idx(127);
+        let one = k.const_idx(1);
+        let lc = k.const_idx(128);
+
+        let mut loop_id = OpId::NULL;
+        k.loop_over(lc, |k, lv| {
+            loop_id = lv;
+            let high = k.mul(lv, bits);
+            let flat = k.add(p, high);
+            let hi = k.bit_shift_right(flat, shift);
+            let lo = k.bit_and(flat, mask);
+            let x = k.add(hi, lo);
+            let cond = k.cmpge(x, threshold);
+            let sel = k.select(cond, one, zero);
+
+            let load_acc = k.load(acc, zi);
+            let add = k.add(sel, load_acc);
+            k.store(acc, add, zi);
+        });
+        let result = k.load(acc, zi);
+        k.store(out, result, zi);
+
+        (k, loop_id, result)
+    }
+
+    #[test]
+    fn test_flattened_index_arange_is_optimized() {
+        let (mut k, _loop_id, result) = make_flattened_index_arange_kernel(5);
+        k.simplify_accumulating_loop();
+        assert_eq!(k.resolve_const(result).and_then(|c| c.as_dim()), Some(6), "arange value is pos + 1");
     }
 
     /// Build a kernel matching the real gather kernel IR where the source index
