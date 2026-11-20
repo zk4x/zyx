@@ -130,8 +130,9 @@ The `gate_proj`/`up_proj` zyx rows are the tensorized 128x128 staged wmma
 kernel (`zyx/tests/25_llama_matmul.rs`) rather than the earlier
 20-launch bench above: 0.2990 ms at boost clocks (SM 1845-1875 MHz), the same
 clock state as torch's warm 0.2927 ms / 22.01 TFLOP/s row. Repeat hot runs of
-the same kernel measured 20.46-21.55 TFLOP/s; a single launch on an idle
-device (SM 1470 MHz) is 0.356 ms / 18.08 TFLOP/s, which is the cold number and
+the same kernel measured 20.46-21.55 TFLOP/s. The same test's single timed
+launch — one warmup, device timing events, idle device (SM 1470 MHz) — now
+measures 0.3502 ms / 18.40 TFLOP/s / 152.0 GB/s. That is the cold number, and
 not the one compared here.
 
 ### Decode, per projection
@@ -229,6 +230,33 @@ pre-`device_epilogue` IR the search actually ranks, 5,250 rows in
 `bench.db`; tensor recipe, packed mma fragments, dense staging decode, `std`
 runtime lock). The tree was clean at that commit, so the run reproduces from
 it exactly.
+
+## qwen3-8B `ffn_gate`: dequant-fused and int8 GEMMs
+
+`zyx/tests/26_qwen_matmul.rs`, shape `[128x5120]x[5120x17408]` (prefill
+`m = 128`, `K = 5120`, `N = 17408`), f32 output. The timing is the search's
+device-side measurement on the same RTX 2060: one warmup launch and one timed
+launch bracketed by timing events, so it is a single cold-clock launch, not a
+hot loop.
+
+| kernel | ms | TFLOP/s | GB/s |
+|---|---|---|---|
+| PQ2_0 weight, dequant fused (tensorized) | 0.9597 | 23.77 | 34.7 |
+| `s8` llama.cpp pasted source (gemm only) | 1.1756 | 19.41 | — |
+| `s8` kernel written in zyx IR (gemm only) | 1.2718 | 17.94 | — |
+
+The two `s8` rows also pay `q8_act` quantization of the activations:
+0.7131 ms per launch, identical for both (the same quantization kernel feeds
+either GEMM). The PQ2_0 row reads the 34-byte super-blocks and dequantizes
+inline, so its GB/s is the effective block traffic, not an f16 weight read.
+
+Reproduce:
+
+```bash
+cd zyx
+AGENT=1 cargo test --test 25_llama_matmul -- --nocapture
+AGENT=1 cargo test --test 26_qwen_matmul -- --nocapture
+```
 
 ## Training Step Time
 

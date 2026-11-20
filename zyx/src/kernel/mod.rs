@@ -243,8 +243,13 @@ pub enum MemScope {
 }
 
 impl PartialEq for Kernel {
+    /// Equality is finer than [`Hash`]: it also carries the `Dev` ordinal, so
+    /// a `KernelId` belongs to exactly one device (the compiled program lives
+    /// in that device's slab). `dev_info` is compared here because the hash
+    /// reads it — equality that ignored a hashed field could split two equal
+    /// kernels across hash buckets.
     fn eq(&self, other: &Self) -> bool {
-        self.ops == other.ops && self.head == other.head && self.dev == other.dev
+        self.ops == other.ops && self.head == other.head && self.dev == other.dev && self.dev_info == other.dev_info
     }
 }
 
@@ -309,10 +314,18 @@ impl DeBin for Kernel {
 }
 
 impl Hash for Kernel {
+    /// Identity is the IR and the hardware it was bound to.
+    ///
+    /// `head` is implied by the slab's links, and the `Dev` discriminant is
+    /// not identity: two ordinals of one backend (or a re-enumerated card)
+    /// differ by which piece of hardware they name, which is exactly what the
+    /// `DeviceInfo` snapshot records — warp size, compute capability, tensor
+    /// cores, vector support, limits. Hashing the snapshot keeps a kernel's
+    /// cache entries apart when the passes would lower it differently, and
+    /// shares them when the hardware is the same.
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.head.hash(state);
         self.ops.hash(state);
-        self.dev.hash(state);
+        self.dev_info.hash(state);
     }
 }
 
@@ -3024,5 +3037,46 @@ impl Kernel {
             panic!("is_preceded_by_compute did not finish in 250000 steps");
         }
         has_compute && has_param
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    use crate::hashers::AHasher;
+    use std::hash::Hasher as _;
+    use std::sync::Arc;
+
+    fn hash(kernel: &Kernel) -> u64 {
+        let mut hasher = AHasher::default();
+        kernel.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// The cache key is the IR plus the hardware snapshot: two kernels that
+    /// the passes would lower differently (warp size, cc, vector support) must
+    /// never share an entry, and two ordinals naming the same hardware must.
+    #[test]
+    fn identity_is_ir_and_device_info_not_the_dev_discriminant() {
+        let mut kernel = Kernel::new(Dev::Auto);
+        kernel.dev_info = Some(Arc::new(DeviceInfo { warp_size: 32, ..DeviceInfo::default() }));
+
+        assert_eq!(hash(&kernel), hash(&kernel.clone()));
+
+        // The `Dev` ordinal is not identity: same IR, same hardware snapshot.
+        let mut other_ordinal = kernel.clone();
+        other_ordinal.dev = Dev::Cuda(1);
+        kernel.dev = Dev::Cuda(0);
+        assert_eq!(hash(&kernel), hash(&other_ordinal));
+
+        // The snapshot is.
+        let mut other_warp = kernel.clone();
+        other_warp.dev_info = Some(Arc::new(DeviceInfo { warp_size: 64, ..DeviceInfo::default() }));
+        assert_ne!(hash(&kernel), hash(&other_warp));
+
+        // So is the absence of one (unbound placeholder).
+        let mut unbound = kernel.clone();
+        unbound.dev_info = None;
+        assert_ne!(hash(&kernel), hash(&unbound));
     }
 }

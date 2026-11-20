@@ -225,7 +225,9 @@ use std::{collections::BTreeSet, hash::BuildHasherDefault, path::Path, sync::Arc
 use crate::viz::Viz;
 use crate::{
     DType, Dev, Map, Scalar, Set, ZyxError,
-    backend::{Cmd, CmdQueue, DTypeCapability, DeviceProgramId, LaunchArg, Placement, Plan, PlanDim, Pool, ProgramId, Shard},
+    backend::{
+        Cmd, CmdQueue, DTypeCapability, DeviceInfo, DeviceProgramId, LaunchArg, Placement, Plan, PlanDim, Pool, ProgramId, Shard,
+    },
     dtype::Constant,
     graph::{Graph, GraphId},
     kernel::{BOp, IDX_T, Kernel, Op, OpId, ParamKind, UOp},
@@ -3963,10 +3965,13 @@ fn kernel_cache_dir() -> Option<std::path::PathBuf> {
 /// The stored autotune result for one scheduled kernel: the winning kernel of
 /// the search and the time it measured.
 ///
-/// `Kernel`'s own binary form carries the IR, `dev` and the `DeviceInfo`
-/// snapshot (compute capability included), so a record is self-describing: one
-/// from another version, backend, device or capability is rejected on load.
-fn load_tuned_kernel(hash: u64, dev: Dev, cc: [i32; 2]) -> Option<(Kernel, u64)> {
+/// A record names no device. `Dev` is the machine's enumeration, not the
+/// hardware, so the payload is written with `Dev::Auto` (the "unbound" tag)
+/// and [`Kernel::dev_info`] carries the identity that matters; the record is
+/// bound to whichever device loads it. [`Kernel::dev_info`] is compared on
+/// load, so a winner IR lowered for other hardware is rejected rather than
+/// reinterpreted.
+fn load_tuned_kernel(hash: u64, dev: Dev, info: Option<&DeviceInfo>) -> Option<(Kernel, u64)> {
     let path = kernel_cache_dir()?.join(format!("{hash:016x}.bin"));
     let bytes = std::fs::read(path).ok()?;
     let mut offset = 0usize;
@@ -3974,11 +3979,12 @@ fn load_tuned_kernel(hash: u64, dev: Dev, cc: [i32; 2]) -> Option<(Kernel, u64)>
     if version != TUNING_CACHE_VERSION {
         return None;
     }
-    let kernel = Kernel::de_bin(&mut offset, &bytes).ok()?;
+    let mut kernel = Kernel::de_bin(&mut offset, &bytes).ok()?;
     let timing = u64::de_bin(&mut offset, &bytes).ok()?;
-    if kernel.dev != dev || kernel.dev_info.as_ref().map(|info| info.cc) != Some(cc) {
+    if kernel.dev_info.as_deref() != info {
         return None;
     }
+    kernel.dev = dev;
     Some((kernel, timing))
 }
 
@@ -3989,6 +3995,10 @@ fn store_tuned_kernel(hash: u64, kernel: &Kernel, timing: u64) {
     let Some(dir) = kernel_cache_dir() else { return };
     let mut bytes = Vec::new();
     TUNING_CACHE_VERSION.ser_bin(&mut bytes);
+    // Strip the device: the same hardware is the same record whichever ordinal
+    // it was enumerated as, and `load_tuned_kernel` binds the reader's device.
+    let mut kernel = kernel.clone();
+    kernel.dev = Dev::Auto;
     kernel.ser_bin(&mut bytes);
     timing.ser_bin(&mut bytes);
     let _ = std::fs::create_dir_all(&dir);
@@ -4348,12 +4358,9 @@ impl Runtime {
         // The search is the expensive part of a cold start (hundreds of timed
         // candidate launches per kernel) while codegen is a couple of
         // milliseconds, so only the search is skipped on a hit: the stored
-        // winner is re-compiled. `Kernel`'s binary form carries `dev` and the
-        // `DeviceInfo` snapshot, so a record from another device, capability or
-        // IR version is ignored rather than reinterpreted.
+        // winner is re-compiled and bound to this device.
         let tuned_hash = kernel.get_hash();
-        let cache_cc = kernel.dev_info.as_ref().map_or([0, 0], |info| info.cc);
-        if let Some((winner, timing)) = load_tuned_kernel(tuned_hash, device_id, cache_cc) {
+        if let Some((winner, timing)) = load_tuned_kernel(tuned_hash, device_id, kernel.dev_info.as_deref()) {
             let program_id = device_id.compile(&winner, crate::debug_mask().asm())?;
             self.programs.insert(kernel_id, program_id);
             self.timings.insert(ProgramId { dev: device_id, program_id }, timing);
@@ -5300,4 +5307,3 @@ mod leak_tests {
         Ok(())
     }
 }*/
-

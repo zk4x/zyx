@@ -14,6 +14,8 @@ members = [
     "bonsai-27b",
     "tt_gemm",
     "onnx-resnet",
+    "onnx-yolo",
+    "onnx-bert",
 ]
 
 [profile.release]

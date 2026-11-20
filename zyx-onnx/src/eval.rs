@@ -417,6 +417,14 @@ pub(crate) fn eval_nodes(
     graph: &onnx::GraphProto,
     values: &mut HashMap<String, Value>,
 ) -> Result<(), ZyxError> {
+    // Runtime-computed shape vectors (`Shape -> Gather -> Unsqueeze ->
+    // Concat -> Reshape`). zyx represents a dim as a symbolic scalar, and a
+    // shape vector as either that scalar (length 1) or a symbolic `Stack`
+    // expression; it has no element indexing on the stacked form. Keep the
+    // dim list alongside the tensor value for every op that builds or
+    // reshapes one, and let the shape-consuming ops read the list directly.
+    let mut dims_of: HashMap<String, Vec<Tensor>> = HashMap::new();
+
     for node in graph.node.iter() {
         let get = |input_name: &str| match values.get(input_name) {
             Some(value) => value,
@@ -484,8 +492,20 @@ pub(crate) fn eval_nodes(
             }
             "Reshape" => {
                 let input0 = get(&node.input[0]);
+                if let Some(d) = dims_of.get(node.input[1].as_str()).cloned() {
+                    let output = input0.reshape(d)?;
+                    values.insert(node.output[0].clone(), output);
+                    continue;
+                }
                 let input1: Tensor = get(&node.input[1]).clone();
                 let shape: Vec<i64> = input1.try_into()?;
+                // A `Shape` result flattened with `[-1]` is the identity, and
+                // `numel()` on the symbolic vector is not the length the
+                // reshape needs.
+                if shape == [-1] {
+                    values.insert(node.output[0].clone(), input0.clone());
+                    continue;
+                }
                 let mut other_than_minus1 = 1i64;
                 for &v in shape.iter() {
                     if v != -1 && v != 0 {
@@ -544,7 +564,7 @@ pub(crate) fn eval_nodes(
                 );
                 let rank = x.rank() as usize;
                 let scales: Vec<f64> = match get_opt(2) {
-                    Some(scales) => scales.clone().try_into()?,
+                    Some(scales) => scales.clone().cast(DType::F64).try_into()?,
                     None => {
                         let sizes: Vec<i64> = get_opt(3)
                             .unwrap_or_else(|| panic!("Resize needs scales or sizes for {}", node.name))
@@ -657,6 +677,35 @@ pub(crate) fn eval_nodes(
                 if inputs.is_empty() {
                     panic!("empty concat")
                 };
+                // Concatenating dims builds a shape vector: each operand is
+                // either a tracked dim list or a constant 1-D tensor. zyx
+                // cannot index the symbolic `Stack` form, so keep the list.
+                if axis == 0 && node.input.iter().any(|n| dims_of.contains_key(n)) {
+                    let mut list: Vec<Tensor> = Vec::new();
+                    for (name, t) in node.input.iter().zip(inputs.iter()) {
+                        if let Some(d) = dims_of.get(name) {
+                            list.extend(d.iter().cloned());
+                        } else {
+                            assert!(
+                                t.rank() <= 1,
+                                "Concat mixes a dim vector with rank {} tensor for {}",
+                                t.rank(),
+                                node.name
+                            );
+                            let values_i64: Vec<i64> =
+                                t.clone().cast(DType::I64).try_into()?;
+                            list.extend(values_i64.into_iter().map(Tensor::from));
+                        }
+                    }
+                    let output = if list.len() == 1 {
+                        list[0].clone()
+                    } else {
+                        Tensor::stack(&list)?
+                    };
+                    dims_of.insert(node.output[0].clone(), list);
+                    values.insert(node.output[0].clone(), output);
+                    continue;
+                }
                 let output = Tensor::cat(&inputs, axis as i32)?;
                 values.insert(node.output[0].clone(), output);
             }
@@ -738,6 +787,9 @@ pub(crate) fn eval_nodes(
                         panic!("unsupported 'to' value {dt:?} for cast {}", node.name)
                     }
                 };
+                if let Some(d) = dims_of.get(node.input[0].as_str()).cloned() {
+                    dims_of.insert(node.output[0].clone(), d);
+                }
                 let output = input.cast(dtype);
                 values.insert(node.output[0].clone(), output);
             }
@@ -956,12 +1008,53 @@ pub(crate) fn eval_nodes(
                     let t = get(&node.input[1]).clone();
                     t.try_into()?
                 };
-                let mut out = input.clone();
-                let mut axes_sorted = axes;
-                axes_sorted.sort();
-                for &axis in axes_sorted.iter() {
-                    out = out.unsqueeze(axis as i32)?;
+                if let Some(d) = dims_of.get(node.input[0].as_str()).cloned() {
+                    assert_eq!(
+                        axes.len(),
+                        1,
+                        "Unsqueeze of a dim vector needs one axis for {}",
+                        node.name
+                    );
+                    assert!(
+                        axes[0] == 0 || axes[0] == -1,
+                        "Unsqueeze of a dim vector on axis {} for {}",
+                        axes[0],
+                        node.name
+                    );
+                    let out = if d.len() == 1 {
+                        d[0].clone()
+                    } else {
+                        Tensor::stack(&d)?
+                    };
+                    dims_of.insert(node.output[0].clone(), d);
+                    values.insert(node.output[0].clone(), out);
+                    continue;
                 }
+                // Lifting a dim (a symbolic scalar) into a length-1 shape
+                // vector is `stack`, not `unsqueeze`: the symbolic scalar has
+                // no buffer to reshape.
+                let mut out = if input.rank() == 0 {
+                    assert_eq!(
+                        axes.len(),
+                        1,
+                        "Unsqueeze axes for a scalar must have one entry for {}",
+                        node.name
+                    );
+                    // A scalar i64 lifted into a vector is a dim: record the
+                    // one-element list so a following shape `Concat` sees it.
+                    if input.dtype() == DType::I64 {
+                        dims_of.insert(node.output[0].clone(), vec![input.clone()]);
+                    }
+                    Tensor::stack(std::slice::from_ref(&input))?
+                } else {
+                    let mut axes_sorted = axes;
+                    axes_sorted.sort();
+                    let mut out = input.clone();
+                    for &axis in axes_sorted.iter() {
+                        out = out.unsqueeze(axis as i32)?;
+                    }
+                    out
+                };
                 values.insert(node.output[0].clone(), out);
             }
             "Shape" => {
@@ -974,6 +1067,7 @@ pub(crate) fn eval_nodes(
                 let shape = input.shape();
                 let shape = &shape[start as usize..end as usize];
                 // shape() returns Vec<Tensor> each is scalar dim
+                dims_of.insert(node.output[0].clone(), shape.to_vec());
                 let out = if shape.is_empty() {
                     Tensor::from(Vec::<i64>::new())
                 } else {
@@ -1086,12 +1180,47 @@ pub(crate) fn eval_nodes(
                 // list, then reshape to `data.shape[..axis] + indices.shape +
                 // data.shape[axis+1..]`. `index_select` also wraps negative
                 // indices.
+                if axis == 0 {
+                    if let Some(src) = dims_of.get(node.input[0].as_str()) {
+                        let index: Result<Vec<i64>, ZyxError> = indices.clone().try_into();
+                        if let Ok(index) = index {
+                            let picked: Vec<Tensor> = index
+                                .iter()
+                                .map(|&i| {
+                                    let i = if i < 0 { i + src.len() as i64 } else { i };
+                                    assert!(
+                                        i >= 0 && i < src.len() as i64,
+                                        "Gather index {i} out of range for {} dims",
+                                        node.name
+                                    );
+                                    src[i as usize].clone()
+                                })
+                                .collect();
+                            let out = if picked.len() == 1 {
+                                picked[0].clone()
+                            } else {
+                                Tensor::stack(&picked)?
+                            };
+                            dims_of.insert(node.output[0].clone(), picked);
+                            values.insert(node.output[0].clone(), out);
+                            continue;
+                        }
+                    }
+                }
                 let data_shape = data.shape();
                 let index_shape = indices.shape();
                 let mut target = data_shape[..axis].to_vec();
                 target.extend(index_shape);
                 target.extend(data_shape[axis + 1..].iter().cloned());
-                let flat = indices.reshape([indices.numel()])?;
+                // `index_select` needs a 1-D index list. A scalar index (a
+                // single element gathered out of a `Shape` result) has no
+                // concrete `numel`, so lift it to a length-1 vector instead
+                // of reshaping through `numel`.
+                let flat = match indices.rank() {
+                    0 => indices.unsqueeze(0)?,
+                    1 => indices.clone(),
+                    _ => indices.reshape([indices.numel()])?,
+                };
                 let out = data.index_select(axis as i32, flat)?.reshape(target)?;
                 values.insert(node.output[0].clone(), out);
             }
@@ -1104,8 +1233,13 @@ pub(crate) fn eval_nodes(
             }
             "Expand" => {
                 let input = get(&node.input[0]);
-                let shape: Vec<i64> = get(&node.input[1]).clone().try_into()?;
-                let shape_tensors: Vec<Tensor> = shape.into_iter().map(Tensor::from).collect();
+                let shape_tensors: Vec<Tensor> =
+                    if let Some(d) = dims_of.get(node.input[1].as_str()).cloned() {
+                        d
+                    } else {
+                        let shape: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                        shape.into_iter().map(Tensor::from).collect()
+                    };
                 let out = input.expand(shape_tensors)?;
                 values.insert(node.output[0].clone(), out);
             }
@@ -1225,15 +1359,39 @@ pub(crate) fn eval_nodes(
                 values.insert(node.output[0].clone(), output);
             }
             "Range" => {
-                let start: i64 = get(&node.input[0]).clone().try_into()?;
-                let limit: i64 = get(&node.input[1]).clone().try_into()?;
-                let delta: i64 = get(&node.input[2]).clone().try_into()?;
-                let out = Tensor::arange(start, limit, delta)?;
+                let start = get(&node.input[0]);
+                let limit = get(&node.input[1]);
+                let delta = get(&node.input[2]);
+                let out = match start.dtype() {
+                    DType::F32 => {
+                        let start: f32 = start.clone().try_into()?;
+                        let limit: f32 = limit.clone().try_into()?;
+                        let delta: f32 = delta.clone().try_into()?;
+                        Tensor::arange(start, limit, delta)?
+                    }
+                    DType::F64 => {
+                        let start: f64 = start.clone().try_into()?;
+                        let limit: f64 = limit.clone().try_into()?;
+                        let delta: f64 = delta.clone().try_into()?;
+                        Tensor::arange(start, limit, delta)?
+                    }
+                    _ => {
+                        let start: i64 = start.clone().try_into()?;
+                        let limit: i64 = limit.clone().try_into()?;
+                        let delta: i64 = delta.clone().try_into()?;
+                        Tensor::arange(start, limit, delta)?
+                    }
+                };
                 values.insert(node.output[0].clone(), out);
             }
             "ConstantOfShape" => {
-                let shape: Vec<i64> = get(&node.input[0]).clone().try_into()?;
-                let shape_tensors: Vec<Tensor> = shape.into_iter().map(Tensor::from).collect();
+                let shape_tensors: Vec<Tensor> =
+                    if let Some(d) = dims_of.get(node.input[0].as_str()).cloned() {
+                        d
+                    } else {
+                        let shape: Vec<i64> = get(&node.input[0]).clone().try_into()?;
+                        shape.into_iter().map(Tensor::from).collect()
+                    };
                 let out = match get_attr_opt_owned::<Tensor>(node, "value")? {
                     Some(value) => value.expand(shape_tensors)?,
                     None => Tensor::zeros(shape_tensors, DType::F32),
@@ -1242,7 +1400,17 @@ pub(crate) fn eval_nodes(
             }
             "Tile" => {
                 let input = get(&node.input[0]);
-                let repeats: Vec<i64> = get(&node.input[1]).clone().try_into()?;
+                let repeats: Vec<i64> =
+                    if let Some(d) = dims_of.get(node.input[1].as_str()).cloned() {
+                        let mut out = Vec::with_capacity(d.len());
+                        for dim in d {
+                            let v: i64 = dim.cast(DType::I64).try_into()?;
+                            out.push(v);
+                        }
+                        out
+                    } else {
+                        get(&node.input[1]).clone().try_into()?
+                    };
                 values.insert(node.output[0].clone(), input.repeat(repeats)?);
             }
             "Trilu" => {
@@ -1806,7 +1974,18 @@ impl OnnxModel {
                             let var = match dim_params.get(p) {
                                 Some(var) => var.clone(),
                                 None => {
-                                    let var = Tensor::variable(1i64);
+                                    // Trace-time placeholder for a symbolic
+                                    // dim. Conv/pool shape math floors
+                                    // divisions, and branches only agree when
+                                    // the placeholder survives the model's
+                                    // total stride (a 2x upsample of a 1x1
+                                    // map is 2x2 while the skip branch stays
+                                    // 1x1). Keep the leading (batch) axis at
+                                    // 1 and trace every other dim at 64; the
+                                    // graph stays symbolic and `run` rebinds
+                                    // the real value.
+                                    let trace_dim = if dim_idx == 0 { 1i64 } else { 64i64 };
+                                    let var = Tensor::variable(trace_dim);
                                     dim_params.insert(p.clone(), var.clone());
                                     dim_tensors.push(var.clone());
                                     var
