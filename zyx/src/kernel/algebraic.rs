@@ -1520,24 +1520,103 @@ fn lin_mul(a: &Lin, b: &Lin) -> Option<Lin> {
     None
 }
 
+/// `f` as a linear form. A factor is a single monomial, so at most one factor
+/// op is expressible — a product of two dims is not a linear form, and a
+/// comparison against it proves nothing.
+fn term_form(f: &(Dim, Vec<OpId>)) -> Option<Lin> {
+    match f.1.as_slice() {
+        [] => Some(Lin::constant(f.0)),
+        [factor] => Some(Lin::leaf(*factor).scale(f.0)),
+        _ => None,
+    }
+}
+
+/// Greatest common divisor of two dimensions.
+fn dim_gcd(a: Dim, b: Dim) -> Dim {
+    let (mut a, mut b) = (a.abs(), b.abs());
+    while b != 0 {
+        let t = a % b;
+        a = b;
+        b = t;
+    }
+    a
+}
+
+/// Candidate factors of `divisor` for [`Kernel::fold_divmod_forms`], largest
+/// first.
+///
+/// The numeric part is the divisor's coefficient or its gcd with a numerator
+/// term's coefficient — the shared numeric content. It is a gcd search, not a
+/// divisor enumeration: what peels is the content both sides carry (`256` in
+/// `256·6·n` against `d + 256·(...)`), and a number that does not divide both
+/// sides cannot be a factor at all.
+///
+/// The symbolic part is the divisor's whole factor set, the set minus one
+/// factor, or the empty set: keep every extent, take one dim out, or take all
+/// of them out (the numeric side is then all that is left).
+fn factor_candidates(divisor: &(Dim, Vec<OpId>), terms: &[(Dim, Vec<OpId>)]) -> Vec<(Dim, Vec<OpId>)> {
+    let mut coeffs = vec![divisor.0];
+    for term in terms {
+        let g = dim_gcd(divisor.0, term.0);
+        if !coeffs.contains(&g) {
+            coeffs.push(g);
+        }
+    }
+    let mut subsets: Vec<Vec<OpId>> = vec![divisor.1.clone()];
+    for i in 0..divisor.1.len() {
+        let mut removed = divisor.1.clone();
+        removed.remove(i);
+        if !subsets.contains(&removed) {
+            subsets.push(removed);
+        }
+    }
+    if !divisor.1.is_empty() && !subsets.iter().any(Vec::is_empty) {
+        subsets.push(Vec::new());
+    }
+    let mut candidates = Vec::new();
+    for &coeff in &coeffs {
+        for factors in &subsets {
+            let f = (coeff, factors.clone());
+            if f.0 <= 0 {
+                continue;
+            }
+            candidates.push(f);
+        }
+    }
+    // Largest first: the most extent taken out leaves the smallest residue and
+    // the smallest divisor behind it.
+    candidates.sort_unstable_by(|a, b| b.1.len().cmp(&a.1.len()).then(b.0.cmp(&a.0)));
+    candidates
+}
+
 impl Kernel {
     /// Fold `x / y` and `x % y` when `y` is a symbolic extent.
     ///
-    /// The numerator is split into the terms that are exact multiples of the
-    /// divisor and the terms that are not. When the rest is provably in
-    /// `[0, y)` — from each term's factor bounds, see [`Kernel::form`] — then
-    /// `x % y` is that rest and `x / y` is the sum of the exact quotients:
-    /// `x = q·y + r` holds by construction and `0 <= r < y` finishes it.
-    /// `y > 0` needs no separate proof: `0 <= r < y` already implies it.
+    /// The numerator is written as `f·K + r` with `f` a factor of the divisor
+    /// and `0 <= r < f`, so with `D' = y / f`
     ///
-    /// This is what folds an index-recovery chain (`(d·n + h·256n + j) % 256n`)
-    /// without knowing any extent's value: the divisor and the residue keep
-    /// their dims, and `256n - 1 < 256n` is decided by the constant one.
+    /// - `x / (f·D') = (x/f) / D' = K / D'`
+    /// - `x % (f·D') = f·(K % D') + r`
     ///
-    /// `x / y -> 0` and `x % y -> x` for a small numerator fall out of the
-    /// same comparison, and are the half that peels the *inner* divisions.
+    /// hold by construction. `K` is the sum of the terms that are exact
+    /// multiples of `f`, `r` the rest plus the constant's remainder modulo `f`,
+    /// and `0 <= r < f` is proved from the factor bounds ([`Kernel::form`]) —
+    /// a residue that is not provably there proves nothing and the candidate is
+    /// skipped. `f > 0` follows from `0 <= r < f`, so no separate proof exists
+    /// or is needed.
+    ///
+    /// This is what folds an index-recovery chain without knowing any extent's
+    /// value: the divisor keeps its dims and `256n - 1 < 256n` is decided by the
+    /// constant one, and `0 <= d` because a dim is a length (`param_bounds`).
+    ///
+    /// With `f = y` the rule is the plain exact-multiple peel (`D' = 1`):
+    /// `x % y` is the residue, `x / y` the sum of the quotient terms. With
+    /// `0 <= x < y` the numerator never reaches one whole divisor at all,
+    /// which is the half that peels the *inner* divisions of a chain.
     fn fold_divmod_forms(&mut self, op_id: OpId, x: OpId, y: OpId, bop: BOp, remaps: &mut Map<OpId, OpId>) -> bool {
-        let Some(divisor) = self.form(y, FormMode::Exact) else { return false };
+        let Some(divisor) = self.form(y, FormMode::Exact) else {
+            return false;
+        };
         // A resolved divisor is the numeric rules' business (they also see
         // powers of two and the pattern arms); only a symbolic one lands here.
         if divisor.as_const().is_some() {
@@ -1548,77 +1627,198 @@ impl Kernel {
             && lower.ge_const(0)
             && upper.lt(&divisor)
         {
-            let replacement = if bop == BOp::Mod { x } else { self.const_idx(0) };
+            let replacement = if bop == BOp::Mod {
+                x
+            } else {
+                self.insert_before(op_id, Op::Const(Constant::idx(0)))
+            };
             record(remaps, op_id, replacement);
             return true;
         }
+        // The divisor's own form and terms are read once; every candidate
+        // factor is a divisor of it.
         let divisor_term = self.term_of(y);
         if divisor_term.0 <= 0 {
             return false;
         }
-        let mut terms = Vec::new();
+        let mut term_ops = Vec::new();
         let mut konst = 0i64;
-        if !flatten_add(self, x, &mut terms, &mut konst) || terms.len() < 2 {
+        if !flatten_add(self, x, &mut term_ops, &mut konst) {
             return false;
         }
-        let mut quotients: Vec<OpId> = Vec::new();
-        let mut residue: Vec<OpId> = Vec::new();
-        for &term in &terms {
-            let mono = self.term_of(term);
-            match term_div(&mono, &divisor_term) {
-                Some((coeff, factors)) => {
-                    let Some(quotient) = self.product_expr(op_id, coeff, &factors) else { return false };
-                    quotients.push(quotient);
+        let terms: Vec<(Dim, Vec<OpId>)> = term_ops.iter().map(|&term| self.term_of(term)).collect();
+        // Both identities are read as truncated integer arithmetic, so the
+        // split needs a non-negative numerator: `f·K + r` is non-negative when
+        // the constant is and every term is (a positive coefficient times
+        // non-negative factors) — a coefficient is a count and a factor is a dim
+        // or an index, both lengths. That is the same fact the residue range
+        // rests on, checked once per numerator.
+        let non_negative = konst >= 0
+            && terms.iter().all(|(coeff, factors)| {
+                *coeff > 0 && factors.iter().all(|factor| self.form(*factor, FormMode::Lower).is_some_and(|fl| fl.ge_const(0)))
+            });
+        if !non_negative {
+            return false;
+        }
+        for f in factor_candidates(&divisor_term, &terms) {
+            // `D' = y / f` must exist: the factor has to divide the divisor.
+            let Some(d_prime) = term_div(&divisor_term, &f) else {
+                continue;
+            };
+            // `f = 1` leaves the divisor unchanged and would fold the same op
+            // again on every sweep.
+            if d_prime == divisor_term {
+                continue;
+            }
+            let Some((quotients, residue, resid_konst)) = self.split_by_factor(&terms, konst, &f) else {
+                continue;
+            };
+            if quotients.is_empty() {
+                continue;
+            }
+            let Some(f_form) = term_form(&f) else { continue };
+            let residue_terms: Vec<(Dim, Vec<OpId>)> = residue.iter().map(|&i| terms[i].clone()).collect();
+            let Some((lower, upper)) = self.terms_range(&residue_terms, resid_konst) else {
+                continue;
+            };
+            if !(lower.ge_const(0) && upper.lt(&f_form)) {
+                continue;
+            }
+            let residue_ops: Vec<OpId> = residue.iter().map(|&i| term_ops[i]).collect();
+            let Some(k_expr) = self.sum_terms(op_id, &quotients, 0) else {
+                continue;
+            };
+            let whole = d_prime.0 == 1 && d_prime.1.is_empty();
+            let expr = if whole && bop == BOp::Div {
+                // `D' = 1`: the divisor is the factor itself, x / y is K.
+                k_expr
+            } else if whole {
+                match self.sum_ops(op_id, &residue_ops, resid_konst) {
+                    Some(residue) => residue,
+                    None => self.insert_before(op_id, Op::Const(Constant::idx(0))),
                 }
-                None => residue.push(term),
+            } else {
+                let d_expr = self.product_expr(op_id, d_prime.0, &d_prime.1).unwrap();
+                let inner = if bop == BOp::Div {
+                    self.insert_before(op_id, Op::Binary { x: k_expr, y: d_expr, bop: BOp::Div })
+                } else {
+                    let inner = self.insert_before(op_id, Op::Binary { x: k_expr, y: d_expr, bop: BOp::Mod });
+                    let f_expr = self.product_expr(op_id, f.0, &f.1).unwrap();
+                    self.insert_before(op_id, Op::Binary { x: f_expr, y: inner, bop: BOp::Mul })
+                };
+                if bop == BOp::Div {
+                    inner
+                } else {
+                    match self.sum_ops(op_id, &residue_ops, resid_konst) {
+                        Some(residue) => self.insert_before(op_id, Op::Binary { x: inner, y: residue, bop: BOp::Add }),
+                        None => inner,
+                    }
+                }
+            };
+            record(remaps, op_id, expr);
+            return true;
+        }
+        false
+    }
+
+    /// Split the additive terms of a numerator by the factor `f`: the terms
+    /// that are exact multiples of `f` as quotients, the indices of the rest as
+    /// residue, and the constant's own remainder — its multiple of `f` joins the
+    /// quotients when `f` is a plain number.
+    ///
+    /// The residue is returned as indices so the caller can keep using the
+    /// *original* term ops: rebuilding a residue term's product would clone a
+    /// subexpression the kernel already has (and change what later passes see).
+    fn split_by_factor(
+        &self,
+        terms: &[(Dim, Vec<OpId>)],
+        konst: Dim,
+        f: &(Dim, Vec<OpId>),
+    ) -> Option<(Vec<(Dim, Vec<OpId>)>, Vec<usize>, Dim)> {
+        let mut quotients = Vec::new();
+        let mut residue = Vec::new();
+        for (i, term) in terms.iter().enumerate() {
+            match term_div(term, f) {
+                Some(quotient) => quotients.push(quotient),
+                None => residue.push(i),
             }
         }
-        if quotients.is_empty() {
-            return false;
-        }
-        // The residue's range: each term contributes its factor bounds, the
-        // constant its value.
+        let resid_konst = if f.1.is_empty() {
+            if f.0 <= 0 {
+                return None;
+            }
+            // `konst = (konst / f)·f + konst % f`: the multiple joins the
+            // quotients, the remainder stays in the residue.
+            if konst / f.0 != 0 {
+                quotients.push((konst / f.0, Vec::new()));
+            }
+            konst % f.0
+        } else {
+            konst
+        };
+        Some((quotients, residue, resid_konst))
+    }
+
+    /// The range of a sum of terms plus a constant, from each term's factor
+    /// bounds. `None` when a bound is not expressible as a linear form.
+    fn terms_range(&self, terms: &[(Dim, Vec<OpId>)], konst: Dim) -> Option<(Lin, Lin)> {
         let mut lower = Lin::constant(konst);
         let mut upper = Lin::constant(konst);
-        for &term in &residue {
-            let (coeff, factors) = self.term_of(term);
-            let mut term_lower = Lin::constant(coeff);
-            let mut term_upper = Lin::constant(coeff);
-            for factor in &factors {
-                let (Some(fl), Some(fu)) = (self.form(*factor, FormMode::Lower), self.form(*factor, FormMode::Upper)) else {
-                    return false;
-                };
+        for (coeff, factors) in terms {
+            let mut term_lower = Lin::constant(*coeff);
+            let mut term_upper = Lin::constant(*coeff);
+            for factor in factors {
+                let fl = self.form(*factor, FormMode::Lower)?;
+                let fu = self.form(*factor, FormMode::Upper)?;
                 if !fl.ge_const(0) {
-                    return false;
+                    return None;
                 }
-                let (Some(l), Some(u)) = (lin_mul(&term_lower, &fl), lin_mul(&term_upper, &fu)) else { return false };
-                term_lower = l;
-                term_upper = u;
+                term_lower = lin_mul(&term_lower, &fl)?;
+                term_upper = lin_mul(&term_upper, &fu)?;
             }
             lower = lower.add(&term_lower);
             upper = upper.add(&term_upper);
         }
-        if !(lower.ge_const(0) && upper.lt(&divisor)) {
-            return false;
+        Some((lower, upper))
+    }
+
+    /// Build `Σ coeff·factors + konst` before `at`. `None` when there is
+    /// nothing to build (no terms and no constant).
+    fn sum_terms(&mut self, at: OpId, terms: &[(Dim, Vec<OpId>)], konst: Dim) -> Option<OpId> {
+        let mut expr: Option<OpId> = None;
+        for (coeff, factors) in terms {
+            let term = self.product_expr(at, *coeff, factors)?;
+            expr = Some(match expr {
+                None => term,
+                Some(previous) => self.insert_before(at, Op::Binary { x: previous, y: term, bop: BOp::Add }),
+            });
         }
-        if bop == BOp::Mod {
-            let Some(mut expr) = residue.first().copied() else { return false };
-            for &term in &residue[1..] {
-                expr = self.insert_before(op_id, Op::Binary { x: expr, y: term, bop: BOp::Add });
-            }
-            if konst != 0 {
-                let k = self.insert_before(op_id, Op::Const(Constant::idx(konst)));
-                expr = self.insert_before(op_id, Op::Binary { x: expr, y: k, bop: BOp::Add });
-            }
-            record(remaps, op_id, expr);
-        } else {
-            let Some(mut expr) = quotients.first().copied() else { return false };
-            for &quotient in &quotients[1..] {
-                expr = self.insert_before(op_id, Op::Binary { x: expr, y: quotient, bop: BOp::Add });
-            }
-            record(remaps, op_id, expr);
+        self.add_konst(at, expr, konst)
+    }
+
+    /// Build the sum of the given term ops plus `konst` before `at`. `None`
+    /// when there is nothing to build.
+    fn sum_ops(&mut self, at: OpId, ops: &[OpId], konst: Dim) -> Option<OpId> {
+        let mut expr: Option<OpId> = None;
+        for &term in ops {
+            expr = Some(match expr {
+                None => term,
+                Some(previous) => self.insert_before(at, Op::Binary { x: previous, y: term, bop: BOp::Add }),
+            });
         }
-        true
+        self.add_konst(at, expr, konst)
+    }
+
+    /// Append `+ konst` to `expr`, when there is a constant to add.
+    fn add_konst(&mut self, at: OpId, expr: Option<OpId>, konst: Dim) -> Option<OpId> {
+        if konst == 0 {
+            return expr;
+        }
+        let k = self.insert_before(at, Op::Const(Constant::idx(konst)));
+        Some(match expr {
+            None => k,
+            Some(previous) => self.insert_before(at, Op::Binary { x: previous, y: k, bop: BOp::Add }),
+        })
     }
 
     /// `op` as a coefficient times a multiset of factors. Only products of
@@ -1643,7 +1843,7 @@ impl Kernel {
         }
         let mut expr = match expr {
             Some(expr) => expr,
-            None => self.const_idx(1),
+            None => self.insert_before(at, Op::Const(Constant::idx(1))),
         };
         if coeff != 1 {
             let c = self.insert_before(at, Op::Const(Constant::idx(coeff)));
@@ -1906,5 +2106,84 @@ mod tests {
         assert_eq!(srcs[1], h, "x / 256n is h");
         assert_eq!(srcs[2], j, "the residue modulo n is j");
         assert_eq!(srcs[3], d, "the residue divided by n is d");
+    }
+
+    /// The shape the decode kernel actually lowers to: the numerator shares a
+    /// *stride* with a wider divisor (`x = d + 256·(h·n + j)` against
+    /// `6·256·n`), so the factor that peels is `256` — not the divisor, and not
+    /// a bound. `nest_by_factor` on a symbolic divisor.
+    ///
+    /// `x / (6·256n) = (h·n + j) / (6n)` and
+    /// `x % (6·256n) = 256·((h·n + j) % 6n) + d`, and the quotient and residue
+    /// fold again by the inner extent `n`. What must be left afterwards is a
+    /// division by a *number*, never by a dim: that is what a recovery chain
+    /// costs, one constant divide per level.
+    #[test]
+    fn stride_recovery_chain_folds_symbolically() {
+        let mut k = Kernel::new(Dev::Auto);
+        let n = k.variable(crate::kernel::IDX_T);
+        k.set_param_bounds(n, (0, Dim::MAX));
+        let out = k.param_mut(DType::I64);
+        let c256 = k.const_idx(256);
+        let c6 = k.const_idx(6);
+        let c24 = k.const_idx(24);
+        let zero = k.const_idx(0);
+        let d = k.group_range(0, c256);
+        let h = k.group_range(1, c24);
+        let j = k.push_back(Op::Loop { len: n });
+        let stride = k.push_back(Op::Binary { x: n, y: c256, bop: BOp::Mul });
+        let hn = k.push_back(Op::Binary { x: h, y: stride, bop: BOp::Mul });
+        let di = k.push_back(Op::Binary { x: c256, y: j, bop: BOp::Mul });
+        let hi = k.push_back(Op::Binary { x: hn, y: di, bop: BOp::Add });
+        // x = d + 256·(h·n + j)
+        let x = k.push_back(Op::Binary { x: d, y: hi, bop: BOp::Add });
+        // divisor = 6·256·n
+        let c256n = k.push_back(Op::Binary { x: c256, y: n, bop: BOp::Mul });
+        let divisor = k.push_back(Op::Binary { x: c6, y: c256n, bop: BOp::Mul });
+        let q = k.push_back(Op::Binary { x, y: divisor, bop: BOp::Div });
+        let m = k.push_back(Op::Binary { x, y: divisor, bop: BOp::Mod });
+        // The two levels the kernel reads back: the quotient by 6, and the
+        // residue split by the inner extent.
+        let inner_q = k.push_back(Op::Binary { x: q, y: c6, bop: BOp::Div });
+        let m256 = k.push_back(Op::Binary { x: m, y: c256, bop: BOp::Div });
+        let inner_m = k.push_back(Op::Binary { x: m, y: c256n, bop: BOp::Mod });
+        for src in [q, m, inner_q, m256, inner_m] {
+            k.push_back(Op::Store { dst: out, dst_idx: zero, src });
+        }
+        k.push_back(Op::EndLoop);
+        k.algebraic_simplifications();
+
+        // No division or modulo by an extent may survive: every remaining one
+        // must be by a resolved number (the compiler turns those into a
+        // multiply-high).
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Binary { y, bop: BOp::Div | BOp::Mod, .. } = *k.at(op_id) {
+                assert!(
+                    k.resolve_const(y).and_then(|c| c.as_dim()).is_some(),
+                    "a symbolic divisor survived at {op_id:?}: {:?}",
+                    k.at(op_id)
+                );
+            }
+            op_id = k.next_op(op_id);
+        }
+        // The addressed values, in store order: the quotient, the reconstructed
+        // modulo, the quotient of that quotient, the residue's 256-split gate
+        // and its inner split. The modulo must be an `Add` (`256·(…) + d`) — a
+        // remainder op cannot survive as itself.
+        let mut srcs = Vec::new();
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Store { src, .. } = *k.at(op_id) {
+                srcs.push(src);
+            }
+            op_id = k.next_op(op_id);
+        }
+        assert_eq!(srcs.len(), 5, "one store per folded value");
+        assert!(
+            matches!(k.at(srcs[1]), Op::Binary { bop: BOp::Add, .. }),
+            "x % (6·256n) is reconstructed, got {:?}",
+            k.at(srcs[1])
+        );
     }
 }

@@ -48,6 +48,7 @@ fn values(n: usize, seed: u64) -> Vec<f32> {
 }
 
 #[test]
+#[ignore = "runs the whole resnet50 in one tape; over 10 minutes on the C backend, so it is not part of the capped CI run"]
 fn resnet50() -> Result<(), ZyxError> {
     // Without a GPU the same ops run on `C`; the sequence and the kernel set
     // are the same, only the device code differs.

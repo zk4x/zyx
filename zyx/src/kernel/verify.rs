@@ -887,8 +887,8 @@ impl Kernel {
 ///
 /// A term that is not a dim (a range index, a loaded value) stays a term of
 /// its own, so the form is exact for whatever it is asked about: it is the
-/// value, not a bound, and [`Kernel::lower_form`]/[`Kernel::upper_form`] are
-/// what turn it into bounds by replacing the leaves.
+/// value, not a bound, and `Kernel::form` is what turns it into a bound by
+/// replacing the leaves.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub(crate) struct Lin {
     /// Coefficients by op, ascending by `OpId` so equality is structural.
@@ -1183,9 +1183,17 @@ impl Kernel {
                 Some(combine(a, b, true))
             }
             Op::Binary { x, y, bop: BOp::Mul } => {
-                if let Some(k) = self.resolve_const(x).and_then(crate::dtype::Constant::as_dim) {
+                // Only a *literal* constant is a scalar factor: `resolve_const`
+                // also answers a `Range` with its extent — the length, not this
+                // thread's index value — so `(h % 6)` would resolve to `0` and
+                // the whole product to `0`.
+                let literal = |id: OpId| match self.at(id) {
+                    Op::Const(c) => c.as_dim(),
+                    _ => None,
+                };
+                if let Some(k) = literal(x) {
                     scale(k, y)
-                } else if let Some(k) = self.resolve_const(y).and_then(crate::dtype::Constant::as_dim) {
+                } else if let Some(k) = literal(y) {
                     scale(k, x)
                 } else if mode == FormMode::Exact {
                     Some(Lin::leaf(op))
@@ -1193,6 +1201,40 @@ impl Kernel {
                     None
                 }
             }
+            Op::Binary { x, y, bop: BOp::Mod } => match mode {
+                FormMode::Exact => Some(Lin::leaf(op)),
+                // `0 <= x % y < y` for a non-negative dividend and a positive
+                // divisor. This is the bound a folded recovery chain needs: the
+                // remainder of a division by a small extent is below that
+                // extent, so the *next* level up can see it fits.
+                _ => {
+                    let dividend = self.form_within(x, FormMode::Lower, depth + 1)?;
+                    let divisor = self.form_within(y, FormMode::Lower, depth + 1)?;
+                    if !(dividend.ge_const(0) && divisor.ge_const(1)) {
+                        return None;
+                    }
+                    match mode {
+                        FormMode::Lower => Some(Lin::constant(0)),
+                        _ => Some(self.form_within(y, FormMode::Exact, depth + 1)?.add(&Lin::constant(-1))),
+                    }
+                }
+            },
+            Op::Binary { x, y, bop: BOp::Div } => match mode {
+                FormMode::Exact => Some(Lin::leaf(op)),
+                // For a non-negative dividend and a positive divisor the
+                // quotient stays within the dividend's own range.
+                _ => {
+                    let dividend = self.form_within(x, FormMode::Lower, depth + 1)?;
+                    let divisor = self.form_within(y, FormMode::Lower, depth + 1)?;
+                    if !(dividend.ge_const(0) && divisor.ge_const(1)) {
+                        return None;
+                    }
+                    match mode {
+                        FormMode::Lower => Some(Lin::constant(0)),
+                        _ => self.form_within(x, FormMode::Upper, depth + 1),
+                    }
+                }
+            },
             Op::Range { kind, .. } => match mode {
                 FormMode::Exact => Some(Lin::leaf(op)),
                 FormMode::Lower => Some(Lin::constant(0)),

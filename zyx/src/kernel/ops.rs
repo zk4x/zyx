@@ -104,11 +104,11 @@ pub enum Op {
         id: u32,
         /// Declared value range of a scalar variable param (inclusive), the
         /// kernel-side counterpart of tinygrad's `ParamArg.vmin_vmax`: an
-        /// index into [`Kernel::param_bounds`], `0` meaning "no range".
+        /// index into `Kernel::param_bounds`, `0` meaning "no range".
         ///
         /// It is set where the variable is *created* from a shape dimension —
         /// a dimension is a length, so `[0, i64::MAX]` — and stays `0` for a
-        /// bare [`Kernel::variable`], which promises nothing. The table is
+        /// bare `Kernel::variable`, which promises nothing. The table is
         /// part of `Eq`/`Hash`: the passes prove things from it
         /// (`compute_bounds`), so two kernels that differ here must not share
         /// a compiled artifact. The *value* an extent takes at launch is not
