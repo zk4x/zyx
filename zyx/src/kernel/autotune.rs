@@ -305,8 +305,17 @@ pub struct BeamSearch {
     pub n_added_per_step: usize,
     /// How many iterations to remove each iteration
     pub n_removed_per_step: usize,
-    /// Max number of optimizations that can be tried
+    /// Max number of candidate sequences the search holds, and therefore the
+    /// largest set the measurement can draw from.
     pub n_total_opts: usize,
+    /// Measure candidates in a random order instead of the cost ranking.
+    ///
+    /// A bench run trains the cost model, so it needs the good *and* the bad
+    /// configs: a cost-ranked prefix can never measure a config the model
+    /// misranks, which is exactly the config the model has to learn about.
+    /// The runtime path keeps the ranking, where the model's opinion should
+    /// decide. Seeded, so a run is reproducible.
+    pub random_order: bool,
 }
 
 impl Default for BeamSearch {
@@ -318,7 +327,14 @@ impl Default for BeamSearch {
 impl BeamSearch {
     /// Defaults mirroring the config-file fallbacks.
     pub const fn new() -> Self {
-        Self { n_added_per_step: 200, n_launches: 1, n_removed_per_step: 0, n_seeds: 200, n_total_opts: 1000 }
+        Self {
+            n_added_per_step: 200,
+            n_launches: 1,
+            n_removed_per_step: 0,
+            n_seeds: 200,
+            n_total_opts: 1000,
+            random_order: false,
+        }
     }
 }
 
@@ -492,9 +508,9 @@ impl BeamSearch {
 
             let mut rng = Rng::seed_from_u64(3_498_203_498);
             let mut exhausted = Set::default();
-            let mut i = 0;
-            while forced.is_none() && i < self.n_total_opts && !items.is_empty() {
-                i += 1;
+            // `n_total_opts` caps the candidate list at the push site below;
+            // it is not a bound on how many search steps it takes to fill.
+            while forced.is_none() && !items.is_empty() {
                 let Some(opt_seq) = sample_best(&items, &exhausted, &mut rng).cloned() else {
                     break;
                 };
@@ -527,6 +543,12 @@ impl BeamSearch {
                             exhausted.insert(new_seq.clone());
                         }
 
+                        // `n_total_opts` caps the list here: once it is full
+                        // nothing more is pushed, so this step adds nothing,
+                        // and `added == 0` ends the search.
+                        if items.len() >= self.n_total_opts {
+                            break;
+                        }
                         items.push(new_seq);
                         added += 1;
                     }
@@ -544,7 +566,19 @@ impl BeamSearch {
             // Keep trying past a candidate that fails to compile/launch (an
             // invalid optimization variant) until `n_launches` successes have
             // been measured.
-            items.sort_by_key(|seq| seq.cost);
+            //
+            // Runtime measures the cost model's ranking; a training bench sets
+            // `random_order` so the measured set covers configs the model ranks
+            // badly — otherwise the model never sees the very candidates it
+            // would have to learn about.
+            if self.random_order {
+                for i in (1..items.len()).rev() {
+                    let j = rng.range::<u64>(0..(i as u64 + 1)) as usize;
+                    items.swap(i, j);
+                }
+            } else {
+                items.sort_by_key(|seq| seq.cost);
+            }
             let mut launched = Set::default();
             let mut measured = 0usize;
             let mut next = 0usize;

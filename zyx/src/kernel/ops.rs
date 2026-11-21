@@ -614,6 +614,19 @@ pub enum PTXOp {
         /// Byte selectors, four nibbles.
         c: OpId,
     },
+    /// `dp4a.s32.s32 d, a, b, c`: the four signed bytes of `a` times the
+    /// four signed bytes of `b`, summed into `c` in 32 bits —
+    /// `d = c + Σ_{i<4} sext(a.b[i]) * sext(b.b[i])`. The exact integer dot
+    /// a 2-bit-code chunk needs, and the instruction the reference decode
+    /// kernel issues eight times per 32-element group.
+    Dp4a {
+        /// First word: four signed int8.
+        a: OpId,
+        /// Second word: four signed int8.
+        b: OpId,
+        /// Accumulator (`U32` bit pattern of the signed sum).
+        c: OpId,
+    },
     /// `cvta.shared.u64 %rd, %rs`: a shared-window byte offset as a generic
     /// 64-bit address, because `ldmatrix` takes a generic address. `addr` is
     /// the `Op::Cast` of the offset to `U64`, so this op is exactly the one
@@ -1915,6 +1928,9 @@ impl Op {
                 PTXOp::Prmt { a, b, c } => {
                     ParamsMut::Three(std::iter::once(a).chain(std::iter::once(b)).chain(std::iter::once(c)))
                 }
+                PTXOp::Dp4a { a, b, c } => {
+                    ParamsMut::Three(std::iter::once(a).chain(std::iter::once(b)).chain(std::iter::once(c)))
+                }
                 // The hardware form names an address, not a storage; the
                 // shared accesses name the storage and the address.
                 PTXOp::LdMatrix { addr, .. } | PTXOp::CvtaShared { addr } | PTXOp::SharedBase { buf: addr } => {
@@ -2038,6 +2054,7 @@ impl Op {
                 PTXOp::Shfl { value, lane, .. } => [*value, *lane].get(i).copied(),
                 PTXOp::ShflXor { value, mask } => [*value, *mask].get(i).copied(),
                 PTXOp::Prmt { a, b, c } => [*a, *b, *c].get(i).copied(),
+                PTXOp::Dp4a { a, b, c } => [*a, *b, *c].get(i).copied(),
                 PTXOp::LdMatrix { addr, .. } | PTXOp::CvtaShared { addr } | PTXOp::SharedBase { buf: addr } => {
                     [*addr].get(i).copied()
                 }
@@ -2298,6 +2315,12 @@ impl SerBin for PTXOp {
                 value.ser_bin(out);
                 mask.ser_bin(out);
             }
+            PTXOp::Dp4a { a, b, c } => {
+                11u8.ser_bin(out);
+                a.ser_bin(out);
+                b.ser_bin(out);
+                c.ser_bin(out);
+            }
         }
     }
 }
@@ -2338,6 +2361,11 @@ impl DeBin for PTXOp {
                 c: DeBin::de_bin(offset, bytes)?,
             },
             10 => PTXOp::ShflXor { value: DeBin::de_bin(offset, bytes)?, mask: DeBin::de_bin(offset, bytes)? },
+            11 => PTXOp::Dp4a {
+                a: DeBin::de_bin(offset, bytes)?,
+                b: DeBin::de_bin(offset, bytes)?,
+                c: DeBin::de_bin(offset, bytes)?,
+            },
             _ => return Err(bad_tag(tag, *offset)),
         };
         Ok(op)

@@ -16,7 +16,7 @@
 use crate::{
     DType, Map,
     dtype::Constant,
-    kernel::{BOp, Kernel, Op, OpId, Pat, VExpr},
+    kernel::{BOp, Kernel, Op, OpId, Pat, RangeKind, VExpr},
     shape::Dim,
 };
 
@@ -455,17 +455,21 @@ impl Kernel {
                         None => self.fold_binary_const(op_id, bounds),
                     },
                     // `(a - b) >= 0` equals `a >= b`. Same overflow guard.
-                    BOp::Cmpge => match self.match_pat(op_id, &pat_sub_ge) {
-                        Some(m) => {
-                            let (a, b) = (m.op('a'), m.op('b'));
-                            if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                                a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                            }) {
-                                self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpge };
+                    BOp::Cmpge => {
+                        if !self.fold_range_bound(op_id, x, y, BOp::Cmpge) {
+                            match self.match_pat(op_id, &pat_sub_ge) {
+                                Some(m) => {
+                                    let (a, b) = (m.op('a'), m.op('b'));
+                                    if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                                        a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                                    }) {
+                                        self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmpge };
+                                    }
+                                }
+                                None => self.fold_binary_const(op_id, bounds),
                             }
                         }
-                        None => self.fold_binary_const(op_id, bounds),
-                    },
+                    }
                     // `(a - b) > 0` equals `a > b`. Same overflow guard.
                     BOp::Cmpgt => match self.match_pat(op_id, &pat_sub_gt) {
                         Some(m) => {
@@ -479,17 +483,21 @@ impl Kernel {
                         None => self.fold_binary_const(op_id, bounds),
                     },
                     // `(a - b) < 0` equals `a < b`. Same overflow guard.
-                    BOp::Cmplt => match self.match_pat(op_id, &pat_sub_lt) {
-                        Some(m) => {
-                            let (a, b) = (m.op('a'), m.op('b'));
-                            if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
-                                a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
-                            }) {
-                                self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmplt };
+                    BOp::Cmplt => {
+                        if !self.fold_range_bound(op_id, x, y, BOp::Cmplt) {
+                            match self.match_pat(op_id, &pat_sub_lt) {
+                                Some(m) => {
+                                    let (a, b) = (m.op('a'), m.op('b'));
+                                    if bounds.get(&a).zip(bounds.get(&b)).is_some_and(|(&(a_lb, a_ub), &(b_lb, b_ub))| {
+                                        a_ub.saturating_sub(b_lb) != i64::MAX && a_lb.saturating_sub(b_ub) != i64::MIN
+                                    }) {
+                                        self.ops[op_id].op = Op::Binary { x: a, y: b, bop: BOp::Cmplt };
+                                    }
+                                }
+                                None => self.fold_binary_const(op_id, bounds),
                             }
                         }
-                        None => self.fold_binary_const(op_id, bounds),
-                    },
+                    }
                     BOp::And => {
                         // A conjunction with a bounds-decided side resolves
                         // outright: false absorbs, true is identity. Same
@@ -576,6 +584,51 @@ impl Kernel {
         }
 
         self.apply_remaps(&remaps);
+    }
+
+    /// An index variable never leaves its own extent: `idx < len` and
+    /// `idx >= 0` hold by construction for a group range, a loop counter and a
+    /// local range, where `len` is the range's own extent. Identity is the
+    /// whole relation — the same extent op, or an equal resolved constant
+    /// (identical chains are CSE'd before this pass runs) — so a clamp that
+    /// really narrows the index (`idx - lp < len - lp - rp` after a pad) keeps
+    /// its comparison, and a dropped one can never hide a mask.
+    ///
+    /// Linearize writes these two checks for every masked view
+    /// (`linearize.rs`, the `pc` terms over `SDim { idx, len }`); proving them
+    /// here instead of at the point they are written keeps the lowering free of
+    /// any shape judgement.
+    fn fold_range_bound(&mut self, op_id: OpId, x: OpId, y: OpId, bop: BOp) -> bool {
+        let symbolic = match *self.at(x) {
+            Op::Range { kind: RangeKind::Group(len), .. } | Op::Loop { len } => Some(len),
+            Op::Range { kind: RangeKind::Local(_), .. } => None,
+            _ => return false,
+        };
+        let holds = match bop {
+            // A range's lower bound is 0 by definition.
+            BOp::Cmpge => self.resolve_const(y).and_then(Constant::as_dim) == Some(0),
+            BOp::Cmplt => match symbolic {
+                Some(len) => {
+                    len == y
+                        || self
+                            .resolve_const(len)
+                            .and_then(Constant::as_dim)
+                            .zip(self.resolve_const(y).and_then(Constant::as_dim))
+                            .is_some_and(|(l, r)| l == r)
+                }
+                None => {
+                    let Op::Range { kind: RangeKind::Local(width), .. } = *self.at(x) else {
+                        return false;
+                    };
+                    self.resolve_const(y).and_then(Constant::as_dim) == Some(i64::from(width))
+                }
+            },
+            _ => return false,
+        };
+        if holds {
+            self.ops[op_id].op = Op::Const(Constant::Bool(true));
+        }
+        holds
     }
 
     /// Fold a `Binary` whose operands are constant or bounds-decided: the

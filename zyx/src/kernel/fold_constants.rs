@@ -755,8 +755,32 @@ impl Kernel {
         let mut remaps = Map::with_capacity_and_hasher(10, BuildHasherDefault::default());
         let mut op_id = self.head;
         while !op_id.is_null() {
+            // A synchronization point publishes every other thread's writes.
+            // The warp barrier is the lowered form of `Op::Barrier`, so it
+            // orders memory the same way.
+            let is_sync = matches!(self.ops[op_id].op, Op::Barrier)
+                || matches!(&self.ops[op_id].op, Op::PTX(p) if matches!(p.as_ref(), PTXOp::WarpSync));
+            // Lowered shared traffic (`LdShared`/`StShared`/`ldmatrix`) and the
+            // raw byte ops read or write memory exactly like `Store`/`Copy`:
+            // `Op::is_effect` is the single classification. A plain `Op::Load`
+            // is excluded here because the arm below pools it.
+            let is_effect =
+                !matches!(self.ops[op_id].op, Op::Load { .. }) && self.ops[op_id].op.is_effect();
             match &mut self.ops[op_id].op {
-                Op::Barrier | Op::Storage { .. } => {} // skip barrier/storage ops, these can not be deduplicated
+                Op::Storage { .. } => {} // storage ops can not be deduplicated
+                _ if is_sync => {
+                    // A value read before the sync need not survive it: another
+                    // thread may have overwritten the same address in between.
+                    // The read pool and the written-buffer markers therefore
+                    // start empty on the far side, in every `MemScope`. Reads on
+                    // one side still pool with each other; nothing pools across.
+                    for level in stack.iter_mut() {
+                        level.retain(|o, _| !matches!(o, Op::Load { .. }));
+                    }
+                    for x in stored_stack.iter_mut() {
+                        x.clear();
+                    }
+                }
                 Op::Loop { .. } => {
                     stack.push(Map::with_capacity_and_hasher(20, BuildHasherDefault::default()));
                     stored_stack.push(Set::with_capacity_and_hasher(10, BuildHasherDefault::default()));
@@ -765,7 +789,7 @@ impl Kernel {
                     stack.pop();
                     stored_stack.pop();
                 }
-                &mut Op::Store { .. } | &mut Op::Copy { .. } | &mut Op::TT(_) => {
+                _ if is_effect => {
                     // Effect ops never participate in CSE: remap operands,
                     // never dedup (two identical effects are two traffic
                     // events). Only buffer references (Storage/Param base
@@ -786,15 +810,6 @@ impl Kernel {
                 }
                 op => {
                     let mut remove_op = false;
-                    // `ldmatrix` reads shared memory the loop rewrites: two
-                    // reads of the same tile and address are not the same
-                    // value once a fill has run between them, so it never
-                    // pools. (Remapping its operands still happens below.)
-                    // The lowered form is the same read, so it is covered too.
-                    let is_ldmatrix = matches!(
-                        op,
-                        Op::PTX(p) if matches!(p.as_ref(), PTXOp::VLdMatrix { .. } | PTXOp::LdMatrix { .. })
-                    );
 
                     // For Load ops: remap the base before the
                     // stored-location check (bases dedup and a stale base
@@ -803,9 +818,7 @@ impl Kernel {
                     // base buffer counts (writers spell it directly now).
                     // Two reads of one buffer uninterrupted dedup;
                     // read-write-read blocks the second read.
-                    let can_cse = if is_ldmatrix {
-                        false
-                    } else if let Op::Load { src, .. } = op {
+                    let can_cse = if let Op::Load { src, .. } = op {
                         if let Some(&new_id) = remaps.get(src) {
                             *src = new_id;
                         }
@@ -850,13 +863,14 @@ impl Kernel {
                         }
                     }
 
-                    if !remove_op && !is_ldmatrix {
+                    if !remove_op {
                         stack.last_mut().unwrap().insert(op.clone(), op_id);
                     }
                 }
             }
             op_id = self.next_op(op_id);
         }
+        self.apply_remaps(&remaps);
         // No `verify` here: CSE also runs inside the backend lowering
         // (`tt_dataflow_select`), where the IR is no longer generic SSA and
         // the backend's own verifier owns it.
@@ -1192,4 +1206,52 @@ impl Kernel {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    /// A barrier publishes another thread's writes: one address read before it
+    /// and the same address read after it are two reads of two values, so CSE
+    /// must keep both. Merging them silently miscompiles every kernel that
+    /// reuses one local buffer across a barrier.
+    #[test]
+    fn barrier_keeps_loads_apart() {
+        let mut k = Kernel::new(crate::kernel::Dev::Auto);
+        let inp = k.param(DType::F32);
+        let out = k.param_mut(DType::F32);
+        let local = k.storage(DType::F32, MemScope::Local, 1);
+        let staged = k.load(inp, 0i64);
+        k.store(local, staged, 0i64);
+        k.barrier();
+        let first = k.load(local, 0i64);
+        k.barrier();
+        let second = k.load(local, 0i64);
+        let sum = k.add(first, second);
+        k.store(out, sum, 0i64);
+        k.common_subexpression_elimination();
+        k.dead_code_elimination();
+
+        assert_ne!(first, second);
+        let loads = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Load { src, .. } if *src == local)).count();
+        assert_eq!(loads, 2);
+    }
+
+    /// Two identical pure expressions must collapse to one after CSE.
+    #[test]
+    fn cse_merges_identical_adds() {
+        let mut k = Kernel::new(crate::kernel::Dev::Auto);
+        let inp = k.param(DType::F32);
+        let out = k.param_mut(DType::F32);
+        let a = k.load(inp, 0i64);
+        let b = k.load(inp, 0i64);
+        let c = k.add(a, b);
+        let d = k.add(a, b);
+        let sum = k.add(c, d);
+        k.store(out, sum, 0i64);
+
+        k.common_subexpression_elimination();
+        k.dead_code_elimination();
+
+        let adds = k.iter_unordered().filter(|(_, op)| matches!(op, Op::Binary { bop: BOp::Add, .. })).count();
+        assert_eq!(adds, 2);
+    }
+}

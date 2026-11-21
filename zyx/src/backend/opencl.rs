@@ -1768,6 +1768,7 @@ fn query_device_info(
         mma_variants: vec![],
         num_circular_buffers: 0,
         has_openmp: false,
+        name: device_name.into_boxed_str(),
         warp_size: {
             if let Ok(device_type_data) = get_device_data(device, clGetDeviceInfo, CL_DEVICE_TYPE) {
                 let device_type = u64::from_ne_bytes(device_type_data.try_into().unwrap_or_default());

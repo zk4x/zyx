@@ -405,6 +405,39 @@ impl Kernel {
                 params.extend(self.ops[parent].op.parameters());
             }
         }
+        // The cone is hoisted out of the body before the loop's end. An op that
+        // already sits before the loop is loop-invariant by position; an op
+        // inside the body is only invariant while it reads no storage the body
+        // declares or writes. A load of such a storage is written by the loop
+        // itself (an inner accumulator, whose own loop folds separately), so
+        // hoisting it would leave the load above the store that initialises the
+        // storage: an uninitialised read, and an out-of-range index derived from
+        // it. Refuse the rewrite instead — the enclosing loop stays, and the
+        // inner one folds on its own.
+        if parents.contains(&loop_id) {
+            return false;
+        }
+        let mut body_storages = Set::default();
+        let mut op_id = loop_id;
+        while op_id != after_loop_load_id {
+            match self.at(op_id) {
+                Op::Storage { .. } => {
+                    body_storages.insert(op_id);
+                }
+                Op::Store { dst, .. } | Op::Copy { dst, .. } => {
+                    body_storages.insert(*dst);
+                }
+                _ => {}
+            }
+            op_id = self.next_op(op_id);
+        }
+        for &parent in &parents {
+            if let Op::Load { src, .. } = self.at(parent)
+                && body_storages.contains(src)
+            {
+                return false;
+            }
+        }
         let after_loop = self.next_op(loop_id);
         let after_indices = self.next_op(indices_id);
         let mut op_id = loop_id;

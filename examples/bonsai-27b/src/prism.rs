@@ -169,17 +169,41 @@ impl Prism {
     }
 
     /// Blockwise normalized Walsh-Hadamard rotation of the last dimension.
+    ///
+    /// The transform is the butterfly itself, not a matmul against
+    /// [`Prism::rotation`]: `log2(block_size)` stages over the block's own
+    /// elements, then one `1/sqrt(block_size)` scale. Stage `h` views each
+    /// block as `[.., block/(2h), 2, h]`; the size-2 axis is bit `h` of the
+    /// element index, so its low slice takes `x + x^h` and its high slice
+    /// `x - x^h` — the Sylvester-Walsh matrix's `(-1)^popcount(j & c)`.
     fn rotate(&self, x: &Tensor, width: i64) -> Result<Tensor, ZyxError> {
         if width % self.block_size != 0 {
             return Err(ZyxError::shape_error(
                 format!("prism.hadamard block {} does not divide width {width}", self.block_size).into(),
             ));
         }
+        let block = self.block_size;
         let shape = x.shape();
-        let rows = x.numel() / self.block_size;
-        let flat = x.reshape([rows, Tensor::from(self.block_size)])?;
-        let rotated = flat.matmul(&self.rotation)?;
-        rotated.reshape(shape)
+        let rows = x.numel() / block;
+        let block_t = Tensor::from(block);
+        let mut t = x.reshape([rows.clone(), block_t.clone()])?;
+        let mut h = 1i64;
+        while h < block {
+            let groups = block / (2 * h);
+            let view = t.reshape([rows.clone(), Tensor::from(groups), Tensor::from(2i64), Tensor::from(h)])?;
+            let low = view.narrow(-2, 0i64, 1i64)?;
+            let high = view.narrow(-2, 1i64, 1i64)?;
+            let sum = &low + &high;
+            let diff = &low - &high;
+            // tinygrad's `.contiguous()`: each stage is a `STAGE`/store, so a
+            // kernel boundary ends the fusion there. Without it the ten stage
+            // views inline into one `4^stages` tree (block 1024 never
+            // compiles); with it the body per stage is O(block).
+            t = Tensor::cat([&sum, &diff], -2)?.reshape([rows.clone(), block_t.clone()])?.contiguous()?;
+            h *= 2;
+        }
+        let scale = Tensor::from(1.0f32 / (block as f32).sqrt());
+        (t * scale).reshape(shape)
     }
 }
 

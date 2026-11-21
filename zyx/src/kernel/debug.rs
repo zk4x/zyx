@@ -771,6 +771,9 @@ impl Kernel {
                     PTXOp::Prmt { a, b, c } => {
                         writeln!(f, "{indent}r{out_id}{reset} = {green}prmt{reset} r{}, r{}, r{}", a.0, b.0, c.0).unwrap()
                     }
+                    PTXOp::Dp4a { a, b, c } => {
+                        writeln!(f, "{indent}r{out_id}{reset} = {green}dp4a{reset} r{}, r{} + r{}", a.0, b.0, c.0).unwrap()
+                    }
                 },
             }
             op_id = self.ops[op_id].next;

@@ -372,6 +372,15 @@ impl Kernel {
                         let cv = get_var(*c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
                         _ = writeln!(source, "{indent}r{reg} = __byte_perm((unsigned){av}, (unsigned){bv}, (unsigned){cv});");
                     }
+                    // The exact integer dot: `__dp4a` is `dp4a.s32.s32`.
+                    PTXOp::Dp4a { a, b, c } => {
+                        let dtype = dtypes[&op_id].clone();
+                        let reg = new_reg(op_id, &mut reg_map, &mut registers, dtype, rcs[&op_id], loop_id);
+                        let av = get_var(*a, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let bv = get_var(*b, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        let cv = get_var(*c, &constants, &indices, &reg_map, &mut registers, loop_id, &var_params)?;
+                        _ = writeln!(source, "{indent}r{reg} = __dp4a((int){av}, (int){bv}, (int){cv});");
+                    }
                 },
                 // An address lane the device supports: the load/store covers
                 // the lanes, so the address is the lane-0 base.

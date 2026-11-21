@@ -139,7 +139,7 @@ impl Kernel {
                     // Effect only.
                     PTXOp::WarpSync => false,
                     // A register move, no memory.
-                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } => false,
+                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } | PTXOp::Dp4a { .. } => false,
                     // The cost model runs before the device lowering: these
                     // are never priced.
                     PTXOp::LdMatrix { .. }
@@ -537,7 +537,7 @@ impl Kernel {
                         wi_barriers += loop_mult;
                     }
                     // One shuffle instruction.
-                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } => {
+                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } | PTXOp::Dp4a { .. } => {
                         wi_ops += loop_mult;
                         wi_compute_ops += loop_mult;
                     }

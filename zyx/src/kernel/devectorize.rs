@@ -884,6 +884,7 @@ mod tests {
             mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp: false,
+            name: "cpu".into(),
         }
     }
 

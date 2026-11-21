@@ -1740,6 +1740,7 @@ pub(super) fn ensure_pool_table(config: &VulkanConfig, debug_dev: bool) -> Resul
             mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp: false,
+            name: name.clone().into_boxed_str(),
         };
 
         std::thread::spawn({

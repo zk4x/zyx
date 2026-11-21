@@ -213,6 +213,7 @@ fn device_info() -> DeviceInfo {
         mma_variants: vec![],
         num_circular_buffers: 32, // architectural CB0-CB31
         has_openmp: false,
+        name: "Tenstorrent".into(),
     }
 }
 

@@ -1697,6 +1697,14 @@ impl Kernel {
                         let reg = comp.new_var(op_id, DType::U32, Vec::new(), rcs[&op_id]);
                         _ = writeln!(comp.body, "{}prmt.b32 %r{reg}, %r{av}, %r{bv}, %r{cv};", comp.indent);
                     }
+                    // Four signed-byte products summed with the accumulator.
+                    PTXOp::Dp4a { a, b, c } => {
+                        let av = comp.get_var(*a);
+                        let bv = comp.get_var(*b);
+                        let cv = comp.get_var(*c);
+                        let reg = comp.new_var(op_id, DType::U32, Vec::new(), rcs[&op_id]);
+                        _ = writeln!(comp.body, "{}dp4a.s32.s32 %r{reg}, %r{av}, %r{bv}, %r{cv};", comp.indent);
+                    }
                     // `ldmatrix` reads one 8x8 b16 tile per group of eight
                     // lanes into one register per tile, in lane order.
                     PTXOp::VLdMatrix { dims, num, trans, dtype, src, addr } => {

@@ -238,11 +238,29 @@ impl Cone {
         let mut remap: Map<OpId, OpId> = Map::default();
         remap.insert(self.mn, row);
         remap.insert(self.k_leaf, kk);
+        // What the clone still needs: the value's cone with the two substituted
+        // leaves standing for themselves. Everything reachable only through a
+        // substituted leaf is the *coordinate's* own cone — the caller hands
+        // that in already (`row`, `kk`), so cloning it would re-derive the
+        // composition the substitution replaces, and a member of it can read a
+        // loop the clone is placed outside of (a split's `loop * step + lane`
+        // contraction index is one: a fill anchored before the loop would then
+        // read the loop it precedes).
+        let mut need: Set<OpId> = Set::default();
+        {
+            let mut stack = vec![self.value];
+            while let Some(id) = stack.pop() {
+                if id.is_null() || id == self.mn || id == self.k_leaf || !need.insert(id) {
+                    continue;
+                }
+                stack.extend(kernel.at(id).parameters());
+            }
+        }
         for (id, op) in &self.ops {
             // The two substituted leaves are not cloned: their coordinates
             // already stand for them, and cloning them would re-derive the
             // composition from the very lanes the substitution replaces.
-            if *id == self.mn || *id == self.k_leaf {
+            if *id == self.mn || *id == self.k_leaf || !need.contains(id) {
                 continue;
             }
             let mut op = op.clone();
@@ -1181,7 +1199,7 @@ fn frag_elems(
         let addr = slot_addr(kernel, before, lane, map, base, sr, sc, slots[i], warp);
         if let Some(cone) = cone {
             // A fused dequant has no vector form to load: the slot's own
-            // element, one chain per slot slot.
+            // element, one chain per slot.
             for s in 0..n {
                 let at = if s == 0 {
                     addr
@@ -1191,14 +1209,20 @@ fn frag_elems(
                 };
                 out.push(cone.clone_at(kernel, before, at));
             }
-        } else if n == 1 {
-            out.push(kernel.insert_before(before, Op::Load { src, src_idx: addr }));
         } else {
-            let vector = kernel.insert_before(before, Op::Unroll { axis: 0, len: n as u16 });
-            let idx = kernel.insert_before(before, Op::Binary { x: addr, y: vector, bop: BOp::Add });
-            let value = kernel.insert_before(before, Op::Load { src, src_idx: idx });
-            for lane_idx in 0..n {
-                out.push(kernel.insert_before(before, Op::Index { vec: value, idx: lane_idx }));
+            // One scalar load per slot, never one vector load sliced by
+            // `Index`: the epilogue expands the vector load's lanes into
+            // scalars while the fragment's `Index` ops still address it, and an
+            // `Index` of a scalar is not renderable. The slots are the same
+            // addresses the vector would have covered.
+            for s in 0..n {
+                let at = if s == 0 {
+                    addr
+                } else {
+                    let off = kernel.insert_before(before, Op::Const(Constant::idx(Dim::from(s as i64))));
+                    kernel.insert_before(before, Op::Binary { x: addr, y: off, bop: BOp::Add })
+                };
+                out.push(kernel.insert_before(before, Op::Load { src, src_idx: at }));
             }
         }
         i += n;
@@ -1961,6 +1985,37 @@ fn tile_fit(
     // in one window of it. A contiguous slice otherwise.
     let interleave = staged_form && combine;
     Some(TileFit { mt_w, nt_w, warps, combine, staged, chunk, interleave })
+}
+
+/// Whether the staged element form's fragment feed is the instruction's.
+///
+/// The `ldmatrix` a staged step issues covers `rows / 8 * (k / 8)` 32-bit words
+/// of one operand, and the instruction takes `a.slots` / `b.slots` *elements*
+/// per lane, `32 / dtype.bit_size()` of them to a word. A plan whose two counts
+/// differ hands the `mma` an operand list that is not the instruction's: the
+/// device rejects the PTX, and the slice that would cut the extra words out of
+/// a missing one indexes a scalar. So the identity is a candidate gate, at both
+/// step widths the emitter uses (one `ldmatrix` per step, or one for a pair).
+fn fragment_width_fits(v: &MMAVariant, shape: &TileShape) -> bool {
+    let per_a = usize::from(32 / v.a_dtype.bit_size());
+    let per_b = usize::from(32 / v.b_dtype.bit_size());
+    let (a_slots, b_slots) = (v.a.slots.len(), v.b.slots.len());
+    if a_slots % per_a != 0 || b_slots % per_b != 0 {
+        return false;
+    }
+    let (a_words, b_words) = (a_slots / per_a, b_slots / per_b);
+    if a_words == 0 || b_words == 0 {
+        return false;
+    }
+    let (a_words, b_words) = (Dim::from(a_words as i64), Dim::from(b_words as i64));
+    let words = |rows: Dim, k: Dim| rows / LDMATRIX_EDGE * (k / LDMATRIX_EDGE);
+    let (fm, fn_, fk) = (shape.fm, shape.fn_, shape.fk);
+    // One step always; the pair (the emitter's `fk * 2` window) only exists
+    // when the K step count is even and greater than one.
+    let single = words(fm, fk) == a_words && words(fn_, fk) == b_words;
+    let paired = shape.kt < Dim::from(2)
+        || (words(fm, fk * Dim::from(2)) == a_words * 2 && words(fn_, fk * Dim::from(2)) == b_words * 2);
+    single && paired
 }
 
 /// Whether the int8 form can be emitted at this shape, staging level and
@@ -4298,6 +4353,20 @@ impl Kernel {
                 .map(|r| regions[r].a_cone.is_some() || regions[r].b_cone.is_some())
                 .or_else(|| tiled_idx.map(|t| tiled[t].a_cone.is_some() || tiled[t].b_cone.is_some()))
                 .unwrap_or(false);
+            let s8_form = region
+                .map(|r| matches!(regions[r].variant.dtype, MMADType::s8_s8_s32_s32))
+                .or_else(|| tiled_idx.map(|t| matches!(tiled[t].variant.dtype, MMADType::s8_s8_s32_s32)))
+                .unwrap_or(false);
+            // A fused-dequant operand's value is a chain over packed words, not
+            // an element stream: the element form's fill re-derives that chain
+            // per f16 element into a tile whose addressing is not the chain's,
+            // which the device rejects (an illegal address at launch) or a
+            // `verify` dtype mismatch refuses. Only the int8 cell — which stages
+            // the chain's codes and per-group scales at the format's own word
+            // width — is a candidate for a coned operand.
+            if coned && !s8_form {
+                continue;
+            }
             for &layout in &layouts {
                 for staged in [false, true] {
                     if !staged && layout.2 > 1 {
@@ -4312,6 +4381,15 @@ impl Kernel {
                     // instruction instead of unfolding the chain per element.
                     let s8_tiled = tiled_idx.is_some_and(|t| matches!(tiled[t].variant.dtype, MMADType::s8_s8_s32_s32));
                     if coned && !staged && !s8_tiled {
+                        continue;
+                    }
+                    // A region's staged request is emitted as the direct form
+                    // when either operand's view is not K-contiguous
+                    // (`apply` demotes it): that is a different kernel, so the
+                    // requested form must be the emitted one.
+                    if let (true, Some(r)) = (staged, region)
+                        && (regions[r].a_k != 1 || regions[r].b_k != 1)
+                    {
                         continue;
                     }
                     if let (Some((shape, loop_len)), Some(ti)) = (&shape, tiled_idx) {
@@ -4344,6 +4422,34 @@ impl Kernel {
                     // region that matched an int8 form is therefore not a
                     // candidate for it.
                     if region.is_some_and(|r| matches!(regions[r].variant.dtype, MMADType::s8_s8_s32_s32)) {
+                        continue;
+                    }
+                    // The fragment-width identity: the staged `ldmatrix` must
+                    // hand the instruction exactly its operand words.
+                    let variant = match (region, tiled_idx) {
+                        (Some(r), _) => &regions[r].variant,
+                        (None, Some(t)) => &tiled[t].variant,
+                        _ => unreachable!("a plan's shape comes from a region or a tiled form"),
+                    };
+                    let one_step = {
+                        let (fm, fn_, fk) = variant.dims.decompose_mnk();
+                        TileShape {
+                            mt: Dim::from(1),
+                            nt: Dim::from(1),
+                            kt: Dim::from(1),
+                            fm: Dim::from(fm as i64),
+                            fn_: Dim::from(fn_ as i64),
+                            fk: Dim::from(fk as i64),
+                            a_k: Dim::from(1),
+                            b_k: Dim::from(1),
+                            slots: Dim::from(variant.c.slots.len() as i64),
+                        }
+                    };
+                    let widths = match &shape {
+                        Some((shape, _)) => shape,
+                        None => &one_step,
+                    };
+                    if !fragment_width_fits(variant, widths) {
                         continue;
                     }
                     // A staged layout has two points: the swizzled pack (the
@@ -4488,6 +4594,11 @@ impl Kernel {
                         // The orientation is decided by the accumulator's view, not
                         // by the multiply order, so either operand may be A.
                         let s8 = matches!(variant.dtype, MMADType::s8_s8_s32_s32);
+                        // A fused-dequant operand is only ever the int8 cell's:
+                        // see the region gate above.
+                        if coned && !s8 {
+                            continue;
+                        }
                         if s8 {
                             // The int8 form consumes both operands' codes and
                             // rescales their int32 sums into the region's f32
@@ -4581,6 +4692,13 @@ impl Kernel {
                                         };
                                         for &layout in &layouts {
                                             for staged in [false, true] {
+                                                // The fragment-width identity: a staged
+                                                // `ldmatrix` hands the instruction exactly
+                                                // its operand words, or the device rejects
+                                                // the `mma` and the slice indexes a scalar.
+                                                if staged && !s8 && !fragment_width_fits(variant, &shape) {
+                                                    continue;
+                                                }
                                                 if !staged && layout.2 > 1 {
                                                     continue;
                                                 }
@@ -4729,6 +4847,7 @@ mod tests {
             }],
             num_circular_buffers: 0,
             has_openmp: false,
+            name: "cuda".into(),
         }
     }
 
@@ -4795,8 +4914,8 @@ mod tests {
         let opt = k.opt_tensorize();
         assert_eq!(
             opt.nconfigs(),
-            51,
-            "one region, per layout and operand form: every layout at both staging levels, and the staged level at both layouts — K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in"
+            15,
+            "one region, per layout and operand form: every layout at the direct level, and the staged level only where it can be emitted — K is a single instruction step, so the only K split covers the whole loop and leaves no loop to place the instructions in, and B's view is column-major (`b_k = N`), which the staged fill cannot address, so the pass does not offer the request that `apply` would demote"
         );
         opt.apply(&mut k, 0);
         k.verify();
@@ -5772,8 +5891,8 @@ mod tests {
         let opt = k.opt_tensorize();
         assert_eq!(
             opt.nconfigs(),
-            1659,
-            "one region per layout and operand form, plus the tile grids at the warp layouts and staging levels that can emit them: this seed's B is a transposed view, so the grids are the direct form (the staged form needs both operands K-contiguous) and the direct form fits more warp layouts"
+            1623,
+            "one region per layout and operand form, plus the tile grids at the warp layouts and staging levels that can emit them: this seed's B is a transposed view, so the grids are the direct form (the staged form needs both operands K-contiguous) and the direct form fits more warp layouts; the staged requests whose operand view is not K-contiguous are not offered (the emitter would demote them to the direct form)"
         );
         opt.apply(&mut k, 0);
         k.verify();
@@ -5810,5 +5929,61 @@ mod tests {
             .max()
             .expect("the accumulator storage");
         assert_eq!(slots, 128, "32 fragments x 4 slots");
+    }
+
+    /// A fill anchored before the K loop must not clone the contraction leaf's
+    /// own cone. After a split the leaf is `loop * step + lane`, so cloning its
+    /// cone into the prologue (the first chunk of the loop's first iteration)
+    /// puts a read of the loop ahead of the loop that defines it: a
+    /// use-before-def that `compute_dtypes_and_rcs` reports as a missing dtype
+    /// entry and every device refuses to render.
+    #[test]
+    fn cone_clone_before_the_loop_does_not_read_it() {
+        const N: i64 = 8;
+        const K: i64 = 32;
+        let mut k = Kernel::new(Dev::Auto);
+        k.dev_info = Some(Arc::new(cuda()));
+        let w = k.param(DType::U16);
+        // The prologue fill's anchor: an op that precedes the loop.
+        let before = k.const_val(0i64);
+        let row = k.const_val(0i64);
+        let kk = k.const_val(0i64);
+        let n = k.group_range(0, N);
+        // The lane a split leaves in the contraction index.
+        let lane = k.unroll(1, 4);
+        let mut value = OpId::NULL;
+        k.loop_over(K / 4, |k, lv| {
+            // The split's contraction leaf: `loop * 4 + lane`, exactly the
+            // shape `split` builds, so the leaf is a chain over the loop.
+            let step = k.const_val(4i64);
+            let stepped = k.mul(lv, step);
+            let kidx = k.add(stepped, lane);
+            let elem = k.mad(n, K, kidx);
+            let raw = k.load(w, elem);
+            value = k.cast(raw, DType::F32);
+        });
+        let cone = Cone::at(&k, value).expect("the dequant-style chain is one cone");
+        assert_eq!(cone.mn, n, "the row leaf is the output range");
+        // Rebuild the chain at an element, before the loop: what every staged
+        // fill's prologue does.
+        let clone = cone.clone_at_coords(&mut k, before, row, kk);
+        assert!(!clone.is_null(), "the clone has a value");
+        let mut loop_id = OpId::NULL;
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if matches!(k.at(op_id), Op::Loop { .. }) {
+                loop_id = op_id;
+                break;
+            }
+            op_id = k.next_op(op_id);
+        }
+        assert!(!loop_id.is_null(), "the kernel still has its K loop");
+        let mut op_id = k.head;
+        while op_id != loop_id {
+            for p in k.at(op_id).parameters() {
+                assert_ne!(p, loop_id, "an op anchored before the loop reads it: {:?}", k.at(op_id));
+            }
+            op_id = k.next_op(op_id);
+        }
     }
 }

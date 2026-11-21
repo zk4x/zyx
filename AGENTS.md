@@ -252,6 +252,25 @@ suite after every edit; never make a commit wait for the push gate.
   selection, not necessarily the change under test; re-run pinned first.
 - A pre-existing red suite is reported, not folded into the current change.
 
+## Performance optimization approach
+
+Optimize the slowest kernel, then teach the search to produce its fast
+shape and record it for the cost model. Work in this order; a later step
+is blocked until the previous one is done.
+
+1. Make sure `src/graph/kernelizer.rs` is fusing things correctly, or add
+   the missing variants manually via the pattern matcher to the egraph.
+2. Spell the sequence out in tensor ops, full size, and pick the slowest
+   kernel.
+3. For the slowest kernel:
+4. Write it out in zyx custom kernel IR by looking at the zyx no-search
+   naive version (`ZYX_DEBUG=256`).
+5. Then optimize this custom kernel IR.
+6. Then make sure one of the optimization passes is capable of generating
+   that super fast IR (add the config/pass when none can).
+7. And then feed it into `zyx-bench`.
+8. And run `zyx-bench`, and retrain the cost model.
+
 ## Layout
 ```
 zyx/src/backend/  one file per backend

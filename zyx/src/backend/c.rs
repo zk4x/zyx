@@ -275,6 +275,7 @@ fn device_with(config: &CConfig, debug_dev: bool) -> Result<&'static Mutex<CDevi
             mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp,
+            name: "C".into(),
         }),
         programs: Slab::new(),
         has_openmp,

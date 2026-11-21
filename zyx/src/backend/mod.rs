@@ -34,7 +34,7 @@ use crate::{
     shape::Dim,
     slab::SlabId,
 };
-use nanoserde::{DeBin, DeJson, SerBin};
+use nanoserde::{DeBin, DeBinErr, DeJson, SerBin};
 use std::sync::Mutex;
 use std::{hash::BuildHasherDefault, sync::Arc};
 
@@ -1609,7 +1609,7 @@ pub struct MMAVariant {
 }
 
 /// Hardware information needed for applying optimizations
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, SerBin, DeBin)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceInfo {
     /// Device compute in flops
     pub compute: u128,
@@ -1663,6 +1663,67 @@ pub struct DeviceInfo {
     /// Whether the C backend was compiled with OpenMP support.
     /// Only meaningful for the C device; false everywhere else.
     pub has_openmp: bool,
+    /// Hardware name as the backend reports it (the CUDA/OpenCL/Vulkan device
+    /// name, `C` or `Tenstorrent` elsewhere). Perf assertions key on this.
+    pub name: Box<str>,
+}
+
+// `Box<str>` is not serialized by nanoserde's blanket `Box<T>` impl (`str` has
+// no `SerBin`), so the record is written field by field in declaration order,
+// with the name as a length-prefixed UTF-8 string (the same bytes a `String`
+// writes).
+impl SerBin for DeviceInfo {
+    fn ser_bin(&self, output: &mut Vec<u8>) {
+        self.compute.ser_bin(output);
+        self.max_global_work_dims.ser_bin(output);
+        self.max_local_threads.ser_bin(output);
+        self.max_local_work_dims.ser_bin(output);
+        self.preferred_vector_size.ser_bin(output);
+        self.local_mem_size.ser_bin(output);
+        self.max_register_bytes.ser_bin(output);
+        self.tensor_cores.ser_bin(output);
+        self.warp_size.ser_bin(output);
+        self.cc.ser_bin(output);
+        self.dtype_capability.ser_bin(output);
+        self.has_native_exp2.ser_bin(output);
+        self.supported_vec_lens.ser_bin(output);
+        self.vector_depth.ser_bin(output);
+        self.tenstorrent.ser_bin(output);
+        self.tile.ser_bin(output);
+        self.tile_sizes.ser_bin(output);
+        self.mma_variants.ser_bin(output);
+        self.num_circular_buffers.ser_bin(output);
+        self.has_openmp.ser_bin(output);
+        self.name.to_string().ser_bin(output);
+    }
+}
+
+impl DeBin for DeviceInfo {
+    fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
+        Ok(Self {
+            compute: DeBin::de_bin(offset, bytes)?,
+            max_global_work_dims: DeBin::de_bin(offset, bytes)?,
+            max_local_threads: DeBin::de_bin(offset, bytes)?,
+            max_local_work_dims: DeBin::de_bin(offset, bytes)?,
+            preferred_vector_size: DeBin::de_bin(offset, bytes)?,
+            local_mem_size: DeBin::de_bin(offset, bytes)?,
+            max_register_bytes: DeBin::de_bin(offset, bytes)?,
+            tensor_cores: DeBin::de_bin(offset, bytes)?,
+            warp_size: DeBin::de_bin(offset, bytes)?,
+            cc: DeBin::de_bin(offset, bytes)?,
+            dtype_capability: DeBin::de_bin(offset, bytes)?,
+            has_native_exp2: DeBin::de_bin(offset, bytes)?,
+            supported_vec_lens: DeBin::de_bin(offset, bytes)?,
+            vector_depth: DeBin::de_bin(offset, bytes)?,
+            tenstorrent: DeBin::de_bin(offset, bytes)?,
+            tile: DeBin::de_bin(offset, bytes)?,
+            tile_sizes: DeBin::de_bin(offset, bytes)?,
+            mma_variants: DeBin::de_bin(offset, bytes)?,
+            num_circular_buffers: DeBin::de_bin(offset, bytes)?,
+            has_openmp: DeBin::de_bin(offset, bytes)?,
+            name: String::de_bin(offset, bytes)?.into_boxed_str(),
+        })
+    }
 }
 
 impl DeviceInfo {

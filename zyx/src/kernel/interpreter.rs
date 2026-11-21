@@ -457,6 +457,23 @@ impl Kernel {
                         .collect();
                     values.insert(id, per_thread);
                 }
+                PTXOp::Dp4a { a, b, c } => {
+                    let per_thread = (0..nthreads)
+                        .map(|t| {
+                            let av = to_i64(val(*a, t).data[0]) as u32;
+                            let bv = to_i64(val(*b, t).data[0]) as u32;
+                            let cv = to_i64(val(*c, t).data[0]) as u32;
+                            let mut sum = cv as i32;
+                            for i in 0..4 {
+                                let ab = ((av >> (8 * i)) & 0xff) as u8 as i8;
+                                let bb = ((bv >> (8 * i)) & 0xff) as u8 as i8;
+                                sum = sum.wrapping_add(i32::from(ab) * i32::from(bb));
+                            }
+                            Value::scalar(DType::U32, Constant::U32(sum as u32))
+                        })
+                        .collect();
+                    values.insert(id, per_thread);
+                }
                 PTXOp::WarpSync => {
                     values.insert(id, vec![Value::scalar(DType::U32, Constant::new(0u32)); nthreads]);
                 }

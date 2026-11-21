@@ -241,6 +241,7 @@ pub(super) fn ensure_pool_table(config: &WGPUConfig, debug_dev: bool) -> Result<
             mma_variants: vec![],
             num_circular_buffers: 0,
             has_openmp: false,
+            name: info.name.clone().into_boxed_str(),
         },
     }));
 

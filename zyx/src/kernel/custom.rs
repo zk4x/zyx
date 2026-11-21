@@ -1179,6 +1179,12 @@ impl Kernel {
         self.push_back(Op::PTX(Box::new(PTXOp::Prmt { a, b, c })))
     }
 
+    /// `dp4a.s32.s32 d, a, b, c`: the four signed bytes of `a` times the four
+    /// signed bytes of `b`, summed with `c` in 32 bits.
+    pub fn dp4a(&mut self, a: OpId, b: OpId, c: OpId) -> OpId {
+        self.push_back(Op::PTX(Box::new(PTXOp::Dp4a { a, b, c })))
+    }
+
     /// Warp-wide xor-butterfly sum reduction over `x` (all 32 lanes of the
     /// warp must participate; every lane ends with the sum): five
     /// `shfl.sync.bfly.b32` exchanges, mask 16 down to 1.

@@ -255,12 +255,6 @@ impl PartialEq for Kernel {
 
 impl Eq for Kernel {}
 
-/// Version of the stored kernel IR format. Bump when the `Op` variant tags,
-/// their field order, or the `Kernel` header change: a stored kernel from a
-/// different version must fail loudly rather than deserialize into a
-/// reinterpreted IR.
-const IR_FORMAT_VERSION: u8 = 1;
-
 /// Hard ceiling on a kernel's op count.
 ///
 /// Past this a kernel is not renderable: every backend's walk guard refuses
@@ -274,7 +268,6 @@ pub const MAX_OPS: u32 = 100_000;
 
 impl SerBin for Kernel {
     fn ser_bin(&self, output: &mut Vec<u8>) {
-        IR_FORMAT_VERSION.ser_bin(output);
         self.ops.ser_bin(output);
         self.head.ser_bin(output);
         self.tail.ser_bin(output);
@@ -291,12 +284,6 @@ impl SerBin for Kernel {
 
 impl DeBin for Kernel {
     fn de_bin(offset: &mut usize, bytes: &[u8]) -> Result<Self, DeBinErr> {
-        let version: u8 = DeBin::de_bin(offset, bytes)?;
-        if version != IR_FORMAT_VERSION {
-            // nanoserde 0.2.1's only error variant is `Length`: carry the
-            // expected and stored versions as the two lengths.
-            return Err(DeBinErr::new(*offset, IR_FORMAT_VERSION as usize, version as usize));
-        }
         let ops = Slab::<OpId, OpLinked>::de_bin(offset, bytes)?;
         let head = OpId::de_bin(offset, bytes)?;
         let tail = OpId::de_bin(offset, bytes)?;
@@ -599,6 +586,13 @@ impl Kernel {
                             *rcs.entry(x).or_insert(0) += 1;
                         }
                     }
+                    // `dp4a`'s result is the 32-bit integer sum.
+                    PTXOp::Dp4a { a, b, c } => {
+                        dtypes.insert(op_id, (DType::U32, Vec::new()));
+                        for &x in [a, b, c] {
+                            *rcs.entry(x).or_insert(0) += 1;
+                        }
+                    }
                 },
                 // Graph-only marker, erased at kernelization: never present.
                 Op::Detach { .. } => todo!("Detach in ordered kernel"),
@@ -792,6 +786,15 @@ impl Kernel {
                             it = self.next_op(it);
                         }
                         eprintln!("DT   total ops walked so far = {n}");
+                        if std::env::var("ZYX_DT_ALL").is_ok() {
+                            let mut it = self.head;
+                            let mut n = 0usize;
+                            while !it.is_null() {
+                                eprintln!("DTALL [{n}] {it:?} = {:?}", self.ops[it].op);
+                                n += 1;
+                                it = self.next_op(it);
+                            }
+                        }
                     }
                     let dtype = if bop.returns_bool() { DType::Bool } else { dtypes[&x].0 };
                     let (xd, yd) = (dtypes[&x].1.clone(), dtypes[&y].1.clone());
@@ -995,6 +998,7 @@ impl Kernel {
                     PTXOp::Shfl { .. } => return DType::F16,
                     PTXOp::ShflXor { value, .. } => op_id = *value,
                     PTXOp::Prmt { .. } => return DType::U32,
+                    PTXOp::Dp4a { .. } => return DType::U32,
                     PTXOp::WarpSync => todo!("warp sync has no result dtype"),
                 },
                 Op::Const(c) => return c.dtype(),

@@ -78,7 +78,8 @@ impl Kernel {
                     // A register move inside the loop stays there.
                     crate::kernel::PTXOp::Shfl { .. }
                     | crate::kernel::PTXOp::ShflXor { .. }
-                    | crate::kernel::PTXOp::Prmt { .. } => loop_depth,
+                    | crate::kernel::PTXOp::Prmt { .. }
+                    | crate::kernel::PTXOp::Dp4a { .. } => loop_depth,
                     // Device-lowered PTX: a shared access orders against the
                     // loop like a load/store; the address ops are pinned with
                     // the access they feed (`loop_invariant_code_motion` never
@@ -180,6 +181,7 @@ impl Kernel {
                     PTXOp::Shfl { value, lane } => loop_dep[value].max(loop_dep[lane]),
                     PTXOp::ShflXor { value, mask } => loop_dep[value].max(loop_dep[mask]),
                     PTXOp::Prmt { a, b, c } => loop_dep[a].max(loop_dep[b]).max(loop_dep[c]),
+                    PTXOp::Dp4a { a, b, c } => loop_dep[a].max(loop_dep[b]).max(loop_dep[c]),
                     // Device-lowered PTX is pinned with the loop it feeds.
                     PTXOp::LdMatrix { .. }
                     | PTXOp::CvtaShared { .. }

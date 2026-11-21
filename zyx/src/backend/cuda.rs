@@ -1490,8 +1490,9 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
         else {
             continue;
         };
+        let name: Box<str> = unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) }.to_string_lossy().into_owned().into_boxed_str();
         if debug_dev {
-            println!("[cuda] {:?}, compute: {major}.{minor}", unsafe { std::ffi::CStr::from_ptr(device_name.as_ptr()) });
+            println!("[cuda] {name:?}, compute: {major}.{minor}");
         }
         let mut free_bytes = 0usize;
         let Ok(()) = unsafe { (fns.cuDeviceTotalMem)(&raw mut free_bytes, device) }.check(ErrorStatus::DeviceQuery) else {
@@ -1545,6 +1546,7 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
                 mma_variants: if major >= 7 { cuda_mma_variants() } else { vec![] },
                 num_circular_buffers: 0,
                 has_openmp: false,
+                name: name.clone(),
             }),
             memory_pool: Pool::Cuda(index as u16),
             compute_capability: [major, minor],
@@ -1635,6 +1637,7 @@ fn initialize_backend() -> Result<(Vec<Mutex<CUDAMemoryPool>>, Vec<Mutex<CUDADev
             mma_variants: if major >= 7 { cuda_mma_variants() } else { vec![] },
             num_circular_buffers: 0,
             has_openmp: false,
+            name,
         });
         devs.push(Mutex::new(dev));
     }

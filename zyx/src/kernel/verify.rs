@@ -145,7 +145,8 @@ impl Kernel {
                     | PTXOp::WarpSync
                     | PTXOp::Shfl { .. }
                     | PTXOp::ShflXor { .. }
-                    | PTXOp::Prmt { .. } => {}
+                    | PTXOp::Prmt { .. }
+                    | PTXOp::Dp4a { .. } => {}
                     // Device-lowered PTX: its operands are ordinary values and
                     // its addresses are not element indices, so the generic
                     // index/shape rules do not apply. Verification is for
@@ -805,6 +806,12 @@ impl Kernel {
                         dtypes.insert(op_id, dtype);
                     }
                     PTXOp::Prmt { a, b, c } => {
+                        for x in [*a, *b, *c] {
+                            check(op_id, x, &stack);
+                        }
+                        dtypes.insert(op_id, DType::U32);
+                    }
+                    PTXOp::Dp4a { a, b, c } => {
                         for x in [*a, *b, *c] {
                             check(op_id, x, &stack);
                         }

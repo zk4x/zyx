@@ -231,7 +231,7 @@ impl Kernel {
                     }
                     // A shuffle reads two registers and writes one: no shared
                     // state to order against.
-                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } => latency[i] = 20,
+                    PTXOp::Shfl { .. } | PTXOp::ShflXor { .. } | PTXOp::Prmt { .. } | PTXOp::Dp4a { .. } => latency[i] = 20,
                     // The shared window base and its generic-address form: one
                     // definition each, carrying no state of their own.
                     PTXOp::CvtaShared { .. } | PTXOp::SharedBase { .. } => latency[i] = 1,
@@ -374,6 +374,11 @@ impl Kernel {
                         add_param!(mask);
                     }
                     PTXOp::Prmt { a, b, c } => {
+                        add_param!(a);
+                        add_param!(b);
+                        add_param!(c);
+                    }
+                    PTXOp::Dp4a { a, b, c } => {
                         add_param!(a);
                         add_param!(b);
                         add_param!(c);
@@ -743,6 +748,7 @@ impl Kernel {
                     | PTXOp::Shfl { .. }
                     | PTXOp::ShflXor { .. }
                     | PTXOp::Prmt { .. }
+                    | PTXOp::Dp4a { .. }
                     | PTXOp::CvtaShared { .. }
                     | PTXOp::SharedBase { .. }
                     | PTXOp::StShared { .. } => continue,
