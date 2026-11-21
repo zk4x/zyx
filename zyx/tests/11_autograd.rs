@@ -744,6 +744,20 @@ fn grad_sum() -> Result<(), ZyxError> {
 }
 
 #[test]
+fn grad_cumsum() -> Result<(), ZyxError> {
+    // `sum(cumsum(x))` along an axis sends every input row the suffix sum of
+    // the incoming gradient: row i receives `rows - i` ones, not the total.
+    let x = Tensor::from([[1f32, 2., 3.], [4., 5., 6.], [7., 8., 9.], [10., 11., 12.]]);
+    let tape = Tape::new([&x])?;
+    let y = x.cumsum(0)?.sum_all();
+    let mut grads = tape.gradient(&y, [&x]);
+    let x_grad = grads.pop().unwrap();
+    tape.realize([&x_grad])?;
+    assert_eq!(x_grad, [[4f32, 4., 4.], [3., 3., 3.], [2., 2., 2.], [1., 1., 1.]]);
+    Ok(())
+}
+
+#[test]
 fn grad_max_1() -> Result<(), ZyxError> {
     let data = vec![1f32, 3., 2.];
     let x = Tensor::from(data);

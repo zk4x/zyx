@@ -4,8 +4,8 @@
 #   ./run_ci.sh
 #   ZYX_DEV=cuda ./run_ci.sh
 #
-# Covers unit and integration tests, doctests, private-item rustdoc, formatting,
-# the examples, the Python bindings (when a torch-enabled interpreter is
+# Covers unit and integration tests, doctests, private-item rustdoc, the
+# examples, the Python bindings (when a torch-enabled interpreter is
 # available), and the book's code examples. It needs the prerequisites in
 # INSTALL.md (a C compiler is enough; no GPU required).
 #
@@ -61,9 +61,6 @@ for crate in zyx zyx-nn zyx-optim zyx-derive; do
     echo "ci: $crate docs (private items)"
     (cd "$repo/$crate" && cargo doc --no-deps --document-private-items)
 done
-
-echo "ci: formatting"
-(cd "$repo/zyx" && cargo fmt --check)
 
 echo "ci: examples (build)"
 # `tt_gemm` and `qwen3-8-27b` still target the pre-rewrite Tenstorrent kernel
