@@ -1198,7 +1198,7 @@ impl Runtime {
             kernel: Kernel::new(dev),
         });
         let shape = self.replay_expr(kernel_id, shape_id);
-        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, id: x.0 + 1 });
+        let op_id = self.kernels[kernel_id].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, id: x.0 + 1, bounds: 0 });
         self.kernels[kernel_id].loads.push(x);
         self.retain(x);
         (kernel_id, op_id)
@@ -3570,6 +3570,7 @@ impl Runtime {
                 kind: ParamKind::GlobalMut,
                 shape: dst_shape_op,
                 id: dst.0 + 1,
+                bounds: 0,
             });
             self.kernels[kernel_id].kernel.push_back(Op::Store { dst: mut_param, dst_idx: OpId::NULL, src: src_op });
             self.kernels[kernel_id].stores.push(dst);
@@ -3949,7 +3950,7 @@ impl Runtime {
 ///
 /// A record from another layout, backend, device or compute capability is
 /// ignored, never reinterpreted.
-const TUNING_CACHE_VERSION: u8 = 2;
+const TUNING_CACHE_VERSION: u8 = 3;
 
 /// Directory of the on-disk autotune cache: `$XDG_CONFIG_HOME/zyx/cache/kernel`,
 /// else `~/.config/zyx/cache/kernel` — the same root the C backend uses for its
@@ -4256,6 +4257,7 @@ impl Runtime {
                 kind: ParamKind::GlobalMut,
                 shape: store_shape_id,
                 id: x.0 + 1,
+                bounds: 0,
             });
             self.kernels[kid].kernel.push_back(Op::Store { dst, dst_idx: OpId::NULL, src: op_id });
             self.kernels[kid].stores.push(x);

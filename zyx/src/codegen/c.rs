@@ -968,7 +968,7 @@ static inline unsigned char f32_to_f8e5m2(float v) {
             op_id = self.next_op(op_id);
         }
         let mut rendered =
-            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+            Kernel { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone(), param_bounds: Vec::new() };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::GPU(Box::new(GPUOp::Grid(gws))));
         rendered.push_back(Op::Source(SourceBlock(source.into_boxed_str())));

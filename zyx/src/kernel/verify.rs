@@ -875,6 +875,109 @@ impl Kernel {
     }
 }
 
+/// A linear form over op values: `Σ coeff·op + konst`.
+///
+/// This is the expression half of [`Kernel::compute_bounds`]: an op keeps its
+/// identity instead of being replaced by a number, so `256n - 1` and `256n`
+/// differ by the constant one — an inequality that is decidable *without
+/// knowing* `n`. That is exactly what an index-recovery chain needs, where a
+/// divisor is a product of dims and a numeric interval cannot see the
+/// identity (`compute_bounds` bounds a dynamic extent as unknown, correctly:
+/// an interval is not an identity).
+///
+/// A term that is not a dim (a range index, a loaded value) stays a term of
+/// its own, so the form is exact for whatever it is asked about: it is the
+/// value, not a bound, and [`Kernel::lower_form`]/[`Kernel::upper_form`] are
+/// what turn it into bounds by replacing the leaves.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub(crate) struct Lin {
+    /// Coefficients by op, ascending by `OpId` so equality is structural.
+    terms: Vec<(OpId, Dim)>,
+    konst: Dim,
+}
+
+impl Lin {
+    /// A plain number.
+    pub(crate) fn constant(v: Dim) -> Self {
+        Self { terms: Vec::new(), konst: v }
+    }
+
+    /// The value of one op, as a single term.
+    pub(crate) fn leaf(op: OpId) -> Self {
+        Self { terms: vec![(op, 1)], konst: 0 }
+    }
+
+    /// The number this form equals, when it is one.
+    pub(crate) fn as_const(&self) -> Option<Dim> {
+        self.terms.is_empty().then_some(self.konst)
+    }
+
+    pub(crate) fn add(&self, other: &Self) -> Self {
+        let (a, b) = (&self.terms, &other.terms);
+        let mut terms = Vec::with_capacity(a.len() + b.len());
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < a.len() || j < b.len() {
+            match (a.get(i), b.get(j)) {
+                (Some(&(x, cx)), Some(&(y, cy))) if x == y => {
+                    let coefficient = cx.saturating_add(cy);
+                    if coefficient != 0 {
+                        terms.push((x, coefficient));
+                    }
+                    i += 1;
+                    j += 1;
+                }
+                (Some(&(x, cx)), Some(&(y, _))) if x < y => {
+                    terms.push((x, cx));
+                    i += 1;
+                }
+                (Some(_), Some(&(y, cy))) => {
+                    terms.push((y, cy));
+                    j += 1;
+                }
+                (Some(&(x, cx)), None) => {
+                    terms.push((x, cx));
+                    i += 1;
+                }
+                (None, Some(&(y, cy))) => {
+                    terms.push((y, cy));
+                    j += 1;
+                }
+                (None, None) => break,
+            }
+        }
+        Self { terms, konst: self.konst.saturating_add(other.konst) }
+    }
+
+    pub(crate) fn sub(&self, other: &Self) -> Self {
+        self.add(&other.scale(-1))
+    }
+
+    pub(crate) fn scale(&self, k: Dim) -> Self {
+        if k == 0 {
+            return Self::constant(0);
+        }
+        Self { terms: self.terms.iter().map(|&(op, c)| (op, c.saturating_mul(k))).collect(), konst: self.konst.saturating_mul(k) }
+    }
+
+    /// Compare two forms: `Some(ordering)` only when the difference is a
+    /// resolved number, `None` when their dimensions differ (conservative —
+    /// the caller then proves nothing).
+    pub(crate) fn cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        let diff = self.sub(other);
+        diff.terms.is_empty().then(|| diff.konst.cmp(&0))
+    }
+
+    /// `self >= v`, when the difference is a number.
+    pub(crate) fn ge_const(&self, v: Dim) -> bool {
+        self.cmp(&Self::constant(v)).is_some_and(|o| o != std::cmp::Ordering::Less)
+    }
+
+    /// `self < other`, when the difference is a number.
+    pub(crate) fn lt(&self, other: &Self) -> bool {
+        self.cmp(other) == Some(std::cmp::Ordering::Less)
+    }
+}
+
 impl Kernel {
     /// Compute value-range bounds for every operation in the kernel.
     ///
@@ -1021,6 +1124,111 @@ impl Kernel {
             op_id = self.ops[op_id].next;
         }
         bounds
+    }
+}
+
+/// Which way [`Kernel::form`] reads a leaf: its exact value, its lower bound,
+/// or its upper bound.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FormMode {
+    Exact,
+    Lower,
+    Upper,
+}
+
+impl Kernel {
+    /// The value of `op` as a linear form ([`Lin`]), read in `mode`.
+    ///
+    /// `Exact` is the value itself and always succeeds — an op that is not
+    /// built from constants, sums, differences and constant products stays a
+    /// single leaf term. `Lower`/`Upper` replace every leaf by its bound: a
+    /// range index is `0` / `len - 1`, and a scalar variable contributes the
+    /// range recorded on it ([`Kernel::param_bounds`]), so a dimension —
+    /// non-negative, no upper bound — gives `[0, itself]`. `None` means "no
+    /// such bound can be expressed", which the caller treats as "nothing
+    /// proved".
+    ///
+    /// This is what a numeric interval cannot do: `256n - 1 < 256n` is decided
+    /// from the identity of `n` alone, with no knowledge of its value.
+    pub(crate) fn form(&self, op: OpId, mode: FormMode) -> Option<Lin> {
+        self.form_within(op, mode, 0)
+    }
+
+    fn form_within(&self, op: OpId, mode: FormMode, depth: u32) -> Option<Lin> {
+        if depth > 512 {
+            return (mode == FormMode::Exact).then(|| Lin::leaf(op));
+        }
+        let combine = |a: Lin, b: Lin, sub: bool| if sub { a.sub(&b) } else { a.add(&b) };
+        let scale = |k: Dim, other: OpId| -> Option<Lin> {
+            // The sign of a constant factor decides which end of the other
+            // operand's range lands on this end of the product's.
+            let inner = match (mode, k >= 0) {
+                (FormMode::Exact, _) => FormMode::Exact,
+                (FormMode::Lower, true) | (FormMode::Upper, false) => FormMode::Lower,
+                (FormMode::Lower, false) | (FormMode::Upper, true) => FormMode::Upper,
+            };
+            Some(self.form_within(other, inner, depth + 1)?.scale(k))
+        };
+        match *self.at(op) {
+            Op::Const(c) => c.as_dim().map(Lin::constant),
+            Op::Cast { x, .. } | Op::Bitcast { x, .. } => self.form_within(x, mode, depth + 1),
+            Op::Binary { x, y, bop: BOp::Add } => {
+                let a = self.form_within(x, mode, depth + 1)?;
+                let b = self.form_within(y, mode, depth + 1)?;
+                Some(combine(a, b, false))
+            }
+            Op::Binary { x, y, bop: BOp::Sub } => {
+                let a = self.form_within(x, mode, depth + 1)?;
+                let b = self.form_within(y, mode, depth + 1)?;
+                Some(combine(a, b, true))
+            }
+            Op::Binary { x, y, bop: BOp::Mul } => {
+                if let Some(k) = self.resolve_const(x).and_then(crate::dtype::Constant::as_dim) {
+                    scale(k, y)
+                } else if let Some(k) = self.resolve_const(y).and_then(crate::dtype::Constant::as_dim) {
+                    scale(k, x)
+                } else if mode == FormMode::Exact {
+                    Some(Lin::leaf(op))
+                } else {
+                    None
+                }
+            }
+            Op::Range { kind, .. } => match mode {
+                FormMode::Exact => Some(Lin::leaf(op)),
+                FormMode::Lower => Some(Lin::constant(0)),
+                FormMode::Upper => {
+                    let len = match kind {
+                        RangeKind::Group(len) => len,
+                        // A local range's width is an immediate.
+                        RangeKind::Local(len) => return Some(Lin::constant(i64::from(len).saturating_sub(1))),
+                    };
+                    Some(match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+                        Some(len) => Lin::constant(len.saturating_sub(1)),
+                        None => Lin::leaf(len).add(&Lin::constant(-1)),
+                    })
+                }
+            },
+            Op::Loop { len } => match mode {
+                FormMode::Exact => Some(Lin::leaf(op)),
+                FormMode::Lower => Some(Lin::constant(0)),
+                FormMode::Upper => Some(match self.resolve_const(len).and_then(crate::dtype::Constant::as_dim) {
+                    Some(len) => Lin::constant(len.saturating_sub(1)),
+                    None => Lin::leaf(len).add(&Lin::constant(-1)),
+                }),
+            },
+            Op::Param { .. } => match mode {
+                FormMode::Exact => Some(Lin::leaf(op)),
+                _ => self.param_bounds(op).and_then(|(lo, hi)| match mode {
+                    FormMode::Lower => Some(Lin::constant(lo)),
+                    // An unbounded dimension is exactly itself: that is the
+                    // tightest statement available, and the one the identity
+                    // proofs need.
+                    _ if hi == Dim::MAX => Some(Lin::leaf(op)),
+                    _ => Some(Lin::constant(hi)),
+                }),
+            },
+            _ => (mode == FormMode::Exact).then(|| Lin::leaf(op)),
+        }
     }
 
     fn rederive_bounds(&self, prev: &mut Map<OpId, (Dim, Dim)>, op_id: OpId) {

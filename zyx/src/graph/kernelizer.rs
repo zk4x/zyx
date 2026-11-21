@@ -635,7 +635,7 @@ impl Graph {
                                 "assign: fused self-update kernel {kid:?} already stores"
                             );
                             let (dtype, shape, id) = match self.jit_kernels[kid].kernel.ops[dst_op].op {
-                                Op::Param { dtype, kind: ParamKind::Global, shape, id } => (dtype, shape, id),
+                                Op::Param { dtype, kind: ParamKind::Global, shape, id, .. } => (dtype, shape, id),
                                 ref op => {
                                     todo!("assign: fused self-update needs dst to be a plain buffer load, got {op:?}")
                                 }
@@ -664,6 +664,7 @@ impl Graph {
                                 kind: ParamKind::GlobalMut,
                                 shape,
                                 id,
+                                bounds: 0,
                             });
                             self.jit_kernels[kid].kernel.push_back(Op::Store {
                                 dst: mut_param,
@@ -782,7 +783,7 @@ impl Graph {
                                         let id = self.jit_kernels[kid].kernel.push_back(Op::Const(value));
                                         op_map.insert(op_id, id);
                                     }
-                                    Op::Param { dtype, mut kind, shape, id } => {
+                                    Op::Param { dtype, mut kind, shape, id, bounds } => {
                                         if op_id == dst_param {
                                             kind = ParamKind::GlobalMut;
                                         }
@@ -815,7 +816,7 @@ impl Graph {
                                         // identifiable.
                                         let shape = if shape.is_null() { shape } else { op_map[&shape] };
                                         let id =
-                                            self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape, id: id + 1 });
+                                            self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind, shape, id: id + 1, bounds });
                                         // Assign turns dst's base from a load into a
                                         // PURE STORE: it must NOT register in loads —
                                         // its buffer slot comes via `stores` instead.
@@ -1626,7 +1627,7 @@ impl Graph {
         let dims = self.shape(cid);
         let shape = self.replay_symbolic_into_kernel(kid, &dims);
         let dtype = self.dtype(cid);
-        let op_id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, id: cid.0 + 1 });
+        let op_id = self.jit_kernels[kid].kernel.push_back(Op::Param { dtype, kind: ParamKind::Global, shape, id: cid.0 + 1, bounds: 0 });
         let data = &mut self.jit_kernels[kid];
         data.outputs = vec![cid; rc as usize];
         data.loads.push(cid);
@@ -1672,7 +1673,7 @@ impl Graph {
             let dtype = self.dtype(cid);
             let kernel = &mut self.jit_kernels[kid].kernel;
             let shape = kernel.stack_shape_dims(op_id);
-            let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape, id: cid.0 + 1 });
+            let dst = kernel.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape, id: cid.0 + 1, bounds: 0 });
             kernel.push_back(Op::Store { dst, dst_idx: OpId::NULL, src: op_id });
             self.jit_kernels[kid].stores.push(cid);
             visited.remove(&cid);

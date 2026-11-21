@@ -227,6 +227,11 @@ pub struct Kernel {
     /// placeholder kernels (`Dev::Auto`) before their device is bound.
     /// Hardware properties are fixed, so the snapshot cannot go stale.
     pub(crate) dev_info: Option<Arc<DeviceInfo>>,
+    /// Declared value ranges of scalar variable params, addressed by
+    /// [`Op::Param`]'s `bounds` index (`0` = no range, so index 0 is unused).
+    /// A dimension replayed from a shape is `[0, i64::MAX]`: a length. Hashed
+    /// with the IR because passes prove things from it.
+    pub(crate) param_bounds: Vec<(Dim, Dim)>,
 }
 
 /// Scope for memory.
@@ -249,7 +254,11 @@ impl PartialEq for Kernel {
     /// reads it — equality that ignored a hashed field could split two equal
     /// kernels across hash buckets.
     fn eq(&self, other: &Self) -> bool {
-        self.ops == other.ops && self.head == other.head && self.dev == other.dev && self.dev_info == other.dev_info
+        self.ops == other.ops
+            && self.head == other.head
+            && self.dev == other.dev
+            && self.dev_info == other.dev_info
+            && self.param_bounds == other.param_bounds
     }
 }
 
@@ -272,6 +281,11 @@ impl SerBin for Kernel {
         self.head.ser_bin(output);
         self.tail.ser_bin(output);
         self.dev.ser_bin(output);
+        (self.param_bounds.len() as u32).ser_bin(output);
+        for (lo, hi) in &self.param_bounds {
+            lo.ser_bin(output);
+            hi.ser_bin(output);
+        }
         match &self.dev_info {
             Some(info) => {
                 1u8.ser_bin(output);
@@ -288,6 +302,13 @@ impl DeBin for Kernel {
         let head = OpId::de_bin(offset, bytes)?;
         let tail = OpId::de_bin(offset, bytes)?;
         let dev = Dev::de_bin(offset, bytes)?;
+        let n_bounds: u32 = DeBin::de_bin(offset, bytes)?;
+        let mut param_bounds = Vec::with_capacity(n_bounds as usize);
+        for _ in 0..n_bounds {
+            let lo: Dim = DeBin::de_bin(offset, bytes)?;
+            let hi: Dim = DeBin::de_bin(offset, bytes)?;
+            param_bounds.push((lo, hi));
+        }
         let has_info: u8 = DeBin::de_bin(offset, bytes)?;
         let dev_info = match has_info {
             0 => None,
@@ -296,7 +317,7 @@ impl DeBin for Kernel {
                 return Err(DeBinErr::new(*offset, 0, has_info as usize));
             }
         };
-        Ok(Self { ops, head, tail, dev, dev_info })
+        Ok(Self { ops, head, tail, dev, dev_info, param_bounds })
     }
 }
 
@@ -312,6 +333,7 @@ impl Hash for Kernel {
     /// shares them when the hardware is the same.
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.ops.hash(state);
+        self.param_bounds.hash(state);
         self.dev_info.hash(state);
     }
 }
@@ -331,6 +353,37 @@ impl Kernel {
     /// `Dev::Auto` that were never compiled).
     pub(crate) fn dev_info(&self) -> &DeviceInfo {
         self.dev_info.as_ref().expect("kernel has no device bound (Dev::Auto placeholder)")
+    }
+
+    /// The declared value range of the scalar variable `op`, when one was
+    /// recorded (see [`Op::Param`]'s `bounds`). `None` for anything else and
+    /// for a variable that promises nothing.
+    pub fn param_bounds(&self, op: OpId) -> Option<(Dim, Dim)> {
+        match self.at(op) {
+            Op::Param { bounds, .. } if *bounds != 0 => self.param_bounds.get(*bounds as usize - 1).copied(),
+            _ => None,
+        }
+    }
+
+    /// Record `range` as the declared value range of the scalar variable `op`.
+    /// Equal ranges share one table entry, so two kernels that only differ in
+    /// which index they point at still hash alike.
+    ///
+    /// The graph records `[0, Dim::MAX]` for every dimension it replays (a
+    /// length is non-negative); a kernel built by hand records what it knows,
+    /// and a bare [`Kernel::variable`] stays without a range.
+    pub fn set_param_bounds(&mut self, op: OpId, range: (Dim, Dim)) {
+        let index = match self.param_bounds.iter().position(|r| *r == range) {
+            Some(position) => position + 1,
+            None => {
+                self.param_bounds.push(range);
+                self.param_bounds.len()
+            }
+        };
+        match &mut self.ops[op].op {
+            Op::Param { bounds, .. } => *bounds = index as u32,
+            other => panic!("set_param_bounds: {other:?} is not a scalar variable param"),
+        }
     }
 
     /// Required per-dtype capabilities for the ops in this kernel. Placement
@@ -2902,8 +2955,14 @@ impl Kernel {
             panic!("duplicate_subkernel did not finish in 250000 steps");
         }
 
-        let mut new_kernel =
-            Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev: self.dev, dev_info: self.dev_info.clone() };
+        let mut new_kernel = Self {
+            ops: Slab::new(),
+            head: OpId::NULL,
+            tail: OpId::NULL,
+            dev: self.dev,
+            dev_info: self.dev_info.clone(),
+            param_bounds: self.param_bounds.clone(),
+        };
         let mut remap: Map<OpId, OpId> =
             Map::with_capacity_and_hasher(root_required.len(), core::hash::BuildHasherDefault::default());
         let mut new_root_op = OpId::NULL;

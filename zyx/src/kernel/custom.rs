@@ -84,7 +84,7 @@ impl Kernel {
         // An unavailable device binds None and fails at compile() with an
         // error (never a panic), so callers can skip gracefully.
         let dev_info = if dev == Dev::Auto { None } else { dev.info().ok() };
-        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info }
+        Self { ops: Slab::new(), head: OpId::NULL, tail: OpId::NULL, dev, dev_info, param_bounds: Vec::new() }
     }
 
     /// Compile the kernel. Consumes `self`.
@@ -335,7 +335,7 @@ impl Kernel {
                 id = core::cmp::max(id, *pid);
             }
         }
-        self.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL, id: id + 1 })
+        self.push_back(Op::Param { dtype, kind: ParamKind::Global, shape: OpId::NULL, id: id + 1, bounds: 0 })
     }
 
     /// Create a kernel output param (global memory mutable argument).
@@ -346,7 +346,7 @@ impl Kernel {
                 id = core::cmp::max(id, *pid);
             }
         }
-        self.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: OpId::NULL, id: id + 1 })
+        self.push_back(Op::Param { dtype, kind: ParamKind::GlobalMut, shape: OpId::NULL, id: id + 1, bounds: 0 })
     }
 
     /// Create a scalar variable param (its value lives in the backend pools' variable slots).
@@ -357,7 +357,7 @@ impl Kernel {
                 id = core::cmp::max(id, *pid);
             }
         }
-        self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL, id: id + 1 })
+        self.push_back(Op::Param { dtype, kind: ParamKind::Variable, shape: OpId::NULL, id: id + 1, bounds: 0 })
     }
 
     /// Create multiple scalar variable params (see [`Kernel::variable`]).

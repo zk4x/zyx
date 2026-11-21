@@ -677,7 +677,7 @@ impl Kernel {
                     let zero = self.push_back(Op::Const(value.dtype().zero_constant()));
                     self.ops[op_id].op = Op::Select { cond: pc, if_true: z, if_false: zero };
                 }
-                Op::Param { dtype, kind, shape, id } => {
+                Op::Param { dtype, kind, shape, id, bounds } => {
                     // A read-only param has no view of its own any more: every
                     // read is a `Load` (see `wrap_global_reads_in_loads`). Nothing to
                     // fold here — the `Load` arm builds each use's index.
@@ -755,7 +755,7 @@ impl Kernel {
                             // param is inserted so the param order (which scalar
                             // args bind to) is preserved, then the value is
                             // gated by the mask (zero where masked off).
-                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, id });
+                            let src = self.insert_before(op_id, Op::Param { dtype, kind, shape, id, bounds });
                             let zero = self.insert_before(op_id, Op::Const(dtype.zero_constant()));
                             self.ops[op_id].op = Op::Select { cond: pc, if_true: src, if_false: zero };
                         }

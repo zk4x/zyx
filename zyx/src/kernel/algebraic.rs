@@ -21,6 +21,7 @@ use crate::{
 };
 
 use super::fold_constants::record;
+use super::verify::{FormMode, Lin};
 
 impl Kernel {
     /// Apply algebraic simplification to the kernel.
@@ -45,7 +46,20 @@ impl Kernel {
         // computed once and are conservative (see `compute_bounds`), so reusing
         // them across these value-preserving checks is sound.
         let bounds = self.compute_bounds();
-        self.simplify_fused(&bounds);
+        // A rewrite remaps its users, and a remapped user is only revisited on
+        // the next sweep — a recovery chain (a divide, then a modulo of its
+        // residue) folds level by level. Sweep until a round stops changing the
+        // op count (the symbolic folds insert ops, so this is the signal), with
+        // a small cap so a single pass stays inside the budget.
+        let mut round = 0;
+        loop {
+            let before = self.ops.len();
+            self.simplify_fused(&bounds);
+            round += 1;
+            if self.ops.len() == before || round >= 4 {
+                break;
+            }
+        }
         self.reduce_pow2_div_mod(&bounds);
         self.simplify_mod_shift_sequences(&bounds);
         self.simplify_mod_div_identity(&bounds);
@@ -283,6 +297,11 @@ impl Kernel {
                         }
                     }
                     BOp::Div => {
+                        // A symbolic divisor: split the numerator into exact
+                        // multiples and a residue (see `fold_divmod_forms`).
+                        if self.fold_divmod_forms(op_id, x, y, BOp::Div, &mut remaps) {
+                            continue;
+                        }
                         // ((a*d)+b)/d → a when |b| < |dv|: truncated division's
                         // correction term vanishes. Integer operands only (float
                         // division is never exact here); dv == 0 cannot fire.
@@ -320,6 +339,11 @@ impl Kernel {
                         }
                     }
                     BOp::Mod => {
+                        // A symbolic divisor: split the numerator into exact
+                        // multiples and a residue (see `fold_divmod_forms`).
+                        if self.fold_divmod_forms(op_id, x, y, BOp::Mod, &mut remaps) {
+                            continue;
+                        }
                         // `dv` is the divisor value, `m["d"]` its op. Each acted
                         // rule ends with `continue`: skip patterns 3-5,
                         // advance the walk. Fall-through leaves the op untouched.
@@ -1460,6 +1484,175 @@ fn fold_cmp(bop: BOp, lb: Dim, ub: Dim, c: Dim, const_is_left: bool) -> Option<b
 /// Only `Op::Const` nodes count: `resolve_const` also evaluates range
 /// extents, and a thread index would then fold to the range's *length* — a
 /// number, but not this thread's value.
+/// A term as a coefficient times a multiset of factors: `6·n·h` is
+/// `(6, [n, h])`. Constants fold into the coefficient, so a product of leaves
+/// is one term and cancellation is multiset difference.
+fn term_mul(a: (Dim, Vec<OpId>), b: (Dim, Vec<OpId>)) -> (Dim, Vec<OpId>) {
+    let mut factors = a.1;
+    factors.extend(b.1);
+    factors.sort_unstable();
+    (a.0.saturating_mul(b.0), factors)
+}
+
+/// `a / b` when the division is exact: every factor of `b` appears in `a` and
+/// the coefficient divides. The remainder is a genuine sum, never dropped.
+fn term_div(a: &(Dim, Vec<OpId>), b: &(Dim, Vec<OpId>)) -> Option<(Dim, Vec<OpId>)> {
+    if b.0 == 0 || a.0 % b.0 != 0 {
+        return None;
+    }
+    let mut rest = a.1.clone();
+    for factor in &b.1 {
+        let position = rest.binary_search(factor).ok()?;
+        rest.remove(position);
+    }
+    Some((a.0 / b.0, rest))
+}
+
+/// `a * b` when one side is a resolved number: a product of two symbolic
+/// bounds is not a linear form, so that case proves nothing.
+fn lin_mul(a: &Lin, b: &Lin) -> Option<Lin> {
+    if let Some(k) = a.as_const() {
+        return Some(b.scale(k));
+    }
+    if let Some(k) = b.as_const() {
+        return Some(a.scale(k));
+    }
+    None
+}
+
+impl Kernel {
+    /// Fold `x / y` and `x % y` when `y` is a symbolic extent.
+    ///
+    /// The numerator is split into the terms that are exact multiples of the
+    /// divisor and the terms that are not. When the rest is provably in
+    /// `[0, y)` — from each term's factor bounds, see [`Kernel::form`] — then
+    /// `x % y` is that rest and `x / y` is the sum of the exact quotients:
+    /// `x = q·y + r` holds by construction and `0 <= r < y` finishes it.
+    /// `y > 0` needs no separate proof: `0 <= r < y` already implies it.
+    ///
+    /// This is what folds an index-recovery chain (`(d·n + h·256n + j) % 256n`)
+    /// without knowing any extent's value: the divisor and the residue keep
+    /// their dims, and `256n - 1 < 256n` is decided by the constant one.
+    ///
+    /// `x / y -> 0` and `x % y -> x` for a small numerator fall out of the
+    /// same comparison, and are the half that peels the *inner* divisions.
+    fn fold_divmod_forms(&mut self, op_id: OpId, x: OpId, y: OpId, bop: BOp, remaps: &mut Map<OpId, OpId>) -> bool {
+        let Some(divisor) = self.form(y, FormMode::Exact) else { return false };
+        // A resolved divisor is the numeric rules' business (they also see
+        // powers of two and the pattern arms); only a symbolic one lands here.
+        if divisor.as_const().is_some() {
+            return false;
+        }
+        // `0 <= x < y`: the numerator never reaches one whole divisor.
+        if let (Some(lower), Some(upper)) = (self.form(x, FormMode::Lower), self.form(x, FormMode::Upper))
+            && lower.ge_const(0)
+            && upper.lt(&divisor)
+        {
+            let replacement = if bop == BOp::Mod { x } else { self.const_idx(0) };
+            record(remaps, op_id, replacement);
+            return true;
+        }
+        let divisor_term = self.term_of(y);
+        if divisor_term.0 <= 0 {
+            return false;
+        }
+        let mut terms = Vec::new();
+        let mut konst = 0i64;
+        if !flatten_add(self, x, &mut terms, &mut konst) || terms.len() < 2 {
+            return false;
+        }
+        let mut quotients: Vec<OpId> = Vec::new();
+        let mut residue: Vec<OpId> = Vec::new();
+        for &term in &terms {
+            let mono = self.term_of(term);
+            match term_div(&mono, &divisor_term) {
+                Some((coeff, factors)) => {
+                    let Some(quotient) = self.product_expr(op_id, coeff, &factors) else { return false };
+                    quotients.push(quotient);
+                }
+                None => residue.push(term),
+            }
+        }
+        if quotients.is_empty() {
+            return false;
+        }
+        // The residue's range: each term contributes its factor bounds, the
+        // constant its value.
+        let mut lower = Lin::constant(konst);
+        let mut upper = Lin::constant(konst);
+        for &term in &residue {
+            let (coeff, factors) = self.term_of(term);
+            let mut term_lower = Lin::constant(coeff);
+            let mut term_upper = Lin::constant(coeff);
+            for factor in &factors {
+                let (Some(fl), Some(fu)) = (self.form(*factor, FormMode::Lower), self.form(*factor, FormMode::Upper)) else {
+                    return false;
+                };
+                if !fl.ge_const(0) {
+                    return false;
+                }
+                let (Some(l), Some(u)) = (lin_mul(&term_lower, &fl), lin_mul(&term_upper, &fu)) else { return false };
+                term_lower = l;
+                term_upper = u;
+            }
+            lower = lower.add(&term_lower);
+            upper = upper.add(&term_upper);
+        }
+        if !(lower.ge_const(0) && upper.lt(&divisor)) {
+            return false;
+        }
+        if bop == BOp::Mod {
+            let Some(mut expr) = residue.first().copied() else { return false };
+            for &term in &residue[1..] {
+                expr = self.insert_before(op_id, Op::Binary { x: expr, y: term, bop: BOp::Add });
+            }
+            if konst != 0 {
+                let k = self.insert_before(op_id, Op::Const(Constant::idx(konst)));
+                expr = self.insert_before(op_id, Op::Binary { x: expr, y: k, bop: BOp::Add });
+            }
+            record(remaps, op_id, expr);
+        } else {
+            let Some(mut expr) = quotients.first().copied() else { return false };
+            for &quotient in &quotients[1..] {
+                expr = self.insert_before(op_id, Op::Binary { x: expr, y: quotient, bop: BOp::Add });
+            }
+            record(remaps, op_id, expr);
+        }
+        true
+    }
+
+    /// `op` as a coefficient times a multiset of factors. Only products of
+    /// constants and leaves are terms: a sum here is a sum, not a factor.
+    fn term_of(&self, op: OpId) -> (Dim, Vec<OpId>) {
+        match *self.at(op) {
+            Op::Const(c) => (c.as_dim().unwrap_or(1), Vec::new()),
+            Op::Cast { x, .. } | Op::Bitcast { x, .. } => self.term_of(x),
+            Op::Binary { x, y, bop: BOp::Mul } => term_mul(self.term_of(x), self.term_of(y)),
+            _ => (1, vec![op]),
+        }
+    }
+
+    /// Build `coeff · f0 · f1 · ...` before `at`.
+    fn product_expr(&mut self, at: OpId, coeff: Dim, factors: &[OpId]) -> Option<OpId> {
+        let mut expr: Option<OpId> = None;
+        for &factor in factors {
+            expr = Some(match expr {
+                None => factor,
+                Some(previous) => self.insert_before(at, Op::Binary { x: previous, y: factor, bop: BOp::Mul }),
+            });
+        }
+        let mut expr = match expr {
+            Some(expr) => expr,
+            None => self.const_idx(1),
+        };
+        if coeff != 1 {
+            let c = self.insert_before(at, Op::Const(Constant::idx(coeff)));
+            expr = self.insert_before(at, Op::Binary { x: c, y: expr, bop: BOp::Mul });
+        }
+        Some(expr)
+    }
+}
+
 fn flatten_add(kernel: &Kernel, id: OpId, terms: &mut Vec<OpId>, konst: &mut i64) -> bool {
     if let Op::Binary { x, y, bop: BOp::Add } = kernel.at(id) {
         let (x, y) = (*x, *y);
@@ -1654,5 +1847,64 @@ mod tests {
 
         let after = eval_mask(&k, mask);
         assert_eq!(after, expected_mask(), "mask must stay correct after algebraic_simplification");
+    }
+
+    /// The index-recovery chain a reshaped attention operand lowers to:
+    /// `x = d·n + h·256n + j` split by `256n`, then its residue split by `n`.
+    ///
+    /// Every extent here is symbolic, so no numeric interval can decide
+    /// anything; the folds come from the dims themselves — `256n - 1 < 256n`
+    /// and `0 <= d·n` because a dimension is a length (`param_bounds`). The
+    /// result is the direct index the grouped lowering would have produced:
+    /// `x % 256n = d·n + j`, `x / 256n = h`, and then `d` and `j` out of the
+    /// residue.
+    #[test]
+    fn recovery_chain_folds_symbolically() {
+        let mut k = Kernel::new(Dev::Auto);
+        let n = k.variable(crate::kernel::IDX_T);
+        // A dimension: non-negative, no upper bound the kernel may rely on.
+        k.set_param_bounds(n, (0, Dim::MAX));
+        let out = k.param_mut(DType::I64);
+        let c256 = k.const_idx(256);
+        let c24 = k.const_idx(24);
+        let zero = k.const_idx(0);
+        let d = k.group_range(0, c256);
+        let h = k.group_range(1, c24);
+        let j = k.push_back(Op::Loop { len: n });
+        let stride = k.push_back(Op::Binary { x: n, y: c256, bop: BOp::Mul });
+        let hn = k.push_back(Op::Binary { x: h, y: stride, bop: BOp::Mul });
+        let dn = k.push_back(Op::Binary { x: d, y: n, bop: BOp::Mul });
+        let s1 = k.push_back(Op::Binary { x: hn, y: dn, bop: BOp::Add });
+        let x = k.push_back(Op::Binary { x: s1, y: j, bop: BOp::Add });
+        let divisor = k.push_back(Op::Binary { x: c256, y: n, bop: BOp::Mul });
+        let m = k.push_back(Op::Binary { x, y: divisor, bop: BOp::Mod });
+        let q = k.push_back(Op::Binary { x, y: divisor, bop: BOp::Div });
+        let inner_m = k.push_back(Op::Binary { x: m, y: n, bop: BOp::Mod });
+        let inner_q = k.push_back(Op::Binary { x: m, y: n, bop: BOp::Div });
+        for src in [m, q, inner_m, inner_q] {
+            k.push_back(Op::Store { dst: out, dst_idx: zero, src });
+        }
+        k.push_back(Op::EndLoop);
+        k.algebraic_simplifications();
+
+        let mut srcs = Vec::new();
+        let mut op_id = k.head;
+        while !op_id.is_null() {
+            if let Op::Store { src, .. } = *k.at(op_id) {
+                srcs.push(src);
+            }
+            op_id = k.next_op(op_id);
+        }
+        assert_eq!(srcs.len(), 4, "one store per folded value");
+        for src in &srcs {
+            assert!(
+                !matches!(k.at(*src), Op::Binary { bop: BOp::Div | BOp::Mod, .. }),
+                "the recovery chain must not survive as a division: got {:?}",
+                k.at(*src)
+            );
+        }
+        assert_eq!(srcs[1], h, "x / 256n is h");
+        assert_eq!(srcs[2], j, "the residue modulo n is j");
+        assert_eq!(srcs[3], d, "the residue divided by n is d");
     }
 }

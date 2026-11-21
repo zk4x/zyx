@@ -569,6 +569,24 @@ fn pv_fast_kv(dev: zyx::Dev) -> zyx::kernel::Kernel {
     k
 }
 
+/// Declare every scalar variable param as a dimension, the way the graph does
+/// when it replays a shape dim into a kernel: a length is non-negative, and it
+/// has no upper bound the kernel may rely on.
+fn declare_dimensions(k: &mut zyx::kernel::Kernel) {
+    use zyx::kernel::{Op, ParamKind};
+    let mut ids = Vec::new();
+    let mut op_id = k.head;
+    while !op_id.is_null() {
+        if matches!(k.at(op_id), Op::Param { kind: ParamKind::Variable, .. }) {
+            ids.push(op_id);
+        }
+        op_id = k.next_op(op_id);
+    }
+    for id in ids {
+        k.set_param_bounds(id, (0, i64::MAX));
+    }
+}
+
 /// Time one PV kernel through the search and check its values against
 /// [`pv_ref`].
 fn run_pv(dev: zyx::Dev, build: fn(zyx::Dev) -> zyx::kernel::Kernel, label: &str) -> Result<(), ZyxError> {
@@ -582,9 +600,15 @@ fn run_pv(dev: zyx::Dev, build: fn(zyx::Dev) -> zyx::kernel::Kernel, label: &str
     let n_t = Tensor::variable(n);
     let scratch = Tensor::zeros([N_HEAD, HEAD_DIM], DType::F32).to(dev)?;
 
-    let (_winner, nanos) = BeamSearch::new().run([build(dev)], &[&v_t, &p_t, &n_t, &scratch], &[], |_| {}, |_| 0)?;
+    // The seed as production hands it over: the dim ranges declared, and the
+    // epilogue already applied (the search does no seed preprocessing).
+    let mut seed = build(dev);
+    declare_dimensions(&mut seed);
+    seed.default_epilogue();
 
-    let out = build(dev).compile()?.forward(&[&v_t, &p_t, &n_t], vec![[N_HEAD, HEAD_DIM]])?.pop().unwrap();
+    let (winner, nanos) = BeamSearch::new().run([seed], &[&v_t, &p_t, &n_t, &scratch], &[], |_| {}, |_| 0)?;
+
+    let out = winner.compile()?.forward(&[&v_t, &p_t, &n_t], vec![[N_HEAD, HEAD_DIM]])?.pop().unwrap();
     let got: Vec<f32> = out.try_into()?;
     let want = pv_ref(&p_host, &v_host, 1, n);
     assert_pv(&got, &want, label);

@@ -1355,6 +1355,13 @@ impl Graph {
                         if let Op::Param { id, .. } = &mut self.jit_kernels[kid].kernel.ops[op_id].op {
                             *id = cons_id + 1;
                         }
+                        // A dimension replayed from a shape is a length: it is
+                        // non-negative, and it has no upper bound the kernel may
+                        // rely on — the launch value stays a kernel argument, so
+                        // one compiled kernel serves every length. This is the
+                        // only place a scalar variable gets a declared range; a
+                        // bare `Kernel::variable` keeps none.
+                        self.jit_kernels[kid].kernel.set_param_bounds(op_id, (0, Dim::MAX));
                         self.jit_kernels[kid].loads.push(c);
                         op_id
                     }
@@ -2960,7 +2967,7 @@ impl Runtime {
         // its own class).
         let cons_id = self.graphs[graph_id].max_cons_id;
         self.graphs[graph_id].max_cons_id += 1;
-        let node = Op::Param { dtype, kind: ParamKind::Global, shape, id: cons_id };
+        let node = Op::Param { dtype, kind: ParamKind::Global, shape, id: cons_id, bounds: 0 };
         let g = &mut self.graphs[graph_id];
         let nid = g.ops.push(OpNode { op: node.clone(), class_of: OpId::NULL, next_in_class: OpId::NULL });
         let cid = nid;

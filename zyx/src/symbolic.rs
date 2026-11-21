@@ -538,6 +538,13 @@ impl Runtime {
                     if let Op::Param { id, .. } = &mut self.kernels[kid].kernel.ops[op_id].op {
                         *id = eid.0 + 1;
                     }
+                    // A symbolic value replayed as a kernel scalar is a
+                    // dimension: a length, non-negative, with no upper bound the
+                    // kernel may rely on (the launch value stays an argument, so
+                    // one compiled kernel serves every length). The same rule the
+                    // graph-side replay applies; a bare `Kernel::variable` keeps
+                    // no range.
+                    self.kernels[kid].kernel.set_param_bounds(op_id, (0, Dim::MAX));
                     // Load-owned handle (rc = 1 is the load edge; no user
                     // handle). Released with the kernel's loads.
                     let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
@@ -659,6 +666,13 @@ impl Runtime {
                     if let Op::Param { id, .. } = &mut self.kernels[kid].kernel.ops[op_id].op {
                         *id = eid.0 + 1;
                     }
+                    // A symbolic value replayed as a kernel scalar is a
+                    // dimension: a length, non-negative, with no upper bound the
+                    // kernel may rely on (the launch value stays an argument, so
+                    // one compiled kernel serves every length). The same rule the
+                    // graph-side replay applies; a bare `Kernel::variable` keeps
+                    // no range.
+                    self.kernels[kid].kernel.set_param_bounds(op_id, (0, Dim::MAX));
                     let tid = self.tensors.push(TensorData::Symbolic { expr: eid, rc: 1 });
                     self.kernels[kid].loads.push(tid);
                     op_id

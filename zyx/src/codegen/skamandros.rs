@@ -508,6 +508,7 @@ impl Kernel {
             tail: OpId::NULL,
             dev: self.dev,
             dev_info: self.dev_info.clone(),
+            param_bounds: Vec::new(),
         };
         rendered.push_back(Op::GPU(Box::new(GPUOp::Params(params.into_boxed_slice()))));
         rendered.push_back(Op::Source(SourceBlock(c.text.into_boxed_str())));

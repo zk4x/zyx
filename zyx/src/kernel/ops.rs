@@ -102,6 +102,20 @@ pub enum Op {
         /// in `Hash` (canonicalized to head-order ordinals first, so
         /// program caches keep sharing across buffers).
         id: u32,
+        /// Declared value range of a scalar variable param (inclusive), the
+        /// kernel-side counterpart of tinygrad's `ParamArg.vmin_vmax`: an
+        /// index into [`Kernel::param_bounds`], `0` meaning "no range".
+        ///
+        /// It is set where the variable is *created* from a shape dimension —
+        /// a dimension is a length, so `[0, i64::MAX]` — and stays `0` for a
+        /// bare [`Kernel::variable`], which promises nothing. The table is
+        /// part of `Eq`/`Hash`: the passes prove things from it
+        /// (`compute_bounds`), so two kernels that differ here must not share
+        /// a compiled artifact. The *value* an extent takes at launch is not
+        /// in it — one kernel serves every value of the range.
+        ///
+        /// An index, not the pair: [`Op`] is pinned at 24 bytes.
+        bounds: u32,
     },
     /// Cast `x` to `dtype` (value conversion; bit-preserving form is
     /// [`Op::Bitcast`]).
@@ -1234,9 +1248,10 @@ impl PartialEq for Op {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Op::Const(a), Op::Const(b)) => a == b,
-            (Op::Param { dtype: ad, kind: ak, shape: as_, id: ac }, Op::Param { dtype: bd, kind: bk, shape: bs, id: bc }) => {
-                ad == bd && ak == bk && as_ == bs && ac == bc
-            }
+            (
+                Op::Param { dtype: ad, kind: ak, shape: as_, id: ac, bounds: ab },
+                Op::Param { dtype: bd, kind: bk, shape: bs, id: bc, bounds: bb },
+            ) => ad == bd && ak == bk && as_ == bs && ac == bc && ab == bb,
             (Op::Cast { x: a, dtype: ad }, Op::Cast { x: b, dtype: bd }) => a == b && ad == bd,
             (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => a == b && ad == bd,
             (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => a == b && au == bu,
@@ -1311,11 +1326,12 @@ impl Hash for Op {
             // ordinals before any cache lookup, so structurally
             // identical kernels hash identically and share programs.
             // `Eq` compares it too, which gives CSE same-id dedup.
-            Op::Param { dtype, kind, shape, id } => {
+            Op::Param { dtype, kind, shape, id, bounds } => {
                 dtype.hash(state);
                 kind.hash(state);
                 shape.hash(state);
                 id.hash(state);
+                bounds.hash(state);
             }
             Op::Cast { x, dtype } => {
                 x.hash(state);
@@ -1460,9 +1476,10 @@ impl Ord for Op {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         match (self, other) {
             (Op::Const(a), Op::Const(b)) => a.cmp(b),
-            (Op::Param { dtype: ad, kind: ak, shape: as_, id: ac }, Op::Param { dtype: bd, kind: bk, shape: bs, id: bc }) => {
-                (ad, ak, as_, ac).cmp(&(bd, bk, bs, bc))
-            }
+            (
+                Op::Param { dtype: ad, kind: ak, shape: as_, id: ac, bounds: ab },
+                Op::Param { dtype: bd, kind: bk, shape: bs, id: bc, bounds: bb },
+            ) => (ad, ak, as_, ac, ab).cmp(&(bd, bk, bs, bc, bb)),
             (Op::Cast { x: a, dtype: ad }, Op::Cast { x: b, dtype: bd }) => (a, ad).cmp(&(b, bd)),
             (Op::Bitcast { x: a, dtype: ad }, Op::Bitcast { x: b, dtype: bd }) => (a, ad).cmp(&(b, bd)),
             (Op::Unary { x: a, uop: au }, Op::Unary { x: b, uop: bu }) => (a, au).cmp(&(b, bu)),
@@ -2470,12 +2487,13 @@ impl SerBin for Op {
                 0u8.ser_bin(out);
                 c.ser_bin(out);
             }
-            Op::Param { dtype, kind, shape, id } => {
+            Op::Param { dtype, kind, shape, id, bounds } => {
                 1u8.ser_bin(out);
                 dtype.ser_bin(out);
                 kind.ser_bin(out);
                 shape.ser_bin(out);
                 id.ser_bin(out);
+                bounds.ser_bin(out);
             }
             Op::Cast { x, dtype } => {
                 2u8.ser_bin(out);
@@ -2666,6 +2684,7 @@ impl DeBin for Op {
                 kind: DeBin::de_bin(offset, bytes)?,
                 shape: DeBin::de_bin(offset, bytes)?,
                 id: DeBin::de_bin(offset, bytes)?,
+                bounds: DeBin::de_bin(offset, bytes)?,
             },
             2 => Op::Cast { x: DeBin::de_bin(offset, bytes)?, dtype: DeBin::de_bin(offset, bytes)? },
             3 => Op::Bitcast { x: DeBin::de_bin(offset, bytes)?, dtype: DeBin::de_bin(offset, bytes)? },
